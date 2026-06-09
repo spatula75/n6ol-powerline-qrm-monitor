@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+<title>Utility Noise at N6OL</title>
+    {% if not no_refresh %}
+<meta http-equiv="refresh" content="60">
+    {% endif %}
+<style type="text/css">
+body {
+  background-color: #fff;
+  margin: 0;
+  padding: 0;
+}
+div.center-container {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100vh;
+  width: 100vw;
+  margin: 0;
+  padding: 0;
+}
+div.center-container p {
+  text-align: center;
+  font-family: Inter, "Open Sans", Verdana, Helvetica, Avenir, sans-serif;
+}
+</style>
+</head>
+
+<body>
+
+  <div class="center-container">
+    <p>
+60 Hz arc noise (120 pulses per second) measured at N6OL.
+        <br />
+Noise is very likely disruptive
+and trackable when the red line crosses the gray -86dB threshold dashed line (S7).
+    <br />
+This page auto-refreshes once per minute.  Last data update at {{update_datetime}}
+    <br />
+    <img src="{{filename}}" alt="Noise plot at {{update_datetime}}" />
+        <br/>
+Access to raw data and charts is available <a href="/noise/data/">here</a>.
+    </p>
+
+  </div>
+
+</body>
+</html>
