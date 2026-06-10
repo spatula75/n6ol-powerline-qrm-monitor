@@ -22,7 +22,7 @@ _DB_REFERENCE = 20 * log10(32768.0)
 
 
 class AudioSampler:
-    def __init__(self, config: BuzzConfig):
+    def __init__(self, config: BuzzConfig) -> None:
         """Initialise the sampler and resolve the PortAudio device to record from.
 
         If config.audio.device_index is set it takes precedence over
@@ -90,7 +90,8 @@ class AudioSampler:
 
 
 @njit
-def _average_pulse_amplitude(mono_amplitude_array, sample_rate, pulse_rate, analysis_size, start_index):
+def _average_pulse_amplitude(mono_amplitude_array: np.ndarray, sample_rate: int,
+                             pulse_rate: int, analysis_size: int, start_index: int) -> int:
     """Average the amplitude at each pulse position across the analysis window.
 
     Samples three adjacent values per pulse position (pulse spans ~3 samples at
@@ -124,7 +125,7 @@ def _build_pulse_kernel(sample_rate: int, pulse_rate: int) -> np.ndarray:
     return coefficients
 
 
-def _calculate_pps_fit_array(mono_amplitude_array, kernel, scan_pulses):
+def _calculate_pps_fit_array(mono_amplitude_array: np.ndarray, kernel: np.ndarray, scan_pulses: int) -> np.ndarray:
     """Return a score at each sample position for how well a pulse train starting
     there fits the data.  Uses fftconvolve with a symmetric kernel so convolution ==
     correlation; O((N+M) log(N+M)) vs O(N*M) for direct correlation.

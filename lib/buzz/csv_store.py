@@ -8,16 +8,18 @@ for the summary graphs.
 """
 
 from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime, time, timedelta
 from math import log
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from buzz.config import BuzzConfig
 
+CsvValue = str | float
+
 
 class CsvStore:
-    def __init__(self, config: BuzzConfig):
+    def __init__(self, config: BuzzConfig) -> None:
         self._config = config
         pps = config.audio.pulse_rate
         self._headers = (f'ISO datetime,{pps}pps SNR,{pps}pps signal dB,Noise floor dB,'
@@ -28,8 +30,8 @@ class CsvStore:
         return Path(self._config.station.path) / f'noise_data.{date.strftime("%Y-%m-%d")}.csv'
 
     def append(self, now: datetime, snr: float, signal: float, noise: float,
-               temperature, humidity, solar_radiation,
-               wind_speed, wind_gust, wind_bearing) -> str:
+               temperature: CsvValue, humidity: CsvValue, solar_radiation: CsvValue,
+               wind_speed: CsvValue, wind_gust: CsvValue, wind_bearing: CsvValue) -> str:
         csv_filename = self.filename_for_date(now)
         write_headers = not csv_filename.exists()
         csv_str = (f'{now.isoformat()},{snr:.2f},{signal:.2f},{noise:.2f},'
@@ -41,7 +43,7 @@ class CsvStore:
             f.write(f'{csv_str}\n')
         return csv_str
 
-    def _read_date_to_time_dict(self, input_filename: Path | str) -> dict:
+    def _read_date_to_time_dict(self, input_filename: Path | str) -> dict[time, int]:
         """Read one CSV file and return a {time: score} dict bucketed to 15-minute intervals.
 
         Only rows where the signal is at or above the noise threshold AND the SNR is at
@@ -72,7 +74,7 @@ class CsvStore:
                     time_to_score[t] += log(snr, snr_gate)
         return {k: int(v) for k, v in time_to_score.items()}
 
-    def read_range_to_time_dict(self, start_date: datetime, end_date: datetime) -> dict:
+    def read_range_to_time_dict(self, start_date: datetime, end_date: datetime) -> dict[time, int]:
         """Aggregate scores across a date range into a single {time: score} dict.
 
         Missing CSV files (days with no data) are silently skipped.  The returned
