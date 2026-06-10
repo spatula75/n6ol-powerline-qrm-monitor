@@ -59,8 +59,13 @@ class Publisher:
             for local_file, file_prefix in files:
                 destination_name = Path(local_file).name
                 sftp.put(str(local_file), f'{server.remote_path}{file_prefix}{destination_name}')
-        except Exception as e:
-            logger.exception('Failed to copy files to server')
+        except Exception:
+            logger.exception(
+                'Uploading output files to %s failed — check SSH key (%s), '
+                'remote path (%s), and host reachability. '
+                'Files will be re-uploaded next cycle.',
+                server.host, server.key_path, server.remote_path,
+            )
         finally:
             if sftp:
                 sftp.close()

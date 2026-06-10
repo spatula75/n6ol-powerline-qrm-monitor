@@ -13,14 +13,14 @@ from pathlib import Path
 from time import sleep
 from zoneinfo import ZoneInfo
 
-logger = logging.getLogger(__name__)
-
 from buzz.config import BuzzConfig
 from buzz.csv_store import CsvStore
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher
 from buzz.sampler import AudioSampler
 from buzz.weather import WeatherClient
+
+logger = logging.getLogger(__name__)
 
 
 class Collector:
@@ -114,4 +114,7 @@ class Collector:
             except KeyboardInterrupt:
                 return
             except Exception:
-                logger.exception('Unexpected error — will retry next minute.')
+                logger.exception(
+                    'Collection cycle failed — likely a transient hardware or network error; '
+                    'will retry at the next minute boundary.'
+                )
