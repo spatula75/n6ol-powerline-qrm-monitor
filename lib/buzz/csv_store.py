@@ -22,7 +22,7 @@ class CsvStore:
     def __init__(self, config: BuzzConfig) -> None:
         self._config = config
         pps = config.audio.pulse_rate
-        self._headers = (f'ISO datetime,{pps}pps SNR,{pps}pps signal dB,Noise floor dB,'
+        self._headers = (f'ISO datetime,{pps}pps SNR,{pps}pps signal (dBm),Noise floor (dBm),'
                          f'Temperature (F),Humidity (%),Solar radiation (w/m^2),'
                          f'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)\n')
 
