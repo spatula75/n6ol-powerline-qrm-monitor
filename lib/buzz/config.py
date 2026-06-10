@@ -15,8 +15,6 @@ from typing import Any, TypeVar
 
 _T = TypeVar('_T')
 
-_MODULE_DIR = Path(__file__).resolve().parent
-
 CONFIG_PATH = Path.home() / '.buzz' / 'config.toml'
 
 
@@ -55,9 +53,9 @@ class StationConfig:
     audio_rf_conversion_db: float = -32.0
     # Path loss in dB from the powerline to the monitoring location.
     # Used to estimate source strength from the measured level.
-    distance_attenuation: float = 29.54
+    distance_attenuation: float = 30.0
     # ISO 8601 start date for the all-time summary graph.
-    summary_start_date_iso: str = '2024-05-15T00:00:00-0700'
+    summary_start_date_iso: str = '2024-01-01T00:00:00+0000'
 
     @property
     def noise_threshold(self) -> float:
@@ -81,13 +79,13 @@ class WeatherConfig:
 
 @dataclass
 class ServerConfig:
-    # Set to false to disable all uploads and run in local-only mode.
-    enabled: bool = True
+    # Set to true to enable SCP uploads to a web server; false runs in local-only mode.
+    enabled: bool = False
     # Hostname or IP of the web server that hosts the published output.
     host: str = ''
     username: str = ''                              # SSH username on the web server
     remote_path: str = ''                           # Remote path for uploaded data files
-    key_path: str = str(_MODULE_DIR / 'buzz.pem')   # SSH private key for SCP authentication
+    key_path: str = str(Path.home() / '.buzz' / 'buzz.pem')   # SSH private key for SCP authentication
 
 
 @dataclass

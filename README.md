@@ -91,6 +91,81 @@ python configure.py
 
 ---
 
+## Web server publishing (optional)
+
+The monitor can upload its output files to a public web server after each
+collection cycle, making the plots accessible from anywhere.  This requires
+an SSH-accessible server and a passwordless SSH key pair.
+
+### What gets uploaded
+
+Each cycle the following are written locally and, when publishing is enabled,
+uploaded to `remote_path/data/` on the server:
+
+- `noise_data.YYYY-MM-DD.csv` — the day's raw measurements
+- `noise_plot.YYYY-MM-DD.png` — the raw daily signal trace
+- `noise_plot_movavg.YYYY-MM-DD.png` — the smoothed daily trace
+
+On the hour, the three probability summary graphs are also uploaded.  After
+every cycle `index.html` is rendered and uploaded to `remote_path/` (one level
+above the data files) so it can serve as the site root.
+
+### Generating an SSH key pair
+
+The monitor authenticates with a dedicated private key so it can upload without
+a password.  Generate one with:
+
+```
+# Linux / macOS / BSD / Git Bash on Windows
+ssh-keygen -t ed25519 -f ~/.buzz/buzz.pem -N ""
+```
+
+This creates `~/.buzz/buzz.pem` (private key) and `~/.buzz/buzz.pem.pub`
+(public key).  The `-N ""` sets an empty passphrase so the monitor can
+authenticate unattended.
+
+### Installing the public key on the server
+
+Append the public key to the `~/.ssh/authorized_keys` file of the SSH user on
+your web server:
+
+```
+cat ~/.buzz/buzz.pem.pub | ssh yourname@yourserver "cat >> ~/.ssh/authorized_keys"
+```
+
+Or if `ssh-copy-id` is available:
+
+```
+ssh-copy-id -i ~/.buzz/buzz.pem.pub yourname@yourserver
+```
+
+Test that key authentication works before enabling uploads:
+
+```
+ssh -i ~/.buzz/buzz.pem yourname@yourserver
+```
+
+### Enabling uploads in the config
+
+Edit `~/.buzz/config.toml` and set the `[server]` section:
+
+```toml
+[server]
+enabled = true
+host = "yourserver.example.com"
+username = "yourname"
+remote_path = "/var/www/html/noise/"   # must end with /
+key_path = "/home/yourname/.buzz/buzz.pem"
+```
+
+On Windows use forward slashes or double-backslashes in `key_path`:
+
+```toml
+key_path = "C:/Users/yourname/.buzz/buzz.pem"
+```
+
+---
+
 ## Radio Setup and Calibration
 
 The monitor works by listening to a fixed audio level from your receiver.

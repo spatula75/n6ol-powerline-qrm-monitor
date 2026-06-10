@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 class Collector:
     def __init__(self, config: BuzzConfig, sampler: AudioSampler, weather: WeatherClient,
-                 store: CsvStore, plotter: Plotter, publisher: Publisher) -> None:
+                 store: CsvStore, plotter: Plotter, publisher: Publisher | None) -> None:
         self._config = config
         self._sampler = sampler
         self._weather = weather

@@ -146,6 +146,24 @@ class TestRunCollectionUploads:
         collector._publisher.generate_index.assert_not_called()
         collector._publisher.scp_to_server.assert_not_called()
 
+    def test_none_publisher_is_safe_when_server_disabled(self, tmp_path):
+        # main.py passes publisher=None when server.enabled is False;
+        # _run_collection must not attempt to call methods on it
+        cfg = _make_config(tmp_path, server_enabled=False)
+        collector = Collector(
+            config=cfg,
+            sampler=MagicMock(),
+            weather=MagicMock(),
+            store=MagicMock(),
+            plotter=MagicMock(),
+            publisher=None,
+        )
+        now = _setup_defaults(collector, tmp_path)
+        with patch('buzz.collector.datetime') as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            collector._run_collection()  # must not raise AttributeError
+
     def test_uploads_when_server_enabled(self, tmp_path):
         cfg = _make_config(tmp_path, server_enabled=True)
         collector = _make_collector(cfg)
