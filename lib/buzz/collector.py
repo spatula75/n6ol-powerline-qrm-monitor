@@ -2,7 +2,7 @@
 Measurement loop: samples audio, stores results, generates plots, and uploads files.
 
 Collector.collection_loop() runs forever (until KeyboardInterrupt), waking at the
-top of each minute to call __run_collection().  __run_collection() averages several
+top of each minute to call _run_collection().  _run_collection() averages several
 audio samples, appends a CSV row, renders daily plots, and — if uploads are enabled
 — generates an HTML index and SCPs everything to the configured web server.
 """
