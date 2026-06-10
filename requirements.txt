@@ -1,4 +1,5 @@
 ruff
+pytest-cov
 sounddevice~=0.4.6
 tomli-w
 numpy~=2.4.2
