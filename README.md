@@ -199,10 +199,16 @@ your antenna is naturally resonant.
 - **Preamp: off. Attenuator: off.**
 - **Sound card input level: 0 dB** — no attenuation and no software amplification,
   just a straight pass-through of the signal on the line input.
-- **AF (audio) gain: start low** and increase slowly until the signal strength reported
-  by the program roughly matches your S-meter reading, using the correspondence
-  **S9 = −73 dBm** with each S-unit equal to **6 dB**
-  (S8 = −79, S7 = −85, S6 = −91, etc.).
+- **AF (audio) gain: start low** and increase slowly.  Use the live level meter
+  script to get a real-time reading from the program while you adjust:
+
+  ```
+  python level_meter.py
+  ```
+
+  This displays a continuously-updating text S-meter using the same amplitude
+  calculation as the monitor.  Adjust RF and AF gain until the reading here
+  matches your radio's S-meter, using **S9 = −73 dBm**, each S-unit = **6 dB**.
 
 Once you have the RF gain, AF gain, and sound card input level set, **write them
 down.**  These three settings form your calibration baseline; if you ever need to
