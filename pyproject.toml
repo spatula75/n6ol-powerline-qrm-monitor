@@ -8,12 +8,25 @@ authors = [
     { name = "Nicklas Johnson" }
 ]
 urls = { Homepage = "https://n6ol.us/" }
+dependencies = [
+    "sounddevice>=0.4.6",
+    "numpy>=2.0",
+    "numba>=0.60",
+    "scipy>=1.17",
+    "matplotlib>=3.10",
+    "paramiko>=3.4",
+    "jinja2>=3.1",
+    "tomli-w",
+    "tzdata",
+]
 keywords = ["ham radio", "amateur radio", "powerline", "QRM", "interference", "monitoring"]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: BSD Software License",
     "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
