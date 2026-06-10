@@ -30,6 +30,35 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+**About virtual environments:** The `python -m venv .venv` command creates a
+virtual environment — an isolated copy of Python with its own set of installed
+packages, kept inside the `.venv` folder in the project directory. This prevents
+the packages this project needs from conflicting with anything else on your system.
+You need to activate it (`activate` on Windows, `source .venv/bin/activate` on
+Mac/Linux) each time you open a new terminal window before running the monitor or
+configure script. Some Python editors and IDEs (PyCharm, VS Code) can detect and
+activate it automatically.
+
+### Configuration
+
+Copy the example config and edit it to match your setup:
+
+```
+copy config.example.toml %USERPROFILE%\.buzz\config.toml
+```
+
+Open `~/.buzz/config.toml` in a text editor. Each setting has a comment
+explaining what it does. At minimum you'll need to update the `[station]` path
+and timezone, and the `[server]` section if you want uploads enabled.
+
+Then run the audio device configurator — it will scan your input devices, show
+live signal levels, and write the correct device settings into your config
+automatically:
+
+```
+python configure.py
+```
+
 ---
 
 ## Radio Setup and Calibration
@@ -56,48 +85,7 @@ between what the sound card measures and the actual RF level at your receiver in
 
 ---
 
-## Configuration
-
-### Step 1 — Select your audio input device
-
-Run the configurator. It scans all available input devices, records 100 ms from
-each one, and displays a logarithmic level bar so you can see which device has
-signal on it:
-
-```
-python configure.py
-```
-
-Devices that don't support the configured sample rate are listed but marked as
-not selectable, with the reason shown. Pick the number next to your line input.
-Your choice is saved to `~/.buzz/config.toml` along with a PortAudio device index
-so the correct device is found reliably even if names change.
-
-### Step 2 — Edit the config file
-
-`~/.buzz/config.toml` is created by `configure.py` and contains all settings with
-inline comments. Key fields to review:
-
-| Setting | Default | Description |
-|---|---|---|
-| `sample_rate` | `16000` | Audio sample rate in Hz. Must match the device's configured rate. |
-| `duration` | `3` | Recording length in seconds per measurement. |
-| `measurements_to_take` | `3` | Measurements averaged per CSV entry. |
-| `audio_rf_conversion_db` | `-32.0` | dB offset from audio amplitude to RF level at the receiver. Adjust to calibrate against a known signal. |
-| `distance_attenuation` | `29.54` | Path loss in dB from the interference source to your location, used to estimate source strength. |
-| `noise_min_snr` | `12.0` | Minimum SNR (dB) to count a reading as interference-present in summary graphs. |
-| `noise_floor` | `-98.0` | Your receiver's noise floor in dBm. |
-| `timezone` | `America/Los_Angeles` | IANA timezone for timestamps and graph labels. |
-| `path` | | Local directory for CSV files, plots, and the index page. |
-| `pulse_rate` | `120` | Expected interference pulse rate: **120** for 60 Hz grids (North America), **100** for 50 Hz grids (Europe and most of the rest of the world). |
-| `weather_url` | | CumulusMX JSON endpoint. Remove or leave blank if you don't have a weather station. |
-| `server_host` | | Hostname or IP of your web server. |
-| `server_username` | | SSH username. |
-| `server_remote_path` | | Remote path where output files are uploaded. |
-| `server_key_path` | | Path to the SSH private key for authentication. |
-| `summary_start_date_iso` | | ISO 8601 start date for the all-time probability summary graph. |
-
-### Step 3 — Run the monitor
+## Running the Monitor
 
 ```
 python -m buzz.main

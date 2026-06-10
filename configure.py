@@ -22,10 +22,14 @@ from buzz.config import BuzzConfig, CONFIG_PATH
 from buzz.device_setup import select_device
 
 
+def _section_dict(obj) -> dict:
+    return {k: v for k, v in asdict(obj).items() if v is not None}
+
+
 def main():
     config = BuzzConfig.from_toml() if CONFIG_PATH.exists() else BuzzConfig()
 
-    new_index = select_device(config.sample_rate, current_real_index=config.device_index)
+    new_index = select_device(config.audio.sample_rate, current_real_index=config.audio.device_index)
     if new_index is None:
         print('No device selected.')
         return
@@ -34,11 +38,16 @@ def main():
     hostapis = sd.query_hostapis()
     full_name = f"{device['name']}, {hostapis[device['hostapi']]['name']}"
 
-    config.device_index = new_index
-    config.input_device_name = full_name
+    config.audio.device_index = new_index
+    config.audio.input_device_name = full_name
 
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    data = {k: v for k, v in asdict(config).items() if v is not None}
+    data = {
+        'audio':   _section_dict(config.audio),
+        'station': _section_dict(config.station),
+        'weather': _section_dict(config.weather),
+        'server':  _section_dict(config.server),
+    }
     with open(CONFIG_PATH, 'wb') as f:
         tomli_w.dump(data, f)
 

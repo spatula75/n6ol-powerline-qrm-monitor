@@ -14,25 +14,27 @@ _DB_REFERENCE = 20 * log10(32768.0)
 class AudioSampler:
     def __init__(self, config: BuzzConfig):
         self._config = config
-        if config.device_index is not None:
-            device = sd.query_devices(config.device_index)
+        audio = config.audio
+        if audio.device_index is not None:
+            device = sd.query_devices(audio.device_index)
             hostapis = sd.query_hostapis()
             current_name = f"{device['name']}, {hostapis[device['hostapi']]['name']}"
-            if current_name != config.input_device_name:
-                print(f'Warning: device {config.device_index} is now "{current_name}", '
-                      f'expected "{config.input_device_name}". Using index anyway.')
-            self._device_index = config.device_index
+            if current_name != audio.input_device_name:
+                print(f'Warning: device {audio.device_index} is now "{current_name}", '
+                      f'expected "{audio.input_device_name}". Using index anyway.')
+            self._device_index = audio.device_index
         else:
-            device = sd.query_devices(config.input_device_name, 'input')
+            device = sd.query_devices(audio.input_device_name, 'input')
             self._device_index = device['index']
-        self._kernel = _build_pulse_kernel(config.sample_rate, config.pulse_rate)
-        self._scan_pulses = config.pulse_rate // 2
+        self._kernel = _build_pulse_kernel(audio.sample_rate, audio.pulse_rate)
+        self._scan_pulses = audio.pulse_rate // 2
 
     @property
     def sample_data(self) -> tuple[float, float, float]:
+        audio = self._config.audio
         recording = sd.rec(
-            int(self._config.duration * self._config.sample_rate),
-            samplerate=self._config.sample_rate,
+            int(audio.duration * audio.sample_rate),
+            samplerate=audio.sample_rate,
             channels=1,
             blocking=True,
             dtype='int16',
@@ -45,15 +47,15 @@ class AudioSampler:
         peak_offset_index = output.argmax()
         min_offset_index = output.argmin()
 
-        peak_sample_frequency = self._config.sample_rate / self._config.pulse_rate
+        peak_sample_frequency = audio.sample_rate / audio.pulse_rate
         first_peak_index = int(peak_offset_index % peak_sample_frequency)
         first_noise_index = int(min_offset_index % peak_sample_frequency)
 
         latest_start = max(first_peak_index, first_noise_index)
         analysis_size = int((len(mono_amplitude_array) - latest_start) // peak_sample_frequency)
 
-        avg_peak = _sum_pulse_train(mono_amplitude_array, self._config.sample_rate, self._config.pulse_rate, analysis_size, first_peak_index)
-        avg_noise = _sum_pulse_train(mono_amplitude_array, self._config.sample_rate, self._config.pulse_rate, analysis_size, first_noise_index)
+        avg_peak = _sum_pulse_train(mono_amplitude_array, audio.sample_rate, audio.pulse_rate, analysis_size, first_peak_index)
+        avg_noise = _sum_pulse_train(mono_amplitude_array, audio.sample_rate, audio.pulse_rate, analysis_size, first_noise_index)
 
         db_peak = 20 * log10(avg_peak) if avg_peak > 0 else -128
         db_pulse_normalized = db_peak - _DB_REFERENCE

@@ -4,12 +4,21 @@ from buzz.csv_store import CsvStore
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher
 from buzz.sampler import AudioSampler
-from buzz.weather import CumulusMXWeatherClient
+from buzz.weather import CumulusMXWeatherClient, NullWeatherClient, OpenMeteoWeatherClient
 
 if __name__ == '__main__':
     config = BuzzConfig.from_toml() if CONFIG_PATH.exists() else BuzzConfig()
+
     sampler = AudioSampler(config)
-    weather = CumulusMXWeatherClient(config.weather_url)
+
+    wc = config.weather
+    if wc.source == 'openmeteo':
+        weather = OpenMeteoWeatherClient(wc.latitude, wc.longitude)
+    elif wc.source == 'cumulusmx':
+        weather = CumulusMXWeatherClient(wc.url)
+    else:
+        weather = NullWeatherClient()
+
     store = CsvStore(config)
     plotter = Plotter(config, store)
     publisher = Publisher(config)

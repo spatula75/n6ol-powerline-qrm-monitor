@@ -1,19 +1,18 @@
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 _MODULE_DIR = Path(__file__).resolve().parent
 
-# Default location for the user's configuration file.
 CONFIG_PATH = Path.home() / '.buzz' / 'config.toml'
 
 
 @dataclass
-class BuzzConfig:
+class AudioConfig:
     # Sounddevice name of the audio input recording the RF-to-audio converted signal.
     input_device_name: str = 'Line In (Realtek(R) Audio), Windows DirectSound'
-    # PortAudio device index for the selected input.  Set by configure.py; takes
-    # precedence over input_device_name at runtime.  None = look up by name.
+    # PortAudio device index for the selected input. Set by configure.py; takes
+    # precedence over input_device_name at runtime. None = look up by name.
     device_index: int | None = None
     # Audio sample rate in Hz. Must match what the input device is configured to use.
     sample_rate: int = 16000
@@ -21,40 +20,78 @@ class BuzzConfig:
     duration: int = 3
     # Number of recordings averaged together per CSV entry. Higher = less noisy readings.
     measurements_to_take: int = 3
+    # Powerline interference pulse rate in Hz: 120 for 60 Hz grid (North America),
+    # 100 for 50 Hz grid (Europe and most of the rest of the world).
+    pulse_rate: int = 120
+
+
+@dataclass
+class StationConfig:
+    # Your amateur radio callsign, used in page titles and plot labels.
+    callsign: str = 'N0CALL'
+    # IANA timezone name for CSV timestamps and graph labels.
+    timezone: str = 'America/Los_Angeles'
+    # Local directory where CSV files, plots, and the index page are written.
+    path: str = r'C:\Users\passp'
+    # Receiver noise floor in dBm. Combined with noise_min_snr to set noise_threshold.
+    noise_floor: float = -98.0
+    # Minimum SNR in dB to count a sample as interference-present in the summary graphs.
+    noise_min_snr: float = 12.0
     # dB offset applied to audio amplitude to approximate RF level at the receiver input.
     # Hardware-specific: derived by calibrating against a known signal level.
     audio_rf_conversion_db: float = -32.0
     # Path loss in dB from the powerline to the monitoring location.
     # Used to estimate source strength from the measured level.
     distance_attenuation: float = 29.54
-    # Minimum SNR in dB to count a sample as interference-present in the summary graphs.
-    noise_min_snr: float = 12.0
-    # Receiver noise floor in dBm. Combined with noise_min_snr to set noise_threshold.
-    noise_floor: float = -98.0
-    # IANA timezone name for CSV timestamps and graph labels.
-    timezone: str = 'America/Los_Angeles'
-    # Local directory where CSV files, plots, and the index page are written.
-    path: str = r'C:\Users\passp'
-    # CumulusMX JSON endpoint. Tags in the query string select which fields are returned.
-    weather_url: str = 'http://192.168.1.160:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing'
-    # Hostname or IP of the web server that hosts the published output.
-    server_host: str = '192.168.1.123'
-    server_username: str = 'spatula'                        # SSH username on the web server
-    server_remote_path: str = '/web/n6ol/noise/'            # Remote path for uploaded data files
-    server_key_path: str = str(_MODULE_DIR / 'buzz.pem')    # SSH private key for SCP authentication
     # ISO 8601 start date for the all-time summary graph.
     summary_start_date_iso: str = '2024-05-15T00:00:00-0700'
-    # Powerline interference pulse rate in Hz: 120 for 60 Hz grid (North America),
-    # 100 for 50 Hz grid (Europe and most of the rest of the world).
-    pulse_rate: int = 120
+
+    @property
+    def noise_threshold(self) -> float:
+        return self.noise_floor + self.noise_min_snr
+
+
+@dataclass
+class WeatherConfig:
+    # Weather data source: 'cumulusmx', 'openmeteo', or 'none'.
+    source: str = 'cumulusmx'
+    # CumulusMX JSON endpoint (used when source = 'cumulusmx').
+    url: str = 'http://192.168.1.160:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing'
+    # Latitude and longitude for Open-Meteo (used when source = 'openmeteo').
+    latitude: float | None = None
+    longitude: float | None = None
+
+
+@dataclass
+class ServerConfig:
+    # Set to false to disable all uploads and run in local-only mode.
+    enabled: bool = True
+    # Hostname or IP of the web server that hosts the published output.
+    host: str = '192.168.1.123'
+    username: str = 'spatula'                       # SSH username on the web server
+    remote_path: str = '/web/n6ol/noise/'           # Remote path for uploaded data files
+    key_path: str = str(_MODULE_DIR / 'buzz.pem')   # SSH private key for SCP authentication
+
+
+@dataclass
+class BuzzConfig:
+    audio: AudioConfig = field(default_factory=AudioConfig)
+    station: StationConfig = field(default_factory=StationConfig)
+    weather: WeatherConfig = field(default_factory=WeatherConfig)
+    server: ServerConfig = field(default_factory=ServerConfig)
 
     @classmethod
     def from_toml(cls, path: Path | str = CONFIG_PATH) -> 'BuzzConfig':
         with open(path, 'rb') as f:
             data = tomllib.load(f)
-        known = set(cls.__dataclass_fields__)
-        return cls(**{k: v for k, v in data.items() if k in known})
+        return cls(
+            audio=_load_section(data, 'audio', AudioConfig),
+            station=_load_section(data, 'station', StationConfig),
+            weather=_load_section(data, 'weather', WeatherConfig),
+            server=_load_section(data, 'server', ServerConfig),
+        )
 
-    @property
-    def noise_threshold(self) -> float:
-        return self.noise_floor + self.noise_min_snr
+
+def _load_section(data: dict, key: str, cls):
+    known = set(cls.__dataclass_fields__)
+    return cls(**{k: v for k, v in data.get(key, {}).items() if k in known})

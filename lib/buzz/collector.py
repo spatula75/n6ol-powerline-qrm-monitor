@@ -20,23 +20,24 @@ class Collector:
         self._store = store
         self._plotter = plotter
         self._publisher = publisher
-        self._summary_start_date = datetime.fromisoformat(config.summary_start_date_iso)
+        self._summary_start_date = datetime.fromisoformat(config.station.summary_start_date_iso)
 
     def run_collection(self):
-        zone = ZoneInfo(self._config.timezone)
+        station = self._config.station
+        zone = ZoneInfo(station.timezone)
         now = datetime.now(zone).replace(second=0, microsecond=0)
 
         snr_total = signal_total = noise_total = 0.0
-        for _ in range(self._config.measurements_to_take):
+        for _ in range(self._config.audio.measurements_to_take):
             snr, signal_db, noise_db = self._sampler.sample_data
             snr_total += snr
             signal_total += signal_db
             noise_total += noise_db
 
-        n = self._config.measurements_to_take
+        n = self._config.audio.measurements_to_take
         snr_mean = round(snr_total / n, 2)
-        signal_mean = round(signal_total / n, 2) + self._config.audio_rf_conversion_db
-        noise_mean = round(noise_total / n, 2) + self._config.audio_rf_conversion_db
+        signal_mean = round(signal_total / n, 2) + station.audio_rf_conversion_db
+        noise_mean = round(noise_total / n, 2) + station.audio_rf_conversion_db
 
         temperature, humidity, solar_radiation, wind_speed, wind_gust, wind_bearing = self._weather.fetch()
 
@@ -46,8 +47,8 @@ class Collector:
 
         now_date_str = now.strftime('%Y-%m-%d')
         csv_filename = self._store.filename_for_date(now)
-        plot_filename = f'{self._config.path}/noise_plot.{now_date_str}.png'
-        smooth_plot_filename = f'{self._config.path}/noise_plot_movavg.{now_date_str}.png'
+        plot_filename = f'{station.path}/noise_plot.{now_date_str}.png'
+        smooth_plot_filename = f'{station.path}/noise_plot_movavg.{now_date_str}.png'
 
         self._plotter.generate_graph_from_csv(csv_filename, plot_filename)
         self._plotter.generate_graph_from_csv(csv_filename, smooth_plot_filename, smooth=6)
@@ -57,30 +58,31 @@ class Collector:
         if now.minute == 0:
             today = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
 
-            summary_all = f'{self._config.path}/_noise_probability_summary.png'
+            summary_all = f'{station.path}/_noise_probability_summary.png'
             self._plotter.generate_summary_graph(summary_all, self._summary_start_date)
 
-            summary_7d = f'{self._config.path}/_noise_probability_summary_7d.png'
+            summary_7d = f'{station.path}/_noise_probability_summary_7d.png'
             self._plotter.generate_summary_graph(summary_7d, today - timedelta(days=7))
 
-            summary_30d = f'{self._config.path}/_noise_probability_summary_30d.png'
+            summary_30d = f'{station.path}/_noise_probability_summary_30d.png'
             self._plotter.generate_summary_graph(summary_30d, today - timedelta(days=30))
 
             upload_files.extend([summary_all, summary_7d, summary_30d])
 
-        index_filename = f'{self._config.path}/index.html'
-        image_path = 'data/' + Path(smooth_plot_filename).name
-        self._publisher.generate_index(index_filename, now, image_path)
-        self._publisher.scp_to_server(
-            [(f, 'data/') for f in upload_files] + [(index_filename, '')]
-        )
+        if self._config.server.enabled:
+            index_filename = f'{station.path}/index.html'
+            image_path = 'data/' + Path(smooth_plot_filename).name
+            self._publisher.generate_index(index_filename, now, image_path)
+            self._publisher.scp_to_server(
+                [(f, 'data/') for f in upload_files] + [(index_filename, '')]
+            )
 
         print(csv_str)
 
     def collection_loop(self):
         while True:
             try:
-                zone = ZoneInfo(self._config.timezone)
+                zone = ZoneInfo(self._config.station.timezone)
                 now = datetime.now(zone)
                 next_minute = now.replace(second=0, microsecond=0) + timedelta(minutes=1)
                 while now.timestamp() < next_minute.timestamp():

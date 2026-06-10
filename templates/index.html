@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-<title>Utility Noise at N6OL</title>
+<title>Utility Noise at {{callsign}}</title>
     {% if not no_refresh %}
 <meta http-equiv="refresh" content="60">
     {% endif %}
@@ -31,7 +31,7 @@ div.center-container p {
 
   <div class="center-container">
     <p>
-60 Hz arc noise (120 pulses per second) measured at N6OL.
+Powerline arc noise ({{pulse_rate}} pulses per second) measured at {{callsign}}.
         <br />
 Noise is very likely disruptive
 and trackable when the red line crosses the gray -86dB threshold dashed line (S7).

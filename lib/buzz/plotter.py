@@ -44,12 +44,14 @@ class Plotter:
 
     @_force_post_gc
     def generate_graph_from_csv(self, input_filename: str, output_filename: str, smooth=0):
+        station = self._config.station
+        audio = self._config.audio
         with open(input_filename, 'r') as f:
             timestamps, signals, noises, snrs = [], [], [], []
             for line in f:
                 timestamp, snr, signal, noise, _ = line.split(',', 4)
                 try:
-                    timestamps.append(datetime.fromisoformat(timestamp).astimezone(ZoneInfo(self._config.timezone)))
+                    timestamps.append(datetime.fromisoformat(timestamp).astimezone(ZoneInfo(station.timezone)))
                     signals.append(float(signal))
                     noises.append(float(noise))
                     snrs.append(float(snr))
@@ -63,20 +65,20 @@ class Plotter:
             noises = self._smooth(noises, smooth)
             timestamps = timestamps[smooth - 1:]
             title = (f'Powerline Noise vs Noise Floor ({smooth} point moving avg), '
-                     f'{timestamps[0].strftime("%Y-%m-%d")} ({self._config.timezone} Timezone)')
+                     f'{timestamps[0].strftime("%Y-%m-%d")} ({station.timezone} Timezone)')
         else:
             title = (f'Powerline Noise vs Noise Floor, '
-                     f'{timestamps[0].strftime("%Y-%m-%d")} ({self._config.timezone} Timezone)')
+                     f'{timestamps[0].strftime("%Y-%m-%d")} ({station.timezone} Timezone)')
 
         signals_adjusted = [
-            val + self._config.distance_attenuation
-            if ((val > self._config.noise_threshold and snrs[i] > self._config.noise_min_snr)
-                or val > self._config.noise_threshold + 0.5 * self._config.noise_min_snr)
+            val + station.distance_attenuation
+            if ((val > station.noise_threshold and snrs[i] > station.noise_min_snr)
+                or val > station.noise_threshold + 0.5 * station.noise_min_snr)
             else val
             for i, val in enumerate(signals)
         ]
 
-        plt.rcParams['timezone'] = self._config.timezone
+        plt.rcParams['timezone'] = station.timezone
         px = 1 / plt.rcParams['figure.dpi']
         figure, axes = plt.subplots(figsize=(_GRAPH_W * px, _GRAPH_H * px))
         figure.subplots_adjust(left=_M_LEFT/_GRAPH_W, right=1 - _M_RIGHT/_GRAPH_W,
@@ -87,11 +89,11 @@ class Plotter:
         noise_twin = axes.twinx()
 
         min_y = min(min(signals), min(noises), min(signals_adjusted),
-                    -48 + self._config.audio_rf_conversion_db) * 1.33
+                    -48 + station.audio_rf_conversion_db) * 1.33
         max_y = max(max(signals), max(noises), max(signals_adjusted),
-                    -48 + self._config.audio_rf_conversion_db) / 1.33
+                    -48 + station.audio_rf_conversion_db) / 1.33
 
-        plot_signal, = axes.plot(timestamps, signals, 'r-', label=f'{self._config.pulse_rate}pps dBm')
+        plot_signal, = axes.plot(timestamps, signals, 'r-', label=f'{audio.pulse_rate}pps dBm')
         plot_noise, = noise_twin.plot(timestamps, noises, 'g-', label='Noise Floor dBm')
 
         axes.set_xlim(timestamps[0], timestamps[-1])
@@ -108,10 +110,10 @@ class Plotter:
         noise_twin.tick_params(axis='y', colors=plot_noise.get_color(), **tick_kwargs)
 
         plot_s9 = axes.axhline(y=-73, color='tan', linestyle='dashed', label='S9 (-73dBm) signal strength')
-        plot_threshold = axes.axhline(y=self._config.noise_threshold, color='gray', linestyle='dashed',
-                                      label=f'{self._config.noise_threshold} dBm threshold')
-        plot_floor = axes.axhline(y=self._config.noise_floor, color='gray',
-                                  label=f'{self._config.noise_floor} dBm typical noise floor')
+        plot_threshold = axes.axhline(y=station.noise_threshold, color='gray', linestyle='dashed',
+                                      label=f'{station.noise_threshold} dBm threshold')
+        plot_floor = axes.axhline(y=station.noise_floor, color='gray',
+                                  label=f'{station.noise_floor} dBm typical noise floor')
 
         axes.legend(loc='lower left', handles=[plot_signal, plot_noise, plot_s9, plot_threshold, plot_floor])
         plt.savefig(output_filename, pil_kwargs={'optimize': True})
@@ -119,13 +121,15 @@ class Plotter:
 
     @_force_post_gc
     def generate_summary_graph(self, output_filename: str, start_date: datetime):
-        zone = ZoneInfo(self._config.timezone)
+        station = self._config.station
+        audio = self._config.audio
+        zone = ZoneInfo(station.timezone)
         end_date = datetime.now(zone)
         time_to_snr = self._store.read_range_to_time_dict(start_date, end_date)
 
         px = 1 / plt.rcParams['figure.dpi']
         fig, ax = plt.subplots(figsize=(_GRAPH_W * px, _SUMMARY_H * px))
-        plt.rcParams['timezone'] = self._config.timezone
+        plt.rcParams['timezone'] = station.timezone
 
         run_time = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=zone)
         all_datetimes = [run_time + timedelta(minutes=15 * i) for i in range(4 * 24)]
@@ -153,7 +157,7 @@ class Plotter:
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         ax.xaxis.set_major_locator(mdates.HourLocator(interval=1))
         ax.set_xlim(all_datetimes[0] - timedelta(minutes=10), all_datetimes[-1] + timedelta(minutes=10))
-        ax.set_xlabel(f'Time ({self._config.timezone} zone)')
+        ax.set_xlabel(f'Time ({station.timezone} zone)')
         ax.set_ylabel('Normalized Probability')
         ax.legend(title='Legend', handles=[
             mpatches.Patch(color='skyblue', label='<  85%'),
@@ -162,7 +166,7 @@ class Plotter:
             mpatches.Patch(color='firebrick', label='= 100%'),
         ])
         ax.bar(all_datetimes, normalized_vals, width=timedelta(minutes=13), color=colors)
-        plt.title(f'Time of Day vs Normalized Probability of {self._config.pulse_rate}pps Interference\n'
+        plt.title(f'Time of Day vs Normalized Probability of {audio.pulse_rate}pps Interference\n'
                   f'15-minute increments from {start_date.strftime("%Y-%m-%d %H:%M")} '
                   f'to {end_date.strftime("%Y-%m-%d %H:%M")}')
         plt.tight_layout(pad=1.1)
