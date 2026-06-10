@@ -102,6 +102,7 @@ class Plotter:
                                   label=f'{self._config.noise_floor} dBm typical noise floor')
 
         axes.legend(loc='lower left', handles=[plot_signal, plot_noise, plot_s9, plot_threshold, plot_floor])
+        plt.tight_layout()
         plt.savefig(output_filename, bbox_inches='tight', pad_inches=20 * px, pil_kwargs={'optimize': True})
         plt.close()
 
