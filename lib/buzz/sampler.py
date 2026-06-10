@@ -20,8 +20,16 @@ from buzz.config import BuzzConfig
 
 logger = logging.getLogger(__name__)
 
-# dBFS reference for 16-bit audio: 0 dBFS = full-scale amplitude of 32768 (2^15)
+# dBFS reference for 16-bit audio: 0 dBFS = full-scale amplitude of 32768 (2^15).
+# The factor of 20 (not 10) is because dBFS is defined in terms of amplitude, not power.
 _DB_REFERENCE = 20 * log10(32768.0)
+
+# Number of consecutive samples that must be elevated for a position to count as a pulse.
+# Requiring a sustained signal across several adjacent samples rejects very short transient
+# pops (static, clicks, relay bounce) that are unlikely to be part of a repetitive
+# powerline-arc pattern.  The value is somewhat arbitrary — 3 samples at 16 kHz is only
+# ~188 µs — but it meaningfully reduces false triggers from sub-millisecond impulse noise.
+_PULSE_WIDTH_SAMPLES = 3
 
 
 class AudioSampler:
@@ -98,23 +106,22 @@ class AudioSampler:
         return round(snr, 2), db_pulse_normalized, db_background_normalized
 
 
-@njit
+@njit  # Numba JIT-compiles this tight inner loop; avoids Python per-element overhead (~10× faster)
 def _average_pulse_amplitude(mono_amplitude_array: np.ndarray, sample_rate: int,
                              pulse_rate: int, analysis_size: int, start_index: int) -> int:
     """Average the amplitude at each pulse position across the analysis window.
 
-    Samples three adjacent values per pulse position (pulse spans ~3 samples at
-    typical sample rates) then divides by the total count.  Equivalent to
-    correlating with the pulse kernel but without multiplying through the ~97% zeros.
+    Samples _PULSE_WIDTH_SAMPLES adjacent values per pulse position, then divides by the
+    total sample count.  Equivalent to correlating with the pulse kernel but without
+    multiplying through the ~97% zeros.
     """
     samples_per_pulse = sample_rate / pulse_rate
     total = 0
     for i in range(analysis_size):
         pos = int(i * samples_per_pulse)
-        total += mono_amplitude_array[start_index + pos]
-        total += mono_amplitude_array[start_index + pos + 1]
-        total += mono_amplitude_array[start_index + pos + 2]
-    return total // (3 * analysis_size)
+        for j in range(_PULSE_WIDTH_SAMPLES):
+            total += mono_amplitude_array[start_index + pos + j]
+    return total // (_PULSE_WIDTH_SAMPLES * analysis_size)
 
 
 def _build_pulse_kernel(sample_rate: int, pulse_rate: int) -> np.ndarray:
@@ -127,10 +134,10 @@ def _build_pulse_kernel(sample_rate: int, pulse_rate: int) -> np.ndarray:
     samples_per_pulse = sample_rate / pulse_rate
     scan_pulses = pulse_rate // 2  # half a second worth of pulses
     last_pos = int((scan_pulses - 1) * samples_per_pulse)
-    coefficients = zeros(last_pos + 3, dtype=uint32)
+    coefficients = zeros(last_pos + _PULSE_WIDTH_SAMPLES, dtype=uint32)
     for i in range(scan_pulses):
         pos = int(i * samples_per_pulse)
-        coefficients[pos:pos + 3] = 1
+        coefficients[pos:pos + _PULSE_WIDTH_SAMPLES] = 1
     return coefficients
 
 
@@ -143,4 +150,4 @@ def _calculate_pps_fit_array(mono_amplitude_array: np.ndarray, kernel: np.ndarra
     signal, avoiding edge artefacts from the convolution.
     """
     raw = fftconvolve(mono_amplitude_array.astype(np.float64), kernel, mode='valid')
-    return np.rint(raw).astype(np.int64) // (3 * scan_pulses)
+    return np.rint(raw).astype(np.int64) // (_PULSE_WIDTH_SAMPLES * scan_pulses)

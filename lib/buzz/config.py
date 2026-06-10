@@ -62,6 +62,10 @@ class StationConfig:
 
     @property
     def noise_threshold(self) -> float:
+        """Detection threshold in dBm: the noise floor plus the minimum SNR required for a valid detection.
+
+        A sample must exceed this level to be counted as interference in the summary graphs.
+        """
         return self.noise_floor + self.noise_min_snr
 
 

@@ -29,6 +29,10 @@ _GRAPH_W = 1600
 _GRAPH_H = 640
 _SUMMARY_H = 540
 
+# S9 signal strength per IARU recommendation: −73 dBm into 50 Ω.
+# Drawn as a reference line on the daily graph so it's easy to gauge signal severity.
+_S9_DBM = -73
+
 # Axes box margins in pixels for the daily graph.
 _M_LEFT   = 88   # room for y-axis label + tick labels
 _M_RIGHT  = 24
@@ -114,7 +118,11 @@ class Plotter:
             title = (f'Powerline Noise vs Noise Floor, '
                      f'{timestamps[0].strftime("%Y-%m-%d")} ({station.timezone} Timezone)')
 
-        signals_adjusted = [
+        # For qualifying detections, estimate the source power by adding back the measured
+        # path loss.  Not plotted as a separate line, but included in the y-axis upper bound
+        # so the scale accommodates the estimated source-power level alongside the measured values.
+        # (Adjusted values are always >= the originals, so they have no effect on min_y.)
+        source_power_estimate = [
             val + station.distance_attenuation
             if ((val > station.noise_threshold and snrs[i] > station.noise_min_snr)
                 or val > station.noise_threshold + 0.5 * station.noise_min_snr)
@@ -132,9 +140,12 @@ class Plotter:
 
         noise_twin = axes.twinx()
 
-        min_y = min(min(signals), min(noises), min(signals_adjusted),
-                    -48 + station.audio_rf_conversion_db) * 1.33
-        max_y = max(max(signals), max(noises), max(signals_adjusted),
+        # 1.33 is a margin factor: since dBm values are negative, multiplying the most-negative
+        # value by 1.33 pushes the lower axis edge further down, while dividing the
+        # least-negative value by 1.33 pulls the upper edge down — keeping reference lines
+        # (noise floor, threshold, S9) away from the plot borders.
+        min_y = min(min(signals), min(noises), -48 + station.audio_rf_conversion_db) * 1.33
+        max_y = max(max(signals), max(noises), max(source_power_estimate),
                     -48 + station.audio_rf_conversion_db) / 1.33
 
         plot_signal, = axes.plot(timestamps, signals, 'r-', label=f'{audio.pulse_rate}pps dBm')
@@ -153,7 +164,7 @@ class Plotter:
         axes.tick_params(axis='y', colors=plot_signal.get_color(), **tick_kwargs)
         noise_twin.tick_params(axis='y', colors=plot_noise.get_color(), **tick_kwargs)
 
-        plot_s9 = axes.axhline(y=-73, color='tan', linestyle='dashed', label='S9 (-73dBm) signal strength')
+        plot_s9 = axes.axhline(y=_S9_DBM, color='tan', linestyle='dashed', label=f'S9 ({_S9_DBM} dBm) signal strength')
         plot_threshold = axes.axhline(y=station.noise_threshold, color='gray', linestyle='dashed',
                                       label=f'{station.noise_threshold} dBm threshold')
         plot_floor = axes.axhline(y=station.noise_floor, color='gray',
