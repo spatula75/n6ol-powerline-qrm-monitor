@@ -11,6 +11,16 @@ from numpy import cumsum
 from buzz.config import BuzzConfig
 from buzz.csv_store import CsvStore
 
+_GRAPH_W = 1600
+_GRAPH_H = 640
+_SUMMARY_H = 540
+
+# Axes box margins in pixels for the daily graph.
+_M_LEFT   = 88   # room for y-axis label + tick labels
+_M_RIGHT  = 24
+_M_TOP    = 43
+_M_BOTTOM = 66   # room for x-axis label + tick labels
+
 
 def _force_post_gc(func):
     # Workaround for https://github.com/matplotlib/matplotlib/issues/27713
@@ -68,7 +78,9 @@ class Plotter:
 
         plt.rcParams['timezone'] = self._config.timezone
         px = 1 / plt.rcParams['figure.dpi']
-        figure, axes = plt.subplots(figsize=(1600 * px, 640 * px))
+        figure, axes = plt.subplots(figsize=(_GRAPH_W * px, _GRAPH_H * px))
+        figure.subplots_adjust(left=_M_LEFT/_GRAPH_W, right=1 - _M_RIGHT/_GRAPH_W,
+                               top=1 - _M_TOP/_GRAPH_H, bottom=_M_BOTTOM/_GRAPH_H)
         plt.title(title)
         axes.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
 
@@ -102,8 +114,7 @@ class Plotter:
                                   label=f'{self._config.noise_floor} dBm typical noise floor')
 
         axes.legend(loc='lower left', handles=[plot_signal, plot_noise, plot_s9, plot_threshold, plot_floor])
-        plt.tight_layout()
-        plt.savefig(output_filename, bbox_inches='tight', pad_inches=20 * px, pil_kwargs={'optimize': True})
+        plt.savefig(output_filename, pil_kwargs={'optimize': True})
         plt.close()
 
     @_force_post_gc
@@ -113,7 +124,7 @@ class Plotter:
         time_to_snr = self._store.read_range_to_time_dict(start_date, end_date)
 
         px = 1 / plt.rcParams['figure.dpi']
-        fig, ax = plt.subplots(figsize=(1600 * px, 540 * px))
+        fig, ax = plt.subplots(figsize=(_GRAPH_W * px, _SUMMARY_H * px))
         plt.rcParams['timezone'] = self._config.timezone
 
         run_time = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=zone)
