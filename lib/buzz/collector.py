@@ -1,3 +1,12 @@
+"""
+Measurement loop: samples audio, stores results, generates plots, and uploads files.
+
+Collector.collection_loop() runs forever (until KeyboardInterrupt), waking at the
+top of each minute to call run_collection().  run_collection() averages several
+audio samples, appends a CSV row, renders daily plots, and — if uploads are enabled
+— generates an HTML index and SCPs everything to the configured web server.
+"""
+
 import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -24,6 +33,13 @@ class Collector:
         self._summary_start_date = datetime.fromisoformat(config.station.summary_start_date_iso)
 
     def run_collection(self):
+        """Take one complete measurement cycle and write all outputs.
+
+        Averages config.audio.measurements_to_take samples, appends a CSV row,
+        generates the raw and smoothed daily plots, and on the hour also regenerates
+        the all-time, 7-day, and 30-day summary graphs.  If server uploads are
+        enabled, also renders the HTML index and SCPs all changed files.
+        """
         station = self._config.station
         zone = ZoneInfo(station.timezone)
         now = datetime.now(zone).replace(second=0, microsecond=0)
@@ -82,6 +98,12 @@ class Collector:
         print(csv_str)
 
     def collection_loop(self):
+        """Run run_collection() at the top of every minute until interrupted.
+
+        Sleeps until the next whole minute, then calls run_collection().
+        Exceptions (other than KeyboardInterrupt) are logged and the loop continues,
+        so a transient hardware or network error doesn't kill the monitor.
+        """
         while True:
             try:
                 zone = ZoneInfo(self._config.station.timezone)

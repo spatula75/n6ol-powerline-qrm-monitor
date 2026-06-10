@@ -1,3 +1,11 @@
+"""
+Entry point for the powerline QRM monitor.
+
+Loads configuration from ~/.buzz/config.toml (or uses defaults if the file is
+absent), wires up the sampler, weather client, CSV store, plotter, and publisher,
+then runs the collection loop indefinitely.
+"""
+
 from buzz.collector import Collector
 from buzz.config import BuzzConfig, CONFIG_PATH
 from buzz.csv_store import CsvStore

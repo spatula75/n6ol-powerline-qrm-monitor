@@ -1,3 +1,12 @@
+"""
+CSV persistence layer for noise measurements.
+
+Each day's data lives in a separate file named noise_data.YYYY-MM-DD.csv in the
+configured output directory.  CsvStore handles writing new rows, reading a single
+day's file into a time-bucketed score dict, and aggregating a date range of files
+for the summary graphs.
+"""
+
 from collections import defaultdict
 from datetime import datetime, timedelta
 from math import log
@@ -33,6 +42,13 @@ class CsvStore:
         return csv_str
 
     def read_date_to_time_dict(self, input_filename: Path | str) -> dict:
+        """Read one CSV file and return a {time: score} dict bucketed to 15-minute intervals.
+
+        Only rows where the signal is at or above the noise threshold AND the SNR is at
+        or above snr_gate are counted.  Each qualifying row contributes log(snr, snr_gate)
+        to its bucket so stronger events weigh more than just-threshold events.  The
+        returned dict maps datetime.time keys (minute is a multiple of 15) to integer scores.
+        """
         time_to_score = defaultdict(int)
         station = self._config.station
         # +3 dB above the detection threshold: a just-qualifying event (SNR exactly
@@ -57,6 +73,12 @@ class CsvStore:
         return {k: int(v) for k, v in time_to_score.items()}
 
     def read_range_to_time_dict(self, start_date: datetime, end_date: datetime) -> dict:
+        """Aggregate scores across a date range into a single {time: score} dict.
+
+        Missing CSV files (days with no data) are silently skipped.  The returned
+        dict is the sum of all per-day dicts, suitable for passing directly to the
+        summary graph generator.
+        """
         time_to_score = defaultdict(int)
         now_date = start_date
         while now_date <= end_date:

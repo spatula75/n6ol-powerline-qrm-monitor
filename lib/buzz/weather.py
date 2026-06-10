@@ -1,3 +1,16 @@
+"""
+Weather data clients for annotating noise measurements with environmental conditions.
+
+All clients implement WeatherClient and return a six-tuple
+(temperature_f, humidity_pct, solar_w_m2, wind_speed_mph, wind_gust_mph, wind_bearing_deg).
+
+CumulusMXWeatherClient — reads from a local CumulusMX weather station's JSON API.
+OpenMeteoWeatherClient — fetches current conditions from the free Open-Meteo API
+                         (no key required, requires internet access).
+NullWeatherClient      — returns empty strings for all fields; use when no weather
+                         source is configured.
+"""
+
 import json
 import urllib.request
 from abc import ABC, abstractmethod

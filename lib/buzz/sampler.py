@@ -1,3 +1,12 @@
+"""
+Audio sampling and pulse-train analysis for powerline interference detection.
+
+Records a short audio clip from the configured input device, then uses FFT-based
+convolution to find the phase and amplitude of the periodic pulse train produced
+by arcing powerline hardware.  Returns signal level, noise floor, and SNR in dBFS
+so the caller can convert to dBm using the station's calibration offset.
+"""
+
 from math import log10
 
 import numpy as np
@@ -14,6 +23,13 @@ _DB_REFERENCE = 20 * log10(32768.0)
 
 class AudioSampler:
     def __init__(self, config: BuzzConfig):
+        """Initialise the sampler and resolve the PortAudio device to record from.
+
+        If config.audio.device_index is set it takes precedence over
+        input_device_name; a warning is printed if the name no longer matches
+        (e.g. after a USB reconnect).  Also pre-builds the pulse-train kernel so
+        it isn't reconstructed on every sample.
+        """
         self._config = config
         audio = config.audio
         if audio.device_index is not None:

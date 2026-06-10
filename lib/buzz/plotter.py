@@ -1,3 +1,15 @@
+"""
+Plot generation for daily noise traces and time-of-day probability summaries.
+
+Plotter.generate_graph_from_csv() renders a daily signal-vs-noise-floor line chart
+from a CSV file.  Plotter.generate_summary_graph() renders a bar chart showing the
+normalised probability of interference at each 15-minute interval of the day,
+aggregated across a configurable date range.
+
+All output is saved as PNG.  The _force_post_gc decorator works around a matplotlib
+memory-leak bug that causes handles to accumulate across repeated savefig calls.
+"""
+
 import gc
 from datetime import datetime, timedelta
 from functools import wraps
@@ -45,6 +57,16 @@ class Plotter:
 
     @_force_post_gc
     def generate_graph_from_csv(self, input_filename: Path | str, output_filename: Path | str, smooth=0):
+        """Render a daily noise trace and save it as a PNG.
+
+        Reads signal and noise floor values from input_filename and plots them on a
+        shared y-axis (dBm) against time-of-day.  Reference lines are drawn for S9,
+        the detection threshold, and the typical noise floor.
+
+        If smooth > 0, a simple moving average of that many points is applied before
+        plotting.  Returns early without writing output if the file has too few rows
+        for the requested smoothing window.
+        """
         station = self._config.station
         audio = self._config.audio
         with open(input_filename, 'r') as f:
@@ -122,6 +144,13 @@ class Plotter:
 
     @_force_post_gc
     def generate_summary_graph(self, output_filename: Path | str, start_date: datetime):
+        """Render a time-of-day interference probability bar chart and save it as a PNG.
+
+        Aggregates scores from all CSV files between start_date and now, buckets them
+        into 15-minute intervals, normalises to the peak bucket (= 100%), and colours
+        each bar by intensity.  Returns early without writing output if there is no
+        data in the date range.
+        """
         station = self._config.station
         audio = self._config.audio
         zone = ZoneInfo(station.timezone)
