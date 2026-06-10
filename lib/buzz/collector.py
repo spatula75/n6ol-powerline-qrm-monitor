@@ -49,6 +49,8 @@ class Collector:
         n = self._config.audio.measurements_to_take
         snrs, signals, noises = zip(*[self._sampler.take_sample() for _ in range(n)])
         snr_mean = round(sum(snrs) / n, 2)
+        # take_sample() returns levels in dBFS (relative to digital full-scale); adding the
+        # station's calibration offset converts to approximate dBm at the receiver input.
         signal_mean = round(sum(signals) / n, 2) + station.audio_rf_conversion_db
         noise_mean = round(sum(noises) / n, 2) + station.audio_rf_conversion_db
 
@@ -65,6 +67,8 @@ class Collector:
         smooth_plot_filename = output_dir / f'noise_plot_movavg.{now_date_str}.png'
 
         self._plotter.generate_graph_from_csv(csv_filename, plot_filename)
+        # smooth=6 applies a 6-point moving average (6 minutes); reduces noise in the
+        # displayed trace without obscuring genuine interference events.
         self._plotter.generate_graph_from_csv(csv_filename, smooth_plot_filename, smooth=6)
 
         upload_files = [csv_filename, plot_filename, smooth_plot_filename]

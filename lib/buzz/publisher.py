@@ -30,6 +30,9 @@ class Publisher:
 
     def generate_index(self, output_filename: Path | str, collection_time: datetime, image_path: str) -> None:
         collection_time_formatted = collection_time.strftime('%d %B %Y %H:%M:%S %Z (%z)')
+        # The 23:59 collection is the last one of the calendar day.  Suppress the
+        # auto-refresh on that final page so the browser doesn't reload after midnight
+        # into the new day's (still empty) graph.
         no_refresh = collection_time.timetz() == time(23, 59, 0, 0, tzinfo=collection_time.tzinfo)
         content = self._template.render(
             filename=image_path,
