@@ -7,11 +7,13 @@ audio samples, appends a CSV row, renders daily plots, and — if uploads are en
 — generates an HTML index and SCPs everything to the configured web server.
 """
 
-import traceback
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from time import sleep
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger(__name__)
 
 from buzz.config import BuzzConfig
 from buzz.csv_store import CsvStore
@@ -89,7 +91,7 @@ class Collector:
                 [(f, 'data/') for f in upload_files] + [(index_filename, '')]
             )
 
-        print(csv_str)
+        logger.info(csv_str)
 
     def collection_loop(self) -> None:
         """Run _run_collection() at the top of every minute until interrupted.
@@ -112,5 +114,4 @@ class Collector:
             except KeyboardInterrupt:
                 return
             except Exception:
-                traceback.print_exc()
-                print('Unexpected error — will retry next minute.')
+                logger.exception('Unexpected error — will retry next minute.')

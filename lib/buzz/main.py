@@ -6,6 +6,8 @@ absent), wires up the sampler, weather client, CSV store, plotter, and publisher
 then runs the collection loop indefinitely.
 """
 
+import logging
+
 from buzz.collector import Collector
 from buzz.config import CONFIG_PATH, BuzzConfig
 from buzz.csv_store import CsvStore
@@ -15,6 +17,11 @@ from buzz.sampler import AudioSampler
 from buzz.weather import CumulusMXWeatherClient, NullWeatherClient, OpenMeteoWeatherClient
 
 if __name__ == '__main__':
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s  %(levelname)-8s  %(name)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+    )
     config = BuzzConfig.from_toml() if CONFIG_PATH.exists() else BuzzConfig()
 
     sampler = AudioSampler(config)

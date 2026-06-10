@@ -7,6 +7,7 @@ opens a single SSH connection and uploads a list of (local_path, remote_prefix) 
 over SFTP.
 """
 
+import logging
 from datetime import datetime, time
 from pathlib import Path
 
@@ -15,6 +16,8 @@ import paramiko
 from jinja2 import FileSystemLoader
 
 from buzz.config import BuzzConfig
+
+logger = logging.getLogger(__name__)
 
 _TEMPLATES_DIR = Path(__file__).resolve().parent.parent.parent / 'templates'
 
@@ -57,7 +60,7 @@ class Publisher:
                 destination_name = Path(local_file).name
                 sftp.put(str(local_file), f'{server.remote_path}{file_prefix}{destination_name}')
         except Exception as e:
-            print(f'Got {e} when trying to copy files')
+            logger.exception('Failed to copy files to server')
         finally:
             if sftp:
                 sftp.close()

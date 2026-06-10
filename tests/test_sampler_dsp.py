@@ -155,14 +155,16 @@ class TestAudioSamplerInit:
             sampler = AudioSampler(cfg)
         assert sampler._device_index == 2
 
-    def test_init_by_index_name_mismatch_prints_warning(self, capsys):
+    def test_init_by_index_name_mismatch_logs_warning(self, caplog):
+        import logging
         cfg = _sampler_config(device_index=2, device_name='Old Device Name')
         device = {'index': 2, 'name': 'New Device', 'hostapi': 0}
         hostapis = [{'name': 'DirectSound'}]
-        with patch('buzz.sampler.sd.query_devices', return_value=device), \
+        with caplog.at_level(logging.WARNING, logger='buzz.sampler'), \
+             patch('buzz.sampler.sd.query_devices', return_value=device), \
              patch('buzz.sampler.sd.query_hostapis', return_value=hostapis):
             AudioSampler(cfg)
-        assert 'Warning' in capsys.readouterr().out
+        assert any(r.levelno == logging.WARNING for r in caplog.records)
 
     def test_init_builds_kernel(self):
         cfg = _sampler_config()
