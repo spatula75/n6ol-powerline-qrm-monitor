@@ -192,7 +192,10 @@ your antenna is naturally resonant.
 - **Filter: as wide as possible.** Powerline noise is broadband; a wide filter
   captures more of it and gives a stronger, more consistent reading.
 - **Mode: LSB or USB.** Either works.
-- **RF gain: 0 dB** (or maximum, depending on your radio's convention — no attenuation).
+- **RF gain: start at 0 dB** (maximum — no attenuation).  If the interference
+  is so strong it is overloading or saturating the receiver front end, reduce RF
+  gain until the signal is clean, then increase AF gain to compensate.  This
+  manual trade-off is a direct consequence of running with AGC off.
 - **Preamp: off. Attenuator: off.**
 - **Sound card input level: 0 dB** — no attenuation and no software amplification,
   just a straight pass-through of the signal on the line input.
