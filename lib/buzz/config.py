@@ -32,7 +32,7 @@ class StationConfig:
     # IANA timezone name for CSV timestamps and graph labels.
     timezone: str = 'America/Los_Angeles'
     # Local directory where CSV files, plots, and the index page are written.
-    path: str = r'C:\Users\passp'
+    path: str = str(Path.home())
     # Receiver noise floor in dBm. Combined with noise_min_snr to set noise_threshold.
     noise_floor: float = -98.0
     # Minimum SNR in dB to count a sample as interference-present in the summary graphs.
@@ -56,7 +56,7 @@ class WeatherConfig:
     # Weather data source: 'cumulusmx', 'openmeteo', or 'none'.
     source: str = 'cumulusmx'
     # CumulusMX JSON endpoint (used when source = 'cumulusmx').
-    url: str = 'http://192.168.1.160:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing'
+    url: str = ''
     # Latitude and longitude for Open-Meteo (used when source = 'openmeteo').
     latitude: float | None = None
     longitude: float | None = None
@@ -67,9 +67,9 @@ class ServerConfig:
     # Set to false to disable all uploads and run in local-only mode.
     enabled: bool = True
     # Hostname or IP of the web server that hosts the published output.
-    host: str = '192.168.1.123'
-    username: str = 'spatula'                       # SSH username on the web server
-    remote_path: str = '/web/n6ol/noise/'           # Remote path for uploaded data files
+    host: str = ''
+    username: str = ''                              # SSH username on the web server
+    remote_path: str = ''                           # Remote path for uploaded data files
     key_path: str = str(_MODULE_DIR / 'buzz.pem')   # SSH private key for SCP authentication
 
 
