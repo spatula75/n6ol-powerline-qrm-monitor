@@ -8,11 +8,10 @@ populates the dataclasses; unknown keys are silently ignored so old config files
 don't break when new fields are added.
 """
 
+import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
-
-import tomllib
 
 _T = TypeVar('_T')
 
