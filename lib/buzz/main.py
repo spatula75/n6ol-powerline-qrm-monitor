@@ -53,7 +53,7 @@ def configure_logging():
 
     logging.config.dictConfig(logging_config)
 
-if __name__ == '__main__':
+if __name__ == '__main__':  # pragma: no cover
     configure_logging()
 
     config = BuzzConfig.from_toml() if CONFIG_PATH.exists() else BuzzConfig()
