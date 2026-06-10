@@ -64,7 +64,9 @@ class AudioSampler:
     def take_sample(self) -> tuple[float, float, float]:
         """Record one audio sample and return (snr_db, signal_dbfs, noise_dbfs).
 
-        Blocks for config.audio.duration seconds while recording.
+        Blocks for config.audio.duration seconds while recording.  Signal and noise
+        levels are mean-absolute-amplitude dBFS (not RMS dBFS) — see inline comments
+        for the reasoning behind that choice.
         """
         audio = self._config.audio
         recording = sd.rec(
@@ -75,14 +77,31 @@ class AudioSampler:
             dtype='int16',
             device=self._device_index,
         )
+        # Powerline arcing is highly impulsive: the arc fires only near the voltage peaks of
+        # the 60 Hz AC cycle, so its duty cycle is typically a few percent or less.  Using
+        # broadband RMS would spread that burst energy across the entire cycle and understate
+        # the peak interference amplitude by a factor of √(duty_cycle) — easily 10–20 dB for
+        # a 1–5 % duty cycle arc.  Mean absolute amplitude (|sample| averaged over many cycles
+        # at the known pulse-phase positions) captures the arc's characteristic impulse level
+        # directly and gives a more honest picture of how severe the interference actually is
+        # during the moments it occurs.  Both signal and noise are measured the same way, so
+        # the SNR and absolute levels are self-consistent; the station calibration offset must
+        # be derived with this same MAV-based code.
         mono_amplitude_array = np.abs(recording[:, 0].astype(np.int32))
 
         output = _calculate_pps_fit_array(mono_amplitude_array, self._kernel, self._scan_pulses)
 
         peak_offset_index = output.argmax()
+        # The minimum-correlation phase is used as the noise reference deliberately: by sampling
+        # at the phase positions LEAST correlated with the 120 pps pulse train we measure
+        # everything except the powerline interference — atmospheric noise, man-made QRM, solar
+        # noise, receiver thermal noise, etc.  This gives a stable, interference-free baseline
+        # so the graph can answer the practical question: is the powerline noise actually the
+        # dominant problem, or are other HF noise sources equally loud?  There is little value
+        # in chasing a powerline arc if atmospheric or solar noise is just as strong.
         noise_offset_index = output.argmin()
 
-        # samples_per_pulse is a fractional period — the spacing between pulses in samples
+        # samples_per_pulse: the pulse period expressed in samples (non-integer at 120 pps / 16 kHz)
         samples_per_pulse = audio.sample_rate / audio.pulse_rate
         peak_phase = int(peak_offset_index % samples_per_pulse)
         noise_phase = int(noise_offset_index % samples_per_pulse)
