@@ -14,6 +14,7 @@ engine and therefore respects the Windows input level controls.
 """
 
 import concurrent.futures
+from dataclasses import dataclass
 from math import log10
 
 import numpy as np
@@ -23,11 +24,23 @@ _BAR_WIDTH = 19
 _FILL = '█'
 _EMPTY = '░'
 
+# Keys are the 'name' field from sd.query_hostapis()[n], which comes from PortAudio.
+# If sounddevice ever changes how it reports API names these will silently stop matching.
 _API_PRIORITY = {
     'Windows WASAPI': 2,
     'Windows DirectSound': 1,
     'MME': 0,
 }
+
+
+@dataclass
+class DeviceInfo:
+    real_index: int       # PortAudio device index, as used by sounddevice
+    name: str             # display name: "device, host API" with "Windows " stripped
+    selectable: bool      # False if the device doesn't support the configured sample rate
+    amplitude: float      # mean absolute amplitude from the 100 ms probe recording
+    bar: str              # pre-rendered level or reason bar, always _BAR_WIDTH chars wide
+    display_index: int = 0  # 1-based index shown to the user in the selection table
 
 
 def _amplitude_bar(amplitude: float) -> str:
@@ -67,8 +80,7 @@ def _best_api_devices(sample_rate: int) -> list[tuple[int, dict]]:
 
     chosen = []
     for variants in groups.values():
-        compatible = [v for v in variants
-                      if _supports_rate(v[0], sample_rate)]
+        compatible = [v for v in variants if _supports_rate(v[0], sample_rate)]
         pool = compatible if compatible else variants
         best = max(pool, key=lambda v: v[2])  # highest priority in pool
         chosen.append(best)
@@ -86,7 +98,7 @@ def _supports_rate(device_index: int, sample_rate: int) -> bool:
         return False
 
 
-def _probe(real_index: int, device: dict, sample_rate: int) -> dict:
+def _probe(real_index: int, device: dict, sample_rate: int) -> DeviceInfo:
     host_name = sd.query_hostapis(device['hostapi'])['name'].replace('Windows ', '')
     name = f"{device['name']}, {host_name}"
 
@@ -95,21 +107,21 @@ def _probe(real_index: int, device: dict, sample_rate: int) -> dict:
                                 dtype='int16', samplerate=sample_rate)
     except sd.PortAudioError:
         native_hz = int(device['default_samplerate'])
-        return dict(real_index=real_index, name=name, selectable=False,
-                    amplitude=0.0, bar=_reason_bar(f'needs {native_hz} Hz'))
+        return DeviceInfo(real_index=real_index, name=name, selectable=False,
+                          amplitude=0.0, bar=_reason_bar(f'needs {native_hz} Hz'))
 
     try:
         rec = sd.rec(int(sample_rate * 0.1), samplerate=sample_rate,
                      channels=1, blocking=True, dtype='int16', device=real_index)
         amplitude = float(np.mean(np.abs(rec.astype(np.int32))))
-        return dict(real_index=real_index, name=name, selectable=True,
-                    amplitude=amplitude, bar=_amplitude_bar(amplitude))
+        return DeviceInfo(real_index=real_index, name=name, selectable=True,
+                          amplitude=amplitude, bar=_amplitude_bar(amplitude))
     except Exception:
-        return dict(real_index=real_index, name=name, selectable=False,
-                    amplitude=0.0, bar=_reason_bar('could not open'))
+        return DeviceInfo(real_index=real_index, name=name, selectable=False,
+                          amplitude=0.0, bar=_reason_bar('could not open'))
 
 
-def enumerate_input_devices(sample_rate: int) -> list[dict]:
+def enumerate_input_devices(sample_rate: int) -> list[DeviceInfo]:
     """Probe deduplicated input devices in parallel, one entry per physical device."""
     candidates = _best_api_devices(sample_rate)
     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -117,14 +129,14 @@ def enumerate_input_devices(sample_rate: int) -> list[dict]:
                    for idx, dev in candidates]
         probed = [f.result() for f in futures]
 
-    probed.sort(key=lambda d: (d['selectable'], d['amplitude']), reverse=True)
+    probed.sort(key=lambda d: (d.selectable, d.amplitude), reverse=True)
 
     for display_idx, entry in enumerate(probed, start=1):
-        entry['display_index'] = display_idx
+        entry.display_index = display_idx
     return probed
 
 
-def print_device_table(devices: list[dict], current_real_index: int | None = None) -> None:
+def print_device_table(devices: list[DeviceInfo], current_real_index: int | None = None) -> None:
     print()
     print('  Audio level is logarithmic — each █ ≈ 6 dB above silence (16-bit)')
     print()
@@ -132,8 +144,8 @@ def print_device_table(devices: list[dict], current_real_index: int | None = Non
     print(f"  {'#':>{idx_w}}  [{'LEVEL'.center(_BAR_WIDTH)}]  DEVICE")
     print(f"  {'-' * idx_w}  {'-' * (_BAR_WIDTH + 2)}  {'-' * 50}")
     for dev in devices:
-        marker = '  ← current' if dev['real_index'] == current_real_index else ''
-        print(f"  {dev['display_index']:>{idx_w}}  [{dev['bar']}]  {dev['name']}{marker}")
+        marker = '  ← current' if dev.real_index == current_real_index else ''
+        print(f"  {dev.display_index:>{idx_w}}  [{dev.bar}]  {dev.name}{marker}")
     print()
 
 
@@ -148,15 +160,15 @@ def select_device(sample_rate: int, current_real_index: int | None = None) -> in
     devices = enumerate_input_devices(sample_rate)
     print_device_table(devices, current_real_index)
 
-    selectable = [d for d in devices if d['selectable']]
+    selectable = [d for d in devices if d.selectable]
     if not selectable:
         print('No compatible input devices found.')
         return None
 
-    valid_nums = sorted(d['display_index'] for d in selectable)
+    valid_nums = sorted(d.display_index for d in selectable)
     valid_set = set(valid_nums)
     current_display = next(
-        (d['display_index'] for d in devices if d['real_index'] == current_real_index),
+        (d.display_index for d in devices if d.real_index == current_real_index),
         None,
     )
 
@@ -171,7 +183,7 @@ def select_device(sample_rate: int, current_real_index: int | None = None) -> in
         try:
             n = int(raw)
             if n in valid_set:
-                return next(d['real_index'] for d in selectable if d['display_index'] == n)
+                return next(d.real_index for d in selectable if d.display_index == n)
         except ValueError:
             pass
         print(f'  Please enter one of: {nums_str}')

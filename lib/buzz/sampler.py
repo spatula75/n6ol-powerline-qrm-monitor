@@ -8,6 +8,7 @@ from scipy.signal import fftconvolve
 
 from buzz.config import BuzzConfig
 
+# dBFS reference for 16-bit audio: 0 dBFS = full-scale amplitude of 32768 (2^15)
 _DB_REFERENCE = 20 * log10(32768.0)
 
 
@@ -29,8 +30,11 @@ class AudioSampler:
         self._kernel = _build_pulse_kernel(audio.sample_rate, audio.pulse_rate)
         self._scan_pulses = audio.pulse_rate // 2
 
-    @property
-    def sample_data(self) -> tuple[float, float, float]:
+    def take_sample(self) -> tuple[float, float, float]:
+        """Record one audio sample and return (snr_db, signal_dbfs, noise_dbfs).
+
+        Blocks for config.audio.duration seconds while recording.
+        """
         audio = self._config.audio
         recording = sd.rec(
             int(audio.duration * audio.sample_rate),
@@ -45,17 +49,20 @@ class AudioSampler:
         output = _calculate_pps_fit_array(mono_amplitude_array, self._kernel, self._scan_pulses)
 
         peak_offset_index = output.argmax()
-        min_offset_index = output.argmin()
+        noise_offset_index = output.argmin()
 
-        peak_sample_frequency = audio.sample_rate / audio.pulse_rate
-        first_peak_index = int(peak_offset_index % peak_sample_frequency)
-        first_noise_index = int(min_offset_index % peak_sample_frequency)
+        # samples_per_pulse is a fractional period — the spacing between pulses in samples
+        samples_per_pulse = audio.sample_rate / audio.pulse_rate
+        peak_phase = int(peak_offset_index % samples_per_pulse)
+        noise_phase = int(noise_offset_index % samples_per_pulse)
 
-        latest_start = max(first_peak_index, first_noise_index)
-        analysis_size = int((len(mono_amplitude_array) - latest_start) // peak_sample_frequency)
+        # Start the analysis window after whichever phase offset is larger, so both
+        # the peak and noise trains fit entirely within the recording
+        analysis_start = max(peak_phase, noise_phase)
+        analysis_size = int((len(mono_amplitude_array) - analysis_start) // samples_per_pulse)
 
-        avg_peak = _sum_pulse_train(mono_amplitude_array, audio.sample_rate, audio.pulse_rate, analysis_size, first_peak_index)
-        avg_noise = _sum_pulse_train(mono_amplitude_array, audio.sample_rate, audio.pulse_rate, analysis_size, first_noise_index)
+        avg_peak = _average_pulse_amplitude(mono_amplitude_array, audio.sample_rate, audio.pulse_rate, analysis_size, peak_phase)
+        avg_noise = _average_pulse_amplitude(mono_amplitude_array, audio.sample_rate, audio.pulse_rate, analysis_size, noise_phase)
 
         db_peak = 20 * log10(avg_peak) if avg_peak > 0 else -128
         db_pulse_normalized = db_peak - _DB_REFERENCE
@@ -67,13 +74,17 @@ class AudioSampler:
 
 
 @njit
-def _sum_pulse_train(mono_amplitude_array, sample_rate, pulse_rate, analysis_size, start_index):
-    """Sum samples directly at the pulse positions — equivalent to correlating with the 0/1
-    coefficient array but without the cost of multiplying through ~97% zeros."""
-    peak_sample_frequency = sample_rate / pulse_rate
+def _average_pulse_amplitude(mono_amplitude_array, sample_rate, pulse_rate, analysis_size, start_index):
+    """Average the amplitude at each pulse position across the analysis window.
+
+    Samples three adjacent values per pulse position (pulse spans ~3 samples at
+    typical sample rates) then divides by the total count.  Equivalent to
+    correlating with the pulse kernel but without multiplying through the ~97% zeros.
+    """
+    samples_per_pulse = sample_rate / pulse_rate
     total = 0
     for i in range(analysis_size):
-        pos = int(i * peak_sample_frequency)
+        pos = int(i * samples_per_pulse)
         total += mono_amplitude_array[start_index + pos]
         total += mono_amplitude_array[start_index + pos + 1]
         total += mono_amplitude_array[start_index + pos + 2]
@@ -83,19 +94,17 @@ def _sum_pulse_train(mono_amplitude_array, sample_rate, pulse_rate, analysis_siz
 def _build_pulse_kernel(sample_rate: int, pulse_rate: int) -> np.ndarray:
     """Build the symmetric pps scan kernel covering half a second of pulses.
 
-    Length is int((scan_pulses-1)*pf)+3, placing the last pulse group flush against
-    the end so the kernel is an exact palindrome.  A palindrome kernel means
-    fftconvolve (convolution) == cross-correlation.
+    Length is int((scan_pulses-1)*samples_per_pulse)+3, placing the last pulse
+    group flush against the end so the kernel is an exact palindrome.  A palindrome
+    kernel means fftconvolve (convolution) == cross-correlation.
     """
-    pf = sample_rate / pulse_rate
+    samples_per_pulse = sample_rate / pulse_rate
     scan_pulses = pulse_rate // 2  # half a second worth of pulses
-    last_pos = int((scan_pulses - 1) * pf)
+    last_pos = int((scan_pulses - 1) * samples_per_pulse)
     coefficients = zeros(last_pos + 3, dtype=uint32)
     for i in range(scan_pulses):
-        pos = int(i * pf)
-        coefficients[pos] = 1
-        coefficients[pos + 1] = 1
-        coefficients[pos + 2] = 1
+        pos = int(i * samples_per_pulse)
+        coefficients[pos:pos + 3] = 1
     return coefficients
 
 
@@ -103,6 +112,9 @@ def _calculate_pps_fit_array(mono_amplitude_array, kernel, scan_pulses):
     """Return a score at each sample position for how well a pulse train starting
     there fits the data.  Uses fftconvolve with a symmetric kernel so convolution ==
     correlation; O((N+M) log(N+M)) vs O(N*M) for direct correlation.
+
+    mode='valid' returns only positions where the kernel fits entirely within the
+    signal, avoiding edge artefacts from the convolution.
     """
     raw = fftconvolve(mono_amplitude_array.astype(np.float64), kernel, mode='valid')
     return np.rint(raw).astype(np.int64) // (3 * scan_pulses)

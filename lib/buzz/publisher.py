@@ -16,7 +16,7 @@ class Publisher:
         environment = jinja2.Environment(loader=FileSystemLoader(str(_TEMPLATES_DIR)))
         self._template = environment.get_template('index.html')
 
-    def generate_index(self, output_filename: str, collection_time: datetime, image_path: str):
+    def generate_index(self, output_filename: Path | str, collection_time: datetime, image_path: str):
         collection_time_formatted = collection_time.strftime('%d %B %Y %H:%M:%S %Z (%z)')
         no_refresh = collection_time.timetz() == time(23, 59, 0, 0, tzinfo=collection_time.tzinfo)
         content = self._template.render(
@@ -29,7 +29,7 @@ class Publisher:
         with open(output_filename, mode='w', encoding='utf-8') as f:
             f.write(content)
 
-    def scp_to_server(self, files: list[tuple[str, str]]):
+    def scp_to_server(self, files: list[tuple[Path | str, str]]):
         """Upload files over a single SSH connection.
 
         Each entry in *files* is a (local_path, remote_prefix) pair; the file
@@ -46,7 +46,7 @@ class Publisher:
             sftp = client.open_sftp()
             for local_file, file_prefix in files:
                 destination_name = Path(local_file).name
-                sftp.put(local_file, f'{server.remote_path}{file_prefix}{destination_name}')
+                sftp.put(str(local_file), f'{server.remote_path}{file_prefix}{destination_name}')
         except Exception as e:
             print(f'Got {e} when trying to copy files')
         finally:

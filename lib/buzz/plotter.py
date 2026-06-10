@@ -1,6 +1,7 @@
 import gc
 from datetime import datetime, timedelta
 from functools import wraps
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 import matplotlib.dates as mdates
@@ -43,7 +44,7 @@ class Plotter:
         return ret[points - 1:] / points
 
     @_force_post_gc
-    def generate_graph_from_csv(self, input_filename: str, output_filename: str, smooth=0):
+    def generate_graph_from_csv(self, input_filename: Path | str, output_filename: Path | str, smooth=0):
         station = self._config.station
         audio = self._config.audio
         with open(input_filename, 'r') as f:
@@ -120,7 +121,7 @@ class Plotter:
         plt.close()
 
     @_force_post_gc
-    def generate_summary_graph(self, output_filename: str, start_date: datetime):
+    def generate_summary_graph(self, output_filename: Path | str, start_date: datetime):
         station = self._config.station
         audio = self._config.audio
         zone = ZoneInfo(station.timezone)
