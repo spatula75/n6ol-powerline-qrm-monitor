@@ -1,0 +1,6 @@
+[tool.ruff]
+line-length = 120
+exclude = ["tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]

@@ -7,7 +7,7 @@ then runs the collection loop indefinitely.
 """
 
 from buzz.collector import Collector
-from buzz.config import BuzzConfig, CONFIG_PATH
+from buzz.config import CONFIG_PATH, BuzzConfig
 from buzz.csv_store import CsvStore
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher

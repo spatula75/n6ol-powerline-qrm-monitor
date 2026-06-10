@@ -17,12 +17,13 @@ sys.path.insert(0, str(Path(__file__).parent / 'lib'))
 
 import sounddevice as sd
 import tomli_w
-
-from buzz.config import AudioConfig, BuzzConfig, CONFIG_PATH, ServerConfig, StationConfig, WeatherConfig
+from buzz.config import CONFIG_PATH, AudioConfig, BuzzConfig, ServerConfig, StationConfig, WeatherConfig
 from buzz.device_setup import select_device
 
 
-def _section_dict(obj: AudioConfig | StationConfig | WeatherConfig | ServerConfig) -> dict[str, str | int | float | bool]:
+def _section_dict(
+    obj: AudioConfig | StationConfig | WeatherConfig | ServerConfig,
+) -> dict[str, str | int | float | bool]:
     return {k: v for k, v in asdict(obj).items() if v is not None}
 
 

@@ -77,8 +77,10 @@ class AudioSampler:
         analysis_start = max(peak_phase, noise_phase)
         analysis_size = int((len(mono_amplitude_array) - analysis_start) // samples_per_pulse)
 
-        avg_peak = _average_pulse_amplitude(mono_amplitude_array, audio.sample_rate, audio.pulse_rate, analysis_size, peak_phase)
-        avg_noise = _average_pulse_amplitude(mono_amplitude_array, audio.sample_rate, audio.pulse_rate, analysis_size, noise_phase)
+        avg_peak = _average_pulse_amplitude(
+            mono_amplitude_array, audio.sample_rate, audio.pulse_rate, analysis_size, peak_phase)
+        avg_noise = _average_pulse_amplitude(
+            mono_amplitude_array, audio.sample_rate, audio.pulse_rate, analysis_size, noise_phase)
 
         db_peak = 20 * log10(avg_peak) if avg_peak > 0 else -128
         db_pulse_normalized = db_peak - _DB_REFERENCE

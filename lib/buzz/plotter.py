@@ -19,7 +19,7 @@ from zoneinfo import ZoneInfo
 import matplotlib.dates as mdates
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
-from numpy import cumsum
+import numpy as np
 
 from buzz.config import BuzzConfig
 from buzz.csv_store import CsvStore
@@ -51,7 +51,7 @@ class Plotter:
         self._store = store
 
     def _smooth(self, data: list[float], points: int) -> np.ndarray:
-        ret = cumsum(data, dtype=float)
+        ret = np.cumsum(data, dtype=float)
         ret[points:] = ret[points:] - ret[:-points]
         return ret[points - 1:] / points
 
