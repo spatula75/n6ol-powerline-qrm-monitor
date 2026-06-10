@@ -11,6 +11,9 @@ don't break when new fields are added.
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, TypeVar
+
+_T = TypeVar('_T')
 
 _MODULE_DIR = Path(__file__).resolve().parent
 
@@ -102,6 +105,6 @@ class BuzzConfig:
         )
 
 
-def _load_section(data: dict, key: str, cls):
+def _load_section(data: dict[str, Any], key: str, cls: type[_T]) -> _T:
     known = set(cls.__dataclass_fields__)
     return cls(**{k: v for k, v in data.get(key, {}).items() if k in known})

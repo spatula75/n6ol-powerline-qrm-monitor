@@ -23,7 +23,7 @@ from buzz.weather import WeatherClient
 
 class Collector:
     def __init__(self, config: BuzzConfig, sampler: AudioSampler, weather: WeatherClient,
-                 store: CsvStore, plotter: Plotter, publisher: Publisher):
+                 store: CsvStore, plotter: Plotter, publisher: Publisher) -> None:
         self._config = config
         self._sampler = sampler
         self._weather = weather
@@ -32,7 +32,7 @@ class Collector:
         self._publisher = publisher
         self._summary_start_date = datetime.fromisoformat(config.station.summary_start_date_iso)
 
-    def run_collection(self):
+    def _run_collection(self) -> None:
         """Take one complete measurement cycle and write all outputs.
 
         Averages config.audio.measurements_to_take samples, appends a CSV row,
@@ -97,7 +97,7 @@ class Collector:
 
         print(csv_str)
 
-    def collection_loop(self):
+    def collection_loop(self) -> None:
         """Run _run_collection() at the top of every minute until interrupted.
 
         Sleeps until the next whole minute, then calls _run_collection().

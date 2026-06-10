@@ -18,15 +18,15 @@ sys.path.insert(0, str(Path(__file__).parent / 'lib'))
 import sounddevice as sd
 import tomli_w
 
-from buzz.config import BuzzConfig, CONFIG_PATH
+from buzz.config import AudioConfig, BuzzConfig, CONFIG_PATH, ServerConfig, StationConfig, WeatherConfig
 from buzz.device_setup import select_device
 
 
-def _section_dict(obj) -> dict:
+def _section_dict(obj: AudioConfig | StationConfig | WeatherConfig | ServerConfig) -> dict[str, str | int | float | bool]:
     return {k: v for k, v in asdict(obj).items() if v is not None}
 
 
-def main():
+def main() -> None:
     """Interactively select the audio input device and save the updated config.
 
     Loads the existing config (or defaults), displays a table of available input

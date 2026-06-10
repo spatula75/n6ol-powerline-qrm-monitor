@@ -15,19 +15,22 @@ import json
 import urllib.request
 from abc import ABC, abstractmethod
 
+CsvValue = str | float
+WeatherData = tuple[CsvValue, CsvValue, CsvValue, CsvValue, CsvValue, CsvValue]
+
 
 class WeatherClient(ABC):
     @abstractmethod
-    def fetch(self) -> tuple:
+    def fetch(self) -> WeatherData:
         """Returns (temperature, humidity, solar_radiation, wind_speed, wind_gust, wind_bearing)."""
         pass
 
 
 class CumulusMXWeatherClient(WeatherClient):
-    def __init__(self, url: str):
+    def __init__(self, url: str) -> None:
         self._url = url
 
-    def fetch(self) -> tuple:
+    def fetch(self) -> WeatherData:
         with urllib.request.urlopen(self._url) as response:
             data = json.loads(response.read())
             return (data['temp'], data['hum'], data['SolarRad'],
@@ -39,12 +42,12 @@ class OpenMeteoWeatherClient(WeatherClient):
     _FIELDS = ('temperature_2m,relative_humidity_2m,shortwave_radiation,'
                'wind_speed_10m,wind_gusts_10m,wind_direction_10m')
 
-    def __init__(self, latitude: float, longitude: float):
+    def __init__(self, latitude: float, longitude: float) -> None:
         self._url = (f'{self._BASE}?latitude={latitude}&longitude={longitude}'
                      f'&current={self._FIELDS}'
                      f'&temperature_unit=fahrenheit&wind_speed_unit=mph')
 
-    def fetch(self) -> tuple:
+    def fetch(self) -> WeatherData:
         with urllib.request.urlopen(self._url) as response:
             current = json.loads(response.read())['current']
             return (current['temperature_2m'], current['relative_humidity_2m'],
@@ -53,5 +56,5 @@ class OpenMeteoWeatherClient(WeatherClient):
 
 
 class NullWeatherClient(WeatherClient):
-    def fetch(self) -> tuple:
+    def fetch(self) -> WeatherData:
         return ('', '', '', '', '', '')

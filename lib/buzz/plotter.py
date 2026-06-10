@@ -46,17 +46,17 @@ def _force_post_gc(func):
 
 
 class Plotter:
-    def __init__(self, config: BuzzConfig, store: CsvStore):
+    def __init__(self, config: BuzzConfig, store: CsvStore) -> None:
         self._config = config
         self._store = store
 
-    def _smooth(self, data: list, points: int):
+    def _smooth(self, data: list[float], points: int) -> np.ndarray:
         ret = cumsum(data, dtype=float)
         ret[points:] = ret[points:] - ret[:-points]
         return ret[points - 1:] / points
 
     @_force_post_gc
-    def generate_graph_from_csv(self, input_filename: Path | str, output_filename: Path | str, smooth=0):
+    def generate_graph_from_csv(self, input_filename: Path | str, output_filename: Path | str, smooth: int = 0) -> None:
         """Render a daily noise trace and save it as a PNG.
 
         Reads signal and noise floor values from input_filename and plots them on a
@@ -143,7 +143,7 @@ class Plotter:
         plt.close()
 
     @_force_post_gc
-    def generate_summary_graph(self, output_filename: Path | str, start_date: datetime):
+    def generate_summary_graph(self, output_filename: Path | str, start_date: datetime) -> None:
         """Render a time-of-day interference probability bar chart and save it as a PNG.
 
         Aggregates scores from all CSV files between start_date and now, buckets them

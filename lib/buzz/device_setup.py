@@ -16,6 +16,7 @@ engine and therefore respects the Windows input level controls.
 import concurrent.futures
 from dataclasses import dataclass
 from math import log10
+from typing import Any
 
 import numpy as np
 import sounddevice as sd
@@ -52,7 +53,7 @@ def _reason_bar(text: str) -> str:
     return text[:_BAR_WIDTH].center(_BAR_WIDTH)
 
 
-def _best_api_devices(sample_rate: int) -> list[tuple[int, dict]]:
+def _best_api_devices(sample_rate: int) -> list[tuple[int, dict[str, Any]]]:
     """Return one (real_index, device_dict) per physical device.
 
     When the same device appears under multiple host APIs, prefer the
@@ -98,7 +99,7 @@ def _supports_rate(device_index: int, sample_rate: int) -> bool:
         return False
 
 
-def _probe(real_index: int, device: dict, sample_rate: int) -> DeviceInfo:
+def _probe(real_index: int, device: dict[str, Any], sample_rate: int) -> DeviceInfo:
     host_name = sd.query_hostapis(device['hostapi'])['name'].replace('Windows ', '')
     name = f"{device['name']}, {host_name}"
 
