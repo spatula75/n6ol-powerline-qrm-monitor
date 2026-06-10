@@ -1,5 +1,7 @@
 # N6OL Powerline QRM Monitor
 
+By [Nicklas Johnson, N6OL](https://n6ol.us/) — BSD 2-Clause License
+
 A tool for ham radio operators to continuously monitor, log, and publish measurements
 of powerline interference (QRM). It records audio from a radio receiver, detects the
 characteristic pulse-train signature of powerline noise, and produces time-series plots

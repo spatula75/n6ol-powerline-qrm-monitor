@@ -1,3 +1,26 @@
+[project]
+name = "n6ol-powerline-qrm-monitor"
+version = "1.0.0"
+description = "Continuous powerline interference monitor for ham radio operators"
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Nicklas Johnson" }
+]
+urls = { Homepage = "https://n6ol.us/" }
+keywords = ["ham radio", "amateur radio", "powerline", "QRM", "interference", "monitoring"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: BSD Software License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Communications :: Ham Radio",
+]
+requires-python = ">=3.11"
+
 [tool.ruff]
 line-length = 120
 exclude = ["tests"]
