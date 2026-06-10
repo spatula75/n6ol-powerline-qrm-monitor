@@ -20,6 +20,7 @@ class Collector:
         self._store = store
         self._plotter = plotter
         self._publisher = publisher
+        self._summary_start_date = datetime.fromisoformat(config.summary_start_date_iso)
 
     def run_collection(self):
         zone = ZoneInfo(self._config.timezone)
@@ -54,12 +55,10 @@ class Collector:
         upload_files = [csv_filename, plot_filename, smooth_plot_filename]
 
         if now.minute == 0:
-            zone = ZoneInfo(self._config.timezone)
             today = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
 
-            all_time_start = datetime.fromisoformat(self._config.summary_start_date_iso)
             summary_all = f'{self._config.path}/_noise_probability_summary.png'
-            self._plotter.generate_summary_graph(summary_all, all_time_start)
+            self._plotter.generate_summary_graph(summary_all, self._summary_start_date)
 
             summary_7d = f'{self._config.path}/_noise_probability_summary_7d.png'
             self._plotter.generate_summary_graph(summary_7d, today - timedelta(days=7))
@@ -69,12 +68,12 @@ class Collector:
 
             upload_files.extend([summary_all, summary_7d, summary_30d])
 
-        self._publisher.scp_to_server(upload_files, prefix='data/')
-
         index_filename = f'{self._config.path}/index.html'
         image_path = 'data/' + Path(smooth_plot_filename).name
         self._publisher.generate_index(index_filename, now, image_path)
-        self._publisher.scp_to_server([index_filename])
+        self._publisher.scp_to_server(
+            [(f, 'data/') for f in upload_files] + [(index_filename, '')]
+        )
 
         print(csv_str)
 
