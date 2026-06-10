@@ -14,8 +14,17 @@ _DB_REFERENCE = 20 * log10(32768.0)
 class AudioSampler:
     def __init__(self, config: BuzzConfig):
         self._config = config
-        device = sd.query_devices(config.input_device_name, 'input')
-        self._device_index = device['index']
+        if config.device_index is not None:
+            device = sd.query_devices(config.device_index)
+            hostapis = sd.query_hostapis()
+            current_name = f"{device['name']}, {hostapis[device['hostapi']]['name']}"
+            if current_name != config.input_device_name:
+                print(f'Warning: device {config.device_index} is now "{current_name}", '
+                      f'expected "{config.input_device_name}". Using index anyway.')
+            self._device_index = config.device_index
+        else:
+            device = sd.query_devices(config.input_device_name, 'input')
+            self._device_index = device['index']
         self._kernel = _build_pulse_kernel(config.sample_rate, config.pulse_rate)
         self._scan_pulses = config.pulse_rate // 2
 

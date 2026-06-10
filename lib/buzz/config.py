@@ -1,13 +1,20 @@
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
 _MODULE_DIR = Path(__file__).resolve().parent
+
+# Default location for the user's configuration file.
+CONFIG_PATH = Path.home() / '.buzz' / 'config.toml'
 
 
 @dataclass
 class BuzzConfig:
     # Sounddevice name of the audio input recording the RF-to-audio converted signal.
     input_device_name: str = 'Line In (Realtek(R) Audio), Windows DirectSound'
+    # PortAudio device index for the selected input.  Set by configure.py; takes
+    # precedence over input_device_name at runtime.  None = look up by name.
+    device_index: int | None = None
     # Audio sample rate in Hz. Must match what the input device is configured to use.
     sample_rate: int = 16000
     # Length of each audio recording in seconds. Longer = more pulses to average over.
@@ -40,6 +47,13 @@ class BuzzConfig:
     # Powerline interference pulse rate in Hz: 120 for 60 Hz grid (North America),
     # 100 for 50 Hz grid (Europe and most of the rest of the world).
     pulse_rate: int = 120
+
+    @classmethod
+    def from_toml(cls, path: Path | str = CONFIG_PATH) -> 'BuzzConfig':
+        with open(path, 'rb') as f:
+            data = tomllib.load(f)
+        known = set(cls.__dataclass_fields__)
+        return cls(**{k: v for k, v in data.items() if k in known})
 
     @property
     def noise_threshold(self) -> float:
