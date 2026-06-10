@@ -44,17 +44,11 @@ class Collector:
         zone = ZoneInfo(station.timezone)
         now = datetime.now(zone).replace(second=0, microsecond=0)
 
-        snr_total = signal_total = noise_total = 0.0
-        for _ in range(self._config.audio.measurements_to_take):
-            snr, signal_db, noise_db = self._sampler.take_sample()
-            snr_total += snr
-            signal_total += signal_db
-            noise_total += noise_db
-
         n = self._config.audio.measurements_to_take
-        snr_mean = round(snr_total / n, 2)
-        signal_mean = round(signal_total / n, 2) + station.audio_rf_conversion_db
-        noise_mean = round(noise_total / n, 2) + station.audio_rf_conversion_db
+        snrs, signals, noises = zip(*[self._sampler.take_sample() for _ in range(n)])
+        snr_mean = round(sum(snrs) / n, 2)
+        signal_mean = round(sum(signals) / n, 2) + station.audio_rf_conversion_db
+        noise_mean = round(sum(noises) / n, 2) + station.audio_rf_conversion_db
 
         temperature, humidity, solar_radiation, wind_speed, wind_gust, wind_bearing = self._weather.fetch()
 

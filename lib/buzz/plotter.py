@@ -10,6 +10,7 @@ All output is saved as PNG.  The _force_post_gc decorator works around a matplot
 memory-leak bug that causes handles to accumulate across repeated savefig calls.
 """
 
+import csv
 import gc
 from datetime import datetime, timedelta
 from functools import wraps
@@ -33,6 +34,25 @@ _M_LEFT   = 88   # room for y-axis label + tick labels
 _M_RIGHT  = 24
 _M_TOP    = 43
 _M_BOTTOM = 66   # room for x-axis label + tick labels
+
+
+def _bar_color(val: int) -> str:
+    """Map a normalized 0–100 bar value to a matplotlib color string.
+
+    100 → firebrick, >92 → indianred, >85 → lightcoral, ≤85 → gradient
+    from skyblue (#87ceeb) at val=85 fading to near-white (#fefefe) at val=0.
+    """
+    if val == 100:
+        return 'firebrick'
+    if val > 92:
+        return 'indianred'
+    if val > 85:
+        return 'lightcoral'
+    fade = (85 - val) / 85
+    r = int(0x87 + fade * (0xfe - 0x87))
+    g = int(0xce + fade * (0xfe - 0xce))
+    b = int(0xeb + fade * (0xfe - 0xeb))
+    return f'#{r:02x}{g:02x}{b:02x}'
 
 
 def _force_post_gc(func):
@@ -69,15 +89,16 @@ class Plotter:
         """
         station = self._config.station
         audio = self._config.audio
-        with open(input_filename, 'r') as f:
+        with open(input_filename, newline='') as f:
             timestamps, signals, noises, snrs = [], [], [], []
-            for line in f:
-                timestamp, snr, signal, noise, _ = line.split(',', 4)
+            for row in csv.reader(f):
+                if len(row) < 4:
+                    continue
                 try:
-                    timestamps.append(datetime.fromisoformat(timestamp).astimezone(ZoneInfo(station.timezone)))
-                    signals.append(float(signal))
-                    noises.append(float(noise))
-                    snrs.append(float(snr))
+                    timestamps.append(datetime.fromisoformat(row[0]).astimezone(ZoneInfo(station.timezone)))
+                    snrs.append(float(row[1]))
+                    signals.append(float(row[2]))
+                    noises.append(float(row[3]))
                 except ValueError:
                     continue
 
@@ -170,19 +191,7 @@ class Plotter:
             return
         normalized_vals = [int(100 * (val / max_val)) for val in vals]
 
-        red_fade = 0xfe - 0x87
-        green_fade = 0xfe - 0xce
-        blue_fade = 0xfe - 0xeb
-
-        colors = [
-            'firebrick' if val == 100
-            else 'indianred' if val > 92
-            else 'lightcoral' if val > 85
-            else (f'#{int(0x87 + (85 - val) / 85 * red_fade):x}'
-                  f'{int(0xce + (85 - val) / 85 * green_fade):x}'
-                  f'{int(0xeb + (85 - val) / 85 * blue_fade):x}')
-            for val in normalized_vals
-        ]
+        colors = [_bar_color(val) for val in normalized_vals]
 
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         ax.xaxis.set_major_locator(mdates.HourLocator(interval=1))
