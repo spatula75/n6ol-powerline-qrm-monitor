@@ -116,6 +116,10 @@ class AudioSampler:
         avg_noise = _average_pulse_amplitude(
             mono_amplitude_array, audio.sample_rate, audio.pulse_rate, analysis_size, noise_phase)
 
+        # log10(0) is undefined; guard against an all-zero recording (e.g. receiver
+        # powered off, muted input, or driver returning silence).  -128 dBFS is well
+        # below the ~-90 dBFS minimum for a 1-LSB 16-bit signal, so it is unambiguously
+        # a sentinel value and will never be confused with a real reading.
         db_peak = 20 * log10(avg_peak) if avg_peak > 0 else -128
         db_pulse_normalized = db_peak - _DB_REFERENCE
         db_background = 20 * log10(avg_noise) if avg_noise > 0 else -128
