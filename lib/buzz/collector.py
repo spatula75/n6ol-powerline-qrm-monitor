@@ -2,7 +2,7 @@
 Measurement loop: samples audio, stores results, generates plots, and uploads files.
 
 Collector.collection_loop() runs forever (until KeyboardInterrupt), waking at the
-top of each minute to call run_collection().  run_collection() averages several
+top of each minute to call __run_collection().  __run_collection() averages several
 audio samples, appends a CSV row, renders daily plots, and — if uploads are enabled
 — generates an HTML index and SCPs everything to the configured web server.
 """
@@ -98,9 +98,9 @@ class Collector:
         print(csv_str)
 
     def collection_loop(self):
-        """Run run_collection() at the top of every minute until interrupted.
+        """Run _run_collection() at the top of every minute until interrupted.
 
-        Sleeps until the next whole minute, then calls run_collection().
+        Sleeps until the next whole minute, then calls _run_collection().
         Exceptions (other than KeyboardInterrupt) are logged and the loop continues,
         so a transient hardware or network error doesn't kill the monitor.
         """
@@ -114,7 +114,7 @@ class Collector:
                 while now.timestamp() < next_minute.timestamp():
                     sleep(next_minute.timestamp() - now.timestamp())
                     now = datetime.now(zone)
-                self.run_collection()
+                self._run_collection()
             except KeyboardInterrupt:
                 return
             except Exception:
