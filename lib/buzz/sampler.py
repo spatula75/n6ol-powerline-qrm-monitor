@@ -7,6 +7,7 @@ by arcing powerline hardware.  Returns signal level, noise floor, and SNR in dBF
 so the caller can convert to dBm using the station's calibration offset.
 """
 
+import logging
 from math import log10
 
 import numpy as np
@@ -16,6 +17,8 @@ from numpy import uint32, zeros
 from scipy.signal import fftconvolve
 
 from buzz.config import BuzzConfig
+
+logger = logging.getLogger(__name__)
 
 # dBFS reference for 16-bit audio: 0 dBFS = full-scale amplitude of 32768 (2^15)
 _DB_REFERENCE = 20 * log10(32768.0)
@@ -37,8 +40,10 @@ class AudioSampler:
             hostapis = sd.query_hostapis()
             current_name = f"{device['name']}, {hostapis[device['hostapi']]['name']}"
             if current_name != audio.input_device_name:
-                print(f'Warning: device {audio.device_index} is now "{current_name}", '
-                      f'expected "{audio.input_device_name}". Using index anyway.')
+                logger.warning(
+                    'Device %d is now "%s", expected "%s" — using index anyway.',
+                    audio.device_index, current_name, audio.input_device_name,
+                )
             self._device_index = audio.device_index
         else:
             device = sd.query_devices(audio.input_device_name, 'input')
