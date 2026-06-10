@@ -7,6 +7,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `level_meter.py` — live text S-meter for receiver gain calibration.  Displays
+  a continuously-updating 21-char bar (S1–S9 linear, then +20/+40/+60 sections
+  with 3 ticks each) plus dBm and S-unit readout.  Uses a persistent
+  callback-based PortAudio stream (DirectSound blocking I/O is unreliable on
+  Windows) at 20 ms per frame.  Flicker-free: each refresh overwrites in place
+  without an intermediate clear.
+- `AudioSampler.level_stream()` / `LevelStream` in `sampler.py` — persistent
+  callback-driven input stream; `.read()` blocks on a `threading.Event` until
+  the next hardware buffer fires.
+
 ## [1.0.0] — 2026-06-10
 
 First stable, well-documented release.  The core detection algorithm has been

@@ -8,6 +8,7 @@ so the caller can convert to dBm using the station's calibration offset.
 """
 
 import logging
+import threading
 from math import log10
 
 import numpy as np
@@ -60,6 +61,15 @@ class AudioSampler:
             self._device_index = device['index']
         self._kernel = _build_pulse_kernel(audio.sample_rate, audio.pulse_rate)
         self._scan_pulses = audio.pulse_rate // 2
+
+    def level_stream(self, blocksize: int = 320) -> 'LevelStream':
+        """Open a persistent input stream for real-time level monitoring.
+
+        Returns a context manager whose .read() method blocks until one block
+        of audio is available and returns the broadband signal level in dBm.
+        Default blocksize of 320 samples = 20 ms at 16 kHz (one Windows CPU quantum).
+        """
+        return LevelStream(self._config, self._device_index, blocksize)
 
     def take_sample(self) -> tuple[float, float, float]:
         """Record one audio sample and return (snr_db, signal_dbfs, noise_dbfs).
@@ -174,3 +184,56 @@ def _calculate_pps_fit_array(mono_amplitude_array: np.ndarray, kernel: np.ndarra
     """
     raw = fftconvolve(mono_amplitude_array.astype(np.float64), kernel, mode='valid')
     return np.rint(raw).astype(np.int64) // (_PULSE_WIDTH_SAMPLES * scan_pulses)
+
+
+class LevelStream:
+    """Persistent input stream for real-time level monitoring.
+
+    Uses a PortAudio callback rather than blocking read() because DirectSound on
+    Windows does not support PortAudio's blocking I/O reliably.  The callback fires
+    whenever the hardware delivers a new buffer; read() blocks on a threading.Event
+    until that happens, then returns immediately with the latest dBm level.
+
+    Use as a context manager:
+        with sampler.level_stream() as stream:
+            dbm = stream.read()
+    """
+
+    def __init__(self, config: BuzzConfig, device_index: int, blocksize: int) -> None:
+        self._event = threading.Event()
+        self._latest_dbm: float = -128.0
+        self._offset = config.station.audio_rf_conversion_db
+
+        def _callback(indata: np.ndarray, frames: int,
+                      time: object, status: sd.CallbackFlags) -> None:
+            amplitude = float(np.mean(np.abs(indata.astype(np.int32))))
+            self._latest_dbm = (20 * log10(amplitude) - _DB_REFERENCE + self._offset
+                                if amplitude > 0 else -128.0)
+            self._event.set()
+
+        self._stream = sd.InputStream(
+            device=device_index,
+            channels=1,
+            samplerate=config.audio.sample_rate,
+            dtype='int16',
+            blocksize=blocksize,
+            latency='low',
+            callback=_callback,
+        )
+        self._stream.start()
+
+    def read(self) -> float:
+        """Block until the next hardware callback fires and return the level in dBm."""
+        self._event.wait()
+        self._event.clear()
+        return self._latest_dbm
+
+    def close(self) -> None:
+        self._stream.stop()
+        self._stream.close()
+
+    def __enter__(self) -> 'LevelStream':
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
