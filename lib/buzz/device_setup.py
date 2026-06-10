@@ -121,7 +121,7 @@ def _probe(real_index: int, device: dict, sample_rate: int) -> DeviceInfo:
                           amplitude=0.0, bar=_reason_bar('could not open'))
 
 
-def enumerate_input_devices(sample_rate: int) -> list[DeviceInfo]:
+def _enumerate_input_devices(sample_rate: int) -> list[DeviceInfo]:
     """Probe deduplicated input devices in parallel, one entry per physical device."""
     candidates = _best_api_devices(sample_rate)
     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -136,7 +136,7 @@ def enumerate_input_devices(sample_rate: int) -> list[DeviceInfo]:
     return probed
 
 
-def print_device_table(devices: list[DeviceInfo], current_real_index: int | None = None) -> None:
+def _print_device_table(devices: list[DeviceInfo], current_real_index: int | None = None) -> None:
     print()
     print('  Audio level is logarithmic — each █ ≈ 6 dB above silence (16-bit)')
     print()
@@ -157,8 +157,8 @@ def select_device(sample_rate: int, current_real_index: int | None = None) -> in
     the user presses Enter without a selection.
     """
     print('Scanning audio input devices...')
-    devices = enumerate_input_devices(sample_rate)
-    print_device_table(devices, current_real_index)
+    devices = _enumerate_input_devices(sample_rate)
+    _print_device_table(devices, current_real_index)
 
     selectable = [d for d in devices if d.selectable]
     if not selectable:

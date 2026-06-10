@@ -41,7 +41,7 @@ class CsvStore:
             f.write(f'{csv_str}\n')
         return csv_str
 
-    def read_date_to_time_dict(self, input_filename: Path | str) -> dict:
+    def _read_date_to_time_dict(self, input_filename: Path | str) -> dict:
         """Read one CSV file and return a {time: score} dict bucketed to 15-minute intervals.
 
         Only rows where the signal is at or above the noise threshold AND the SNR is at
@@ -85,7 +85,7 @@ class CsvStore:
             csv_filename = self.filename_for_date(now_date)
             now_date += timedelta(days=1)
             try:
-                for t, val in self.read_date_to_time_dict(csv_filename).items():
+                for t, val in self._read_date_to_time_dict(csv_filename).items():
                     time_to_score[t] += val
             except FileNotFoundError:
                 pass
