@@ -41,8 +41,10 @@ class AudioSampler:
             current_name = f"{device['name']}, {hostapis[device['hostapi']]['name']}"
             if current_name != audio.input_device_name:
                 logger.warning(
-                    'Device %d is now "%s", expected "%s" — using index anyway.',
-                    audio.device_index, current_name, audio.input_device_name,
+                    'Audio device at index %d is now "%s" but was configured as "%s"; '
+                    'the device may have been reconnected or renamed. '
+                    'Continuing with index %d — re-run configure.py if recording fails.',
+                    audio.device_index, current_name, audio.input_device_name, audio.device_index,
                 )
             self._device_index = audio.device_index
         else:
