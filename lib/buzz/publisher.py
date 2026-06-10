@@ -27,7 +27,12 @@ class Publisher:
         with open(output_filename, mode='w', encoding='utf-8') as f:
             f.write(content)
 
-    def scp_to_server(self, files: list[str], prefix=''):
+    def scp_to_server(self, files: list[tuple[str, str]]):
+        """Upload files over a single SSH connection.
+
+        Each entry in *files* is a (local_path, remote_prefix) pair; the file
+        is placed at server_remote_path + remote_prefix + basename.
+        """
         sftp = None
         client = None
         try:
@@ -36,10 +41,10 @@ class Publisher:
             client.connect(self._config.server_host, username=self._config.server_username,
                            password='', key_filename=self._config.server_key_path)
             sftp = client.open_sftp()
-            for file in files:
-                destination_name = Path(file).name
-                sftp.put(file, f'{self._config.server_remote_path}{prefix}{destination_name}')
-        except BaseException as e:
+            for local_file, file_prefix in files:
+                destination_name = Path(local_file).name
+                sftp.put(local_file, f'{self._config.server_remote_path}{file_prefix}{destination_name}')
+        except Exception as e:
             print(f'Got {e} when trying to copy files')
         finally:
             if sftp:

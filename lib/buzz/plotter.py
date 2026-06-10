@@ -36,7 +36,7 @@ class Plotter:
     def generate_graph_from_csv(self, input_filename: str, output_filename: str, smooth=0):
         with open(input_filename, 'r') as f:
             timestamps, signals, noises, snrs = [], [], [], []
-            while line := f.readline():
+            for line in f:
                 timestamp, snr, signal, noise, _ = line.split(',', 4)
                 try:
                     timestamps.append(datetime.fromisoformat(timestamp).astimezone(ZoneInfo(self._config.timezone)))
@@ -67,8 +67,6 @@ class Plotter:
         ]
 
         plt.rcParams['timezone'] = self._config.timezone
-        plt.tight_layout()
-
         px = 1 / plt.rcParams['figure.dpi']
         figure, axes = plt.subplots(figsize=(1600 * px, 640 * px))
         plt.title(title)
