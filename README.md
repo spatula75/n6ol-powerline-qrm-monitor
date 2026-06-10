@@ -171,7 +171,22 @@ key_path = "C:/Users/yourname/.buzz/buzz.pem"
 The monitor works by listening to a fixed audio level from your receiver.
 Getting this right is the most important step — wrong AF gain means wrong dB readings.
 
-**Receiver settings:**
+### Choosing a frequency
+
+This application performs no rig control — you set the frequency on the radio
+manually, and the monitor simply listens to whatever audio the receiver produces.
+Once you have settled on a frequency, enable your radio's **control lock** to
+prevent accidentally nudging the VFO during a long monitoring run.
+
+**Choose a frequency where you already suspect powerline interference is a
+problem.**  The **80-meter band (3.5–4.0 MHz)** has worked well in practice,
+but any band where you've noticed interference is a valid choice.
+
+For best results, **bypass your antenna tuner** and tune to a frequency where
+your antenna is naturally resonant.
+
+### Receiver settings
+
 - **AGC: OFF.** AGC will chase the noise and flatten everything to the same level,
   making it impossible to measure actual signal strength.
 - **Filter: as wide as possible.** Powerline noise is broadband; a wide filter
@@ -179,10 +194,16 @@ Getting this right is the most important step — wrong AF gain means wrong dB r
 - **Mode: LSB or USB.** Either works.
 - **RF gain: 0 dB** (or maximum, depending on your radio's convention — no attenuation).
 - **Preamp: off. Attenuator: off.**
+- **Sound card input level: 0 dB** — no attenuation and no software amplification,
+  just a straight pass-through of the signal on the line input.
 - **AF (audio) gain: start low** and increase slowly until the signal strength reported
   by the program roughly matches your S-meter reading, using the correspondence
   **S9 = −73 dBm** with each S-unit equal to **6 dB**
   (S8 = −79, S7 = −85, S6 = −91, etc.).
+
+Once you have the RF gain, AF gain, and sound card input level set, **write them
+down.**  These three settings form your calibration baseline; if you ever need to
+reconnect the receiver or reinstall drivers, you will want to restore them exactly.
 
 Once you have the AF gain set, leave it there. This is your calibration point.
 The `audio_rf_conversion_db` setting in the config file fine-tunes the dB offset
@@ -255,3 +276,45 @@ noise.
 
 All output files are uploaded to the configured web server via a single SSH/SCP
 connection per collection cycle.
+
+---
+
+## Potential improvements
+
+**Directionality.**  The current design uses a single receiver and antenna and
+can only measure signal strength — it cannot determine which direction a noise
+source lies.  A set of inexpensive fixed magnetic loop antennas oriented in
+different compass directions could potentially provide a rough initial bearing
+by comparing signal intensities across the loops.  This idea is theoretical and
+unexplored; even a vague heading would be useful for narrowing down which span
+of power line to inspect.
+
+**SDR integration.**  The monitor currently relies on a conventional receiver
+feeding a PC sound card.  Inexpensive software-defined radio (SDR) dongles
+(RTL-SDR, HackRF, etc.) could be driven directly from Python using libraries
+such as `pyrtlsdr` or GNU Radio, eliminating the analog audio path and the
+sound card calibration step.  An SDR approach would also make it straightforward
+to monitor several frequencies simultaneously from a single device.
+
+---
+
+## Further reading
+
+**IEEE Std 1897-2024 — IEEE Standard for Describing and Measuring Power-Line
+Noise for Power-Line Communications**
+([https://standards.ieee.org/ieee/1897/6837/](https://standards.ieee.org/ieee/1897/6837/))
+*Purchase or IEEE subscription required.*
+
+This standard defines rigorous methodologies for characterizing and locating
+gap-type power-line interference sources — the same arcing and corona discharge
+phenomena this monitor detects.  It covers measurement techniques, signal models,
+and recommended practices.  Included here as a technical reference.
+
+**"IEEE Recommendations for Locating Power-Line Gap Interference Sources,"**
+*QST*, February 2026.
+
+Written for a ham radio audience and published in the ARRL's flagship journal,
+this article covers the history behind the development of IEEE Std 1897-2024
+and the standardization effort that produced it.  Useful background for
+understanding the context and motivation behind the standard before reading
+the specification itself.
