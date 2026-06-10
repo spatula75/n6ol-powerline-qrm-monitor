@@ -10,15 +10,30 @@ and time-of-day probability charts that are automatically uploaded to a web serv
 Useful for documenting interference patterns when working with a power company to locate
 and fix a problem source, or simply for understanding when the noise is worst.
 
+## Sample output
+
+Daily signal vs. noise floor (6-minute moving average):
+
+![Daily plot](docs/sample_daily_plot.png)
+
+30-day time-of-day interference probability:
+
+![30-day probability summary](docs/sample_summary_plot.png)
+
 ---
 
 ## Requirements
 
 - Python 3.11 or later
-- Windows (audio device enumeration uses Windows-specific host APIs)
-- A radio receiver with an audio output connected to a PC sound card line input
+- A radio receiver with an audio output connected to a sound card line input
 - An SSH-accessible web server for publishing output (optional but expected)
-- A [CumulusMX](https://cumulusmx.com/) weather station HTTP endpoint (optional)
+- A [CumulusMX](https://cumulusmx.com/) weather station or Open-Meteo API access for weather data (optional)
+
+**Platform support:** Developed and tested on Windows. Linux and macOS should
+work without code changes — the core DSP and collection code is fully
+cross-platform and the CI runs on Linux. FreeBSD should also work, but `numba`
+must be installed via the ports collection (`devel/py-numba`) rather than pip,
+since pip does not ship FreeBSD binary wheels for numba.
 
 ---
 
@@ -28,17 +43,26 @@ and fix a problem source, or simply for understanding when the noise is worst.
 git clone https://github.com/spatula75/n6ol-powerline-qrm-monitor.git
 cd n6ol-powerline-qrm-monitor
 python -m venv .venv
+```
+
+Activate the virtual environment:
+
+```
+# Windows
 .venv\Scripts\activate
+
+# Linux / macOS / BSD
+source .venv/bin/activate
+```
+
+```
 pip install -r requirements.txt
 ```
 
-**About virtual environments:** The `python -m venv .venv` command creates a
-virtual environment — an isolated copy of Python with its own set of installed
-packages, kept inside the `.venv` folder in the project directory. This prevents
-the packages this project needs from conflicting with anything else on your system.
-You need to activate it (`activate` on Windows, `source .venv/bin/activate` on
-Mac/Linux) each time you open a new terminal window before running the monitor or
-configure script. Some Python editors and IDEs (PyCharm, VS Code) can detect and
+**About virtual environments:** The `.venv` folder contains an isolated copy of
+Python with its own installed packages, preventing conflicts with anything else
+on your system. You need to activate it each time you open a new terminal before
+running the monitor or configure script. PyCharm and VS Code can detect and
 activate it automatically.
 
 ### Configuration
@@ -46,7 +70,11 @@ activate it automatically.
 Copy the example config and edit it to match your setup:
 
 ```
+# Windows
 copy config.example.toml %USERPROFILE%\.buzz\config.toml
+
+# Linux / macOS / BSD
+mkdir -p ~/.buzz && cp config.example.toml ~/.buzz/config.toml
 ```
 
 Open `~/.buzz/config.toml` in a text editor. Each setting has a comment

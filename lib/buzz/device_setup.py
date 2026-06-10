@@ -6,11 +6,11 @@ compatibility, then samples 100 ms of audio to measure ambient amplitude.
 Results are displayed as a logarithmic ASCII level bar so the user can
 visually identify which device is carrying the RF signal.
 
-Devices that appear under multiple host APIs (e.g. the same physical input
-listed as MME, DirectSound, and WASAPI) are deduplicated to a single entry
-using the highest-priority API available: WASAPI > DirectSound > MME.
-WASAPI shared mode (the PortAudio default) routes through the Windows audio
-engine and therefore respects the Windows input level controls.
+On Windows the same physical input is often listed three times — once each
+under MME, DirectSound, and WASAPI.  The deduplication logic in _best_api_devices()
+collapses these to a single entry, preferring WASAPI (which routes through the
+Windows audio engine and respects system input level controls).  On Linux, macOS,
+and BSD each device typically appears once, so the deduplication is a no-op.
 """
 
 import concurrent.futures
