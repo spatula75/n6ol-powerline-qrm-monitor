@@ -4,3 +4,14 @@ exclude = ["tests"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+source = ["lib/buzz", "configure"]
+omit = ["tests/*", "lib/buzz/device_setup.py"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true

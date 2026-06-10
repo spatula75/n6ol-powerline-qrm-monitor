@@ -1,0 +1,201 @@
+"""Tests for CsvStore: filename generation, row append, time bucketing, and range aggregation."""
+
+from datetime import datetime, time
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import pytest
+
+from buzz.config import BuzzConfig
+from buzz.csv_store import CsvStore
+
+_TZ = ZoneInfo('America/Los_Angeles')
+
+
+def _make_store(tmp_path: Path) -> CsvStore:
+    cfg = BuzzConfig()
+    cfg.station.path = str(tmp_path)
+    cfg.station.timezone = 'America/Los_Angeles'
+    cfg.station.noise_floor = -98.0
+    cfg.station.noise_min_snr = 12.0
+    return CsvStore(cfg)
+
+
+def _ts(year: int, month: int, day: int, hour: int, minute: int, second: int = 0) -> datetime:
+    return datetime(year, month, day, hour, minute, second, tzinfo=_TZ)
+
+
+class TestFilenameForDate:
+    def test_filename_contains_date(self, tmp_path):
+        store = _make_store(tmp_path)
+        path = store.filename_for_date(_ts(2024, 1, 15, 10, 0))
+        assert '2024-01-15' in path.name
+
+    def test_filename_in_configured_directory(self, tmp_path):
+        store = _make_store(tmp_path)
+        path = store.filename_for_date(_ts(2024, 1, 15, 10, 0))
+        assert path.parent == tmp_path
+
+    def test_different_dates_give_different_filenames(self, tmp_path):
+        store = _make_store(tmp_path)
+        p1 = store.filename_for_date(_ts(2024, 1, 15, 10, 0))
+        p2 = store.filename_for_date(_ts(2024, 1, 16, 10, 0))
+        assert p1 != p2
+
+
+class TestAppend:
+    def test_creates_file_with_headers_on_first_call(self, tmp_path):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.append(now, 15.0, -80.0, -95.0, 68.0, 52.0, 300.0, 7.5, 12.0, 225)
+        content = store.filename_for_date(now).read_text()
+        assert 'ISO datetime' in content
+        assert '120pps SNR' in content
+
+    def test_no_headers_on_subsequent_calls(self, tmp_path):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.append(now, 15.0, -80.0, -95.0, 68.0, 52.0, 300.0, 7.5, 12.0, 225)
+        store.append(now, 16.0, -81.0, -96.0, 69.0, 53.0, 310.0, 8.0, 13.0, 230)
+        lines = store.filename_for_date(now).read_text().strip().split('\n')
+        header_count = sum(1 for l in lines if 'ISO datetime' in l)
+        assert header_count == 1
+
+    def test_returns_csv_string_without_newline(self, tmp_path):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        result = store.append(now, 15.0, -80.0, -95.0, 68.0, 52.0, 300.0, 7.5, 12.0, 225)
+        assert '\n' not in result
+
+    def test_csv_string_contains_snr(self, tmp_path):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        result = store.append(now, 17.5, -80.0, -95.0, 68.0, 52.0, 300.0, 7.5, 12.0, 225)
+        assert '17.50' in result
+
+    def test_multiple_appends_produce_multiple_rows(self, tmp_path):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        for i in range(3):
+            store.append(now, 15.0 + i, -80.0, -95.0, '', '', '', '', '', '')
+        lines = [l for l in store.filename_for_date(now).read_text().strip().split('\n')
+                 if 'ISO datetime' not in l]
+        assert len(lines) == 3
+
+    def test_accepts_string_weather_values(self, tmp_path):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        result = store.append(now, 15.0, -80.0, -95.0, '', '', '', '', '', '')
+        assert result is not None
+
+
+class TestReadDateToTimeDict:
+    def _write_csv(self, path: Path, rows: list[str]) -> None:
+        path.write_text('\n'.join(rows) + '\n')
+
+    def test_qualifying_row_appears_in_dict(self, tmp_path):
+        store = _make_store(tmp_path)
+        # signal >= -86, snr >= 15
+        row = f'{_ts(2024, 1, 15, 10, 23).isoformat()},20.0,-80.0,-95.0,72,50,300,5,8,180'
+        csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
+        self._write_csv(csv_path, ['header,line', row])
+        result = store._read_date_to_time_dict(csv_path)
+        assert time(10, 15) in result
+
+    def test_low_snr_row_excluded(self, tmp_path):
+        store = _make_store(tmp_path)
+        # snr=10 < 15 (snr_gate)
+        row = f'{_ts(2024, 1, 15, 10, 23).isoformat()},10.0,-80.0,-95.0,72,50,300,5,8,180'
+        csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
+        self._write_csv(csv_path, [row])
+        result = store._read_date_to_time_dict(csv_path)
+        assert len(result) == 0
+
+    def test_low_signal_row_excluded(self, tmp_path):
+        store = _make_store(tmp_path)
+        # signal=-90 < -86 (noise_threshold)
+        row = f'{_ts(2024, 1, 15, 10, 23).isoformat()},20.0,-90.0,-95.0,72,50,300,5,8,180'
+        csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
+        self._write_csv(csv_path, [row])
+        result = store._read_date_to_time_dict(csv_path)
+        assert len(result) == 0
+
+    def test_bucket_to_15_minute_interval(self, tmp_path):
+        store = _make_store(tmp_path)
+        row_10_23 = f'{_ts(2024, 1, 15, 10, 23).isoformat()},20.0,-80.0,-95.0,72,50,300,5,8,180'
+        row_10_14 = f'{_ts(2024, 1, 15, 10, 14).isoformat()},20.0,-80.0,-95.0,72,50,300,5,8,180'
+        row_10_45 = f'{_ts(2024, 1, 15, 10, 45).isoformat()},20.0,-80.0,-95.0,72,50,300,5,8,180'
+        csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
+        self._write_csv(csv_path, [row_10_23, row_10_14, row_10_45])
+        result = store._read_date_to_time_dict(csv_path)
+        assert time(10, 15) in result   # 10:23 → 10:15
+        assert time(10, 0) in result    # 10:14 → 10:00
+        assert time(10, 45) in result   # 10:45 → 10:45
+
+    def test_two_rows_same_bucket_accumulate(self, tmp_path):
+        store = _make_store(tmp_path)
+        row1 = f'{_ts(2024, 1, 15, 10, 20).isoformat()},20.0,-80.0,-95.0,72,50,300,5,8,180'
+        row2 = f'{_ts(2024, 1, 15, 10, 25).isoformat()},20.0,-80.0,-95.0,72,50,300,5,8,180'
+        csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
+        self._write_csv(csv_path, [row1, row2])
+        result = store._read_date_to_time_dict(csv_path)
+        one_row_store = _make_store(tmp_path)
+        one_csv = tmp_path / 'single.csv'
+        self._write_csv(one_csv, [row1])
+        one_result = one_row_store._read_date_to_time_dict(one_csv)
+        assert result[time(10, 15)] > one_result[time(10, 15)]
+
+    def test_header_line_skipped(self, tmp_path):
+        store = _make_store(tmp_path)
+        csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
+        self._write_csv(csv_path, ['ISO datetime,120pps SNR,120pps signal dB,Noise floor dB,...'])
+        result = store._read_date_to_time_dict(csv_path)
+        assert len(result) == 0
+
+    def test_bad_lines_skipped(self, tmp_path):
+        store = _make_store(tmp_path)
+        csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
+        self._write_csv(csv_path, ['not,valid,data', 'also bad'])
+        result = store._read_date_to_time_dict(csv_path)
+        assert len(result) == 0
+
+
+class TestReadRangeToTimeDict:
+    def _write_qualifying_row(self, store: CsvStore, when: datetime) -> None:
+        store.append(when, 20.0, -80.0, -95.0, 72, 50, 300, 5, 8, 180)
+
+    def test_missing_files_silently_skipped(self, tmp_path):
+        store = _make_store(tmp_path)
+        start = _ts(2024, 1, 15, 0, 0)
+        end = _ts(2024, 1, 17, 0, 0)
+        result = store.read_range_to_time_dict(start, end)
+        assert isinstance(result, dict)
+
+    def test_single_day_aggregated(self, tmp_path):
+        store = _make_store(tmp_path)
+        when = _ts(2024, 1, 15, 10, 20)
+        self._write_qualifying_row(store, when)
+        result = store.read_range_to_time_dict(
+            _ts(2024, 1, 15, 0, 0),
+            _ts(2024, 1, 15, 23, 59),
+        )
+        assert time(10, 15) in result
+
+    def test_multiple_days_summed(self, tmp_path):
+        store = _make_store(tmp_path)
+        self._write_qualifying_row(store, _ts(2024, 1, 15, 10, 20))
+        self._write_qualifying_row(store, _ts(2024, 1, 16, 10, 20))
+        single_day_result = store.read_range_to_time_dict(
+            _ts(2024, 1, 15, 0, 0), _ts(2024, 1, 15, 23, 59),
+        )
+        two_day_result = store.read_range_to_time_dict(
+            _ts(2024, 1, 15, 0, 0), _ts(2024, 1, 16, 23, 59),
+        )
+        assert two_day_result[time(10, 15)] > single_day_result[time(10, 15)]
+
+    def test_returns_plain_dict_not_defaultdict(self, tmp_path):
+        store = _make_store(tmp_path)
+        start = _ts(2024, 1, 15, 0, 0)
+        end = _ts(2024, 1, 15, 23, 59)
+        result = store.read_range_to_time_dict(start, end)
+        assert type(result) is dict
