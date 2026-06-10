@@ -9,8 +9,8 @@
 # It will probe all available devices, show live signal levels, and write
 # the device_index and input_device_name fields below automatically.
 # You should not need to edit those two fields by hand.
-input_device_name = "Line In (Realtek(R) Audio), Windows DirectSound"
-device_index = 12
+# input_device_name = "Your Device, Windows DirectSound"
+# device_index = 1
 
 # Audio sample rate in Hz. Must match what your input device is configured to
 # use. 16000 Hz is sufficient for powerline noise analysis and keeps CPU load low.
@@ -55,10 +55,10 @@ audio_rf_conversion_db = -32.0
 
 # Estimated path loss in dB from the interference source to your location.
 # Used to calculate source strength from the measured level.
-distance_attenuation = 29.54
+distance_attenuation = 30.0
 
 # ISO 8601 start date for the all-time probability summary graph.
-summary_start_date_iso = "2024-05-15T00:00:00-0700"
+summary_start_date_iso = "2024-01-01T00:00:00+0000"
 
 
 [weather]
@@ -70,7 +70,7 @@ source = "cumulusmx"
 
 # CumulusMX JSON endpoint (only used when source = "cumulusmx").
 # Adjust the query string tags to match your station's available fields.
-url = "http://192.168.1.160:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing"
+url = "http://cumulusmx.local:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing"
 
 # Latitude and longitude for Open-Meteo (only used when source = "openmeteo").
 # latitude = 34.05
@@ -78,8 +78,10 @@ url = "http://192.168.1.160:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&
 
 
 [server]
-# Set enabled = false to run in local-only mode with no uploads.
-enabled = true
+# Set enabled = true to upload output files to a web server via SCP after each
+# collection cycle.  When false (the default) the monitor runs in local-only mode
+# and all fields below are ignored.
+enabled = false
 
 # Hostname or IP address of the web server that hosts the published output.
 host = "192.168.1.123"

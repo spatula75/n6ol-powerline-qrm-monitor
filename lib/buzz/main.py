@@ -36,5 +36,5 @@ if __name__ == '__main__':
 
     store = CsvStore(config)
     plotter = Plotter(config, store)
-    publisher = Publisher(config)
+    publisher = Publisher(config) if config.server.enabled else None
     Collector(config, sampler, weather, store, plotter, publisher).collection_loop()
