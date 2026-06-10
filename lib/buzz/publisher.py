@@ -1,3 +1,12 @@
+"""
+HTML index generation and SCP upload to the web server.
+
+Publisher.generate_index() renders index.html from the Jinja2 template, embedding
+the current plot filename, timestamp, and station callsign.  Publisher.scp_to_server()
+opens a single SSH connection and uploads a list of (local_path, remote_prefix) pairs
+over SFTP.
+"""
+
 from datetime import datetime, time
 from pathlib import Path
 

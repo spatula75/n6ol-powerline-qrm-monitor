@@ -27,6 +27,13 @@ def _section_dict(obj) -> dict:
 
 
 def main():
+    """Interactively select the audio input device and save the updated config.
+
+    Loads the existing config (or defaults), displays a table of available input
+    devices with live amplitude bars, prompts for a selection, then writes the full
+    config — with the new device_index and input_device_name — back to
+    ~/.buzz/config.toml.
+    """
     config = BuzzConfig.from_toml() if CONFIG_PATH.exists() else BuzzConfig()
 
     new_index = select_device(config.audio.sample_rate, current_real_index=config.audio.device_index)
