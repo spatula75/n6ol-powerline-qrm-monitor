@@ -1,0 +1,94 @@
+# N6OL Powerline QRM Monitor — example configuration
+#
+# Copy this file to ~/.buzz/config.toml and edit to suit your setup.
+# All values shown are the defaults.
+
+
+[audio]
+# Run configure.py to select your audio input device interactively.
+# It will probe all available devices, show live signal levels, and write
+# the device_index and input_device_name fields below automatically.
+# You should not need to edit those two fields by hand.
+input_device_name = "Line In (Realtek(R) Audio), Windows DirectSound"
+device_index = 12
+
+# Audio sample rate in Hz. Must match what your input device is configured to
+# use. 16000 Hz is sufficient for powerline noise analysis and keeps CPU load low.
+sample_rate = 16000
+
+# Length of each audio recording in seconds. Longer recordings capture more
+# pulses and give a more stable reading, at the cost of slower updates.
+duration = 3
+
+# Number of recordings averaged together per CSV entry. More measurements
+# reduce noise in the readings but increase the time per collection cycle.
+measurements_to_take = 3
+
+# Expected interference pulse rate in Hz.
+# Use 120 for 60 Hz grids (North America).
+# Use 100 for 50 Hz grids (Europe and most of the rest of the world).
+pulse_rate = 120
+
+
+[station]
+# Your amateur radio callsign, used in page titles and plot labels.
+callsign = "N0CALL"
+
+# IANA timezone name used for CSV timestamps and graph labels.
+timezone = "America/Los_Angeles"
+
+# Local directory where CSV files, plots, and the index page are written.
+path = "C:\\Users\\yourname"
+
+# Your receiver's noise floor in dBm. Used as the baseline for the noise
+# floor reference line on the daily graph.
+noise_floor = -98.0
+
+# Minimum SNR in dB for a reading to count as interference-present in the
+# probability summary graphs.
+noise_min_snr = 12.0
+
+# dB offset applied to the audio amplitude to approximate RF level at the
+# receiver input. Hardware-specific: calibrate by comparing the program's
+# reading against your S-meter (S9 = -73 dBm, each S-unit = 6 dB).
+audio_rf_conversion_db = -32.0
+
+# Estimated path loss in dB from the interference source to your location.
+# Used to calculate source strength from the measured level.
+distance_attenuation = 29.54
+
+# ISO 8601 start date for the all-time probability summary graph.
+summary_start_date_iso = "2024-05-15T00:00:00-0700"
+
+
+[weather]
+# Weather data source. Options:
+#   "cumulusmx" — pull from a local CumulusMX weather station HTTP endpoint
+#   "openmeteo" — pull from the free Open-Meteo API (no account required)
+#   "none"      — disable weather data; weather columns in CSV will be blank
+source = "cumulusmx"
+
+# CumulusMX JSON endpoint (only used when source = "cumulusmx").
+# Adjust the query string tags to match your station's available fields.
+url = "http://192.168.1.160:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing"
+
+# Latitude and longitude for Open-Meteo (only used when source = "openmeteo").
+# latitude = 34.05
+# longitude = -118.25
+
+
+[server]
+# Set enabled = false to run in local-only mode with no uploads.
+enabled = true
+
+# Hostname or IP address of the web server that hosts the published output.
+host = "192.168.1.123"
+
+# SSH username on the web server.
+username = "yourname"
+
+# Remote path where output files are uploaded.
+remote_path = "/web/n6ol/noise/"
+
+# Path to the SSH private key used for authentication.
+key_path = "C:\\Users\\yourname\\.buzz\\buzz.pem"

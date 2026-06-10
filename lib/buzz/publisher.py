@@ -23,6 +23,8 @@ class Publisher:
             filename=image_path,
             update_datetime=collection_time_formatted,
             no_refresh=no_refresh,
+            callsign=self._config.station.callsign,
+            pulse_rate=self._config.audio.pulse_rate,
         )
         with open(output_filename, mode='w', encoding='utf-8') as f:
             f.write(content)
@@ -33,17 +35,18 @@ class Publisher:
         Each entry in *files* is a (local_path, remote_prefix) pair; the file
         is placed at server_remote_path + remote_prefix + basename.
         """
+        server = self._config.server
         sftp = None
         client = None
         try:
             client = paramiko.SSHClient()
             client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            client.connect(self._config.server_host, username=self._config.server_username,
-                           password='', key_filename=self._config.server_key_path)
+            client.connect(server.host, username=server.username,
+                           password='', key_filename=server.key_path)
             sftp = client.open_sftp()
             for local_file, file_prefix in files:
                 destination_name = Path(local_file).name
-                sftp.put(local_file, f'{self._config.server_remote_path}{file_prefix}{destination_name}')
+                sftp.put(local_file, f'{server.remote_path}{file_prefix}{destination_name}')
         except Exception as e:
             print(f'Got {e} when trying to copy files')
         finally:
