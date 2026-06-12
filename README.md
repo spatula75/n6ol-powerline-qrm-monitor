@@ -10,6 +10,12 @@ and time-of-day probability charts that are automatically uploaded to a web serv
 Useful for documenting interference patterns when working with a power company to locate
 and fix a problem source, or simply for understanding when the noise is worst.
 
+Imported as a full-fledged repo from the original 
+[gist](https://gist.github.com/spatula75/e6c654262e420aecf85ba7493a92ec31), first posted
+to GitHub on May 12, 2024.  This project actually began on April 16, 2024 in an effort to 
+track QRM produced by PG&E equipment near my station.  See [HISTORY.md](HISTORY.md) for
+more detail.
+
 ## Sample output
 
 Daily signal vs. noise floor (6-minute moving average):
