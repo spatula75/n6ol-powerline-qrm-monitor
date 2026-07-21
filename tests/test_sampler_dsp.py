@@ -139,32 +139,20 @@ class TestAveragePulseAmplitude:
 
 
 class TestAudioSamplerInit:
-    def test_init_by_name_resolves_device_index(self):
+    def test_init_resolves_device_by_name(self):
         cfg = _sampler_config()
         device = {'index': 3, 'name': 'Test', 'hostapi': 0}
         with patch('buzz.sampler.sd.query_devices', return_value=device):
             sampler = AudioSampler(cfg)
         assert sampler._device_index == 3
 
-    def test_init_by_index_uses_stored_index(self):
+    def test_init_always_uses_name_even_when_index_configured(self):
+        # device_index in config is ignored at runtime; name is always the lookup key
         cfg = _sampler_config(device_index=2, device_name='Test, DirectSound')
-        device = {'index': 2, 'name': 'Test', 'hostapi': 0}
-        hostapis = [{'name': 'DirectSound'}]
-        with patch('buzz.sampler.sd.query_devices', return_value=device), \
-             patch('buzz.sampler.sd.query_hostapis', return_value=hostapis):
+        device = {'index': 7, 'name': 'Test', 'hostapi': 0}
+        with patch('buzz.sampler.sd.query_devices', return_value=device):
             sampler = AudioSampler(cfg)
-        assert sampler._device_index == 2
-
-    def test_init_by_index_name_mismatch_logs_warning(self, caplog):
-        import logging
-        cfg = _sampler_config(device_index=2, device_name='Old Device Name')
-        device = {'index': 2, 'name': 'New Device', 'hostapi': 0}
-        hostapis = [{'name': 'DirectSound'}]
-        with caplog.at_level(logging.WARNING, logger='buzz.sampler'), \
-             patch('buzz.sampler.sd.query_devices', return_value=device), \
-             patch('buzz.sampler.sd.query_hostapis', return_value=hostapis):
-            AudioSampler(cfg)
-        assert any(r.levelno == logging.WARNING for r in caplog.records)
+        assert sampler._device_index == 7  # index from name lookup, not the stored 2
 
     def test_init_builds_kernel(self):
         cfg = _sampler_config()
@@ -185,9 +173,7 @@ class TestAudioSamplerInit:
 def _make_sampler() -> AudioSampler:
     cfg = _sampler_config(device_index=0, device_name='Test, DirectSound')
     device = {'index': 0, 'name': 'Test', 'hostapi': 0}
-    hostapis = [{'name': 'DirectSound'}]
-    with patch('buzz.sampler.sd.query_devices', return_value=device), \
-         patch('buzz.sampler.sd.query_hostapis', return_value=hostapis):
+    with patch('buzz.sampler.sd.query_devices', return_value=device):
         return AudioSampler(cfg)
 
 

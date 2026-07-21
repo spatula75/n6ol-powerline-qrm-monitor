@@ -37,28 +37,14 @@ class AudioSampler:
     def __init__(self, config: BuzzConfig) -> None:
         """Initialise the sampler and resolve the PortAudio device to record from.
 
-        If config.audio.device_index is set it takes precedence over
-        input_device_name; a warning is printed if the name no longer matches
-        (e.g. after a USB reconnect).  Also pre-builds the pulse-train kernel so
-        it isn't reconstructed on every sample.
+        Always resolves the device by name, not by the stored index.  PortAudio
+        device indices are reassigned by Windows on every reboot; the name is stable.
+        Also pre-builds the pulse-train kernel so it isn't reconstructed on every sample.
         """
         self._config = config
         audio = config.audio
-        if audio.device_index is not None:
-            device = sd.query_devices(audio.device_index)
-            hostapis = sd.query_hostapis()
-            current_name = f"{device['name']}, {hostapis[device['hostapi']]['name']}"
-            if current_name != audio.input_device_name:
-                logger.warning(
-                    'Audio device at index %d is now "%s" but was configured as "%s"; '
-                    'the device may have been reconnected or renamed. '
-                    'Continuing with index %d — re-run configure.py if recording fails.',
-                    audio.device_index, current_name, audio.input_device_name, audio.device_index,
-                )
-            self._device_index = audio.device_index
-        else:
-            device = sd.query_devices(audio.input_device_name, 'input')
-            self._device_index = device['index']
+        device = sd.query_devices(audio.input_device_name, 'input')
+        self._device_index = device['index']
         self._kernel = _build_pulse_kernel(audio.sample_rate, audio.pulse_rate)
         self._scan_pulses = audio.pulse_rate // 2
 
