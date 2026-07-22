@@ -24,9 +24,7 @@ def _make_config(offset_db: float = 0.0) -> BuzzConfig:
 def _make_sampler() -> AudioSampler:
     cfg = _make_config()
     device = {'index': 0, 'name': 'Test', 'hostapi': 0}
-    hostapis = [{'name': 'DirectSound'}]
-    with patch('buzz.sampler.sd.query_devices', return_value=device), \
-         patch('buzz.sampler.sd.query_hostapis', return_value=hostapis):
+    with patch('buzz.sampler.sd.query_devices', return_value=device):
         return AudioSampler(cfg)
 
 

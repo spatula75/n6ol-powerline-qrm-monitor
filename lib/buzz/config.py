@@ -22,8 +22,9 @@ CONFIG_PATH = Path.home() / '.buzz' / 'config.toml'
 class AudioConfig:
     # Sounddevice name of the audio input recording the RF-to-audio converted signal.
     input_device_name: str = 'Line In (Realtek(R) Audio), Windows DirectSound'
-    # PortAudio device index for the selected input. Set by configure.py; takes
-    # precedence over input_device_name at runtime. None = look up by name.
+    # PortAudio device index written by configure.py for reference. Not used at
+    # runtime — the device is always resolved by input_device_name, which is stable
+    # across reboots. Indices change whenever Windows reassigns USB/audio devices.
     device_index: int | None = None
     # Audio sample rate in Hz. Must match what the input device is configured to use.
     sample_rate: int = 16000
