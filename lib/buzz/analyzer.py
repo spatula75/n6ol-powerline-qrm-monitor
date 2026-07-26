@@ -64,7 +64,7 @@ class ContinuousAnalyzer:
     LOSE_LOCK_COUNT     = 3     # consecutive _quick_check failures before SIGNAL_LOST
     LOCKED_INTERVAL     = 0.2   # s  — fast tick while LOCKED or SIGNAL_LOST
     SEARCH_INTERVAL     = 1.0   # s  — narrow phase-search interval while SIGNAL_LOST
-    REFINE_INTERVAL     = 10.0  # s  — full FFT phase-refinement interval while LOCKED
+    REFINE_INTERVAL     = 2.0   # s  — phase-search refinement interval while LOCKED
     SIGNAL_LOST_REFINE  = 120.0 # s  — unconditional full-FFT safety net in SIGNAL_LOST
     PHASE_SEARCH_RADIUS = 10    # samples either side of stored peak to scan in SIGNAL_LOST
     FAST_SCAN_PULSES    = 15    # pulses in the Tier-3a screening kernel (~1/4 of full)
@@ -95,6 +95,7 @@ class ContinuousAnalyzer:
         self._consecutive_low_snr: int = 0
 
         self._result: AnalysisResult | None = None
+        self._last_correction: int = 0
         self._result_lock = threading.Lock()
         self._stop        = threading.Event()
 
@@ -111,6 +112,10 @@ class ContinuousAnalyzer:
     def latest_result(self) -> AnalysisResult | None:
         with self._result_lock:
             return self._result
+
+    def latest_correction(self) -> int:
+        with self._result_lock:
+            return self._last_correction
 
     # ----------------------------------------------------------------- private
 
@@ -282,6 +287,7 @@ class ContinuousAnalyzer:
         # Signal scan: find the phase with the highest pulse amplitude.
         best_sig_amp = -1.0
         best_phase   = self._peak_phase
+        best_offset  = 0
         for offset in range(-self.PHASE_SEARCH_RADIUS, self.PHASE_SEARCH_RADIUS + 1):
             candidate = (self._peak_phase + offset) % spp_int
             start     = max(candidate, self._noise_phase)
@@ -293,6 +299,9 @@ class ContinuousAnalyzer:
             if amp > best_sig_amp:
                 best_sig_amp = amp
                 best_phase   = candidate
+                best_offset  = offset
+        with self._result_lock:
+            self._last_correction = best_offset
 
         # Noise scan: independently find the quietest phase near _noise_phase.
         best_noise_amp   = float('inf')

@@ -371,6 +371,28 @@ class TestPhaseSearch:
         """Search radius must cover at least a few samples of phase drift."""
         assert ContinuousAnalyzer.PHASE_SEARCH_RADIUS >= 5
 
+    def test_latest_correction_initial_zero(self):
+        assert _make_analyzer().latest_correction() == 0
+
+    def test_phase_search_records_signal_offset(self):
+        """Correction is updated to the winning offset when phase_search finds the signal."""
+        az = self._signal_lost_analyzer()
+        spp_int   = int(SAMPLE_RATE / PULSE_RATE)
+        new_phase = (az._peak_phase + 3) % spp_int
+        az._pipeline.get_snapshot.return_value = _pulse_audio(phase=new_phase)
+        az._phase_search()
+        assert az._state == 'LOCKED'
+        assert az.latest_correction() == 3
+
+    def test_phase_search_updates_correction_even_without_relock(self):
+        """Correction field is written on every phase_search call, not only on relock."""
+        az = self._signal_lost_analyzer()
+        az._last_correction = 999   # sentinel — must be overwritten
+        az._pipeline.get_snapshot.return_value = _noise_audio()
+        az._phase_search()
+        assert az._state == 'SIGNAL_LOST'
+        assert az.latest_correction() != 999
+
     def test_signal_lost_refine_interval_much_longer_than_search(self):
         """FFT fallback should be infrequent compared to the cheap narrow scan."""
         assert ContinuousAnalyzer.SIGNAL_LOST_REFINE >= 5 * ContinuousAnalyzer.SEARCH_INTERVAL

@@ -44,7 +44,7 @@ stateDiagram-v2
     SEARCHING --> LOCKED      : SNR ≥ 6 dB (full FFT)
     LOCKED    --> SIGNAL_LOST : 3 consecutive checks below 2 dB
     SIGNAL_LOST --> LOCKED    : SNR ≥ 6 dB (any tier)
-    LOCKED    --> LOCKED      : quick check every 200 ms\nFFT refinement every 10 s
+    LOCKED    --> LOCKED      : quick check every 200 ms\nphase-search refinement every 2 s
 ```
 
 ### SEARCHING
@@ -65,7 +65,7 @@ below 2 dB for up to three consecutive checks before declaring signal loss.
 A single noisy frame doesn't cause a state change; three consecutive failures
 are required.
 
-Every 10 seconds `_phase_search()` runs to correct for slow mains frequency
+Every 2 seconds `_phase_search()` runs to correct for slow mains frequency
 drift, scanning ±10 samples around each stored phase. A full FFT isn't needed
 here: any drift fast enough to exceed the search radius would already cause
 `_quick_check()` to fail first, dropping to SIGNAL_LOST where the full FFT
@@ -127,7 +127,7 @@ even if Tier 3a's threshold is too conservative to fire on a weak signal.
 | `LOCK_LOSE_SNR` | 2.0 dB | SNR below which a failure is counted |
 | `LOSE_LOCK_COUNT` | 3 | Consecutive failures before SIGNAL_LOST |
 | `LOCKED_INTERVAL` | 0.2 s | Quick-check cadence in LOCKED and SIGNAL_LOST |
-| `REFINE_INTERVAL` | 10 s | Full FFT phase refinement while LOCKED |
+| `REFINE_INTERVAL` | 2 s | Phase-search refinement cadence while LOCKED |
 | `SEARCH_INTERVAL` | 1 s | Phase search cadence in SIGNAL_LOST |
 | `PHASE_SEARCH_RADIUS` | 10 samples | Scan radius for Tier 2 in each direction |
 | `FAST_SCAN_INTERVAL` | 5 s | Tier 3a cadence in SIGNAL_LOST |

@@ -74,9 +74,11 @@ _WINDOW_W    = _WATERFALL_W + _PANEL_W
 _WINDOW_H    = _N_ROWS * _PIXELS_PER_ROW + _AXIS_H  # 224 px
 
 # Segment area geometry (within the panel widget)
-_SEGS_TOP    = _AXIS_H + 2
+_CORR_H      = _SEG_H // 4                 # 3 px — phase-correction indicator height
+_CORR_TOP    = _AXIS_H + 2                 # top of correction strip (just below header)
+_SEGS_TOP    = _CORR_TOP + _CORR_H + 1    # S-meter bars start here
 _SEGS_BOTTOM = _WINDOW_H - 4
-_SEGS_H      = _SEGS_BOTTOM - _SEGS_TOP    # ≈ 194 px for 13 segments
+_SEGS_H      = _SEGS_BOTTOM - _SEGS_TOP   # ≈ 190 px for 13 segments
 
 
 def _n_lit(dbm: float) -> int:
@@ -234,6 +236,21 @@ class MeterPanelWidget(QWidget):
 
         nf_lit  = _n_lit(nf_dbm)
         sig_lit = _n_lit(sig_dbm)
+
+        # Phase-correction indicator — above both bars.
+        # Range: ±PHASE_SEARCH_RADIUS (10 samples).  0 → one-pixel dot at center.
+        correction = self._analyzer.latest_correction()
+        grey       = QColor(160, 160, 160)
+        half_w     = _BAR_W // 2
+        max_corr   = ContinuousAnalyzer.PHASE_SEARCH_RADIUS
+        line_y     = _CORR_TOP + _CORR_H // 2
+        if correction == 0:
+            px, left_offset = 1, 0
+        else:
+            px          = max(1, round(abs(correction) * half_w / max_corr))
+            left_offset = -px if correction < 0 else 0
+        for bar_x in (nf_x, sig_x):
+            painter.fillRect(bar_x + half_w + left_offset, line_y, px, 1, grey)
 
         # Integer layout: anchor each bar from the bottom so the 1 px remainder
         # from 25 px of total gap / 12 spaces falls above the top bar, not below S1.
