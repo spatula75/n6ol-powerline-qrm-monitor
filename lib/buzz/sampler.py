@@ -74,20 +74,21 @@ class AudioPipeline:
         )
         self._stream.start()
 
-    def get_snapshot(self, n_samples: int) -> np.ndarray:
-        """Return the last n_samples as a contiguous 1-D int16 array.
+    def get_snapshot(self, n_samples: int, offset: int = 0) -> np.ndarray:
+        """Return n_samples ending offset samples before the current tail.
 
-        Caller should ensure wait_for_data() has returned True first.
-        If the buffer holds fewer samples than requested, the available
-        data is returned (possibly shorter than n_samples).
+        offset=0 (default) returns the most recent n_samples.
+        offset=n_samples returns the window immediately before that, and so on.
+        Caller should ensure wait_for_data(n_samples + offset) has returned True.
         """
-        n_chunks = ceil(n_samples / self.CHUNK_SIZE)
+        n_chunks = ceil((n_samples + offset) / self.CHUNK_SIZE)
         with self._condition:
             chunks = list(self._buffer)[-n_chunks:]
         if not chunks:
             return np.zeros(n_samples, dtype=np.int16)
         arr = np.concatenate(chunks)
-        return arr[-n_samples:]
+        end = len(arr) - offset
+        return arr[max(0, end - n_samples):end]
 
     def wait_for_data(self, n_samples: int, timeout: float | None = None) -> bool:
         """Block until at least n_samples worth of chunks are in the buffer.
@@ -139,20 +140,22 @@ class AudioSampler:
         """
         return LevelStream(self._config, self._device_index, blocksize)
 
-    def take_sample(self) -> tuple[float, float, float]:
+    def take_sample(self, offset_samples: int = 0) -> tuple[float, float, float]:
         """Analyse a snapshot from the ring buffer and return (snr_db, signal_dbfs, noise_dbfs).
 
-        Reads the last config.audio.duration seconds of audio already captured by the
-        continuously-running AudioPipeline.  On the very first call after startup this
-        may block briefly while the buffer fills; thereafter it returns immediately.
+        offset_samples shifts the window back into the buffer: 0 (default) analyses
+        the most recent duration seconds; passing n_samples analyses the window
+        immediately before that, etc.  This lets the collector read three distinct
+        non-overlapping windows in sequence, mirroring the old behaviour of three
+        independent recordings.
 
         Signal and noise levels are mean-absolute-amplitude dBFS (not RMS dBFS) — see
         inline comments for the reasoning behind that choice.
         """
         audio = self._config.audio
         n_samples = int(audio.duration * audio.sample_rate)
-        self._pipeline.wait_for_data(n_samples)
-        snapshot = self._pipeline.get_snapshot(n_samples)
+        self._pipeline.wait_for_data(n_samples + offset_samples)
+        snapshot = self._pipeline.get_snapshot(n_samples, offset=offset_samples)
         # Powerline arcing is highly impulsive: the arc fires only near the voltage peaks of
         # the 60 Hz AC cycle, so its duty cycle is typically a few percent or less.  Using
         # broadband RMS would spread that burst energy across the entire cycle and understate

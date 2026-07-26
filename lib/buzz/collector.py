@@ -47,7 +47,14 @@ class Collector:
         now = datetime.now(zone).replace(second=0, microsecond=0)
 
         n = self._config.audio.measurements_to_take
-        snrs, signals, noises = zip(*[self._sampler.take_sample() for _ in range(n)])
+        audio = self._config.audio
+        n_samples = int(audio.duration * audio.sample_rate)
+        # Read non-overlapping windows from oldest to most recent, so the analysis
+        # mirrors the old behaviour of three sequential independent recordings.
+        snrs, signals, noises = zip(*[
+            self._sampler.take_sample(offset_samples=n_samples * i)
+            for i in range(n - 1, -1, -1)
+        ])
         snr_mean = round(sum(snrs) / n, 2)
         # take_sample() returns levels in dBFS (relative to digital full-scale); adding the
         # station's calibration offset converts to approximate dBm at the receiver input.

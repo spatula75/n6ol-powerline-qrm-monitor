@@ -245,6 +245,20 @@ class TestAudioSamplerTakeSample:
         snr, _, _ = sampler.take_sample()
         assert abs(snr) < 5.0
 
+    def test_offset_samples_reads_earlier_window(self):
+        sampler = _make_sampler()
+        n = 48000
+        # inject two back-to-back recordings; offset=n should return the first one
+        rec1 = _synthetic_recording(amplitude=20000)
+        rec2 = np.zeros((n, 1), dtype=np.int16)  # silence
+        combined = np.concatenate([rec1, rec2], axis=0)
+        _inject_recording(sampler, combined)
+        # offset=0 → silence window → low signal
+        _, signal_recent, _ = sampler.take_sample(offset_samples=0)
+        # offset=n → pulse window → strong signal
+        _, signal_earlier, _ = sampler.take_sample(offset_samples=n)
+        assert signal_earlier > signal_recent
+
 
 class TestGoldenFiles:
     @pytest.fixture(autouse=True)

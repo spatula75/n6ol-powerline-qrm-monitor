@@ -145,6 +145,33 @@ class TestAudioPipelineGetSnapshot:
         result = pipeline.get_snapshot(100)
         assert len(result) == 100
 
+    def test_offset_shifts_window_back(self):
+        pipeline, _, callback = _make_pipeline()
+        _fire(callback, amplitude=111)
+        _fire(callback, amplitude=222)
+        # with offset=CHUNK, skip the last chunk and read the one before it
+        result = pipeline.get_snapshot(CHUNK, offset=CHUNK)
+        assert np.all(result == 111)
+
+    def test_offset_zero_is_most_recent(self):
+        pipeline, _, callback = _make_pipeline()
+        _fire(callback, amplitude=111)
+        _fire(callback, amplitude=222)
+        result = pipeline.get_snapshot(CHUNK, offset=0)
+        assert np.all(result == 222)
+
+    def test_non_overlapping_windows_are_distinct(self):
+        pipeline, _, callback = _make_pipeline()
+        _fire(callback, amplitude=100)
+        _fire(callback, amplitude=200)
+        _fire(callback, amplitude=300)
+        w0 = pipeline.get_snapshot(CHUNK, offset=2 * CHUNK)
+        w1 = pipeline.get_snapshot(CHUNK, offset=CHUNK)
+        w2 = pipeline.get_snapshot(CHUNK, offset=0)
+        assert np.all(w0 == 100)
+        assert np.all(w1 == 200)
+        assert np.all(w2 == 300)
+
 
 class TestAudioPipelineWaitForData:
     def test_returns_true_immediately_when_data_available(self):
