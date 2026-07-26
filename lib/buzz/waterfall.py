@@ -235,15 +235,15 @@ class MeterPanelWidget(QWidget):
         nf_lit  = _n_lit(nf_dbm)
         sig_lit = _n_lit(sig_dbm)
 
-        seg_step = (_SEGS_H - _SEG_H) / max(1, _N_SEGS - 1)
+        # Integer layout: anchor each bar from the bottom so the 1 px remainder
+        # from 25 px of total gap / 12 spaces falls above the top bar, not below S1.
+        base_gap = (_SEGS_H - _N_SEGS * _SEG_H) // (_N_SEGS - 1)
 
         painter.setFont(QFont('Monospace', 7))
 
         for i in range(_N_SEGS):
             # i=0 → S1 (bottom), i=12 → S9+40 (top)
-            # draw top-down: highest segment first
-            row = _N_SEGS - 1 - i          # row 0 is the top (S9+40)
-            y   = int(_SEGS_TOP + row * seg_step)
+            y = _SEGS_BOTTOM - (i + 1) * _SEG_H - i * base_gap
 
             lit_rgb = _SEG_LIT[i]
             dim_rgb = _SEG_DIM[i]
