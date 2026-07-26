@@ -9,7 +9,8 @@ so the caller can convert to dBm using the station's calibration offset.
 
 import logging
 import threading
-from math import log10
+from collections import deque
+from math import ceil, log10
 
 import numpy as np
 import sounddevice as sd
@@ -32,6 +33,86 @@ _DB_REFERENCE = 20 * log10(32768.0)
 # ~188 µs — but it meaningfully reduces false triggers from sub-millisecond impulse noise.
 _PULSE_WIDTH_SAMPLES = 3
 
+# Ring buffer capacity in chunks.  300 × 512 samples at 16 kHz ≈ 160 seconds — enough
+# for the once-per-minute analysis window with comfortable headroom.
+_BUFFER_CHUNKS = 300
+
+
+class AudioPipeline:
+    """Continuously-running audio input that fills a ring buffer of fixed-size chunks.
+
+    A PortAudio callback appends each chunk to a deque and notifies a Condition so
+    consumers can block-wait for new data.  Multiple independent consumers (analysis
+    thread, waterfall display, etc.) read from the buffer via get_snapshot() without
+    removing data; the deque's maxlen acts as a sliding window that discards audio
+    older than ~160 seconds.
+
+    CHUNK_SIZE is a power of two so FFT-based consumers get clean window boundaries
+    without padding or resampling.
+    """
+
+    CHUNK_SIZE = 512  # samples per callback block; 32 ms at 16 kHz
+
+    def __init__(self, config: BuzzConfig, device_index: int) -> None:
+        self._buffer: deque[np.ndarray] = deque(maxlen=_BUFFER_CHUNKS)
+        self._condition = threading.Condition()
+
+        def _callback(indata: np.ndarray, frames: int,
+                      time: object, status: sd.CallbackFlags) -> None:
+            chunk = indata[:, 0].copy()
+            with self._condition:
+                self._buffer.append(chunk)
+                self._condition.notify_all()
+
+        self._stream = sd.InputStream(
+            device=device_index,
+            channels=1,
+            samplerate=config.audio.sample_rate,
+            dtype='int16',
+            blocksize=self.CHUNK_SIZE,
+            callback=_callback,
+        )
+        self._stream.start()
+
+    def get_snapshot(self, n_samples: int) -> np.ndarray:
+        """Return the last n_samples as a contiguous 1-D int16 array.
+
+        Caller should ensure wait_for_data() has returned True first.
+        If the buffer holds fewer samples than requested, the available
+        data is returned (possibly shorter than n_samples).
+        """
+        n_chunks = ceil(n_samples / self.CHUNK_SIZE)
+        with self._condition:
+            chunks = list(self._buffer)[-n_chunks:]
+        if not chunks:
+            return np.zeros(n_samples, dtype=np.int16)
+        arr = np.concatenate(chunks)
+        return arr[-n_samples:]
+
+    def wait_for_data(self, n_samples: int, timeout: float | None = None) -> bool:
+        """Block until at least n_samples worth of chunks are in the buffer.
+
+        Returns True if sufficient data is available, False on timeout.
+        On first startup this blocks for up to duration seconds while the
+        buffer fills; thereafter it returns immediately.
+        """
+        n_chunks = ceil(n_samples / self.CHUNK_SIZE)
+        with self._condition:
+            return self._condition.wait_for(
+                lambda: len(self._buffer) >= n_chunks,
+                timeout=timeout,
+            )
+
+    def close(self) -> None:
+        self._stream.stop()
+        self._stream.close()
+
+    def __enter__(self) -> 'AudioPipeline':
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
 
 class AudioSampler:
     def __init__(self, config: BuzzConfig) -> None:
@@ -45,6 +126,7 @@ class AudioSampler:
         audio = config.audio
         device = sd.query_devices(audio.input_device_name, 'input')
         self._device_index = device['index']
+        self._pipeline = AudioPipeline(config, self._device_index)
         self._kernel = _build_pulse_kernel(audio.sample_rate, audio.pulse_rate)
         self._scan_pulses = audio.pulse_rate // 2
 
@@ -58,21 +140,19 @@ class AudioSampler:
         return LevelStream(self._config, self._device_index, blocksize)
 
     def take_sample(self) -> tuple[float, float, float]:
-        """Record one audio sample and return (snr_db, signal_dbfs, noise_dbfs).
+        """Analyse a snapshot from the ring buffer and return (snr_db, signal_dbfs, noise_dbfs).
 
-        Blocks for config.audio.duration seconds while recording.  Signal and noise
-        levels are mean-absolute-amplitude dBFS (not RMS dBFS) — see inline comments
-        for the reasoning behind that choice.
+        Reads the last config.audio.duration seconds of audio already captured by the
+        continuously-running AudioPipeline.  On the very first call after startup this
+        may block briefly while the buffer fills; thereafter it returns immediately.
+
+        Signal and noise levels are mean-absolute-amplitude dBFS (not RMS dBFS) — see
+        inline comments for the reasoning behind that choice.
         """
         audio = self._config.audio
-        recording = sd.rec(
-            int(audio.duration * audio.sample_rate),
-            samplerate=audio.sample_rate,
-            channels=1,
-            blocking=True,
-            dtype='int16',
-            device=self._device_index,
-        )
+        n_samples = int(audio.duration * audio.sample_rate)
+        self._pipeline.wait_for_data(n_samples)
+        snapshot = self._pipeline.get_snapshot(n_samples)
         # Powerline arcing is highly impulsive: the arc fires only near the voltage peaks of
         # the 60 Hz AC cycle, so its duty cycle is typically a few percent or less.  Using
         # broadband RMS would spread that burst energy across the entire cycle and understate
@@ -83,7 +163,7 @@ class AudioSampler:
         # during the moments it occurs.  Both signal and noise are measured the same way, so
         # the SNR and absolute levels are self-consistent; the station calibration offset must
         # be derived with this same MAV-based code.
-        mono_amplitude_array = np.abs(recording[:, 0].astype(np.int32))
+        mono_amplitude_array = np.abs(snapshot.astype(np.int32))
 
         output = _calculate_pps_fit_array(mono_amplitude_array, self._kernel, self._scan_pulses)
 

@@ -1,7 +1,7 @@
 """Tests for audio DSP functions and AudioSampler: kernel, fit array, averaging, and golden files."""
 
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -9,7 +9,8 @@ from numpy import uint32, zeros
 
 from buzz.config import BuzzConfig
 from buzz.sampler import (
-    AudioSampler, _average_pulse_amplitude, _build_pulse_kernel, _calculate_pps_fit_array,
+    AudioPipeline, AudioSampler,
+    _average_pulse_amplitude, _build_pulse_kernel, _calculate_pps_fit_array,
 )
 
 SAMPLE_RATE = 16000
@@ -142,22 +143,32 @@ class TestAudioSamplerInit:
     def test_init_resolves_device_by_name(self):
         cfg = _sampler_config()
         device = {'index': 3, 'name': 'Test', 'hostapi': 0}
-        with patch('buzz.sampler.sd.query_devices', return_value=device):
+        with patch('buzz.sampler.sd.query_devices', return_value=device), \
+             patch('buzz.sampler.sd.InputStream', return_value=MagicMock()):
             sampler = AudioSampler(cfg)
         assert sampler._device_index == 3
 
     def test_init_always_uses_name_even_when_index_configured(self):
-        # device_index in config is ignored at runtime; name is always the lookup key
         cfg = _sampler_config(device_index=2, device_name='Test, DirectSound')
         device = {'index': 7, 'name': 'Test', 'hostapi': 0}
-        with patch('buzz.sampler.sd.query_devices', return_value=device):
+        with patch('buzz.sampler.sd.query_devices', return_value=device), \
+             patch('buzz.sampler.sd.InputStream', return_value=MagicMock()):
             sampler = AudioSampler(cfg)
         assert sampler._device_index == 7  # index from name lookup, not the stored 2
+
+    def test_init_creates_pipeline(self):
+        cfg = _sampler_config()
+        device = {'index': 0, 'name': 'Test', 'hostapi': 0}
+        with patch('buzz.sampler.sd.query_devices', return_value=device), \
+             patch('buzz.sampler.sd.InputStream', return_value=MagicMock()):
+            sampler = AudioSampler(cfg)
+        assert isinstance(sampler._pipeline, AudioPipeline)
 
     def test_init_builds_kernel(self):
         cfg = _sampler_config()
         device = {'index': 0, 'name': 'Test', 'hostapi': 0}
-        with patch('buzz.sampler.sd.query_devices', return_value=device):
+        with patch('buzz.sampler.sd.query_devices', return_value=device), \
+             patch('buzz.sampler.sd.InputStream', return_value=MagicMock()):
             sampler = AudioSampler(cfg)
         assert sampler._kernel is not None
         assert len(sampler._kernel) > 0
@@ -165,7 +176,8 @@ class TestAudioSamplerInit:
     def test_scan_pulses_is_half_pulse_rate(self):
         cfg = _sampler_config()
         device = {'index': 0, 'name': 'Test', 'hostapi': 0}
-        with patch('buzz.sampler.sd.query_devices', return_value=device):
+        with patch('buzz.sampler.sd.query_devices', return_value=device), \
+             patch('buzz.sampler.sd.InputStream', return_value=MagicMock()):
             sampler = AudioSampler(cfg)
         assert sampler._scan_pulses == PULSE_RATE // 2
 
@@ -173,8 +185,23 @@ class TestAudioSamplerInit:
 def _make_sampler() -> AudioSampler:
     cfg = _sampler_config(device_index=0, device_name='Test, DirectSound')
     device = {'index': 0, 'name': 'Test', 'hostapi': 0}
-    with patch('buzz.sampler.sd.query_devices', return_value=device):
+    with patch('buzz.sampler.sd.query_devices', return_value=device), \
+         patch('buzz.sampler.sd.InputStream', return_value=MagicMock()):
         return AudioSampler(cfg)
+
+
+def _inject_recording(sampler: AudioSampler, recording: np.ndarray) -> None:
+    """Populate the sampler's pipeline buffer from a (n, 1) int16 array.
+
+    Pads with zeros at the front so the total length is a multiple of CHUNK_SIZE,
+    ensuring get_snapshot(len(recording)) returns exactly the recording data.
+    """
+    chunk = AudioPipeline.CHUNK_SIZE
+    mono = recording[:, 0]
+    pad = (-len(mono)) % chunk
+    padded = np.concatenate([np.zeros(pad, dtype=mono.dtype), mono]) if pad else mono
+    for i in range(0, len(padded), chunk):
+        sampler._pipeline._buffer.append(padded[i:i + chunk].copy())
 
 
 def _synthetic_recording(phase: int = 5, amplitude: int = 20000) -> np.ndarray:
@@ -193,32 +220,29 @@ def _synthetic_recording(phase: int = 5, amplitude: int = 20000) -> np.ndarray:
 class TestAudioSamplerTakeSample:
     def test_returns_three_float_values(self):
         sampler = _make_sampler()
-        recording = _synthetic_recording()
-        with patch('buzz.sampler.sd.rec', return_value=recording):
-            result = sampler.take_sample()
+        _inject_recording(sampler, _synthetic_recording())
+        result = sampler.take_sample()
         assert len(result) == 3
         assert all(isinstance(v, float) for v in result)
 
     def test_snr_positive_for_strong_pulse(self):
         sampler = _make_sampler()
-        recording = _synthetic_recording(amplitude=20000)
-        with patch('buzz.sampler.sd.rec', return_value=recording):
-            snr, _, _ = sampler.take_sample()
+        _inject_recording(sampler, _synthetic_recording(amplitude=20000))
+        snr, _, _ = sampler.take_sample()
         assert snr > 0
 
     def test_signal_above_noise_for_strong_pulse(self):
         sampler = _make_sampler()
-        recording = _synthetic_recording(amplitude=20000)
-        with patch('buzz.sampler.sd.rec', return_value=recording):
-            snr, signal, noise = sampler.take_sample()
+        _inject_recording(sampler, _synthetic_recording(amplitude=20000))
+        snr, signal, noise = sampler.take_sample()
         assert signal > noise
 
     def test_snr_near_zero_for_flat_noise(self):
         sampler = _make_sampler()
         rng = np.random.default_rng(0)
         recording = rng.integers(50, 150, size=(48000, 1), dtype=np.int16)
-        with patch('buzz.sampler.sd.rec', return_value=recording):
-            snr, _, _ = sampler.take_sample()
+        _inject_recording(sampler, recording)
+        snr, _, _ = sampler.take_sample()
         assert abs(snr) < 5.0
 
 
@@ -240,8 +264,8 @@ class TestGoldenFiles:
         audio_data = np.load(RESOURCES / 'synthetic_audio.npy')
         golden = np.load(RESOURCES / 'take_sample_golden.npy')
         sampler = _make_sampler()
-        with patch('buzz.sampler.sd.rec', return_value=audio_data):
-            snr, signal, noise = sampler.take_sample()
+        _inject_recording(sampler, audio_data)
+        snr, signal, noise = sampler.take_sample()
         assert snr == pytest.approx(golden[0], abs=0.1)
         assert signal == pytest.approx(golden[1], abs=0.1)
         assert noise == pytest.approx(golden[2], abs=0.1)
