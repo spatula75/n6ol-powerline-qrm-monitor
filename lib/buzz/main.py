@@ -102,6 +102,7 @@ def main() -> None:  # pragma: no cover
     try:
         from PySide6.QtCore import QTimer  # noqa: I001
         from PySide6.QtWidgets import QApplication
+        from buzz.analyzer import ContinuousAnalyzer
         from buzz.waterfall import MainWindow
     except ImportError:
         logging.getLogger(ROOT_PACKAGE).warning(
@@ -116,8 +117,11 @@ def main() -> None:  # pragma: no cover
             sampler.close()
         return
 
+    analyzer = ContinuousAnalyzer(sampler.pipeline, config)
+    analyzer.start()
+
     app = QApplication(sys.argv)
-    window = MainWindow(sampler.pipeline, config)
+    window = MainWindow(sampler.pipeline, analyzer, config)
     window.show()
 
     # Allow Ctrl+C to close the window cleanly from the console

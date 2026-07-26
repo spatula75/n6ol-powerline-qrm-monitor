@@ -22,7 +22,7 @@ def _direct_sum(data, sample_rate, analysis_size, start_index):
     pf = sample_rate / 120
     total = 0
     for i in range(analysis_size):
-        pos = int(i * pf)
+        pos = round(i * pf)
         total += int(data[start_index + pos])
         total += int(data[start_index + pos + 1])
         total += int(data[start_index + pos + 2])
@@ -51,7 +51,7 @@ class TestSumPulseTrainEquivalence:
         data = zeros(48000, dtype=uint32)
         pf = SAMPLE_RATE / 120
         for i in range(60):
-            pos = int(i * pf)
+            pos = round(i * pf)
             data[pos] = data[pos + 1] = data[pos + 2] = 5000
         assert _fast_result(data, 60, 0) == _direct_sum(data, SAMPLE_RATE, 60, 0) == 5000
 

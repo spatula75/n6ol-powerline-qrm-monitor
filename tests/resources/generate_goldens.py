@@ -36,7 +36,7 @@ def make_synthetic_audio() -> np.ndarray:
     audio = rng.integers(NOISE_LO, NOISE_HI, size=(N, 1), dtype=np.int16)
     spp = SAMPLE_RATE / PULSE_RATE
     for i in range(int(N / spp)):
-        pos = PULSE_PHASE + int(i * spp)
+        pos = PULSE_PHASE + round(i * spp)
         if pos + 3 < N:
             audio[pos, 0] = PULSE_AMPLITUDE
             audio[pos + 1, 0] = PULSE_AMPLITUDE

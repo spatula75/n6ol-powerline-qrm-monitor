@@ -234,7 +234,7 @@ def _average_pulse_amplitude(mono_amplitude_array: np.ndarray, sample_rate: int,
     samples_per_pulse = sample_rate / pulse_rate
     total = 0
     for i in range(analysis_size):
-        pos = int(i * samples_per_pulse)
+        pos = round(i * samples_per_pulse)
         for j in range(_PULSE_WIDTH_SAMPLES):
             total += mono_amplitude_array[start_index + pos + j]
     return total // (_PULSE_WIDTH_SAMPLES * analysis_size)

@@ -118,7 +118,7 @@ class TestAveragePulseAmplitude:
         data = zeros(48000, dtype=uint32)
         spp = SAMPLE_RATE / PULSE_RATE
         for i in range(60):
-            pos = int(i * spp)
+            pos = round(i * spp)
             data[pos] = data[pos + 1] = data[pos + 2] = 5000
         assert _average_pulse_amplitude(data, SAMPLE_RATE, PULSE_RATE, 60, 0) == 5000
 
@@ -130,9 +130,9 @@ class TestAveragePulseAmplitude:
         # Direct reference sum
         spp = SAMPLE_RATE / PULSE_RATE
         total = sum(
-            int(data[start_index + int(i * spp)]) +
-            int(data[start_index + int(i * spp) + 1]) +
-            int(data[start_index + int(i * spp) + 2])
+            int(data[start_index + round(i * spp)]) +
+            int(data[start_index + round(i * spp) + 1]) +
+            int(data[start_index + round(i * spp) + 2])
             for i in range(60)
         )
         expected = total // (3 * 60)
@@ -225,7 +225,7 @@ def _synthetic_recording(phase: int = 5, amplitude: int = 20000) -> np.ndarray:
     audio = rng.integers(50, 150, size=(48000, 1), dtype=np.int16)
     spp = SAMPLE_RATE / PULSE_RATE
     for i in range(int(48000 / spp)):
-        pos = phase + int(i * spp)
+        pos = phase + round(i * spp)
         if pos + 3 < 48000:
             audio[pos, 0] = amplitude
             audio[pos + 1, 0] = amplitude
