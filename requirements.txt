@@ -1,4 +1,5 @@
 ruff
+PySide6
 pytest-cov
 sounddevice~=0.4.6
 tomli-w

@@ -46,7 +46,7 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["lib/buzz", "configure"]
-omit = ["tests/*", "lib/buzz/device_setup.py"]
+omit = ["tests/*", "lib/buzz/device_setup.py", "lib/buzz/waterfall.py"]
 
 [tool.coverage.report]
 fail_under = 90

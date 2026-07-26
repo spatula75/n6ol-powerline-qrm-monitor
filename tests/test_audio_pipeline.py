@@ -205,6 +205,27 @@ class TestAudioPipelineWaitForData:
         assert pipeline.wait_for_data(CHUNK + 1, timeout=0.05) is True
 
 
+class TestAudioPipelineLatestChunk:
+    def test_returns_none_when_buffer_empty(self):
+        pipeline, _, _ = _make_pipeline()
+        assert pipeline.latest_chunk() is None
+
+    def test_returns_most_recent_chunk(self):
+        pipeline, _, callback = _make_pipeline()
+        _fire(callback, amplitude=100)
+        _fire(callback, amplitude=200)
+        chunk = pipeline.latest_chunk()
+        assert chunk is not None
+        assert np.all(chunk == 200)
+
+    def test_returns_copy(self):
+        pipeline, _, callback = _make_pipeline()
+        _fire(callback, amplitude=500)
+        chunk = pipeline.latest_chunk()
+        chunk[0] = 0
+        assert pipeline._buffer[-1][0] == 500  # buffer unaffected
+
+
 class TestAudioPipelineClose:
     def test_close_stops_stream(self):
         config = _make_config()

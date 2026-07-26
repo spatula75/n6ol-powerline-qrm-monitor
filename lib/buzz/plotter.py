@@ -10,13 +10,15 @@ All output is saved as PNG.  The _force_post_gc decorator works around a matplot
 memory-leak bug that causes handles to accumulate across repeated savefig calls.
 """
 
-import csv
+import csv  # noqa: I001
 import gc
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import matplotlib
+matplotlib.use('Agg')  # must precede submodule imports; forces non-interactive backend
 import matplotlib.dates as mdates
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt

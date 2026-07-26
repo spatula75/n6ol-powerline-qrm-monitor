@@ -181,6 +181,22 @@ class TestAudioSamplerInit:
             sampler = AudioSampler(cfg)
         assert sampler._scan_pulses == PULSE_RATE // 2
 
+    def test_pipeline_property_returns_pipeline(self):
+        sampler = _make_sampler()
+        assert sampler.pipeline is sampler._pipeline
+
+    def test_close_stops_pipeline_stream(self):
+        cfg = _sampler_config(device_index=0, device_name='Test, DirectSound')
+        device = {'index': 0, 'name': 'Test', 'hostapi': 0}
+        with patch('buzz.sampler.sd.query_devices', return_value=device), \
+             patch('buzz.sampler.sd.InputStream') as mock_cls:
+            mock_stream = MagicMock()
+            mock_cls.return_value = mock_stream
+            sampler = AudioSampler(cfg)
+        sampler.close()
+        mock_stream.stop.assert_called_once()
+        mock_stream.close.assert_called_once()
+
 
 def _make_sampler() -> AudioSampler:
     cfg = _sampler_config(device_index=0, device_name='Test, DirectSound')

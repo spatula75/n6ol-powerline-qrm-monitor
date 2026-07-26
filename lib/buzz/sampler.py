@@ -104,6 +104,13 @@ class AudioPipeline:
                 timeout=timeout,
             )
 
+    def latest_chunk(self) -> np.ndarray | None:
+        """Return a copy of the most recently captured chunk, or None if the buffer is empty."""
+        with self._condition:
+            if not self._buffer:
+                return None
+            return self._buffer[-1].copy()
+
     def close(self) -> None:
         self._stream.stop()
         self._stream.close()
@@ -130,6 +137,13 @@ class AudioSampler:
         self._pipeline = AudioPipeline(config, self._device_index)
         self._kernel = _build_pulse_kernel(audio.sample_rate, audio.pulse_rate)
         self._scan_pulses = audio.pulse_rate // 2
+
+    @property
+    def pipeline(self) -> AudioPipeline:
+        return self._pipeline
+
+    def close(self) -> None:
+        self._pipeline.close()
 
     def level_stream(self, blocksize: int = 320) -> 'LevelStream':
         """Open a persistent input stream for real-time level monitoring.
