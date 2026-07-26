@@ -47,7 +47,7 @@ class TestAppend:
     def test_creates_file_with_headers_on_first_call(self, tmp_path):
         store = _make_store(tmp_path)
         now = _ts(2024, 1, 15, 10, 30)
-        store.append(now, 15.0, -80.0, -95.0, 68.0, 52.0, 300.0, 7.5, 12.0, 225)
+        store.append(now, 15.0, -80.0, -95.0, 'full', 68.0, 52.0, 300.0, 7.5, 12.0, 225)
         content = store.filename_for_date(now).read_text()
         assert 'ISO datetime' in content
         assert '120pps SNR' in content
@@ -55,8 +55,8 @@ class TestAppend:
     def test_no_headers_on_subsequent_calls(self, tmp_path):
         store = _make_store(tmp_path)
         now = _ts(2024, 1, 15, 10, 30)
-        store.append(now, 15.0, -80.0, -95.0, 68.0, 52.0, 300.0, 7.5, 12.0, 225)
-        store.append(now, 16.0, -81.0, -96.0, 69.0, 53.0, 310.0, 8.0, 13.0, 230)
+        store.append(now, 15.0, -80.0, -95.0, 'full', 68.0, 52.0, 300.0, 7.5, 12.0, 225)
+        store.append(now, 16.0, -81.0, -96.0, 'full', 69.0, 53.0, 310.0, 8.0, 13.0, 230)
         lines = store.filename_for_date(now).read_text().strip().split('\n')
         header_count = sum(1 for l in lines if 'ISO datetime' in l)
         assert header_count == 1
@@ -64,20 +64,20 @@ class TestAppend:
     def test_returns_csv_string_without_newline(self, tmp_path):
         store = _make_store(tmp_path)
         now = _ts(2024, 1, 15, 10, 30)
-        result = store.append(now, 15.0, -80.0, -95.0, 68.0, 52.0, 300.0, 7.5, 12.0, 225)
+        result = store.append(now, 15.0, -80.0, -95.0, 'full', 68.0, 52.0, 300.0, 7.5, 12.0, 225)
         assert '\n' not in result
 
     def test_csv_string_contains_snr(self, tmp_path):
         store = _make_store(tmp_path)
         now = _ts(2024, 1, 15, 10, 30)
-        result = store.append(now, 17.5, -80.0, -95.0, 68.0, 52.0, 300.0, 7.5, 12.0, 225)
+        result = store.append(now, 17.5, -80.0, -95.0, 'full', 68.0, 52.0, 300.0, 7.5, 12.0, 225)
         assert '17.50' in result
 
     def test_multiple_appends_produce_multiple_rows(self, tmp_path):
         store = _make_store(tmp_path)
         now = _ts(2024, 1, 15, 10, 30)
         for i in range(3):
-            store.append(now, 15.0 + i, -80.0, -95.0, '', '', '', '', '', '')
+            store.append(now, 15.0 + i, -80.0, -95.0, 'full', '', '', '', '', '', '')
         lines = [l for l in store.filename_for_date(now).read_text().strip().split('\n')
                  if 'ISO datetime' not in l]
         assert len(lines) == 3
@@ -85,8 +85,28 @@ class TestAppend:
     def test_accepts_string_weather_values(self, tmp_path):
         store = _make_store(tmp_path)
         now = _ts(2024, 1, 15, 10, 30)
-        result = store.append(now, 15.0, -80.0, -95.0, '', '', '', '', '', '')
+        result = store.append(now, 15.0, -80.0, -95.0, 'full', '', '', '', '', '', '')
         assert result is not None
+
+    def test_lock_status_in_header(self, tmp_path):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.append(now, 15.0, -80.0, -95.0, 'full', 68.0, 52.0, 300.0, 7.5, 12.0, 225)
+        content = store.filename_for_date(now).read_text()
+        assert 'Signal Lock Status' in content
+
+    def test_lock_status_written_to_row(self, tmp_path):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        result = store.append(now, 15.0, -80.0, -95.0, 'partial', 68.0, 52.0, 300.0, 7.5, 12.0, 225)
+        assert 'partial' in result
+
+    @pytest.mark.parametrize('status', ['full', 'partial', 'none'])
+    def test_all_lock_statuses_accepted(self, tmp_path, status):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        result = store.append(now, 0.0, -90.0, -90.0, status, '', '', '', '', '', '')
+        assert status in result
 
 
 class TestReadDateToTimeDict:
@@ -162,7 +182,7 @@ class TestReadDateToTimeDict:
 
 class TestReadRangeToTimeDict:
     def _write_qualifying_row(self, store: CsvStore, when: datetime) -> None:
-        store.append(when, 20.0, -80.0, -95.0, 72, 50, 300, 5, 8, 180)
+        store.append(when, 20.0, -80.0, -95.0, 'full', 72, 50, 300, 5, 8, 180)
 
     def test_missing_files_silently_skipped(self, tmp_path):
         store = _make_store(tmp_path)

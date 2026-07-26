@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from buzz.analyzer import AnalysisResult
 from buzz.collector import Collector
 from buzz.config import BuzzConfig
 
@@ -23,10 +24,14 @@ def _make_config(tmp_path: Path, server_enabled: bool = False) -> BuzzConfig:
     return cfg
 
 
+_LOCKED_RESULT   = AnalysisResult(signal_dbm=-80.0, noise_dbm=-90.0, snr=10.0, locked=True)
+_UNLOCKED_RESULT = AnalysisResult(signal_dbm=-90.0, noise_dbm=-90.0, snr=0.0,  locked=False)
+
+
 def _make_collector(cfg: BuzzConfig) -> Collector:
     return Collector(
         config=cfg,
-        sampler=MagicMock(),
+        analyzer=MagicMock(),
         weather=MagicMock(),
         store=MagicMock(),
         plotter=MagicMock(),
@@ -35,7 +40,7 @@ def _make_collector(cfg: BuzzConfig) -> Collector:
 
 
 def _setup_defaults(collector: Collector, tmp_path: Path, minute: int = 30) -> datetime:
-    collector._sampler.take_sample.return_value = (10.0, -80.0, -90.0)
+    collector._analyzer.get_results_snapshot.return_value = [_LOCKED_RESULT] * 60
     collector._weather.fetch.return_value = ('72', '45', '120', '5', '8', '180')
     collector._store.append.return_value = 'csv_row'
     collector._store.filename_for_date.return_value = tmp_path / 'data.csv'
@@ -43,30 +48,24 @@ def _setup_defaults(collector: Collector, tmp_path: Path, minute: int = 30) -> d
 
 
 class TestRunCollectionAveraging:
-    def test_calls_take_sample_n_times(self, tmp_path):
+    def test_calls_get_results_snapshot_once(self, tmp_path):
         cfg = _make_config(tmp_path)
-        cfg.audio.measurements_to_take = 3
         collector = _make_collector(cfg)
         now = _setup_defaults(collector, tmp_path)
-        collector._sampler.take_sample.side_effect = [
-            (10.0, -80.0, -90.0),
-            (12.0, -78.0, -88.0),
-            (14.0, -76.0, -86.0),
-        ]
         with patch('buzz.collector.datetime') as mock_dt:
             mock_dt.now.return_value = now
             mock_dt.fromisoformat = datetime.fromisoformat
             collector._run_collection()
-        assert collector._sampler.take_sample.call_count == 3
+        collector._analyzer.get_results_snapshot.assert_called_once()
 
-    def test_averaged_snr_passed_to_store(self, tmp_path):
+    def test_averaged_snr_from_locked_results(self, tmp_path):
         cfg = _make_config(tmp_path)
-        cfg.audio.measurements_to_take = 2
         collector = _make_collector(cfg)
-        collector._sampler.take_sample.side_effect = [
-            (10.0, -80.0, -90.0),
-            (20.0, -70.0, -80.0),
+        results = [
+            AnalysisResult(signal_dbm=-80.0, noise_dbm=-90.0, snr=10.0, locked=True),
+            AnalysisResult(signal_dbm=-70.0, noise_dbm=-80.0, snr=20.0, locked=True),
         ]
+        collector._analyzer.get_results_snapshot.return_value = results
         collector._weather.fetch.return_value = ('72', '45', '120', '5', '8', '180')
         collector._store.append.return_value = 'csv'
         collector._store.filename_for_date.return_value = tmp_path / 'data.csv'
@@ -87,6 +86,51 @@ class TestRunCollectionAveraging:
             mock_dt.fromisoformat = datetime.fromisoformat
             collector._run_collection()
         collector._weather.fetch.assert_called_once()
+
+
+class TestRunCollectionLockStatus:
+    def _run(self, collector: Collector, tmp_path: Path) -> tuple:
+        now = datetime(2024, 1, 15, 10, 30, 0, tzinfo=_TZ)
+        collector._weather.fetch.return_value = ('72', '45', '120', '5', '8', '180')
+        collector._store.append.return_value = 'csv'
+        collector._store.filename_for_date.return_value = tmp_path / 'data.csv'
+        with patch('buzz.collector.datetime') as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            collector._run_collection()
+        return collector._store.append.call_args[0]
+
+    def test_all_locked_gives_full(self, tmp_path):
+        collector = _make_collector(_make_config(tmp_path))
+        collector._analyzer.get_results_snapshot.return_value = [_LOCKED_RESULT] * 60
+        args = self._run(collector, tmp_path)
+        assert args[4] == 'full'
+
+    def test_all_unlocked_gives_none(self, tmp_path):
+        collector = _make_collector(_make_config(tmp_path))
+        collector._analyzer.get_results_snapshot.return_value = [_UNLOCKED_RESULT] * 60
+        args = self._run(collector, tmp_path)
+        assert args[4] == 'none'
+
+    def test_mixed_gives_partial(self, tmp_path):
+        collector = _make_collector(_make_config(tmp_path))
+        collector._analyzer.get_results_snapshot.return_value = (
+            [_LOCKED_RESULT] * 30 + [_UNLOCKED_RESULT] * 30
+        )
+        args = self._run(collector, tmp_path)
+        assert args[4] == 'partial'
+
+    def test_no_results_gives_none(self, tmp_path):
+        collector = _make_collector(_make_config(tmp_path))
+        collector._analyzer.get_results_snapshot.return_value = []
+        args = self._run(collector, tmp_path)
+        assert args[4] == 'none'
+
+    def test_no_lock_signal_equals_noise(self, tmp_path):
+        collector = _make_collector(_make_config(tmp_path))
+        collector._analyzer.get_results_snapshot.return_value = [_UNLOCKED_RESULT] * 60
+        args = self._run(collector, tmp_path)
+        assert args[2] == args[3]   # signal_mean == noise_mean
 
 
 class TestRunCollectionPlotting:
@@ -152,7 +196,7 @@ class TestRunCollectionUploads:
         cfg = _make_config(tmp_path, server_enabled=False)
         collector = Collector(
             config=cfg,
-            sampler=MagicMock(),
+            analyzer=MagicMock(),
             weather=MagicMock(),
             store=MagicMock(),
             plotter=MagicMock(),

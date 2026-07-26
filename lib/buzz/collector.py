@@ -13,21 +13,21 @@ from pathlib import Path
 from time import sleep
 from zoneinfo import ZoneInfo
 
+from buzz.analyzer import ContinuousAnalyzer
 from buzz.config import BuzzConfig
 from buzz.csv_store import CsvStore
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher
-from buzz.sampler import AudioSampler
 from buzz.weather import WeatherClient
 
 logger = logging.getLogger(__name__)
 
 
 class Collector:
-    def __init__(self, config: BuzzConfig, sampler: AudioSampler, weather: WeatherClient,
+    def __init__(self, config: BuzzConfig, analyzer: ContinuousAnalyzer, weather: WeatherClient,
                  store: CsvStore, plotter: Plotter, publisher: Publisher | None) -> None:
         self._config = config
-        self._sampler = sampler
+        self._analyzer = analyzer
         self._weather = weather
         self._store = store
         self._plotter = plotter
@@ -37,33 +37,37 @@ class Collector:
     def _run_collection(self) -> None:
         """Take one complete measurement cycle and write all outputs.
 
-        Averages config.audio.measurements_to_take samples, appends a CSV row,
-        generates the raw and smoothed daily plots, and on the hour also regenerates
-        the all-time, 7-day, and 30-day summary graphs.  If server uploads are
-        enabled, also renders the HTML index and SCPs all changed files.
+        Averages the last minute's worth of AnalysisResult objects from the analyzer
+        ring buffer, appends a CSV row, generates the raw and smoothed daily plots,
+        and on the hour also regenerates the all-time, 7-day, and 30-day summary
+        graphs.  If server uploads are enabled, also renders the HTML index and SCPs
+        all changed files.
         """
         station = self._config.station
         zone = ZoneInfo(station.timezone)
         now = datetime.now(zone).replace(second=0, microsecond=0)
 
-        n = self._config.audio.measurements_to_take
-        audio = self._config.audio
-        n_samples = int(audio.duration * audio.sample_rate)
-        # Read non-overlapping windows from oldest to most recent, so the analysis
-        # mirrors the old behaviour of three sequential independent recordings.
-        snrs, signals, noises = zip(*[
-            self._sampler.take_sample(offset_samples=n_samples * i)
-            for i in range(n - 1, -1, -1)
-        ])
-        snr_mean = round(sum(snrs) / n, 2)
-        # take_sample() returns levels in dBFS (relative to digital full-scale); adding the
-        # station's calibration offset converts to approximate dBm at the receiver input.
-        signal_mean = round(sum(signals) / n, 2) + station.audio_rf_conversion_db
-        noise_mean = round(sum(noises) / n, 2) + station.audio_rf_conversion_db
+        results = self._analyzer.get_results_snapshot()
+        locked  = [r for r in results if r.locked]
+
+        if not results:
+            snr_mean, signal_mean, noise_mean = 0.0, -128.0, -128.0
+            lock_status = 'none'
+        elif locked:
+            signal_mean = round(sum(r.signal_dbm for r in locked)  / len(locked),  2)
+            snr_mean    = round(sum(r.snr         for r in locked)  / len(locked),  2)
+            noise_mean  = round(sum(r.noise_dbm   for r in results) / len(results), 2)
+            lock_status = 'full' if len(locked) == len(results) else 'partial'
+        else:
+            noise_mean  = round(sum(r.noise_dbm for r in results) / len(results), 2)
+            signal_mean = noise_mean
+            snr_mean    = 0.0
+            lock_status = 'none'
 
         temperature, humidity, solar_radiation, wind_speed, wind_gust, wind_bearing = self._weather.fetch()
 
         csv_str = self._store.append(now, snr_mean, signal_mean, noise_mean,
+                                     lock_status,
                                      temperature, humidity, solar_radiation,
                                      wind_speed, wind_gust, wind_bearing)
 

@@ -37,6 +37,17 @@ def _write_csv(path: Path, n_rows: int = 10) -> None:
     path.write_text('\n'.join(lines) + '\n')
 
 
+def _write_csv_with_lock(path: Path, lock_statuses: list[str]) -> None:
+    """Write a new-format CSV with Signal Lock Status column."""
+    tz_offset = '-08:00'
+    lines = ['ISO datetime,120pps SNR,120pps signal (dBm),Noise floor (dBm),Signal Lock Status,T,H,S,W,G,B']
+    for i, status in enumerate(lock_statuses):
+        ts = f'2024-01-15T10:{i:02d}:00{tz_offset}'
+        sig = '-95.0' if status == 'none' else '-80.0'
+        lines.append(f'{ts},15.0,{sig},-95.0,{status},68,52,300,7,12,225')
+    path.write_text('\n'.join(lines) + '\n')
+
+
 class TestSmooth:
     def test_simple_moving_average(self, tmp_path):
         plotter, _ = _make_plotter(tmp_path)
@@ -100,6 +111,38 @@ class TestGenerateGraphFromCsv:
         _write_csv(csv_path, n_rows=5)
         output = tmp_path / 'out.png'
         plotter.generate_graph_from_csv(str(csv_path), str(output))
+        assert output.exists()
+
+    def test_old_format_csv_without_lock_column_still_renders(self, tmp_path):
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv(csv_path, n_rows=10)   # no Signal Lock Status column
+        output = tmp_path / 'out.png'
+        plotter.generate_graph_from_csv(csv_path, output)
+        assert output.exists()
+
+    def test_all_none_lock_status_renders(self, tmp_path):
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv_with_lock(csv_path, ['none'] * 10)
+        output = tmp_path / 'out.png'
+        plotter.generate_graph_from_csv(csv_path, output)
+        assert output.exists()
+
+    def test_mixed_lock_status_renders(self, tmp_path):
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv_with_lock(csv_path, ['full'] * 5 + ['none'] * 5)
+        output = tmp_path / 'out.png'
+        plotter.generate_graph_from_csv(csv_path, output)
+        assert output.exists()
+
+    def test_smooth_with_lock_status_renders(self, tmp_path):
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv_with_lock(csv_path, ['full'] * 10 + ['none'] * 10)
+        output = tmp_path / 'out.png'
+        plotter.generate_graph_from_csv(csv_path, output, smooth=6)
         assert output.exists()
 
 

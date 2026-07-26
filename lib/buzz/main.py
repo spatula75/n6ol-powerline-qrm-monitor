@@ -19,6 +19,7 @@ import signal
 import sys
 import threading
 
+from buzz.analyzer import ContinuousAnalyzer
 from buzz.collector import Collector
 from buzz.config import CONFIG_PATH, BuzzConfig
 from buzz.csv_store import CsvStore
@@ -72,6 +73,9 @@ def main() -> None:  # pragma: no cover
     config = BuzzConfig.from_toml() if CONFIG_PATH.exists() else BuzzConfig()
     sampler = AudioSampler(config)
 
+    analyzer = ContinuousAnalyzer(sampler.pipeline, config)
+    analyzer.start()
+
     wc = config.weather
     if wc.source == 'openmeteo':
         weather = OpenMeteoWeatherClient(wc.latitude, wc.longitude)
@@ -84,7 +88,7 @@ def main() -> None:  # pragma: no cover
     plotter = Plotter(config, store)
     publisher = Publisher(config) if config.server.enabled else None
 
-    collector = Collector(config, sampler, weather, store, plotter, publisher)
+    collector = Collector(config, analyzer, weather, store, plotter, publisher)
     collector_thread = threading.Thread(
         target=collector.collection_loop, daemon=True, name='collector',
     )
@@ -102,7 +106,6 @@ def main() -> None:  # pragma: no cover
     try:
         from PySide6.QtCore import QTimer  # noqa: I001
         from PySide6.QtWidgets import QApplication
-        from buzz.analyzer import ContinuousAnalyzer
         from buzz.waterfall import MainWindow
     except ImportError:
         logging.getLogger(ROOT_PACKAGE).warning(
@@ -116,9 +119,6 @@ def main() -> None:  # pragma: no cover
         finally:
             sampler.close()
         return
-
-    analyzer = ContinuousAnalyzer(sampler.pipeline, config)
-    analyzer.start()
 
     app = QApplication(sys.argv)
     window = MainWindow(sampler.pipeline, analyzer, config)

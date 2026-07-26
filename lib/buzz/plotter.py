@@ -96,7 +96,7 @@ class Plotter:
         station = self._config.station
         audio = self._config.audio
         with open(input_filename, newline='') as f:
-            timestamps, signals, noises, snrs = [], [], [], []
+            timestamps, signals, noises, snrs, lock_statuses = [], [], [], [], []
             for row in csv.reader(f):
                 if len(row) < 4:
                     continue
@@ -105,6 +105,10 @@ class Plotter:
                     snrs.append(float(row[1]))
                     signals.append(float(row[2]))
                     noises.append(float(row[3]))
+                    # Column 4 is Signal Lock Status in new-format files; old files and
+                    # files that predate the column have a non-'none' value here (either
+                    # the temperature field or nothing), which correctly defaults to locked.
+                    lock_statuses.append(row[4].strip() if len(row) > 4 else 'full')
                 except ValueError:
                     continue
 
@@ -113,7 +117,8 @@ class Plotter:
                 return
             signals = self._smooth(signals, smooth)
             noises = self._smooth(noises, smooth)
-            timestamps = timestamps[smooth - 1:]
+            timestamps    = timestamps[smooth - 1:]
+            lock_statuses = lock_statuses[smooth - 1:]
             title = (f'Powerline Noise vs Noise Floor ({smooth} point moving avg), '
                      f'{timestamps[0].strftime("%Y-%m-%d")} ({station.timezone} Timezone)')
         else:
@@ -150,7 +155,14 @@ class Plotter:
         max_y = max(max(signals), max(noises), max(source_power_estimate),
                     -48 + station.audio_rf_conversion_db) / 1.33
 
-        plot_signal, = axes.plot(timestamps, signals, 'r-', label=f'{audio.pulse_rate}pps dBm')
+        # Red: NaN where unlocked so the green noise-floor line shows through cleanly.
+        # Green is on noise_twin (rendered on top) and is always continuous.
+        signals_red = np.where(
+            [s != 'none' for s in lock_statuses],
+            np.array(signals, dtype=float),
+            np.nan,
+        )
+        plot_signal, = axes.plot(timestamps, signals_red, 'r-', label=f'{audio.pulse_rate}pps dBm')
         plot_noise, = noise_twin.plot(timestamps, noises, 'g-', label='Noise Floor dBm')
 
         axes.set_xlim(timestamps[0], timestamps[-1])

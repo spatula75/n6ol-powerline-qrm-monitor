@@ -87,6 +87,45 @@ class TestContinuousAnalyzerInit:
 
 
 # ---------------------------------------------------------------------------
+# Result ring buffer
+# ---------------------------------------------------------------------------
+
+class TestResultBuffer:
+    def test_buffer_initially_empty(self):
+        assert _make_analyzer().get_results_snapshot() == []
+
+    def test_publish_appends_to_buffer(self):
+        az = _make_analyzer()
+        r = AnalysisResult(signal_dbm=-70.0, noise_dbm=-90.0, snr=20.0, locked=True)
+        az._publish(r)
+        assert az.get_results_snapshot() == [r]
+
+    def test_get_results_snapshot_returns_list_copy(self):
+        az = _make_analyzer()
+        az._publish(AnalysisResult(signal_dbm=-70.0, noise_dbm=-90.0, snr=20.0, locked=True))
+        snap = az.get_results_snapshot()
+        snap.clear()
+        assert len(az.get_results_snapshot()) == 1   # original buffer unaffected
+
+    def test_buffer_bounded_to_360(self):
+        az = _make_analyzer()
+        r = AnalysisResult(signal_dbm=-70.0, noise_dbm=-90.0, snr=20.0, locked=True)
+        for _ in range(400):
+            az._publish(r)
+        assert len(az.get_results_snapshot()) == 360
+
+    def test_multiple_results_preserved_in_order(self):
+        az = _make_analyzer()
+        r1 = AnalysisResult(signal_dbm=-70.0, noise_dbm=-90.0, snr=20.0, locked=True)
+        r2 = AnalysisResult(signal_dbm=-75.0, noise_dbm=-92.0, snr=17.0, locked=False)
+        az._publish(r1)
+        az._publish(r2)
+        snap = az.get_results_snapshot()
+        assert snap[0] is r1
+        assert snap[1] is r2
+
+
+# ---------------------------------------------------------------------------
 # _full_analysis
 # ---------------------------------------------------------------------------
 

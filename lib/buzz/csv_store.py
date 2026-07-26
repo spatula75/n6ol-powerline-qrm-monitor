@@ -23,6 +23,7 @@ class CsvStore:
         self._config = config
         pps = config.audio.pulse_rate
         self._headers = (f'ISO datetime,{pps}pps SNR,{pps}pps signal (dBm),Noise floor (dBm),'
+                         f'Signal Lock Status,'
                          f'Temperature (F),Humidity (%),Solar radiation (w/m^2),'
                          f'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)\n')
 
@@ -30,11 +31,13 @@ class CsvStore:
         return Path(self._config.station.path) / f'noise_data.{date.strftime("%Y-%m-%d")}.csv'
 
     def append(self, now: datetime, snr: float, signal: float, noise: float,
+               lock_status: str,
                temperature: CsvValue, humidity: CsvValue, solar_radiation: CsvValue,
                wind_speed: CsvValue, wind_gust: CsvValue, wind_bearing: CsvValue) -> str:
         csv_filename = self.filename_for_date(now)
         write_headers = not csv_filename.exists()
         csv_str = (f'{now.isoformat()},{snr:.2f},{signal:.2f},{noise:.2f},'
+                   f'{lock_status},'
                    f'{temperature},{humidity},{solar_radiation},'
                    f'{wind_speed},{wind_gust},{wind_bearing}')
         with open(csv_filename, 'a') as f:

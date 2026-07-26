@@ -32,6 +32,7 @@ paint tick without blocking.
 
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from math import log10
 
@@ -95,6 +96,7 @@ class ContinuousAnalyzer:
         self._consecutive_low_snr: int = 0
 
         self._result: AnalysisResult | None = None
+        self._result_buffer: deque[AnalysisResult] = deque(maxlen=360)
         self._last_correction: int = 0
         self._result_lock = threading.Lock()
         self._stop        = threading.Event()
@@ -117,11 +119,16 @@ class ContinuousAnalyzer:
         with self._result_lock:
             return self._last_correction
 
+    def get_results_snapshot(self) -> list[AnalysisResult]:
+        with self._result_lock:
+            return list(self._result_buffer)
+
     # ----------------------------------------------------------------- private
 
     def _publish(self, result: AnalysisResult) -> None:
         with self._result_lock:
             self._result = result
+            self._result_buffer.append(result)
 
     def _to_dbm(self, amplitude: float) -> float:
         return (20 * log10(amplitude) - _DB_REFERENCE + self._offset
