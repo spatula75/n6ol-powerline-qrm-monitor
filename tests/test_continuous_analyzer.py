@@ -342,6 +342,25 @@ class TestPhaseSearch:
         assert az._state == 'LOCKED'
         assert az._peak_phase == new_phase
 
+    def test_phase_search_updates_noise_phase_independently(self):
+        """Noise phase is searched within its own radius, not co-moved with the signal."""
+        az = self._signal_lost_analyzer()
+        spp_int        = int(SAMPLE_RATE / PULSE_RATE)
+        original_noise = az._noise_phase
+        new_peak       = (az._peak_phase + 2) % spp_int
+        az._pipeline.get_snapshot.return_value = _pulse_audio(phase=new_peak)
+        az._phase_search()
+        assert az._state == 'LOCKED'
+        # Noise phase must land within the search radius of where it started,
+        # confirming it was searched independently rather than shifted by the
+        # signal delta.
+        r     = ContinuousAnalyzer.PHASE_SEARCH_RADIUS
+        delta = min(
+            abs(az._noise_phase - original_noise),
+            spp_int - abs(az._noise_phase - original_noise),
+        )
+        assert delta <= r
+
     def test_phase_search_no_data_returns_false(self):
         az = self._signal_lost_analyzer()
         az._pipeline.wait_for_data.return_value = False
@@ -355,3 +374,58 @@ class TestPhaseSearch:
     def test_signal_lost_refine_interval_much_longer_than_search(self):
         """FFT fallback should be infrequent compared to the cheap narrow scan."""
         assert ContinuousAnalyzer.SIGNAL_LOST_REFINE >= 5 * ContinuousAnalyzer.SEARCH_INTERVAL
+
+
+# ---------------------------------------------------------------------------
+# _fast_scan  (SIGNAL_LOST Tier-3a screening)
+# ---------------------------------------------------------------------------
+
+class TestFastScan:
+    def _signal_lost_analyzer(self) -> ContinuousAnalyzer:
+        az = _make_analyzer()
+        az._pipeline.get_snapshot.return_value = _pulse_audio()
+        az._full_analysis()
+        assert az._state == 'LOCKED'
+        az._pipeline.get_snapshot.return_value = np.zeros(SAMPLE_RATE, dtype=np.int16)
+        for _ in range(ContinuousAnalyzer.LOSE_LOCK_COUNT):
+            az._quick_check()
+        assert az._state == 'SIGNAL_LOST'
+        return az
+
+    def test_fast_scan_returns_true_with_signal(self):
+        az = self._signal_lost_analyzer()
+        n = ContinuousAnalyzer.FAST_SCAN_SAMPLES
+        az._pipeline.get_snapshot.return_value = _pulse_audio(n=n)
+        assert az._fast_scan() is True
+
+    def test_fast_scan_returns_false_without_signal(self):
+        az = self._signal_lost_analyzer()
+        n = ContinuousAnalyzer.FAST_SCAN_SAMPLES
+        az._pipeline.get_snapshot.return_value = _noise_audio(n=n)
+        assert az._fast_scan() is False
+
+    def test_fast_scan_does_not_publish_or_change_state(self):
+        az = self._signal_lost_analyzer()
+        n = ContinuousAnalyzer.FAST_SCAN_SAMPLES
+        az._pipeline.get_snapshot.return_value = _pulse_audio(n=n)
+        before = az.latest_result()
+        az._fast_scan()
+        assert az._state == 'SIGNAL_LOST'
+        assert az.latest_result() == before
+
+    def test_fast_scan_no_data_returns_false(self):
+        az = self._signal_lost_analyzer()
+        az._pipeline.wait_for_data.return_value = False
+        assert az._fast_scan() is False
+        assert az._state == 'SIGNAL_LOST'
+
+    def test_fast_scan_interval_shorter_than_signal_lost_refine(self):
+        assert ContinuousAnalyzer.FAST_SCAN_INTERVAL < ContinuousAnalyzer.SIGNAL_LOST_REFINE
+
+    def test_fast_scan_kernel_shorter_than_full_kernel(self):
+        az = _make_analyzer()
+        assert len(az._fast_kernel) < len(az._kernel)
+
+    def test_fast_scan_pulses_less_than_scan_pulses(self):
+        az = _make_analyzer()
+        assert ContinuousAnalyzer.FAST_SCAN_PULSES < az._scan_pulses

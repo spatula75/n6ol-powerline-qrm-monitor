@@ -67,6 +67,19 @@ class TestBuildPulseKernel:
         k = _build_pulse_kernel(SAMPLE_RATE, PULSE_RATE)
         assert set(k.tolist()).issubset({0, 1})
 
+    def test_custom_n_pulses_sum(self):
+        k = _build_pulse_kernel(SAMPLE_RATE, PULSE_RATE, n_pulses=15)
+        assert k.sum() == 15 * 3
+
+    def test_custom_n_pulses_palindrome(self):
+        k = _build_pulse_kernel(SAMPLE_RATE, PULSE_RATE, n_pulses=15)
+        np.testing.assert_array_equal(k, k[::-1])
+
+    def test_custom_n_pulses_shorter_than_default(self):
+        k_short = _build_pulse_kernel(SAMPLE_RATE, PULSE_RATE, n_pulses=15)
+        k_full  = _build_pulse_kernel(SAMPLE_RATE, PULSE_RATE)
+        assert len(k_short) < len(k_full)
+
 
 class TestCalculatePpsFitArray:
     def test_zero_input_gives_zero_output(self):

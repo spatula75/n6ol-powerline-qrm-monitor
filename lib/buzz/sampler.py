@@ -240,15 +240,17 @@ def _average_pulse_amplitude(mono_amplitude_array: np.ndarray, sample_rate: int,
     return total // (_PULSE_WIDTH_SAMPLES * analysis_size)
 
 
-def _build_pulse_kernel(sample_rate: int, pulse_rate: int) -> np.ndarray:
-    """Build the symmetric pps scan kernel covering half a second of pulses.
+def _build_pulse_kernel(sample_rate: int, pulse_rate: int,
+                        n_pulses: int | None = None) -> np.ndarray:
+    """Build the symmetric pps scan kernel.
 
-    Length is int((scan_pulses-1)*samples_per_pulse)+3, placing the last pulse
-    group flush against the end so the kernel is an exact palindrome.  A palindrome
-    kernel means fftconvolve (convolution) == cross-correlation.
+    n_pulses controls kernel length; defaults to pulse_rate // 2 (half a second).
+    Length is int((n_pulses-1)*samples_per_pulse)+3, placing the last pulse group
+    flush against the end so the kernel is an exact palindrome.  A palindrome kernel
+    means fftconvolve (convolution) == cross-correlation.
     """
     samples_per_pulse = sample_rate / pulse_rate
-    scan_pulses = pulse_rate // 2  # half a second worth of pulses
+    scan_pulses = n_pulses if n_pulses is not None else pulse_rate // 2
     last_pos = int((scan_pulses - 1) * samples_per_pulse)
     coefficients = zeros(last_pos + _PULSE_WIDTH_SAMPLES, dtype=uint32)
     for i in range(scan_pulses):
