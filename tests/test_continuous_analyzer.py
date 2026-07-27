@@ -1,6 +1,12 @@
-"""Tests for ContinuousAnalyzer state machine and DSP integration."""
+"""Tests for ContinuousAnalyzer state machine and DSP integration.
 
-from unittest.mock import MagicMock
+Tier methods (_full_analysis, _quick_check, _noise_check, _phase_search) measure
+and publish, then return the state they propose; _transition() applies it.  The
+_step() helper below mirrors what _run()'s tick methods do in production.
+"""
+
+import time
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
@@ -18,7 +24,6 @@ def _make_config() -> BuzzConfig:
     cfg.audio.sample_rate   = SAMPLE_RATE
     cfg.audio.pulse_rate    = PULSE_RATE
     cfg.audio.input_device_name = 'Test'
-    cfg.audio.duration      = 3
     return cfg
 
 
@@ -27,6 +32,13 @@ def _make_analyzer() -> ContinuousAnalyzer:
     pipeline = MagicMock(spec=AudioPipeline)
     pipeline.wait_for_data.return_value = True
     return ContinuousAnalyzer(pipeline, cfg)
+
+
+def _step(az: ContinuousAnalyzer, tier_method) -> str:
+    """Run one tier method and apply its proposed state, as _run's tick methods do."""
+    proposed = tier_method()
+    az._transition(proposed)
+    return proposed
 
 
 def _pulse_audio(n: int = SAMPLE_RATE, amplitude: int = 20000, phase: int = 5) -> np.ndarray:
@@ -87,6 +99,132 @@ class TestContinuousAnalyzerInit:
 
 
 # ---------------------------------------------------------------------------
+# _transition
+# ---------------------------------------------------------------------------
+
+class TestTransition:
+    def test_same_state_is_noop(self):
+        az = _make_analyzer()
+        az._consecutive_low_snr = 2
+        az._transition('SEARCHING')
+        assert az._state == 'SEARCHING'
+        assert az._consecutive_low_snr == 2   # untouched on no-op
+
+    def test_entering_locked_sets_phases_valid(self):
+        az = _make_analyzer()
+        az._transition('LOCKED')
+        assert az._phases_valid is True
+
+    def test_entering_locked_stamps_refine_timer(self):
+        az = _make_analyzer()
+        assert az._last_refine == 0.0
+        az._transition('LOCKED')
+        assert az._last_refine > 0.0
+
+    def test_any_transition_resets_debounce_counter(self):
+        az = _make_analyzer()
+        az._transition('LOCKED')
+        az._consecutive_low_snr = 2
+        az._transition('SIGNAL_LOST')
+        assert az._consecutive_low_snr == 0
+
+    def test_state_is_updated(self):
+        az = _make_analyzer()
+        az._transition('SIGNAL_LOST')
+        assert az._state == 'SIGNAL_LOST'
+
+
+# ---------------------------------------------------------------------------
+# Tick methods — per-state scheduling (tier cadence and transition wiring)
+# ---------------------------------------------------------------------------
+
+class TestTickMethods:
+    def test_searching_tick_runs_full_analysis(self):
+        az = _make_analyzer()
+        with patch.object(az, '_full_analysis', return_value='SEARCHING') as fa:
+            interval = az._searching_tick()
+        fa.assert_called_once()
+        assert interval == ContinuousAnalyzer.SEARCH_INTERVAL
+        assert az._last_fft > 0.0
+
+    def test_locked_tick_quick_checks_between_refines(self):
+        az = _make_analyzer()
+        az._transition('LOCKED')   # stamps _last_refine = now
+        with patch.object(az, '_quick_check', return_value='LOCKED') as qc, \
+             patch.object(az, '_phase_search') as ps:
+            interval = az._locked_tick()
+        qc.assert_called_once()
+        ps.assert_not_called()
+        assert interval == ContinuousAnalyzer.LOCKED_INTERVAL
+
+    def test_locked_tick_refines_when_interval_elapsed(self):
+        az = _make_analyzer()
+        az._transition('LOCKED')
+        az._last_refine = 0.0   # refine long overdue
+        with patch.object(az, '_phase_search', return_value='LOCKED') as ps, \
+             patch.object(az, '_quick_check') as qc:
+            az._locked_tick()
+        ps.assert_called_once()
+        qc.assert_not_called()
+        assert az._last_refine > 0.0
+
+    def test_signal_lost_tick_noise_checks_every_tick(self):
+        az = _make_analyzer()
+        az._transition('SIGNAL_LOST')
+        with patch.object(az, '_noise_check', return_value='SIGNAL_LOST') as nc, \
+             patch.object(az, '_phase_search', return_value='SIGNAL_LOST'), \
+             patch.object(az, '_fast_scan', return_value=False), \
+             patch.object(az, '_full_analysis', return_value='SIGNAL_LOST'):
+            interval = az._signal_lost_tick()
+        nc.assert_called_once()
+        assert interval == ContinuousAnalyzer.LOCKED_INTERVAL
+
+    def test_signal_lost_tick_skips_lower_tiers_after_tier1_relock(self):
+        az = _make_analyzer()
+        az._transition('SIGNAL_LOST')
+        with patch.object(az, '_noise_check', return_value='LOCKED'), \
+             patch.object(az, '_phase_search') as ps, \
+             patch.object(az, '_fast_scan') as fs:
+            az._signal_lost_tick()
+        ps.assert_not_called()
+        fs.assert_not_called()
+        assert az._state == 'LOCKED'
+
+    def test_signal_lost_tick_runs_full_fft_on_fast_scan_hit(self):
+        az = _make_analyzer()
+        az._transition('SIGNAL_LOST')
+        with patch.object(az, '_noise_check', return_value='SIGNAL_LOST'), \
+             patch.object(az, '_phase_search', return_value='SIGNAL_LOST'), \
+             patch.object(az, '_fast_scan', return_value=True), \
+             patch.object(az, '_full_analysis', return_value='LOCKED') as fa:
+            az._signal_lost_tick()
+        fa.assert_called_once()
+        assert az._state == 'LOCKED'
+
+    def test_signal_lost_tick_skips_full_fft_without_hit_before_backstop(self):
+        az = _make_analyzer()
+        az._transition('SIGNAL_LOST')
+        az._last_fft = time.monotonic()   # backstop not yet due
+        with patch.object(az, '_noise_check', return_value='SIGNAL_LOST'), \
+             patch.object(az, '_phase_search', return_value='SIGNAL_LOST'), \
+             patch.object(az, '_fast_scan', return_value=False), \
+             patch.object(az, '_full_analysis') as fa:
+            az._signal_lost_tick()
+        fa.assert_not_called()
+
+    def test_signal_lost_tick_respects_narrow_scan_cadence(self):
+        az = _make_analyzer()
+        az._transition('SIGNAL_LOST')
+        az._last_narrow = time.monotonic()   # Tier 2 not yet due
+        with patch.object(az, '_noise_check', return_value='SIGNAL_LOST'), \
+             patch.object(az, '_phase_search') as ps, \
+             patch.object(az, '_fast_scan', return_value=False), \
+             patch.object(az, '_full_analysis', return_value='SIGNAL_LOST'):
+            az._signal_lost_tick()
+        ps.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Result ring buffer
 # ---------------------------------------------------------------------------
 
@@ -133,19 +271,24 @@ class TestFullAnalysis:
     def test_strong_signal_transitions_to_locked(self):
         az = _make_analyzer()
         az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._full_analysis()
+        _step(az, az._full_analysis)
         assert az._state == 'LOCKED'
+
+    def test_strong_signal_proposes_locked(self):
+        az = _make_analyzer()
+        az._pipeline.get_snapshot.return_value = _pulse_audio()
+        assert az._full_analysis() == 'LOCKED'
 
     def test_strong_signal_sets_phases_valid(self):
         az = _make_analyzer()
         az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._full_analysis()
+        _step(az, az._full_analysis)
         assert az._phases_valid is True
 
     def test_strong_signal_publishes_locked_result(self):
         az = _make_analyzer()
         az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._full_analysis()
+        _step(az, az._full_analysis)
         result = az.latest_result()
         assert result is not None
         assert result.locked is True
@@ -154,13 +297,13 @@ class TestFullAnalysis:
     def test_flat_noise_stays_searching(self):
         az = _make_analyzer()
         az._pipeline.get_snapshot.return_value = _noise_audio()
-        az._full_analysis()
+        _step(az, az._full_analysis)
         assert az._state == 'SEARCHING'
 
     def test_flat_noise_publishes_unlocked_result(self):
         az = _make_analyzer()
         az._pipeline.get_snapshot.return_value = _noise_audio()
-        az._full_analysis()
+        _step(az, az._full_analysis)
         result = az.latest_result()
         assert result is not None
         assert result.locked is False
@@ -170,13 +313,13 @@ class TestFullAnalysis:
     def test_no_data_returns_without_publishing(self):
         az = _make_analyzer()
         az._pipeline.wait_for_data.return_value = False
-        az._full_analysis()
+        _step(az, az._full_analysis)
         assert az.latest_result() is None
 
     def test_stores_peak_and_noise_phase_on_lock(self):
         az = _make_analyzer()
         az._pipeline.get_snapshot.return_value = _pulse_audio(phase=5)
-        az._full_analysis()
+        _step(az, az._full_analysis)
         assert az._state == 'LOCKED'
         spp = SAMPLE_RATE / PULSE_RATE
         assert 0 <= az._peak_phase  < spp
@@ -187,15 +330,15 @@ class TestFullAnalysis:
         az = _make_analyzer()
         # Lock, then force SIGNAL_LOST
         az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._full_analysis()
-        az._state = 'SIGNAL_LOST'
+        _step(az, az._full_analysis)
+        az._transition('SIGNAL_LOST')
         # Publish a known noise-check result
         az._pipeline.get_snapshot.return_value = _noise_audio()
-        az._noise_check()
+        _step(az, az._noise_check)
         noise_result = az.latest_result()
         assert noise_result is not None and noise_result.locked is False
         # Now run full_analysis with flat noise — should NOT overwrite
-        az._full_analysis()
+        _step(az, az._full_analysis)
         assert az.latest_result() == noise_result
 
 
@@ -207,40 +350,40 @@ class TestQuickCheck:
     def _locked_analyzer(self) -> ContinuousAnalyzer:
         az = _make_analyzer()
         az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._full_analysis()
+        _step(az, az._full_analysis)
         assert az._state == 'LOCKED'
         return az
 
     def test_strong_signal_stays_locked(self):
         az = self._locked_analyzer()
         az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._quick_check()
+        _step(az, az._quick_check)
         assert az._state == 'LOCKED'
 
     def test_strong_signal_publishes_locked_result(self):
         az = self._locked_analyzer()
         az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._quick_check()
+        _step(az, az._quick_check)
         assert az.latest_result().locked is True
 
     def test_single_failure_does_not_lose_lock(self):
         az = self._locked_analyzer()
         az._pipeline.get_snapshot.return_value = np.zeros(SAMPLE_RATE, dtype=np.int16)
-        az._quick_check()
+        _step(az, az._quick_check)
         assert az._state == 'LOCKED'
 
     def test_silence_loses_lock_after_consecutive_failures(self):
         az = self._locked_analyzer()
         az._pipeline.get_snapshot.return_value = np.zeros(SAMPLE_RATE, dtype=np.int16)
         for _ in range(ContinuousAnalyzer.LOSE_LOCK_COUNT):
-            az._quick_check()
+            _step(az, az._quick_check)
         assert az._state == 'SIGNAL_LOST'
 
     def test_silence_publishes_unlocked_result(self):
         az = self._locked_analyzer()
         az._pipeline.get_snapshot.return_value = np.zeros(SAMPLE_RATE, dtype=np.int16)
         for _ in range(ContinuousAnalyzer.LOSE_LOCK_COUNT):
-            az._quick_check()
+            _step(az, az._quick_check)
         result = az.latest_result()
         assert result.locked is False
         assert result.snr == 0.0
@@ -251,23 +394,23 @@ class TestQuickCheck:
         az = self._locked_analyzer()
         az._pipeline.get_snapshot.return_value = np.zeros(SAMPLE_RATE, dtype=np.int16)
         for _ in range(ContinuousAnalyzer.LOSE_LOCK_COUNT):
-            az._quick_check()
+            _step(az, az._quick_check)
         assert az._state == 'SIGNAL_LOST'
         assert az._phases_valid is True
 
     def test_recovery_resets_failure_count(self):
         az = self._locked_analyzer()
         az._pipeline.get_snapshot.return_value = np.zeros(SAMPLE_RATE, dtype=np.int16)
-        az._quick_check()
+        _step(az, az._quick_check)
         az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._quick_check()
+        _step(az, az._quick_check)
         assert az._consecutive_low_snr == 0
         assert az._state == 'LOCKED'
 
     def test_no_data_returns_without_state_change(self):
         az = self._locked_analyzer()
         az._pipeline.wait_for_data.return_value = False
-        az._quick_check()
+        _step(az, az._quick_check)
         assert az._state == 'LOCKED'
 
     def test_hysteresis_acquire_threshold_exceeds_lose_threshold(self):
@@ -283,46 +426,47 @@ class TestQuickCheck:
 # _noise_check  (SIGNAL_LOST state)
 # ---------------------------------------------------------------------------
 
-class TestNoiseCheck:
-    def _signal_lost_analyzer(self) -> ContinuousAnalyzer:
-        """Analyzer that was LOCKED and has transitioned to SIGNAL_LOST."""
-        az = _make_analyzer()
-        az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._full_analysis()
-        assert az._state == 'LOCKED'
-        az._pipeline.get_snapshot.return_value = np.zeros(SAMPLE_RATE, dtype=np.int16)
-        for _ in range(ContinuousAnalyzer.LOSE_LOCK_COUNT):
-            az._quick_check()
-        assert az._state == 'SIGNAL_LOST'
-        return az
+def _signal_lost_analyzer() -> ContinuousAnalyzer:
+    """Analyzer that was LOCKED and has transitioned to SIGNAL_LOST."""
+    az = _make_analyzer()
+    az._pipeline.get_snapshot.return_value = _pulse_audio()
+    _step(az, az._full_analysis)
+    assert az._state == 'LOCKED'
+    az._pipeline.get_snapshot.return_value = np.zeros(SAMPLE_RATE, dtype=np.int16)
+    for _ in range(ContinuousAnalyzer.LOSE_LOCK_COUNT):
+        _step(az, az._quick_check)
+    assert az._state == 'SIGNAL_LOST'
+    return az
 
+
+class TestNoiseCheck:
     def test_noise_check_publishes_noise_only_when_signal_absent(self):
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         az._pipeline.get_snapshot.return_value = _noise_audio()
-        az._noise_check()
+        _step(az, az._noise_check)
         result = az.latest_result()
         assert result.locked is False
         assert result.snr == 0.0
         assert result.signal_dbm == result.noise_dbm
 
     def test_noise_check_relocks_when_signal_returns(self):
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._noise_check()
+        _step(az, az._noise_check)
         assert az._state == 'LOCKED'
 
     def test_noise_check_publishes_locked_result_on_recovery(self):
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._noise_check()
+        _step(az, az._noise_check)
         result = az.latest_result()
         assert result.locked is True
         assert result.snr >= ContinuousAnalyzer.LOCK_ACQUIRE_SNR
 
     def test_noise_check_no_data_returns_without_change(self):
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         az._pipeline.wait_for_data.return_value = False
-        az._noise_check()
+        _step(az, az._noise_check)
         assert az._state == 'SIGNAL_LOST'
 
 
@@ -331,64 +475,53 @@ class TestNoiseCheck:
 # ---------------------------------------------------------------------------
 
 class TestPhaseSearch:
-    def _signal_lost_analyzer(self) -> ContinuousAnalyzer:
-        az = _make_analyzer()
-        az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._full_analysis()
-        assert az._state == 'LOCKED'
-        az._pipeline.get_snapshot.return_value = np.zeros(SAMPLE_RATE, dtype=np.int16)
-        for _ in range(ContinuousAnalyzer.LOSE_LOCK_COUNT):
-            az._quick_check()
-        assert az._state == 'SIGNAL_LOST'
-        return az
-
     def test_phase_search_relocks_on_signal_at_stored_phase(self):
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         az._pipeline.get_snapshot.return_value = _pulse_audio()
-        assert az._phase_search() is True
+        assert _step(az, az._phase_search) == 'LOCKED'
         assert az._state == 'LOCKED'
 
     def test_phase_search_publishes_locked_result_on_recovery(self):
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._phase_search()
+        _step(az, az._phase_search)
         result = az.latest_result()
         assert result.locked is True
         assert result.snr >= ContinuousAnalyzer.LOCK_ACQUIRE_SNR
 
-    def test_phase_search_returns_false_without_signal(self):
-        az = self._signal_lost_analyzer()
+    def test_phase_search_proposes_current_state_without_signal(self):
+        az = _signal_lost_analyzer()
         az._pipeline.get_snapshot.return_value = _noise_audio()
-        assert az._phase_search() is False
+        assert _step(az, az._phase_search) == 'SIGNAL_LOST'
         assert az._state == 'SIGNAL_LOST'
 
     def test_phase_search_does_not_publish_on_failure(self):
         """On failure _phase_search() must not overwrite the noise-check result."""
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         az._pipeline.get_snapshot.return_value = _noise_audio()
-        az._noise_check()
+        _step(az, az._noise_check)
         before = az.latest_result()
-        az._phase_search()
+        _step(az, az._phase_search)
         assert az.latest_result() == before
 
     def test_phase_search_finds_signal_at_offset_phase(self):
         """Signal shifted by 2 samples should still trigger re-lock."""
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         spp_int   = int(SAMPLE_RATE / PULSE_RATE)
         new_phase = (az._peak_phase + 2) % spp_int
         az._pipeline.get_snapshot.return_value = _pulse_audio(phase=new_phase)
-        assert az._phase_search() is True
+        assert _step(az, az._phase_search) == 'LOCKED'
         assert az._state == 'LOCKED'
         assert az._peak_phase == new_phase
 
     def test_phase_search_updates_noise_phase_independently(self):
         """Noise phase is searched within its own radius, not co-moved with the signal."""
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         spp_int        = int(SAMPLE_RATE / PULSE_RATE)
         original_noise = az._noise_phase
         new_peak       = (az._peak_phase + 2) % spp_int
         az._pipeline.get_snapshot.return_value = _pulse_audio(phase=new_peak)
-        az._phase_search()
+        _step(az, az._phase_search)
         assert az._state == 'LOCKED'
         # Noise phase must land within the search radius of where it started,
         # confirming it was searched independently rather than shifted by the
@@ -400,10 +533,10 @@ class TestPhaseSearch:
         )
         assert delta <= r
 
-    def test_phase_search_no_data_returns_false(self):
-        az = self._signal_lost_analyzer()
+    def test_phase_search_no_data_proposes_current_state(self):
+        az = _signal_lost_analyzer()
         az._pipeline.wait_for_data.return_value = False
-        assert az._phase_search() is False
+        assert _step(az, az._phase_search) == 'SIGNAL_LOST'
         assert az._state == 'SIGNAL_LOST'
 
     def test_phase_search_radius_contract(self):
@@ -415,20 +548,20 @@ class TestPhaseSearch:
 
     def test_phase_search_records_signal_offset(self):
         """Correction is updated to the winning offset when phase_search finds the signal."""
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         spp_int   = int(SAMPLE_RATE / PULSE_RATE)
         new_phase = (az._peak_phase + 3) % spp_int
         az._pipeline.get_snapshot.return_value = _pulse_audio(phase=new_phase)
-        az._phase_search()
+        _step(az, az._phase_search)
         assert az._state == 'LOCKED'
         assert az.latest_correction() == 3
 
     def test_phase_search_updates_correction_even_without_relock(self):
         """Correction field is written on every phase_search call, not only on relock."""
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         az._last_correction = 999   # sentinel — must be overwritten
         az._pipeline.get_snapshot.return_value = _noise_audio()
-        az._phase_search()
+        _step(az, az._phase_search)
         assert az._state == 'SIGNAL_LOST'
         assert az.latest_correction() != 999
 
@@ -442,31 +575,20 @@ class TestPhaseSearch:
 # ---------------------------------------------------------------------------
 
 class TestFastScan:
-    def _signal_lost_analyzer(self) -> ContinuousAnalyzer:
-        az = _make_analyzer()
-        az._pipeline.get_snapshot.return_value = _pulse_audio()
-        az._full_analysis()
-        assert az._state == 'LOCKED'
-        az._pipeline.get_snapshot.return_value = np.zeros(SAMPLE_RATE, dtype=np.int16)
-        for _ in range(ContinuousAnalyzer.LOSE_LOCK_COUNT):
-            az._quick_check()
-        assert az._state == 'SIGNAL_LOST'
-        return az
-
     def test_fast_scan_returns_true_with_signal(self):
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         n = ContinuousAnalyzer.FAST_SCAN_SAMPLES
         az._pipeline.get_snapshot.return_value = _pulse_audio(n=n)
         assert az._fast_scan() is True
 
     def test_fast_scan_returns_false_without_signal(self):
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         n = ContinuousAnalyzer.FAST_SCAN_SAMPLES
         az._pipeline.get_snapshot.return_value = _noise_audio(n=n)
         assert az._fast_scan() is False
 
     def test_fast_scan_does_not_publish_or_change_state(self):
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         n = ContinuousAnalyzer.FAST_SCAN_SAMPLES
         az._pipeline.get_snapshot.return_value = _pulse_audio(n=n)
         before = az.latest_result()
@@ -475,7 +597,7 @@ class TestFastScan:
         assert az.latest_result() == before
 
     def test_fast_scan_no_data_returns_false(self):
-        az = self._signal_lost_analyzer()
+        az = _signal_lost_analyzer()
         az._pipeline.wait_for_data.return_value = False
         assert az._fast_scan() is False
         assert az._state == 'SIGNAL_LOST'

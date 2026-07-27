@@ -16,7 +16,6 @@ def _make_config(offset_db: float = 0.0) -> BuzzConfig:
     cfg.audio.input_device_name = 'Test, DirectSound'
     cfg.audio.sample_rate = SAMPLE_RATE
     cfg.audio.pulse_rate = PULSE_RATE
-    cfg.audio.duration = 3
     cfg.station.audio_rf_conversion_db = offset_db
     return cfg
 

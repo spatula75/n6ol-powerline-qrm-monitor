@@ -11,7 +11,7 @@ import numpy as np
 import pytest
 from numpy import uint32, zeros
 
-from buzz.sampler import _average_pulse_amplitude as _sum_pulse_train
+from buzz.dsp import average_pulse_amplitude as _sum_pulse_train
 
 SAMPLE_RATE = 16000
 PULSE_RATE = 120

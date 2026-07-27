@@ -14,12 +14,6 @@ class TestAudioConfigDefaults:
     def test_pulse_rate(self):
         assert AudioConfig().pulse_rate == 120
 
-    def test_duration(self):
-        assert AudioConfig().duration == 3
-
-    def test_measurements_to_take(self):
-        assert AudioConfig().measurements_to_take == 3
-
     def test_device_index_default_none(self):
         assert AudioConfig().device_index is None
 
