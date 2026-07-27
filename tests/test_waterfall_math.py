@@ -1,7 +1,7 @@
 """Tests for pure-numpy functions in waterfall.py (no Qt required)."""
 import numpy as np
 
-from buzz.waterfall import build_colormap, _DISPLAY_BINS, _N_ROWS, _DB_RANGE
+from buzz.waterfall import build_colormap, _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE
 
 
 class TestBuildColormap:
@@ -36,9 +36,9 @@ class TestBuildColormap:
 
 
 class TestWaterfallConstants:
-    def test_display_bins_matches_frequency_range(self):
-        # 128 bins × 31.25 Hz/bin = 4000 Hz
-        assert _DISPLAY_BINS == 128
+    def test_display_bins_formula_at_16k(self):
+        # At 16 kHz: 128 bins × 31.25 Hz/bin = 4000 Hz
+        assert _MAX_HZ * _CHUNK // 16000 == 128
 
     def test_db_range_is_48(self):
         assert _DB_RANGE == 48.0

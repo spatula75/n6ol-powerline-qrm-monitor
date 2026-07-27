@@ -18,6 +18,11 @@ from abc import ABC, abstractmethod
 CsvValue = str | float
 WeatherData = tuple[CsvValue, CsvValue, CsvValue, CsvValue, CsvValue, CsvValue]
 
+# Weather annotates the measurements but must never stall them: a hung server
+# would otherwise block the collector thread indefinitely (urlopen's default
+# is no timeout at all).
+_FETCH_TIMEOUT_S = 10
+
 
 class WeatherClient(ABC):
     @abstractmethod
@@ -31,7 +36,7 @@ class CumulusMXWeatherClient(WeatherClient):
         self._url = url
 
     def fetch(self) -> WeatherData:
-        with urllib.request.urlopen(self._url) as response:
+        with urllib.request.urlopen(self._url, timeout=_FETCH_TIMEOUT_S) as response:
             data = json.loads(response.read())
             return (data['temp'], data['hum'], data['SolarRad'],
                     data['wspeed'], data['wgust'], data['avgbearing'])
@@ -48,7 +53,7 @@ class OpenMeteoWeatherClient(WeatherClient):
                      f'&temperature_unit=fahrenheit&wind_speed_unit=mph')
 
     def fetch(self) -> WeatherData:
-        with urllib.request.urlopen(self._url) as response:
+        with urllib.request.urlopen(self._url, timeout=_FETCH_TIMEOUT_S) as response:
             current = json.loads(response.read())['current']
             return (current['temperature_2m'], current['relative_humidity_2m'],
                     current['shortwave_radiation'], current['wind_speed_10m'],

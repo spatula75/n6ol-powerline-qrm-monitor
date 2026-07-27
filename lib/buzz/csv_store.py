@@ -2,12 +2,15 @@
 CSV persistence layer for noise measurements.
 
 Each day's data lives in a separate file named noise_data.YYYY-MM-DD.csv in the
-configured output directory.  CsvStore handles writing new rows, reading a single
-day's file into a time-bucketed score dict, and aggregating a date range of files
-for the summary graphs.
+configured output directory.  CsvStore owns the file format end to end: writing
+new rows, parsing files back into typed CsvRow records (including old-format
+files that predate the Signal Lock Status column), and aggregating a date range
+into the time-bucketed score dict the summary graphs consume.
 """
 
+import csv
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from math import log
 from pathlib import Path
@@ -16,6 +19,16 @@ from zoneinfo import ZoneInfo
 from buzz.config import BuzzConfig
 
 CsvValue = str | float
+
+
+@dataclass(frozen=True)
+class CsvRow:
+    """One measurement row, with the timestamp converted to the station timezone."""
+    timestamp: datetime
+    snr: float
+    signal: float
+    noise: float
+    lock_status: str
 
 
 class CsvStore:
@@ -46,6 +59,32 @@ class CsvStore:
             f.write(f'{csv_str}\n')
         return csv_str
 
+    def read_rows(self, input_filename: Path | str) -> list[CsvRow]:
+        """Parse one CSV file into CsvRow records, skipping headers and malformed lines.
+
+        Timestamps are converted to the station timezone.  Old-format files without
+        the Signal Lock Status column get a non-'none' value at index 4 (either the
+        temperature field or nothing), which correctly reads as locked; rows too
+        short to hold the measurement fields default the status to 'full'.
+        """
+        zone = ZoneInfo(self._config.station.timezone)
+        rows: list[CsvRow] = []
+        with open(input_filename, newline='') as f:
+            for row in csv.reader(f):
+                if len(row) < 4:
+                    continue
+                try:
+                    rows.append(CsvRow(
+                        timestamp=datetime.fromisoformat(row[0]).astimezone(zone),
+                        snr=float(row[1]),
+                        signal=float(row[2]),
+                        noise=float(row[3]),
+                        lock_status=row[4].strip() if len(row) > 4 else 'full',
+                    ))
+                except ValueError:
+                    continue
+        return rows
+
     def _read_date_to_time_dict(self, input_filename: Path | str) -> dict[time, int]:
         """Read one CSV file and return a {time: score} dict bucketed to 15-minute intervals.
 
@@ -59,22 +98,15 @@ class CsvStore:
         # +3 dB above the detection threshold: a just-qualifying event (SNR exactly
         # at snr_gate) contributes log(snr_gate, snr_gate) = 1.0 to the score.
         snr_gate = station.noise_min_snr + 3
-        with open(input_filename, 'r') as f:
-            for line in f:
-                parts = line.split(',')
-                try:
-                    timestamp = datetime.fromisoformat(parts[0]).astimezone(ZoneInfo(station.timezone))
-                    snr = float(parts[1])
-                    signal = float(parts[2])
-                except (ValueError, IndexError):
-                    continue
-                # Bucket timestamp to the nearest 15-minute interval
-                t = timestamp.time().replace(
-                    minute=int(15 * (timestamp.minute // 15)),
-                    second=0, microsecond=0,
-                )
-                if signal >= station.noise_threshold and snr >= snr_gate:
-                    time_to_score[t] += log(snr, snr_gate)
+        for row in self.read_rows(input_filename):
+            if row.signal < station.noise_threshold or row.snr < snr_gate:
+                continue
+            # Bucket timestamp to the nearest 15-minute interval
+            t = row.timestamp.time().replace(
+                minute=int(15 * (row.timestamp.minute // 15)),
+                second=0, microsecond=0,
+            )
+            time_to_score[t] += log(row.snr, snr_gate)
         return {k: int(v) for k, v in time_to_score.items()}
 
     def read_range_to_time_dict(self, start_date: datetime, end_date: datetime) -> dict[time, int]:

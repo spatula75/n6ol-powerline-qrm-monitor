@@ -13,6 +13,7 @@ In headless mode the main thread blocks until ^C, then stops the pipeline.
 """
 
 import argparse
+import faulthandler
 import logging
 import logging.config
 import signal
@@ -26,7 +27,14 @@ from buzz.csv_store import CsvStore
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher
 from buzz.sampler import AudioSampler
-from buzz.weather import CumulusMXWeatherClient, NullWeatherClient, OpenMeteoWeatherClient
+from buzz.weather import (
+    CumulusMXWeatherClient,
+    NullWeatherClient,
+    OpenMeteoWeatherClient,
+    WeatherClient,
+)
+
+faulthandler.enable()
 
 ROOT_PACKAGE = 'buzz'
 
@@ -62,6 +70,29 @@ def configure_logging() -> None:
     logging.config.dictConfig(logging_config)
 
 
+def make_weather_client(config: BuzzConfig) -> WeatherClient:
+    wc = config.weather
+    if wc.source == 'openmeteo':
+        return OpenMeteoWeatherClient(wc.latitude, wc.longitude)
+    if wc.source == 'cumulusmx':
+        return CumulusMXWeatherClient(wc.url)
+    if wc.source != 'none':
+        logging.getLogger(ROOT_PACKAGE).warning(
+            "Unknown weather source %r — expected 'cumulusmx', 'openmeteo', or 'none'; "
+            'weather data disabled.', wc.source)
+    return NullWeatherClient()
+
+
+def _wait_until_interrupted(sampler: AudioSampler) -> None:
+    """Headless main loop: block until ^C, then stop the audio pipeline."""
+    try:
+        threading.Event().wait()
+    except KeyboardInterrupt:
+        pass
+    finally:
+        sampler.close()
+
+
 def main() -> None:  # pragma: no cover
     parser = argparse.ArgumentParser(description='N6OL Powerline QRM Monitor')
     parser.add_argument('--headless', action='store_true',
@@ -76,13 +107,7 @@ def main() -> None:  # pragma: no cover
     analyzer = ContinuousAnalyzer(sampler.pipeline, config)
     analyzer.start()
 
-    wc = config.weather
-    if wc.source == 'openmeteo':
-        weather = OpenMeteoWeatherClient(wc.latitude, wc.longitude)
-    elif wc.source == 'cumulusmx':
-        weather = CumulusMXWeatherClient(wc.url)
-    else:
-        weather = NullWeatherClient()
+    weather = make_weather_client(config)
 
     store = CsvStore(config)
     plotter = Plotter(config, store)
@@ -95,12 +120,7 @@ def main() -> None:  # pragma: no cover
     collector_thread.start()
 
     if args.headless:
-        try:
-            threading.Event().wait()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            sampler.close()
+        _wait_until_interrupted(sampler)
         return
 
     try:
@@ -112,12 +132,7 @@ def main() -> None:  # pragma: no cover
             'PySide6 not installed — falling back to headless mode. '
             'Install PySide6 or run with --headless to suppress this warning.'
         )
-        try:
-            threading.Event().wait()
-        except KeyboardInterrupt:
-            pass
-        finally:
-            sampler.close()
+        _wait_until_interrupted(sampler)
         return
 
     app = QApplication(sys.argv)

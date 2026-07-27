@@ -10,8 +10,7 @@ All output is saved as PNG.  The _force_post_gc decorator works around a matplot
 memory-leak bug that causes handles to accumulate across repeated savefig calls.
 """
 
-import csv  # noqa: I001
-import gc
+import gc  # noqa: I001
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
@@ -95,22 +94,14 @@ class Plotter:
         """
         station = self._config.station
         audio = self._config.audio
-        with open(input_filename, newline='') as f:
-            timestamps, signals, noises, snrs, lock_statuses = [], [], [], [], []
-            for row in csv.reader(f):
-                if len(row) < 4:
-                    continue
-                try:
-                    timestamps.append(datetime.fromisoformat(row[0]).astimezone(ZoneInfo(station.timezone)))
-                    snrs.append(float(row[1]))
-                    signals.append(float(row[2]))
-                    noises.append(float(row[3]))
-                    # Column 4 is Signal Lock Status in new-format files; old files and
-                    # files that predate the column have a non-'none' value here (either
-                    # the temperature field or nothing), which correctly defaults to locked.
-                    lock_statuses.append(row[4].strip() if len(row) > 4 else 'full')
-                except ValueError:
-                    continue
+        rows = self._store.read_rows(input_filename)
+        if not rows:
+            return
+        timestamps    = [r.timestamp for r in rows]
+        snrs          = [r.snr for r in rows]
+        signals       = [r.signal for r in rows]
+        noises        = [r.noise for r in rows]
+        lock_statuses = [r.lock_status for r in rows]
 
         if smooth:
             if len(timestamps) <= smooth:
@@ -203,13 +194,11 @@ class Plotter:
         end_date = datetime.now(zone)
         time_to_snr = self._store.read_range_to_time_dict(start_date, end_date)
 
-        px = 1 / plt.rcParams['figure.dpi']
-        fig, ax = plt.subplots(figsize=(_GRAPH_W * px, _SUMMARY_H * px))
-        plt.rcParams['timezone'] = station.timezone
-
         run_time = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=zone)
         all_datetimes = [run_time + timedelta(minutes=15 * i) for i in range(4 * 24)]
 
+        # Decide whether there is anything to draw BEFORE creating the figure, so
+        # the no-data early return can't leak an unclosed figure.
         vals = [time_to_snr.get(dt.time(), 0) for dt in all_datetimes]
         max_val = max(vals)
         if max_val == 0:
@@ -217,6 +206,10 @@ class Plotter:
         normalized_vals = [int(100 * (val / max_val)) for val in vals]
 
         colors = [_bar_color(val) for val in normalized_vals]
+
+        plt.rcParams['timezone'] = station.timezone
+        px = 1 / plt.rcParams['figure.dpi']
+        fig, ax = plt.subplots(figsize=(_GRAPH_W * px, _SUMMARY_H * px))
 
         ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
         ax.xaxis.set_major_locator(mdates.HourLocator(interval=1))

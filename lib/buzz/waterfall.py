@@ -23,10 +23,9 @@ from buzz.sampler import AudioPipeline
 # ---------------------------------------------------------------------------
 
 _CHUNK = AudioPipeline.CHUNK_SIZE           # 512 samples
-_SAMPLE_RATE = 16000
-_MAX_HZ = 4000
-_DISPLAY_BINS = _MAX_HZ * _CHUNK // _SAMPLE_RATE   # 128 bins = 0–4000 Hz
-_FREQ_LABEL_INTERVAL = 16                   # tick every 16 bins = every 500 Hz
+_MAX_HZ = 4000                              # top of the displayed band
+_FREQ_LABEL_HZ = 500                        # frequency-axis tick spacing
+_PIXELS_PER_BIN = 5                         # horizontal scale (128 bins → 640 px at 16 kHz)
 _N_ROWS = 100                               # history rows (~10 s at 100 ms/frame)
 _PIXELS_PER_ROW = 2                         # must divide (window_height - _AXIS_H) evenly
 _UPDATE_MS = 100
@@ -69,8 +68,6 @@ _PAD      = 3    # outer and inner horizontal padding
 # Panel width: PAD + BAR + PAD + LABEL + PAD + BAR + PAD
 _PANEL_W  = _PAD + _BAR_W + _PAD + _LABEL_W + _PAD + _BAR_W + _PAD  # 86 px
 
-_WATERFALL_W = _DISPLAY_BINS * 5            # 640 px (5 px/bin, no scaling)
-_WINDOW_W    = _WATERFALL_W + _PANEL_W
 _WINDOW_H    = _N_ROWS * _PIXELS_PER_ROW + _AXIS_H  # 224 px
 
 # Segment area geometry (within the panel widget)
@@ -120,11 +117,18 @@ class WaterfallWidget(QWidget):
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pipeline = pipeline
+        # Bin geometry follows the configured sample rate: each FFT bin spans
+        # sample_rate/_CHUNK Hz, and we display 0–_MAX_HZ (clamped to the rfft
+        # output length for sample rates below 2×_MAX_HZ).
+        sample_rate = config.audio.sample_rate
+        self._hz_per_bin = sample_rate / _CHUNK
+        self._display_bins = min(_MAX_HZ * _CHUNK // sample_rate, _CHUNK // 2)
+        self._label_interval = max(1, round(_FREQ_LABEL_HZ / self._hz_per_bin))
         self._db_min = (config.station.noise_floor
                         - config.station.audio_rf_conversion_db
                         - _DB_FFT_NOISE_CORR)
-        self._waterfall = np.full((_N_ROWS, _DISPLAY_BINS), self._db_min, dtype=np.float32)
-        self.setFixedSize(_WATERFALL_W, _WINDOW_H)
+        self._waterfall = np.full((_N_ROWS, self._display_bins), self._db_min, dtype=np.float32)
+        self.setFixedSize(self._display_bins * _PIXELS_PER_BIN, _WINDOW_H)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -135,7 +139,7 @@ class WaterfallWidget(QWidget):
         if chunk is None:
             return
         windowed = chunk.astype(np.float32) * _HANN
-        spectrum = np.abs(np.fft.rfft(windowed, n=_CHUNK))[:_DISPLAY_BINS]
+        spectrum = np.abs(np.fft.rfft(windowed, n=_CHUNK))[:self._display_bins]
         db = np.where(spectrum > 0, 20 * np.log10(spectrum) - _DB_REF, self._db_min)
         self._waterfall[1:] = self._waterfall[:-1]
         self._waterfall[0] = db.astype(np.float32)
@@ -149,12 +153,11 @@ class WaterfallWidget(QWidget):
         painter.fillRect(0, 0, w, _AXIS_H, QColor(30, 30, 30))
         painter.setPen(QColor(200, 200, 200))
         painter.setFont(QFont('Monospace', 8))
-        hz_per_bin = _SAMPLE_RATE / _CHUNK
-        bin_px = w / _DISPLAY_BINS
-        for b in range(0, _DISPLAY_BINS + 1, _FREQ_LABEL_INTERVAL):
+        bin_px = w / self._display_bins
+        for b in range(0, self._display_bins + 1, self._label_interval):
             x = int(b * bin_px)
             painter.drawLine(x, _AXIS_H - 5, x, _AXIS_H)
-            painter.drawText(x + 2, _AXIS_H - 6, f'{int(b * hz_per_bin)} Hz')
+            painter.drawText(x + 2, _AXIS_H - 6, f'{int(b * self._hz_per_bin)} Hz')
 
         # Waterfall — each row is exactly _PIXELS_PER_ROW pixels tall
         norm = np.clip(
@@ -162,9 +165,9 @@ class WaterfallWidget(QWidget):
         ).astype(np.uint8)
         used_h = _N_ROWS * _PIXELS_PER_ROW
         rgb_rows = np.ascontiguousarray(_COLORMAP[norm].repeat(_PIXELS_PER_ROW, axis=0))
-        img = QImage(rgb_rows.data, _DISPLAY_BINS, used_h,
-                     _DISPLAY_BINS * 3, QImage.Format.Format_RGB888)
-        # Scale horizontally (128 bins → 640 px); used_h is already exact so no vertical scaling.
+        img = QImage(rgb_rows.data, self._display_bins, used_h,
+                     self._display_bins * 3, QImage.Format.Format_RGB888)
+        # Scale horizontally (bins → _PIXELS_PER_BIN px each); used_h is already exact so no vertical scaling.
         scaled = img.scaled(w, used_h,
                             Qt.AspectRatioMode.IgnoreAspectRatio,
                             Qt.TransformationMode.FastTransformation)
@@ -311,7 +314,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._meters)
 
         self.setCentralWidget(container)
-        self.setFixedSize(_WINDOW_W, _WINDOW_H)
+        self.setFixedSize(self._waterfall.width() + self._meters.width(), _WINDOW_H)
 
     def closeEvent(self, event) -> None:  # noqa: N802
         self._waterfall.stop()

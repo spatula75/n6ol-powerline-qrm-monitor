@@ -20,7 +20,6 @@ def _make_config(tmp_path: Path, server_enabled: bool = False) -> BuzzConfig:
     cfg.station.timezone = 'America/Los_Angeles'
     cfg.station.audio_rf_conversion_db = -32.0
     cfg.server.enabled = server_enabled
-    cfg.audio.measurements_to_take = 2
     return cfg
 
 
@@ -86,6 +85,20 @@ class TestRunCollectionAveraging:
             mock_dt.fromisoformat = datetime.fromisoformat
             collector._run_collection()
         collector._weather.fetch.assert_called_once()
+
+    def test_weather_failure_still_writes_csv_row(self, tmp_path):
+        """A weather API failure must not cost us the noise measurement."""
+        cfg = _make_config(tmp_path)
+        collector = _make_collector(cfg)
+        now = _setup_defaults(collector, tmp_path)
+        collector._weather.fetch.side_effect = OSError('weather server down')
+        with patch('buzz.collector.datetime') as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            collector._run_collection()
+        collector._store.append.assert_called_once()
+        args = collector._store.append.call_args[0]
+        assert args[5:] == ('', '', '', '', '', '')   # blank weather fields
 
 
 class TestRunCollectionLockStatus:
@@ -179,20 +192,10 @@ class TestRunCollectionPlotting:
 
 
 class TestRunCollectionUploads:
-    def test_no_uploads_when_server_disabled(self, tmp_path):
-        cfg = _make_config(tmp_path, server_enabled=False)
-        collector = _make_collector(cfg)
-        now = _setup_defaults(collector, tmp_path)
-        with patch('buzz.collector.datetime') as mock_dt:
-            mock_dt.now.return_value = now
-            mock_dt.fromisoformat = datetime.fromisoformat
-            collector._run_collection()
-        collector._publisher.generate_index.assert_not_called()
-        collector._publisher.scp_to_server.assert_not_called()
-
-    def test_none_publisher_is_safe_when_server_disabled(self, tmp_path):
-        # main.py passes publisher=None when server.enabled is False;
-        # _run_collection must not attempt to call methods on it
+    def test_no_uploads_when_publisher_none(self, tmp_path):
+        # main.py passes publisher=None when server.enabled is False; the
+        # publisher's presence is the gate, so this must run without uploads
+        # and without AttributeError
         cfg = _make_config(tmp_path, server_enabled=False)
         collector = Collector(
             config=cfg,
@@ -208,7 +211,7 @@ class TestRunCollectionUploads:
             mock_dt.fromisoformat = datetime.fromisoformat
             collector._run_collection()  # must not raise AttributeError
 
-    def test_uploads_when_server_enabled(self, tmp_path):
+    def test_uploads_when_publisher_present(self, tmp_path):
         cfg = _make_config(tmp_path, server_enabled=True)
         collector = _make_collector(cfg)
         now = _setup_defaults(collector, tmp_path)

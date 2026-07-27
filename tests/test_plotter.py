@@ -15,7 +15,7 @@ from buzz.plotter import Plotter
 _TZ = ZoneInfo('America/Los_Angeles')
 
 
-def _make_plotter(tmp_path: Path) -> tuple[Plotter, MagicMock]:
+def _make_plotter(tmp_path: Path) -> tuple[Plotter, CsvStore]:
     cfg = BuzzConfig()
     cfg.station.path = str(tmp_path)
     cfg.station.timezone = 'America/Los_Angeles'
@@ -24,8 +24,8 @@ def _make_plotter(tmp_path: Path) -> tuple[Plotter, MagicMock]:
     cfg.station.audio_rf_conversion_db = -32.0
     cfg.station.distance_attenuation = 29.54
     cfg.audio.pulse_rate = 120
-    store_mock = MagicMock(spec=CsvStore)
-    return Plotter(cfg, store_mock), store_mock
+    store = CsvStore(cfg)
+    return Plotter(cfg, store), store
 
 
 def _write_csv(path: Path, n_rows: int = 10) -> None:
@@ -157,35 +157,43 @@ class TestGenerateSummaryGraph:
         }
 
     def test_creates_png_file(self, tmp_path):
-        plotter, store_mock = _make_plotter(tmp_path)
-        store_mock.read_range_to_time_dict.return_value = self._time_data()
+        plotter, store = _make_plotter(tmp_path)
+        store.read_range_to_time_dict = MagicMock(return_value=self._time_data())
         output = tmp_path / 'summary.png'
         start = datetime(2024, 1, 1, tzinfo=_TZ)
         plotter.generate_summary_graph(output, start)
         assert output.exists()
 
     def test_returns_early_when_no_data(self, tmp_path):
-        plotter, store_mock = _make_plotter(tmp_path)
-        store_mock.read_range_to_time_dict.return_value = {}
+        plotter, store = _make_plotter(tmp_path)
+        store.read_range_to_time_dict = MagicMock(return_value={})
         output = tmp_path / 'should_not_exist.png'
         start = datetime(2024, 1, 1, tzinfo=_TZ)
         plotter.generate_summary_graph(output, start)
         assert not output.exists()
 
+    def test_no_data_early_return_leaves_no_open_figures(self, tmp_path):
+        import matplotlib.pyplot as plt
+        plotter, store = _make_plotter(tmp_path)
+        store.read_range_to_time_dict = MagicMock(return_value={})
+        start = datetime(2024, 1, 1, tzinfo=_TZ)
+        plotter.generate_summary_graph(tmp_path / 'nope.png', start)
+        assert plt.get_fignums() == []
+
     def test_accepts_path_or_string(self, tmp_path):
-        plotter, store_mock = _make_plotter(tmp_path)
-        store_mock.read_range_to_time_dict.return_value = self._time_data()
+        plotter, store = _make_plotter(tmp_path)
+        store.read_range_to_time_dict = MagicMock(return_value=self._time_data())
         output = tmp_path / 'summary.png'
         start = datetime(2024, 1, 1, tzinfo=_TZ)
         plotter.generate_summary_graph(str(output), start)
         assert output.exists()
 
     def test_passes_date_range_to_store(self, tmp_path):
-        plotter, store_mock = _make_plotter(tmp_path)
-        store_mock.read_range_to_time_dict.return_value = {}
+        plotter, store = _make_plotter(tmp_path)
+        store.read_range_to_time_dict = MagicMock(return_value={})
         start = datetime(2024, 1, 1, tzinfo=_TZ)
         output = tmp_path / 'summary.png'
         plotter.generate_summary_graph(output, start)
-        store_mock.read_range_to_time_dict.assert_called_once()
-        call_start = store_mock.read_range_to_time_dict.call_args[0][0]
+        store.read_range_to_time_dict.assert_called_once()
+        call_start = store.read_range_to_time_dict.call_args[0][0]
         assert call_start == start

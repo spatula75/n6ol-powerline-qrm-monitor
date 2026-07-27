@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from buzz.config import BuzzConfig
-from buzz.csv_store import CsvStore
+from buzz.csv_store import CsvRow, CsvStore
 
 _TZ = ZoneInfo('America/Los_Angeles')
 
@@ -107,6 +107,45 @@ class TestAppend:
         now = _ts(2024, 1, 15, 10, 30)
         result = store.append(now, 0.0, -90.0, -90.0, status, '', '', '', '', '', '')
         assert status in result
+
+
+class TestReadRows:
+    def test_round_trips_appended_row(self, tmp_path):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.append(now, 15.0, -80.0, -95.0, 'partial', 68.0, 52.0, 300.0, 7.5, 12.0, 225)
+        rows = store.read_rows(store.filename_for_date(now))
+        assert rows == [CsvRow(timestamp=now, snr=15.0, signal=-80.0, noise=-95.0,
+                               lock_status='partial')]
+
+    def test_header_row_skipped(self, tmp_path):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.append(now, 15.0, -80.0, -95.0, 'full', '', '', '', '', '', '')
+        rows = store.read_rows(store.filename_for_date(now))
+        assert len(rows) == 1
+
+    def test_timestamp_converted_to_station_timezone(self, tmp_path):
+        store = _make_store(tmp_path)
+        utc_now = datetime(2024, 1, 15, 18, 30, tzinfo=ZoneInfo('UTC'))
+        store.append(utc_now, 15.0, -80.0, -95.0, 'full', '', '', '', '', '', '')
+        rows = store.read_rows(store.filename_for_date(utc_now))
+        assert rows[0].timestamp.tzinfo == ZoneInfo('America/Los_Angeles')
+        assert rows[0].timestamp == utc_now
+
+    def test_old_format_row_without_lock_column_reads_as_locked(self, tmp_path):
+        store = _make_store(tmp_path)
+        path = tmp_path / 'old.csv'
+        # Old format: temperature directly after noise floor, no lock column
+        path.write_text(f'{_ts(2024, 1, 15, 10, 30).isoformat()},15.0,-80.0,-95.0\n')
+        rows = store.read_rows(path)
+        assert rows[0].lock_status == 'full'
+
+    def test_malformed_rows_skipped(self, tmp_path):
+        store = _make_store(tmp_path)
+        path = tmp_path / 'bad.csv'
+        path.write_text('not,valid,data\nalso bad\n')
+        assert store.read_rows(path) == []
 
 
 class TestReadDateToTimeDict:

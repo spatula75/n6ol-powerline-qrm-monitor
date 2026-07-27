@@ -64,7 +64,15 @@ class Collector:
             snr_mean    = 0.0
             lock_status = 'none'
 
-        temperature, humidity, solar_radiation, wind_speed, wind_gust, wind_bearing = self._weather.fetch()
+        # Weather is decoration on the noise measurement — a failed fetch must not
+        # cost us the CSV row, so degrade to blank fields and keep going.
+        try:
+            weather_data = self._weather.fetch()
+        except Exception:
+            logger.warning('Weather fetch failed — recording measurement without weather data.',
+                           exc_info=True)
+            weather_data = ('', '', '', '', '', '')
+        temperature, humidity, solar_radiation, wind_speed, wind_gust, wind_bearing = weather_data
 
         csv_str = self._store.append(now, snr_mean, signal_mean, noise_mean,
                                      lock_status,
@@ -98,7 +106,9 @@ class Collector:
 
             upload_files.extend([summary_all, summary_7d, summary_30d])
 
-        if self._config.server.enabled:
+        # main.py wires a Publisher only when uploads are enabled, so the publisher's
+        # presence is the single source of truth for whether to upload.
+        if self._publisher is not None:
             index_filename = output_dir / 'index.html'
             image_path = 'data/' + smooth_plot_filename.name
             self._publisher.generate_index(index_filename, now, image_path)
