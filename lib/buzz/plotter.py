@@ -142,11 +142,10 @@ class Plotter:
         rows = self._store.read_rows(input_filename)
         if not rows:
             return
-        timestamps    = [r.timestamp for r in rows]
-        snrs          = [r.snr for r in rows]
-        signals       = [r.signal for r in rows]
-        noises        = [r.noise for r in rows]
-        lock_statuses = [r.lock_status for r in rows]
+        timestamps = [r.timestamp for r in rows]
+        snrs       = [r.snr for r in rows]
+        signals    = [r.signal for r in rows]
+        noises     = [r.noise for r in rows]
 
         if smooth:
             if len(timestamps) <= smooth:
@@ -154,7 +153,6 @@ class Plotter:
             signals = self._smooth(signals, smooth)
             noises = self._smooth(noises, smooth)
             timestamps    = timestamps[smooth - 1:]
-            lock_statuses = lock_statuses[smooth - 1:]
             title = (f'Powerline Noise vs Noise Floor ({smooth} point moving avg), '
                      f'{timestamps[0].strftime("%Y-%m-%d")} ({station.timezone} Timezone)')
         else:
@@ -191,15 +189,17 @@ class Plotter:
         max_y = max(max(signals), max(noises), max(source_power_estimate),
                     -48 + station.audio_rf_conversion_db) / 1.33
 
-        # Red: NaN where unlocked so the green noise-floor line shows through cleanly.
-        # Green is on noise_twin (rendered on top) and is always continuous.
-        signals_red = np.where(
-            [s != 'none' for s in lock_statuses],
-            np.array(signals, dtype=float),
-            np.nan,
-        )
-        plot_signal, = axes.plot(timestamps, signals_red, 'r-', label=f'{audio.pulse_rate}pps dBm')
-        plot_noise, = noise_twin.plot(timestamps, noises, 'g-', label='Noise Floor dBm')
+        # Both lines plot every row's value continuously, with no NaN gaps: when
+        # unlocked, Collector._run_collection() already writes signal == noise for
+        # that row, so red and green coincide exactly during unlocked stretches.
+        # zorder makes green paint on top there, so an unlocked stretch reads as a
+        # single clean green trace instead of a gap. NaN-masking red instead used
+        # to fragment it into dozens of disconnected dashes whenever lock flickered
+        # on and off for a minute or two — worse than useless once smoothed, since
+        # the moving average blended real signal readings with unlocked rows'
+        # noise-floor stand-in before the mask was even applied.
+        plot_signal, = axes.plot(timestamps, signals, 'r-', label=f'{audio.pulse_rate}pps dBm', zorder=2)
+        plot_noise, = noise_twin.plot(timestamps, noises, 'g-', label='Noise Floor dBm', zorder=3)
 
         axes.set_xlim(timestamps[0], timestamps[-1])
         axes.set_ylim(min_y, max_y)
