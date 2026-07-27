@@ -1,13 +1,15 @@
 ruff
 PySide6
 pytest-cov
-sounddevice~=0.4.6
+sounddevice~=0.5.5
 tomli-w
-numpy~=2.4.2
-numba~=0.64.0
+# numpy is capped below 2.5 by numba's own dependency constraint (numba~=0.66.0
+# requires numpy<2.5) -- pin to the latest patch within that ceiling.
+numpy~=2.4.6
+numba~=0.66.0
 tzdata
-matplotlib~=3.10.8
-paramiko~=3.4.0
+matplotlib~=3.11.1
+paramiko~=5.0.0
 jinja2~=3.1.6
-scipy~=1.17.1
+scipy~=1.18.0
 
