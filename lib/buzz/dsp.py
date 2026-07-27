@@ -122,6 +122,9 @@ def calculate_pps_fit_array(mono_amplitude_array: np.ndarray, kernel: np.ndarray
     signal, avoiding edge artefacts from the convolution.
     """
     raw = fftconvolve(mono_amplitude_array.astype(np.float64), kernel, mode='valid')
+    # Each raw score is a sum over the kernel's PULSE_WIDTH_SAMPLES × scan_pulses
+    # ones; dividing by that count converts it to a mean amplitude per sampled
+    # position — the same scale average_pulse_amplitude reports.
     return np.rint(raw).astype(np.int64) // (PULSE_WIDTH_SAMPLES * scan_pulses)
 
 

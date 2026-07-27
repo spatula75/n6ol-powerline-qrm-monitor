@@ -20,6 +20,10 @@ from buzz.config import BuzzConfig
 
 CsvValue = str | float
 
+# Summary scores are bucketed to intervals of this many minutes.  The summary
+# graph builds its time axis from the same constant so the two can't drift apart.
+BUCKET_MINUTES = 15
+
 
 @dataclass(frozen=True)
 class CsvRow:
@@ -101,9 +105,9 @@ class CsvStore:
         for row in self.read_rows(input_filename):
             if row.signal < station.noise_threshold or row.snr < snr_gate:
                 continue
-            # Bucket timestamp to the nearest 15-minute interval
+            # Bucket timestamp down to the enclosing BUCKET_MINUTES interval
             t = row.timestamp.time().replace(
-                minute=int(15 * (row.timestamp.minute // 15)),
+                minute=BUCKET_MINUTES * (row.timestamp.minute // BUCKET_MINUTES),
                 second=0, microsecond=0,
             )
             time_to_score[t] += log(row.snr, snr_gate)

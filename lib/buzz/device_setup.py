@@ -45,6 +45,8 @@ class DeviceInfo:
 
 
 def _amplitude_bar(amplitude: float) -> str:
+    """Render amplitude as a logarithmic bar: empty at 1 LSB, full at 16-bit
+    full scale (32768), so each filled char spans an equal number of dB."""
     n = min(_BAR_WIDTH, int(_BAR_WIDTH * log10(max(1.0, amplitude)) / log10(32768.0)))
     return _FILL * n + _EMPTY * (_BAR_WIDTH - n)
 

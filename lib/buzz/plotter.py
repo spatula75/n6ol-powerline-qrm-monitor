@@ -27,7 +27,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from buzz.config import BuzzConfig
-from buzz.csv_store import CsvStore
+from buzz.csv_store import BUCKET_MINUTES, CsvStore
 
 _GRAPH_W = 1600
 _GRAPH_H = 640
@@ -36,6 +36,15 @@ _SUMMARY_H = 540
 # S9 signal strength per IARU recommendation: −73 dBm into 50 Ω.
 # Drawn as a reference line on the daily graph so it's easy to gauge signal severity.
 _S9_DBM = -73
+
+# The daily graph's y-axis always includes the dBm level corresponding to this
+# audio level (−48 dBFS + audio_rf_conversion_db), so a quiet or flat trace still
+# gets a sensible scale instead of the axis collapsing around a few dB of noise.
+_AXIS_ANCHOR_DBFS = -48
+
+# Visual gap between summary bars: each bucket-wide bar is drawn this many
+# minutes narrower than the bucket so adjacent bars don't touch.
+_BAR_GAP_MINUTES = 2
 
 # Axes box margins in pixels for the daily graph.
 _M_LEFT   = 88   # room for y-axis label + tick labels
@@ -74,7 +83,11 @@ def _bar_color(val: int) -> str:
 
 
 def _smooth(data: list[float], points: int) -> np.ndarray:
-    """Simple moving average of the given window length; output is shorter by points-1."""
+    """Simple moving average of the given window length; output is shorter by points-1.
+
+    Uses the cumulative-sum trick: the difference between cumsum values `points`
+    apart is the sum of each sliding window, computed in O(n) instead of O(n·points).
+    """
     ret = np.cumsum(data, dtype=float)
     ret[points:] = ret[points:] - ret[:-points]
     return ret[points - 1:] / points
@@ -175,6 +188,9 @@ class Plotter:
         # path loss.  Not plotted as a separate line, but included in the y-axis upper bound
         # so the scale accommodates the estimated source-power level alongside the measured values.
         # (Adjusted values are always >= the originals, so they have no effect on min_y.)
+        # A row qualifies either by passing both the level threshold and the SNR gate, or
+        # by exceeding the threshold by half the SNR margin on signal level alone (catches
+        # strong events whose SNR was diluted by smoothing or partial-minute lock).
         source_power_estimate = [
             val + station.distance_attenuation
             if ((val > station.noise_threshold and snrs[i] > station.noise_min_snr)
@@ -186,7 +202,7 @@ class Plotter:
         # rc_context scopes the timezone setting (used by matplotlib's date
         # machinery) to this render instead of mutating global state.
         with matplotlib.rc_context({'timezone': station.timezone}):
-            px = 1 / plt.rcParams['figure.dpi']
+            px = 1 / plt.rcParams['figure.dpi']   # inches per pixel; figsize is in inches
             figure, axes = plt.subplots(figsize=(_GRAPH_W * px, _GRAPH_H * px))
             figure.subplots_adjust(left=_M_LEFT/_GRAPH_W, right=1 - _M_RIGHT/_GRAPH_W,
                                    top=1 - _M_TOP/_GRAPH_H, bottom=_M_BOTTOM/_GRAPH_H)
@@ -199,9 +215,10 @@ class Plotter:
             # value by 1.33 pushes the lower axis edge further down, while dividing the
             # least-negative value by 1.33 pulls the upper edge down — keeping reference lines
             # (noise floor, threshold, S9) away from the plot borders.
-            min_y = min(min(signals), min(noises), -48 + station.audio_rf_conversion_db) * 1.33
+            min_y = min(min(signals), min(noises),
+                        _AXIS_ANCHOR_DBFS + station.audio_rf_conversion_db) * 1.33
             max_y = max(max(signals), max(noises), max(source_power_estimate),
-                        -48 + station.audio_rf_conversion_db) / 1.33
+                        _AXIS_ANCHOR_DBFS + station.audio_rf_conversion_db) / 1.33
 
             # Both lines plot every row's value continuously, with no NaN gaps: when
             # unlocked, Collector._run_collection() already writes signal == noise for
@@ -256,7 +273,9 @@ class Plotter:
         time_to_score = self._store.read_range_scores(start_date, end_date)
 
         midnight = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        slot_datetimes = [midnight + timedelta(minutes=15 * i) for i in range(4 * 24)]
+        slots_per_day = 24 * 60 // BUCKET_MINUTES   # 96
+        slot_datetimes = [midnight + timedelta(minutes=BUCKET_MINUTES * i)
+                          for i in range(slots_per_day)]
 
         # Decide whether there is anything to draw BEFORE creating the figure, so
         # the no-data early return can't leak an unclosed figure.
@@ -271,12 +290,14 @@ class Plotter:
         # rc_context scopes the timezone setting (used by matplotlib's date
         # machinery) to this render instead of mutating global state.
         with matplotlib.rc_context({'timezone': station.timezone}):
-            px = 1 / plt.rcParams['figure.dpi']
+            px = 1 / plt.rcParams['figure.dpi']   # inches per pixel; figsize is in inches
             figure, axes = plt.subplots(figsize=(_GRAPH_W * px, _SUMMARY_H * px))
 
             axes.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
             axes.xaxis.set_major_locator(mdates.HourLocator(interval=1))
-            axes.set_xlim(slot_datetimes[0] - timedelta(minutes=10), slot_datetimes[-1] + timedelta(minutes=10))
+            # Pad the x-axis so the first and last bars aren't clipped by the axes box
+            axes.set_xlim(slot_datetimes[0] - timedelta(minutes=10),
+                          slot_datetimes[-1] + timedelta(minutes=10))
             axes.set_xlabel(f'Time ({station.timezone} zone)')
             axes.set_ylabel('Normalized Probability')
             axes.legend(title='Legend', handles=[
@@ -285,9 +306,10 @@ class Plotter:
                 mpatches.Patch(color=_COLOR_HIGH, label=f'>  {_PCT_HIGH}%'),
                 mpatches.Patch(color=_COLOR_MAX, label=f'= {_PCT_MAX}%'),
             ])
-            axes.bar(slot_datetimes, normalized_scores, width=timedelta(minutes=13), color=colors)
+            axes.bar(slot_datetimes, normalized_scores,
+                     width=timedelta(minutes=BUCKET_MINUTES - _BAR_GAP_MINUTES), color=colors)
             axes.set_title(f'Time of Day vs Normalized Probability of {audio.pulse_rate}pps Interference\n'
-                           f'15-minute increments from {start_date.strftime("%Y-%m-%d %H:%M")} '
+                           f'{BUCKET_MINUTES}-minute increments from {start_date.strftime("%Y-%m-%d %H:%M")} '
                            f'to {end_date.strftime("%Y-%m-%d %H:%M")}')
             figure.tight_layout(pad=1.1)
             figure.savefig(output_filename)
