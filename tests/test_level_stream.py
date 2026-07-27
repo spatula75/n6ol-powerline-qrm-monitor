@@ -56,7 +56,7 @@ class TestLevelStreamInit:
     def test_offset_stored_from_config(self):
         cfg = _make_config(offset_db=12.5)
         stream, _, _ = _make_level_stream(cfg=cfg)
-        assert stream._offset == pytest.approx(12.5)
+        assert stream._offset_db == pytest.approx(12.5)
 
     def test_blocksize_passed_to_input_stream(self):
         cfg = _make_config()

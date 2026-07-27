@@ -43,24 +43,41 @@ _M_RIGHT  = 24
 _M_TOP    = 43
 _M_BOTTOM = 66   # room for x-axis label + tick labels
 
+# Summary-bar intensity thresholds (normalized 0–100) and their colours.
+# Shared by _bar_color and the summary graph's legend so the two can't drift apart.
+_PCT_MAX      = 100
+_PCT_HIGH     = 92
+_PCT_ELEVATED = 85
+_COLOR_MAX      = 'firebrick'
+_COLOR_HIGH     = 'indianred'
+_COLOR_ELEVATED = 'lightcoral'
+
 
 def _bar_color(val: int) -> str:
     """Map a normalized 0–100 bar value to a matplotlib color string.
 
-    100 → firebrick, >92 → indianred, >85 → lightcoral, ≤85 → gradient
-    from skyblue (#87ceeb) at val=85 fading to near-white (#fefefe) at val=0.
+    Values above _PCT_ELEVATED use the fixed threshold colours; at or below it,
+    a gradient from skyblue (#87ceeb) at the threshold fading to near-white
+    (#fefefe) at val=0.
     """
-    if val == 100:
-        return 'firebrick'
-    if val > 92:
-        return 'indianred'
-    if val > 85:
-        return 'lightcoral'
-    fade = (85 - val) / 85
+    if val == _PCT_MAX:
+        return _COLOR_MAX
+    if val > _PCT_HIGH:
+        return _COLOR_HIGH
+    if val > _PCT_ELEVATED:
+        return _COLOR_ELEVATED
+    fade = (_PCT_ELEVATED - val) / _PCT_ELEVATED
     r = int(0x87 + fade * (0xfe - 0x87))
     g = int(0xce + fade * (0xfe - 0xce))
     b = int(0xeb + fade * (0xfe - 0xeb))
     return f'#{r:02x}{g:02x}{b:02x}'
+
+
+def _smooth(data: list[float], points: int) -> np.ndarray:
+    """Simple moving average of the given window length; output is shorter by points-1."""
+    ret = np.cumsum(data, dtype=float)
+    ret[points:] = ret[points:] - ret[:-points]
+    return ret[points - 1:] / points
 
 
 def _gc_guarded(func):
@@ -120,11 +137,6 @@ class Plotter:
         self._config = config
         self._store = store
 
-    def _smooth(self, data: list[float], points: int) -> np.ndarray:
-        ret = np.cumsum(data, dtype=float)
-        ret[points:] = ret[points:] - ret[:-points]
-        return ret[points - 1:] / points
-
     @_gc_guarded
     def generate_graph_from_csv(self, input_filename: Path | str, output_filename: Path | str, smooth: int = 0) -> None:
         """Render a daily noise trace and save it as a PNG.
@@ -150,8 +162,8 @@ class Plotter:
         if smooth:
             if len(timestamps) <= smooth:
                 return
-            signals = self._smooth(signals, smooth)
-            noises = self._smooth(noises, smooth)
+            signals = _smooth(signals, smooth)
+            noises = _smooth(noises, smooth)
             timestamps    = timestamps[smooth - 1:]
             title = (f'Powerline Noise vs Noise Floor ({smooth} point moving avg), '
                      f'{timestamps[0].strftime("%Y-%m-%d")} ({station.timezone} Timezone)')
@@ -171,58 +183,62 @@ class Plotter:
             for i, val in enumerate(signals)
         ]
 
-        plt.rcParams['timezone'] = station.timezone
-        px = 1 / plt.rcParams['figure.dpi']
-        figure, axes = plt.subplots(figsize=(_GRAPH_W * px, _GRAPH_H * px))
-        figure.subplots_adjust(left=_M_LEFT/_GRAPH_W, right=1 - _M_RIGHT/_GRAPH_W,
-                               top=1 - _M_TOP/_GRAPH_H, bottom=_M_BOTTOM/_GRAPH_H)
-        plt.title(title)
-        axes.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+        # rc_context scopes the timezone setting (used by matplotlib's date
+        # machinery) to this render instead of mutating global state.
+        with matplotlib.rc_context({'timezone': station.timezone}):
+            px = 1 / plt.rcParams['figure.dpi']
+            figure, axes = plt.subplots(figsize=(_GRAPH_W * px, _GRAPH_H * px))
+            figure.subplots_adjust(left=_M_LEFT/_GRAPH_W, right=1 - _M_RIGHT/_GRAPH_W,
+                                   top=1 - _M_TOP/_GRAPH_H, bottom=_M_BOTTOM/_GRAPH_H)
+            axes.set_title(title)
+            axes.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
 
-        noise_twin = axes.twinx()
+            noise_twin = axes.twinx()
 
-        # 1.33 is a margin factor: since dBm values are negative, multiplying the most-negative
-        # value by 1.33 pushes the lower axis edge further down, while dividing the
-        # least-negative value by 1.33 pulls the upper edge down — keeping reference lines
-        # (noise floor, threshold, S9) away from the plot borders.
-        min_y = min(min(signals), min(noises), -48 + station.audio_rf_conversion_db) * 1.33
-        max_y = max(max(signals), max(noises), max(source_power_estimate),
-                    -48 + station.audio_rf_conversion_db) / 1.33
+            # 1.33 is a margin factor: since dBm values are negative, multiplying the most-negative
+            # value by 1.33 pushes the lower axis edge further down, while dividing the
+            # least-negative value by 1.33 pulls the upper edge down — keeping reference lines
+            # (noise floor, threshold, S9) away from the plot borders.
+            min_y = min(min(signals), min(noises), -48 + station.audio_rf_conversion_db) * 1.33
+            max_y = max(max(signals), max(noises), max(source_power_estimate),
+                        -48 + station.audio_rf_conversion_db) / 1.33
 
-        # Both lines plot every row's value continuously, with no NaN gaps: when
-        # unlocked, Collector._run_collection() already writes signal == noise for
-        # that row, so red and green coincide exactly during unlocked stretches.
-        # zorder makes green paint on top there, so an unlocked stretch reads as a
-        # single clean green trace instead of a gap. NaN-masking red instead used
-        # to fragment it into dozens of disconnected dashes whenever lock flickered
-        # on and off for a minute or two — worse than useless once smoothed, since
-        # the moving average blended real signal readings with unlocked rows'
-        # noise-floor stand-in before the mask was even applied.
-        plot_signal, = axes.plot(timestamps, signals, 'r-', label=f'{audio.pulse_rate}pps dBm', zorder=2)
-        plot_noise, = noise_twin.plot(timestamps, noises, 'g-', label='Noise Floor dBm', zorder=3)
+            # Both lines plot every row's value continuously, with no NaN gaps: when
+            # unlocked, Collector._run_collection() already writes signal == noise for
+            # that row, so red and green coincide exactly during unlocked stretches.
+            # zorder makes green paint on top there, so an unlocked stretch reads as a
+            # single clean green trace instead of a gap. NaN-masking red instead used
+            # to fragment it into dozens of disconnected dashes whenever lock flickered
+            # on and off for a minute or two — worse than useless once smoothed, since
+            # the moving average blended real signal readings with unlocked rows'
+            # noise-floor stand-in before the mask was even applied.
+            plot_signal, = axes.plot(timestamps, signals, 'r-', label=f'{audio.pulse_rate}pps dBm', zorder=2)
+            plot_noise, = noise_twin.plot(timestamps, noises, 'g-', label='Noise Floor dBm', zorder=3)
 
-        axes.set_xlim(timestamps[0], timestamps[-1])
-        axes.set_ylim(min_y, max_y)
-        noise_twin.set_ylim(min_y, max_y)
-        axes.set_xlabel('Time')
-        axes.set_ylabel('dBm')
-        noise_twin.get_yaxis().set_ticks([])
+            axes.set_xlim(timestamps[0], timestamps[-1])
+            axes.set_ylim(min_y, max_y)
+            noise_twin.set_ylim(min_y, max_y)
+            axes.set_xlabel('Time')
+            axes.set_ylabel('dBm')
+            noise_twin.get_yaxis().set_ticks([])
 
-        axes.yaxis.label.set_color(plot_signal.get_color())
-        noise_twin.yaxis.label.set_color(plot_noise.get_color())
-        tick_kwargs = dict(size=4, width=1.5)
-        axes.tick_params(axis='y', colors=plot_signal.get_color(), **tick_kwargs)
-        noise_twin.tick_params(axis='y', colors=plot_noise.get_color(), **tick_kwargs)
+            axes.yaxis.label.set_color(plot_signal.get_color())
+            noise_twin.yaxis.label.set_color(plot_noise.get_color())
+            tick_kwargs = dict(size=4, width=1.5)
+            axes.tick_params(axis='y', colors=plot_signal.get_color(), **tick_kwargs)
+            noise_twin.tick_params(axis='y', colors=plot_noise.get_color(), **tick_kwargs)
 
-        plot_s9 = axes.axhline(y=_S9_DBM, color='tan', linestyle='dashed', label=f'S9 ({_S9_DBM} dBm) signal strength')
-        plot_threshold = axes.axhline(y=station.noise_threshold, color='gray', linestyle='dashed',
-                                      label=f'{station.noise_threshold} dBm threshold')
-        plot_floor = axes.axhline(y=station.noise_floor, color='gray',
-                                  label=f'{station.noise_floor} dBm typical noise floor')
+            plot_s9 = axes.axhline(y=_S9_DBM, color='tan', linestyle='dashed',
+                                   label=f'S9 ({_S9_DBM} dBm) signal strength')
+            plot_threshold = axes.axhline(y=station.noise_threshold, color='gray', linestyle='dashed',
+                                          label=f'{station.noise_threshold} dBm threshold')
+            plot_floor = axes.axhline(y=station.noise_floor, color='gray',
+                                      label=f'{station.noise_floor} dBm typical noise floor')
 
-        axes.legend(loc='lower left', handles=[plot_signal, plot_noise, plot_s9, plot_threshold, plot_floor])
-        plt.savefig(output_filename, pil_kwargs={'optimize': True})
-        plt.close()
+            axes.legend(loc='lower left',
+                        handles=[plot_signal, plot_noise, plot_s9, plot_threshold, plot_floor])
+            figure.savefig(output_filename, pil_kwargs={'optimize': True})
+            plt.close(figure)
 
     @_gc_guarded
     def generate_summary_graph(self, output_filename: Path | str, start_date: datetime) -> None:
@@ -237,40 +253,42 @@ class Plotter:
         audio = self._config.audio
         zone = ZoneInfo(station.timezone)
         end_date = datetime.now(zone)
-        time_to_snr = self._store.read_range_to_time_dict(start_date, end_date)
+        time_to_score = self._store.read_range_scores(start_date, end_date)
 
-        run_time = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0, tzinfo=zone)
-        all_datetimes = [run_time + timedelta(minutes=15 * i) for i in range(4 * 24)]
+        midnight = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        slot_datetimes = [midnight + timedelta(minutes=15 * i) for i in range(4 * 24)]
 
         # Decide whether there is anything to draw BEFORE creating the figure, so
         # the no-data early return can't leak an unclosed figure.
-        vals = [time_to_snr.get(dt.time(), 0) for dt in all_datetimes]
-        max_val = max(vals)
-        if max_val == 0:
+        slot_scores = [time_to_score.get(dt.time(), 0) for dt in slot_datetimes]
+        max_score = max(slot_scores)
+        if max_score == 0:
             return
-        normalized_vals = [int(100 * (val / max_val)) for val in vals]
+        normalized_scores = [int(100 * (score / max_score)) for score in slot_scores]
 
-        colors = [_bar_color(val) for val in normalized_vals]
+        colors = [_bar_color(score) for score in normalized_scores]
 
-        plt.rcParams['timezone'] = station.timezone
-        px = 1 / plt.rcParams['figure.dpi']
-        fig, ax = plt.subplots(figsize=(_GRAPH_W * px, _SUMMARY_H * px))
+        # rc_context scopes the timezone setting (used by matplotlib's date
+        # machinery) to this render instead of mutating global state.
+        with matplotlib.rc_context({'timezone': station.timezone}):
+            px = 1 / plt.rcParams['figure.dpi']
+            figure, axes = plt.subplots(figsize=(_GRAPH_W * px, _SUMMARY_H * px))
 
-        ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-        ax.xaxis.set_major_locator(mdates.HourLocator(interval=1))
-        ax.set_xlim(all_datetimes[0] - timedelta(minutes=10), all_datetimes[-1] + timedelta(minutes=10))
-        ax.set_xlabel(f'Time ({station.timezone} zone)')
-        ax.set_ylabel('Normalized Probability')
-        ax.legend(title='Legend', handles=[
-            mpatches.Patch(color='skyblue', label='<  85%'),
-            mpatches.Patch(color='lightcoral', label='>  85%'),
-            mpatches.Patch(color='indianred', label='>  92%'),
-            mpatches.Patch(color='firebrick', label='= 100%'),
-        ])
-        ax.bar(all_datetimes, normalized_vals, width=timedelta(minutes=13), color=colors)
-        plt.title(f'Time of Day vs Normalized Probability of {audio.pulse_rate}pps Interference\n'
-                  f'15-minute increments from {start_date.strftime("%Y-%m-%d %H:%M")} '
-                  f'to {end_date.strftime("%Y-%m-%d %H:%M")}')
-        plt.tight_layout(pad=1.1)
-        plt.savefig(output_filename)
-        plt.close()
+            axes.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            axes.xaxis.set_major_locator(mdates.HourLocator(interval=1))
+            axes.set_xlim(slot_datetimes[0] - timedelta(minutes=10), slot_datetimes[-1] + timedelta(minutes=10))
+            axes.set_xlabel(f'Time ({station.timezone} zone)')
+            axes.set_ylabel('Normalized Probability')
+            axes.legend(title='Legend', handles=[
+                mpatches.Patch(color='skyblue', label=f'<  {_PCT_ELEVATED}%'),
+                mpatches.Patch(color=_COLOR_ELEVATED, label=f'>  {_PCT_ELEVATED}%'),
+                mpatches.Patch(color=_COLOR_HIGH, label=f'>  {_PCT_HIGH}%'),
+                mpatches.Patch(color=_COLOR_MAX, label=f'= {_PCT_MAX}%'),
+            ])
+            axes.bar(slot_datetimes, normalized_scores, width=timedelta(minutes=13), color=colors)
+            axes.set_title(f'Time of Day vs Normalized Probability of {audio.pulse_rate}pps Interference\n'
+                           f'15-minute increments from {start_date.strftime("%Y-%m-%d %H:%M")} '
+                           f'to {end_date.strftime("%Y-%m-%d %H:%M")}')
+            figure.tight_layout(pad=1.1)
+            figure.savefig(output_filename)
+            plt.close(figure)

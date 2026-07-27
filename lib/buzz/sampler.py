@@ -18,7 +18,7 @@ import numpy as np
 import sounddevice as sd
 
 from buzz.config import BuzzConfig
-from buzz.dsp import amplitude_to_dbfs
+from buzz.dsp import SILENCE_DBFS, amplitude_to_dbm
 
 logger = logging.getLogger(__name__)
 
@@ -158,14 +158,13 @@ class LevelStream:
 
     def __init__(self, config: BuzzConfig, device_index: int, blocksize: int) -> None:
         self._event = threading.Event()
-        self._latest_dbm: float = -128.0
-        self._offset = config.station.audio_rf_conversion_db
+        self._latest_dbm: float = SILENCE_DBFS
+        self._offset_db = config.station.audio_rf_conversion_db
 
         def _callback(indata: np.ndarray, frames: int,
                       time: object, status: sd.CallbackFlags) -> None:
             amplitude = float(np.mean(np.abs(indata.astype(np.int32))))
-            self._latest_dbm = (amplitude_to_dbfs(amplitude) + self._offset
-                                if amplitude > 0 else -128.0)
+            self._latest_dbm = amplitude_to_dbm(amplitude, self._offset_db)
             self._event.set()
 
         self._stream = sd.InputStream(

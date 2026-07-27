@@ -11,7 +11,7 @@ import pytest
 
 from buzz.config import BuzzConfig
 from buzz.csv_store import CsvStore
-from buzz.plotter import Plotter, _gc_guarded
+from buzz.plotter import Plotter, _bar_color, _gc_guarded, _smooth
 
 _TZ = ZoneInfo('America/Los_Angeles')
 
@@ -123,27 +123,40 @@ class TestGcGuarded:
 
 
 class TestSmooth:
-    def test_simple_moving_average(self, tmp_path):
-        plotter, _ = _make_plotter(tmp_path)
-        result = plotter._smooth([1.0, 2.0, 3.0, 4.0, 5.0], points=3)
+    def test_simple_moving_average(self):
+        result = _smooth([1.0, 2.0, 3.0, 4.0, 5.0], points=3)
         np.testing.assert_allclose(result, [2.0, 3.0, 4.0])
 
-    def test_points_equal_one_returns_same_values(self, tmp_path):
-        plotter, _ = _make_plotter(tmp_path)
+    def test_points_equal_one_returns_same_values(self):
         data = [10.0, 20.0, 30.0]
-        result = plotter._smooth(data, points=1)
+        result = _smooth(data, points=1)
         np.testing.assert_allclose(result, data)
 
-    def test_output_shorter_than_input(self, tmp_path):
-        plotter, _ = _make_plotter(tmp_path)
-        result = plotter._smooth([1.0, 2.0, 3.0, 4.0, 5.0], points=3)
+    def test_output_shorter_than_input(self):
+        result = _smooth([1.0, 2.0, 3.0, 4.0, 5.0], points=3)
         assert len(result) == 3  # len(data) - points + 1
 
-    def test_uniform_data_unchanged_by_smoothing(self, tmp_path):
-        plotter, _ = _make_plotter(tmp_path)
+    def test_uniform_data_unchanged_by_smoothing(self):
         data = [5.0] * 10
-        result = plotter._smooth(data, points=3)
+        result = _smooth(data, points=3)
         np.testing.assert_allclose(result, [5.0] * 8)
+
+
+class TestBarColor:
+    def test_max_is_firebrick(self):
+        assert _bar_color(100) == 'firebrick'
+
+    def test_above_high_threshold_is_indianred(self):
+        assert _bar_color(93) == 'indianred'
+
+    def test_above_elevated_threshold_is_lightcoral(self):
+        assert _bar_color(86) == 'lightcoral'
+
+    def test_at_elevated_threshold_starts_gradient(self):
+        assert _bar_color(85) == '#87ceeb'   # skyblue, matching the legend
+
+    def test_zero_fades_to_near_white(self):
+        assert _bar_color(0) == '#fefefe'
 
 
 class TestGenerateGraphFromCsv:
@@ -232,7 +245,7 @@ class TestGenerateSummaryGraph:
 
     def test_creates_png_file(self, tmp_path):
         plotter, store = _make_plotter(tmp_path)
-        store.read_range_to_time_dict = MagicMock(return_value=self._time_data())
+        store.read_range_scores = MagicMock(return_value=self._time_data())
         output = tmp_path / 'summary.png'
         start = datetime(2024, 1, 1, tzinfo=_TZ)
         plotter.generate_summary_graph(output, start)
@@ -240,7 +253,7 @@ class TestGenerateSummaryGraph:
 
     def test_returns_early_when_no_data(self, tmp_path):
         plotter, store = _make_plotter(tmp_path)
-        store.read_range_to_time_dict = MagicMock(return_value={})
+        store.read_range_scores = MagicMock(return_value={})
         output = tmp_path / 'should_not_exist.png'
         start = datetime(2024, 1, 1, tzinfo=_TZ)
         plotter.generate_summary_graph(output, start)
@@ -249,14 +262,14 @@ class TestGenerateSummaryGraph:
     def test_no_data_early_return_leaves_no_open_figures(self, tmp_path):
         import matplotlib.pyplot as plt
         plotter, store = _make_plotter(tmp_path)
-        store.read_range_to_time_dict = MagicMock(return_value={})
+        store.read_range_scores = MagicMock(return_value={})
         start = datetime(2024, 1, 1, tzinfo=_TZ)
         plotter.generate_summary_graph(tmp_path / 'nope.png', start)
         assert plt.get_fignums() == []
 
     def test_accepts_path_or_string(self, tmp_path):
         plotter, store = _make_plotter(tmp_path)
-        store.read_range_to_time_dict = MagicMock(return_value=self._time_data())
+        store.read_range_scores = MagicMock(return_value=self._time_data())
         output = tmp_path / 'summary.png'
         start = datetime(2024, 1, 1, tzinfo=_TZ)
         plotter.generate_summary_graph(str(output), start)
@@ -264,10 +277,10 @@ class TestGenerateSummaryGraph:
 
     def test_passes_date_range_to_store(self, tmp_path):
         plotter, store = _make_plotter(tmp_path)
-        store.read_range_to_time_dict = MagicMock(return_value={})
+        store.read_range_scores = MagicMock(return_value={})
         start = datetime(2024, 1, 1, tzinfo=_TZ)
         output = tmp_path / 'summary.png'
         plotter.generate_summary_graph(output, start)
-        store.read_range_to_time_dict.assert_called_once()
-        call_start = store.read_range_to_time_dict.call_args[0][0]
+        store.read_range_scores.assert_called_once()
+        call_start = store.read_range_scores.call_args[0][0]
         assert call_start == start

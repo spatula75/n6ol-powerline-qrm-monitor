@@ -8,6 +8,7 @@ MainWindow composes both widgets side-by-side and handles clean shutdown.
 """
 
 from collections import deque
+from collections.abc import Sequence
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
@@ -16,6 +17,7 @@ from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QWidget
 
 from buzz.analyzer import AnalysisResult, ContinuousAnalyzer
 from buzz.config import BuzzConfig
+from buzz.dsp import SILENCE_DBFS
 from buzz.sampler import AudioPipeline
 
 # ---------------------------------------------------------------------------
@@ -27,7 +29,7 @@ _MAX_HZ = 4000                              # top of the displayed band
 _FREQ_LABEL_HZ = 500                        # frequency-axis tick spacing
 _PIXELS_PER_BIN = 5                         # horizontal scale (128 bins → 640 px at 16 kHz)
 _N_ROWS = 100                               # history rows (~10 s at 100 ms/frame)
-_PIXELS_PER_ROW = 2                         # must divide (window_height - _AXIS_H) evenly
+_PIXELS_PER_ROW = 2                         # vertical scale; _WINDOW_H is derived from this
 _UPDATE_MS = 100
 _DB_RANGE = 48.0                            # colour scale dynamic range in dB (8 S-units)
 _DB_REF = 20 * np.log10(32768.0 * _CHUNK / 4)  # 0 dBFS for a full-scale Hann-windowed sinusoid
@@ -60,8 +62,7 @@ _SEG_DIM = (
     *[(60, 0, 0)] * 4,
 )
 
-_SEG_H    = 13   # segment bar height in pixels
-_SEG_GAP  = 2    # gap between segments
+_SEG_H    = 13   # segment bar height in pixels; gaps are computed from _SEGS_H below
 _BAR_W    = 22   # width of each meter bar
 _LABEL_W  = 30   # width of shared S-unit label column
 _PAD      = 3    # outer and inner horizontal padding
@@ -77,8 +78,11 @@ _SEGS_TOP    = _CORR_TOP + _CORR_H + 1    # S-meter bars start here
 _SEGS_BOTTOM = _WINDOW_H - 4
 _SEGS_H      = _SEGS_BOTTOM - _SEGS_TOP   # ≈ 190 px for 13 segments
 
+_METER_UPDATE_MS = 200                    # meter poll cadence (matches analyzer LOCKED tick)
+_SMOOTH_N        = 5                      # recent results averaged for meter display
 
-def _n_lit(dbm: float) -> int:
+
+def _n_segments_lit(dbm: float) -> int:
     """Return number of segments that should be illuminated for a given dBm reading."""
     return sum(1 for level in _S_LEVELS_DBM if dbm >= level)
 
@@ -93,6 +97,24 @@ def _correction_offset(correction: int, half_w: int, max_corr: int) -> tuple[int
         return 1, 0
     px = max(1, round(abs(correction) * half_w / max_corr))
     return px, (-px if correction < 0 else 0)
+
+
+def _aggregate_meter_history(history: Sequence[AnalysisResult]) -> tuple[float, float, bool]:
+    """Average recent results into the (nf_dbm, sig_dbm, locked) triple the meters draw.
+
+    Noise averages over every result.  Signal averages only over locked results, so
+    unlocked readings (where signal == noise per AnalysisResult.unlocked) don't drag
+    the level down mid-window during an intermittent signal; with no locked results
+    the signal reading falls back to the noise floor.  An empty history reads as
+    silence on both meters.
+    """
+    if not history:
+        return SILENCE_DBFS, SILENCE_DBFS, False
+    nf_dbm = sum(r.noise_dbm for r in history) / len(history)
+    locked_results = [r for r in history if r.locked]
+    if not locked_results:
+        return nf_dbm, nf_dbm, False
+    return nf_dbm, sum(r.signal_dbm for r in locked_results) / len(locked_results), True
 
 
 def build_colormap() -> np.ndarray:
@@ -139,7 +161,7 @@ class WaterfallWidget(QWidget):
         self._db_min = (config.station.noise_floor
                         - config.station.audio_rf_conversion_db
                         - _DB_FFT_NOISE_CORR)
-        self._waterfall = np.full((_N_ROWS, self._display_bins), self._db_min, dtype=np.float32)
+        self._history_db = np.full((_N_ROWS, self._display_bins), self._db_min, dtype=np.float32)
         self.setFixedSize(self._display_bins * _PIXELS_PER_BIN, _WINDOW_H)
 
         self._timer = QTimer(self)
@@ -153,8 +175,8 @@ class WaterfallWidget(QWidget):
         windowed = chunk.astype(np.float32) * _HANN
         spectrum = np.abs(np.fft.rfft(windowed, n=_CHUNK))[:self._display_bins]
         db = np.where(spectrum > 0, 20 * np.log10(spectrum) - _DB_REF, self._db_min)
-        self._waterfall[1:] = self._waterfall[:-1]
-        self._waterfall[0] = db.astype(np.float32)
+        self._history_db[1:] = self._history_db[:-1]
+        self._history_db[0] = db.astype(np.float32)
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -173,7 +195,7 @@ class WaterfallWidget(QWidget):
 
         # Waterfall — each row is exactly _PIXELS_PER_ROW pixels tall
         norm = np.clip(
-            (self._waterfall - self._db_min) / _DB_RANGE * 255, 0, 255,
+            (self._history_db - self._db_min) / _DB_RANGE * 255, 0, 255,
         ).astype(np.uint8)
         used_h = _N_ROWS * _PIXELS_PER_ROW
         rgb_rows = np.ascontiguousarray(_COLORMAP[norm].repeat(_PIXELS_PER_ROW, axis=0))
@@ -190,27 +212,29 @@ class WaterfallWidget(QWidget):
 
 
 class MeterPanelWidget(QWidget):
-    """Pair of vertical S-band bar-graph meters: noise floor (left) and signal (right)."""
+    """Pair of vertical S-band bar-graph meters: noise floor (left) and signal (right).
 
-    _METER_UPDATE_MS = 200
-
-    _SMOOTH_N = 5   # number of recent results to average for display
+    _tick() polls the analyzer and reduces the recent history to the displayed
+    (nf_dbm, sig_dbm, locked) values; paintEvent() only draws them.
+    """
 
     def __init__(self, analyzer: ContinuousAnalyzer,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._analyzer = analyzer
-        self._history: deque[AnalysisResult] = deque(maxlen=self._SMOOTH_N)
+        self._history: deque[AnalysisResult] = deque(maxlen=_SMOOTH_N)
+        self._nf_dbm, self._sig_dbm, self._locked = _aggregate_meter_history(())
         self.setFixedSize(_PANEL_W, _WINDOW_H)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
-        self._timer.start(self._METER_UPDATE_MS)
+        self._timer.start(_METER_UPDATE_MS)
 
     def _tick(self) -> None:
         result = self._analyzer.latest_result()
         if result is not None:
             self._history.append(result)
+        self._nf_dbm, self._sig_dbm, self._locked = _aggregate_meter_history(self._history)
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -231,26 +255,9 @@ class MeterPanelWidget(QWidget):
         painter.drawText(sig_x, 0, _BAR_W, _AXIS_H,
                          Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, 'SIG')
 
-        if self._history:
-            n          = len(self._history)
-            nf_dbm     = sum(r.noise_dbm for r in self._history) / n
-            # Average signal only over locked results so unlocked readings
-            # (where signal_dbm == noise_dbm) don't drag the level down
-            # mid-window during an intermittent signal.
-            locked_rs  = [r for r in self._history if r.locked]
-            if locked_rs:
-                sig_dbm = sum(r.signal_dbm for r in locked_rs) / len(locked_rs)
-                locked  = True
-            else:
-                sig_dbm = nf_dbm
-                locked  = False
-        else:
-            nf_dbm  = -128.0
-            sig_dbm = -128.0
-            locked  = False
-
-        nf_lit  = _n_lit(nf_dbm)
-        sig_lit = _n_lit(sig_dbm)
+        nf_lit  = _n_segments_lit(self._nf_dbm)
+        sig_lit = _n_segments_lit(self._sig_dbm)
+        locked  = self._locked
 
         # Phase-correction indicators — above each bar, independent per NF/SIG since
         # the noise and signal phases are searched (and can drift) independently —
@@ -267,8 +274,8 @@ class MeterPanelWidget(QWidget):
         painter.fillRect(nf_x + half_w + noise_offset, line_y, noise_px, 1, grey)
         painter.fillRect(sig_x + half_w + signal_offset, line_y, signal_px, 1, grey)
 
-        # Integer layout: anchor each bar from the bottom so the 1 px remainder
-        # from 25 px of total gap / 12 spaces falls above the top bar, not below S1.
+        # Integer layout: anchor each bar from the bottom so the leftover pixels
+        # from the integer gap division fall above the top bar, not below S1.
         base_gap = (_SEGS_H - _N_SEGS * _SEG_H) // (_N_SEGS - 1)
 
         painter.setFont(QFont('Monospace', 7))

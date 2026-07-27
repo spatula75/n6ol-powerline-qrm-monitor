@@ -158,7 +158,7 @@ class TestReadDateToTimeDict:
         row = f'{_ts(2024, 1, 15, 10, 23).isoformat()},20.0,-80.0,-95.0,72,50,300,5,8,180'
         csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
         self._write_csv(csv_path, ['header,line', row])
-        result = store._read_date_to_time_dict(csv_path)
+        result = store._read_day_scores(csv_path)
         assert time(10, 15) in result
 
     def test_low_snr_row_excluded(self, tmp_path):
@@ -167,7 +167,7 @@ class TestReadDateToTimeDict:
         row = f'{_ts(2024, 1, 15, 10, 23).isoformat()},10.0,-80.0,-95.0,72,50,300,5,8,180'
         csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
         self._write_csv(csv_path, [row])
-        result = store._read_date_to_time_dict(csv_path)
+        result = store._read_day_scores(csv_path)
         assert len(result) == 0
 
     def test_low_signal_row_excluded(self, tmp_path):
@@ -176,7 +176,7 @@ class TestReadDateToTimeDict:
         row = f'{_ts(2024, 1, 15, 10, 23).isoformat()},20.0,-90.0,-95.0,72,50,300,5,8,180'
         csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
         self._write_csv(csv_path, [row])
-        result = store._read_date_to_time_dict(csv_path)
+        result = store._read_day_scores(csv_path)
         assert len(result) == 0
 
     def test_bucket_to_15_minute_interval(self, tmp_path):
@@ -186,7 +186,7 @@ class TestReadDateToTimeDict:
         row_10_45 = f'{_ts(2024, 1, 15, 10, 45).isoformat()},20.0,-80.0,-95.0,72,50,300,5,8,180'
         csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
         self._write_csv(csv_path, [row_10_23, row_10_14, row_10_45])
-        result = store._read_date_to_time_dict(csv_path)
+        result = store._read_day_scores(csv_path)
         assert time(10, 15) in result   # 10:23 → 10:15
         assert time(10, 0) in result    # 10:14 → 10:00
         assert time(10, 45) in result   # 10:45 → 10:45
@@ -197,25 +197,25 @@ class TestReadDateToTimeDict:
         row2 = f'{_ts(2024, 1, 15, 10, 25).isoformat()},20.0,-80.0,-95.0,72,50,300,5,8,180'
         csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
         self._write_csv(csv_path, [row1, row2])
-        result = store._read_date_to_time_dict(csv_path)
+        result = store._read_day_scores(csv_path)
         one_row_store = _make_store(tmp_path)
         one_csv = tmp_path / 'single.csv'
         self._write_csv(one_csv, [row1])
-        one_result = one_row_store._read_date_to_time_dict(one_csv)
+        one_result = one_row_store._read_day_scores(one_csv)
         assert result[time(10, 15)] > one_result[time(10, 15)]
 
     def test_header_line_skipped(self, tmp_path):
         store = _make_store(tmp_path)
         csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
         self._write_csv(csv_path, ['ISO datetime,120pps SNR,120pps signal dB,Noise floor dB,...'])
-        result = store._read_date_to_time_dict(csv_path)
+        result = store._read_day_scores(csv_path)
         assert len(result) == 0
 
     def test_bad_lines_skipped(self, tmp_path):
         store = _make_store(tmp_path)
         csv_path = store.filename_for_date(_ts(2024, 1, 15, 0, 0))
         self._write_csv(csv_path, ['not,valid,data', 'also bad'])
-        result = store._read_date_to_time_dict(csv_path)
+        result = store._read_day_scores(csv_path)
         assert len(result) == 0
 
 
@@ -227,14 +227,14 @@ class TestReadRangeToTimeDict:
         store = _make_store(tmp_path)
         start = _ts(2024, 1, 15, 0, 0)
         end = _ts(2024, 1, 17, 0, 0)
-        result = store.read_range_to_time_dict(start, end)
+        result = store.read_range_scores(start, end)
         assert isinstance(result, dict)
 
     def test_single_day_aggregated(self, tmp_path):
         store = _make_store(tmp_path)
         when = _ts(2024, 1, 15, 10, 20)
         self._write_qualifying_row(store, when)
-        result = store.read_range_to_time_dict(
+        result = store.read_range_scores(
             _ts(2024, 1, 15, 0, 0),
             _ts(2024, 1, 15, 23, 59),
         )
@@ -244,10 +244,10 @@ class TestReadRangeToTimeDict:
         store = _make_store(tmp_path)
         self._write_qualifying_row(store, _ts(2024, 1, 15, 10, 20))
         self._write_qualifying_row(store, _ts(2024, 1, 16, 10, 20))
-        single_day_result = store.read_range_to_time_dict(
+        single_day_result = store.read_range_scores(
             _ts(2024, 1, 15, 0, 0), _ts(2024, 1, 15, 23, 59),
         )
-        two_day_result = store.read_range_to_time_dict(
+        two_day_result = store.read_range_scores(
             _ts(2024, 1, 15, 0, 0), _ts(2024, 1, 16, 23, 59),
         )
         assert two_day_result[time(10, 15)] > single_day_result[time(10, 15)]
@@ -256,5 +256,5 @@ class TestReadRangeToTimeDict:
         store = _make_store(tmp_path)
         start = _ts(2024, 1, 15, 0, 0)
         end = _ts(2024, 1, 15, 23, 59)
-        result = store.read_range_to_time_dict(start, end)
+        result = store.read_range_scores(start, end)
         assert type(result) is dict

@@ -87,6 +87,32 @@ class TestMakeWeatherClient:
             make_weather_client(self._config('none'))
         assert caplog.text == ''
 
+    def test_openmeteo_without_coordinates_returns_null_client(self):
+        cfg = self._config('openmeteo')
+        cfg.weather.latitude = None
+        client = make_weather_client(cfg)
+        assert isinstance(client, NullWeatherClient)
+
+    def test_openmeteo_without_coordinates_logs_warning(self, caplog):
+        cfg = self._config('openmeteo')
+        cfg.weather.longitude = None
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            make_weather_client(cfg)
+        assert 'latitude/longitude' in caplog.text
+
+    def test_cumulusmx_without_url_returns_null_client(self):
+        cfg = self._config('cumulusmx')
+        cfg.weather.url = ''
+        client = make_weather_client(cfg)
+        assert isinstance(client, NullWeatherClient)
+
+    def test_cumulusmx_without_url_logs_warning(self, caplog):
+        cfg = self._config('cumulusmx')
+        cfg.weather.url = ''
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            make_weather_client(cfg)
+        assert 'url is not set' in caplog.text
+
 
 class TestWaitUntilInterrupted:
     def test_closes_sampler_on_keyboard_interrupt(self):

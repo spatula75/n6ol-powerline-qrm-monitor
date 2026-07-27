@@ -126,9 +126,9 @@ even if Tier 3a's threshold is too conservative to fire on a weak signal.
 | `LOCK_ACQUIRE_SNR` | 6.0 dB | Minimum SNR to enter LOCKED |
 | `LOCK_LOSE_SNR` | 2.0 dB | SNR below which a failure is counted |
 | `LOSE_LOCK_COUNT` | 3 | Consecutive failures before SIGNAL_LOST |
-| `LOCKED_INTERVAL` | 0.2 s | Quick-check cadence in LOCKED and SIGNAL_LOST |
+| `FAST_TICK_INTERVAL` | 0.2 s | Tick cadence in LOCKED and SIGNAL_LOST |
 | `REFINE_INTERVAL` | 2 s | Phase-search refinement cadence while LOCKED |
-| `SEARCH_INTERVAL` | 1 s | Phase search cadence in SIGNAL_LOST |
+| `SEARCH_INTERVAL` | 1 s | Full-FFT cadence in SEARCHING; narrow-scan cadence in SIGNAL_LOST |
 | `PHASE_SEARCH_RADIUS` | 10 samples | Scan radius for Tier 2 in each direction |
 | `FAST_SCAN_INTERVAL` | 5 s | Tier 3a cadence in SIGNAL_LOST |
 | `FAST_SCAN_PULSES` | 15 | Pulses in the short Tier 3a kernel |

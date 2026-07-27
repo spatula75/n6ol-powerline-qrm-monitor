@@ -38,6 +38,7 @@ from buzz.weather import (
 faulthandler.enable()
 
 ROOT_PACKAGE = 'buzz'
+logger = logging.getLogger(__name__)
 
 
 def configure_logging() -> None:
@@ -72,15 +73,28 @@ def configure_logging() -> None:
 
 
 def make_weather_client(config: BuzzConfig) -> WeatherClient:
-    wc = config.weather
-    if wc.source == 'openmeteo':
-        return OpenMeteoWeatherClient(wc.latitude, wc.longitude)
-    if wc.source == 'cumulusmx':
-        return CumulusMXWeatherClient(wc.url)
-    if wc.source != 'none':
-        logging.getLogger(ROOT_PACKAGE).warning(
+    """Build the configured weather client, validating its settings up front.
+
+    A misconfigured source degrades to NullWeatherClient with a single startup
+    warning, rather than failing (and logging) on every collection cycle.
+    """
+    weather_config = config.weather
+    if weather_config.source == 'openmeteo':
+        if weather_config.latitude is None or weather_config.longitude is None:
+            logger.warning('Weather source is openmeteo but latitude/longitude are not set; '
+                           'weather data disabled.')
+            return NullWeatherClient()
+        return OpenMeteoWeatherClient(weather_config.latitude, weather_config.longitude)
+    if weather_config.source == 'cumulusmx':
+        if not weather_config.url:
+            logger.warning('Weather source is cumulusmx but url is not set; '
+                           'weather data disabled.')
+            return NullWeatherClient()
+        return CumulusMXWeatherClient(weather_config.url)
+    if weather_config.source != 'none':
+        logger.warning(
             "Unknown weather source %r — expected 'cumulusmx', 'openmeteo', or 'none'; "
-            'weather data disabled.', wc.source)
+            'weather data disabled.', weather_config.source)
     return NullWeatherClient()
 
 
@@ -131,7 +145,7 @@ def main() -> None:  # pragma: no cover
         from PySide6.QtWidgets import QApplication
         from buzz.waterfall import MainWindow
     except ImportError:
-        logging.getLogger(ROOT_PACKAGE).warning(
+        logger.warning(
             'PySide6 not installed — falling back to headless mode. '
             'Install PySide6 or run with --headless to suppress this warning.'
         )
@@ -145,9 +159,9 @@ def main() -> None:  # pragma: no cover
     # Allow Ctrl+C to close the window cleanly from the console
     signal.signal(signal.SIGINT, lambda *_: window.close())
     # QTimer keeps the Python interpreter ticking so SIGINT can be delivered
-    pulse = QTimer()
-    pulse.timeout.connect(lambda: None)
-    pulse.start(200)
+    sigint_keepalive = QTimer()
+    sigint_keepalive.timeout.connect(lambda: None)
+    sigint_keepalive.start(200)
 
     sys.exit(app.exec())
 

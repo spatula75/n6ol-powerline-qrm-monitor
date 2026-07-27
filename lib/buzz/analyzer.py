@@ -39,19 +39,26 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
+from enum import StrEnum
 from math import log10
 
 import numpy as np
 
 from buzz.config import BuzzConfig
 from buzz.dsp import (
-    amplitude_to_dbfs,
+    amplitude_to_dbm,
     analyze_window,
     average_pulse_amplitude,
     build_pulse_kernel,
     calculate_pps_fit_array,
 )
 from buzz.sampler import AudioPipeline
+
+
+class AnalyzerState(StrEnum):
+    SEARCHING   = 'SEARCHING'
+    LOCKED      = 'LOCKED'
+    SIGNAL_LOST = 'SIGNAL_LOST'
 
 
 @dataclass(frozen=True)
@@ -61,6 +68,16 @@ class AnalysisResult:
     snr: float
     locked: bool
 
+    @classmethod
+    def unlocked(cls, noise_dbm: float) -> 'AnalysisResult':
+        """Result for a tick with no pulse-train lock.
+
+        By convention an unlocked result has signal_dbm == noise_dbm and snr == 0:
+        the plotter and the meter panel both rely on the pair coinciding so unlocked
+        stretches render as a single continuous noise trace rather than a gap.
+        """
+        return cls(signal_dbm=noise_dbm, noise_dbm=noise_dbm, snr=0.0, locked=False)
+
 
 class ContinuousAnalyzer:
     """Background analysis thread; call start() once, then poll latest_result()."""
@@ -68,8 +85,8 @@ class ContinuousAnalyzer:
     LOCK_ACQUIRE_SNR    = 6.0   # dB — minimum SNR to enter LOCKED
     LOCK_LOSE_SNR       = 2.0   # dB — SNR below which consecutive failures are counted
     LOSE_LOCK_COUNT     = 3     # consecutive _quick_check failures before SIGNAL_LOST
-    LOCKED_INTERVAL     = 0.2   # s  — fast tick while LOCKED or SIGNAL_LOST
-    SEARCH_INTERVAL     = 1.0   # s  — narrow phase-search interval while SIGNAL_LOST
+    FAST_TICK_INTERVAL  = 0.2   # s  — tick cadence in LOCKED and SIGNAL_LOST
+    SEARCH_INTERVAL     = 1.0   # s  — SEARCHING tick cadence; also the Tier-2 narrow-scan cadence in SIGNAL_LOST
     REFINE_INTERVAL     = 2.0   # s  — phase-search refinement interval while LOCKED
     SIGNAL_LOST_REFINE  = 120.0 # s  — unconditional full-FFT safety net in SIGNAL_LOST
     PHASE_SEARCH_RADIUS = 10    # samples either side of stored peak to scan in SIGNAL_LOST
@@ -77,21 +94,22 @@ class ContinuousAnalyzer:
     FAST_SCAN_SAMPLES   = 4000  # audio window for Tier-3a (~0.25 s at 16 kHz)
     FAST_SCAN_INTERVAL  = 5.0   # s  — Tier-3a cadence in SIGNAL_LOST
     FAST_SCAN_SNR       = 4.0   # dB — Tier-3a hit threshold; triggers Tier-3b full FFT
+    CAPTURE_TIMEOUT     = 2.0   # s  — max wait for the pipeline to supply a window
 
     def __init__(self, pipeline: AudioPipeline, config: BuzzConfig) -> None:
-        self._pipeline    = pipeline
-        audio             = config.audio
-        self._sample_rate = audio.sample_rate
-        self._pulse_rate  = audio.pulse_rate
-        self._offset      = config.station.audio_rf_conversion_db
-        self._n_samples   = audio.sample_rate          # 1 s window
-        self._scan_pulses = audio.pulse_rate // 2
-        self._spp         = audio.sample_rate / audio.pulse_rate
-        self._kernel      = build_pulse_kernel(audio.sample_rate, audio.pulse_rate)
-        self._fast_kernel = build_pulse_kernel(
+        self._pipeline          = pipeline
+        audio                   = config.audio
+        self._sample_rate       = audio.sample_rate
+        self._pulse_rate        = audio.pulse_rate
+        self._offset_db         = config.station.audio_rf_conversion_db
+        self._window_samples    = audio.sample_rate    # 1 s analysis window
+        self._scan_pulses       = audio.pulse_rate // 2
+        self._samples_per_pulse = audio.sample_rate / audio.pulse_rate
+        self._kernel            = build_pulse_kernel(audio.sample_rate, audio.pulse_rate)
+        self._fast_kernel       = build_pulse_kernel(
             audio.sample_rate, audio.pulse_rate, n_pulses=self.FAST_SCAN_PULSES)
 
-        self._state       = 'SEARCHING'
+        self._state       = AnalyzerState.SEARCHING
         self._peak_phase  = 0
         self._noise_phase = 0
 
@@ -101,12 +119,12 @@ class ContinuousAnalyzer:
         self._consecutive_low_snr: int = 0
 
         # Cadence timestamps (monotonic); owned by the tick methods and _transition.
-        self._last_refine    = 0.0  # last _phase_search while LOCKED (or lock acquisition)
-        self._last_narrow    = 0.0  # last _phase_search while SIGNAL_LOST
-        self._last_fft       = 0.0  # last _full_analysis (SEARCHING or SIGNAL_LOST backstop)
-        self._last_fast_scan = 0.0  # last _fast_scan while SIGNAL_LOST
+        self._last_refine      = 0.0  # last _phase_search while LOCKED (or lock acquisition)
+        self._last_narrow_scan = 0.0  # last _phase_search while SIGNAL_LOST
+        self._last_full_fft    = 0.0  # last _full_analysis (SEARCHING or SIGNAL_LOST backstop)
+        self._last_fast_scan   = 0.0  # last _fast_scan while SIGNAL_LOST
 
-        self._result: AnalysisResult | None = None
+        self._latest_result: AnalysisResult | None = None
         self._result_buffer: deque[AnalysisResult] = deque(maxlen=360)
         self._latest_signal_correction: int = 0
         self._latest_noise_correction: int = 0
@@ -125,7 +143,7 @@ class ContinuousAnalyzer:
 
     def latest_result(self) -> AnalysisResult | None:
         with self._result_lock:
-            return self._result
+            return self._latest_result
 
     def latest_signal_correction(self) -> int:
         with self._result_lock:
@@ -141,7 +159,7 @@ class ContinuousAnalyzer:
 
     # ----------------------------------------------------- state machine core
 
-    def _transition(self, new_state: str) -> None:
+    def _transition(self, new_state: AnalyzerState) -> None:
         """Apply a state change proposed by a tier method.
 
         The single place transition bookkeeping happens: entering any new state
@@ -152,16 +170,16 @@ class ContinuousAnalyzer:
         if new_state == self._state:
             return
         self._consecutive_low_snr = 0
-        if new_state == 'LOCKED':
+        if new_state == AnalyzerState.LOCKED:
             self._phases_valid = True
             self._last_refine  = time.monotonic()
         self._state = new_state
 
     def _run(self) -> None:  # pragma: no cover
         while not self._stop.is_set():
-            if self._state == 'LOCKED':
+            if self._state == AnalyzerState.LOCKED:
                 interval = self._locked_tick()
-            elif self._state == 'SIGNAL_LOST':
+            elif self._state == AnalyzerState.SIGNAL_LOST:
                 interval = self._signal_lost_tick()
             else:
                 interval = self._searching_tick()
@@ -169,7 +187,7 @@ class ContinuousAnalyzer:
 
     def _searching_tick(self) -> float:
         self._transition(self._full_analysis())
-        self._last_fft = time.monotonic()
+        self._last_full_fft = time.monotonic()
         return self.SEARCH_INTERVAL
 
     def _locked_tick(self) -> float:
@@ -178,26 +196,26 @@ class ContinuousAnalyzer:
             self._last_refine = time.monotonic()
         else:
             self._transition(self._quick_check())
-        return self.LOCKED_INTERVAL
+        return self.FAST_TICK_INTERVAL
 
     def _signal_lost_tick(self) -> float:
         # Tier 1 (200 ms): live noise + exact-phase re-acquisition attempt
         self._transition(self._noise_check())
         # Tier 2 (1 s): cheap narrow amplitude scan ± PHASE_SEARCH_RADIUS
-        if (self._state != 'LOCKED'
-                and time.monotonic() - self._last_narrow >= self.SEARCH_INTERVAL):
+        if (self._state != AnalyzerState.LOCKED
+                and time.monotonic() - self._last_narrow_scan >= self.SEARCH_INTERVAL):
             self._transition(self._phase_search())
-            self._last_narrow = time.monotonic()
+            self._last_narrow_scan = time.monotonic()
         # Tier 3a (5 s): short-kernel FFT screens for a candidate;
         # Tier 3b: full FFT on a hit, or every SIGNAL_LOST_REFINE as backstop
-        if (self._state != 'LOCKED'
+        if (self._state != AnalyzerState.LOCKED
                 and time.monotonic() - self._last_fast_scan >= self.FAST_SCAN_INTERVAL):
             triggered = self._fast_scan()
             self._last_fast_scan = time.monotonic()
-            if triggered or time.monotonic() - self._last_fft >= self.SIGNAL_LOST_REFINE:
+            if triggered or time.monotonic() - self._last_full_fft >= self.SIGNAL_LOST_REFINE:
                 self._transition(self._full_analysis())
-                self._last_fft = time.monotonic()
-        return self.LOCKED_INTERVAL
+                self._last_full_fft = time.monotonic()
+        return self.FAST_TICK_INTERVAL
 
     # ------------------------------------------------------------ tier methods
     #
@@ -207,26 +225,39 @@ class ContinuousAnalyzer:
 
     def _publish(self, result: AnalysisResult) -> None:
         with self._result_lock:
-            self._result = result
+            self._latest_result = result
             self._result_buffer.append(result)
 
     def _to_dbm(self, amplitude: float) -> float:
-        return (amplitude_to_dbfs(amplitude) + self._offset
-                if amplitude > 0 else -128.0)
+        return amplitude_to_dbm(amplitude, self._offset_db)
 
-    def _sample_phases(self, abs_data: np.ndarray) -> tuple[float, float, float] | None:
-        """Sample signal and noise amplitudes at the stored phases.
+    def _capture(self, n_samples: int) -> np.ndarray | None:
+        """Wait for n_samples of audio and return it rectified (absolute int32).
+
+        Returns None when the pipeline cannot supply the data within
+        CAPTURE_TIMEOUT — the caller should leave the state machine unchanged.
+        """
+        if not self._pipeline.wait_for_data(n_samples, timeout=self.CAPTURE_TIMEOUT):
+            return None
+        return np.abs(self._pipeline.get_snapshot(n_samples).astype(np.int32))
+
+    def _sample_phases(self, abs_data: np.ndarray,
+                       peak_phase: int | None = None,
+                       noise_phase: int | None = None) -> tuple[float, float, float] | None:
+        """Sample signal and noise amplitudes at the given phases (stored ones by default).
 
         Returns (sig_dbm, noise_dbm, snr) or None if the buffer is too short.
         """
-        start = max(self._peak_phase, self._noise_phase)
-        size  = int((len(abs_data) - start) // self._spp)
-        if size < 1:
+        peak     = self._peak_phase if peak_phase is None else peak_phase
+        noise    = self._noise_phase if noise_phase is None else noise_phase
+        start    = max(peak, noise)
+        n_pulses = int((len(abs_data) - start) // self._samples_per_pulse)
+        if n_pulses < 1:
             return None
         sig_amp   = float(average_pulse_amplitude(
-            abs_data, self._sample_rate, self._pulse_rate, size, self._peak_phase))
+            abs_data, self._sample_rate, self._pulse_rate, n_pulses, peak))
         noise_amp = float(average_pulse_amplitude(
-            abs_data, self._sample_rate, self._pulse_rate, size, self._noise_phase))
+            abs_data, self._sample_rate, self._pulse_rate, n_pulses, noise))
         sig_dbm   = self._to_dbm(sig_amp)
         noise_dbm = self._to_dbm(noise_amp)
         return sig_dbm, noise_dbm, sig_dbm - noise_dbm
@@ -239,10 +270,9 @@ class ContinuousAnalyzer:
         worst by FAST_SCAN_SNR dB — a weak hint that something is worth confirming.
         Does not publish or propose a state; only gates whether Tier 3b runs.
         """
-        if not self._pipeline.wait_for_data(self.FAST_SCAN_SAMPLES, timeout=2.0):
+        abs_data = self._capture(self.FAST_SCAN_SAMPLES)
+        if abs_data is None:
             return False
-        snapshot = self._pipeline.get_snapshot(self.FAST_SCAN_SAMPLES)
-        abs_data = np.abs(snapshot.astype(np.int32))
         fit = calculate_pps_fit_array(abs_data, self._fast_kernel, self.FAST_SCAN_PULSES)
         if len(fit) < 2:
             return False
@@ -252,18 +282,17 @@ class ContinuousAnalyzer:
             return peak > 0
         return 20 * log10(peak / trough) >= self.FAST_SCAN_SNR
 
-    def _full_analysis(self) -> str:
+    def _full_analysis(self) -> AnalyzerState:
         """FFT fit over 1 s of audio; establishes or refreshes the locked phase pair.
 
-        Returns 'LOCKED' when a pulse train passes LOCK_ACQUIRE_SNR, otherwise the
+        Returns LOCKED when a pulse train passes LOCK_ACQUIRE_SNR, otherwise the
         current state.  When called from SIGNAL_LOST and no lock is found, nothing
         is published — _noise_check() is already providing live noise results on
         each tick.
         """
-        if not self._pipeline.wait_for_data(self._n_samples, timeout=2.0):
+        abs_data = self._capture(self._window_samples)
+        if abs_data is None:
             return self._state
-        snapshot = self._pipeline.get_snapshot(self._n_samples)
-        abs_data = np.abs(snapshot.astype(np.int32))
 
         window = analyze_window(abs_data, self._sample_rate, self._pulse_rate,
                                 self._kernel, self._scan_pulses)
@@ -280,16 +309,42 @@ class ContinuousAnalyzer:
             self._publish(AnalysisResult(
                 signal_dbm=sig_dbm, noise_dbm=noise_dbm, snr=snr, locked=True,
             ))
-            return 'LOCKED'
+            return AnalyzerState.LOCKED
         if not self._phases_valid:
             # SEARCHING: no stored phases to fall back on — publish what the FFT found
-            self._publish(AnalysisResult(
-                signal_dbm=noise_dbm, noise_dbm=noise_dbm, snr=0.0, locked=False,
-            ))
+            self._publish(AnalysisResult.unlocked(noise_dbm))
         # else: SIGNAL_LOST with valid phases — _noise_check() handles publishing
         return self._state
 
-    def _phase_search(self) -> str:
+    def _scan_phase(self, abs_data: np.ndarray, center: int, anchor: int,
+                    minimize: bool) -> tuple[int, int]:
+        """Scan ± PHASE_SEARCH_RADIUS around center for the best pulse amplitude.
+
+        anchor is the other pulse train's phase; the analysis window starts at
+        max(candidate, anchor) so both trains fit within the same audio.  minimize
+        selects the quietest candidate (noise scan) instead of the loudest (signal
+        scan).  Returns (best_phase, best_offset); center with offset 0 if no
+        candidate fits.
+        """
+        spp_int     = int(self._samples_per_pulse)
+        best_amp    = float('inf') if minimize else -1.0
+        best_phase  = center
+        best_offset = 0
+        for offset in range(-self.PHASE_SEARCH_RADIUS, self.PHASE_SEARCH_RADIUS + 1):
+            candidate = (center + offset) % spp_int
+            start     = max(candidate, anchor)
+            n_pulses  = int((len(abs_data) - start) // self._samples_per_pulse)
+            if n_pulses < 1:
+                continue
+            amp = float(average_pulse_amplitude(
+                abs_data, self._sample_rate, self._pulse_rate, n_pulses, candidate))
+            if (amp < best_amp) if minimize else (amp > best_amp):
+                best_amp    = amp
+                best_phase  = candidate
+                best_offset = offset
+        return best_phase, best_offset
+
+    def _phase_search(self) -> AnalyzerState:
         """Narrow amplitude scan ± PHASE_SEARCH_RADIUS around each stored phase.
 
         ~40× cheaper than _full_analysis() — evaluates average_pulse_amplitude at
@@ -310,88 +365,50 @@ class ContinuousAnalyzer:
         track together.
 
         If the best signal candidate passes LOCK_ACQUIRE_SNR both phases are updated
-        and 'LOCKED' is returned; otherwise the current state.  Does not publish on
+        and LOCKED is returned; otherwise the current state.  Does not publish on
         failure; _noise_check() already published the noise result on this tick.
         """
-        if not self._pipeline.wait_for_data(self._n_samples, timeout=2.0):
+        abs_data = self._capture(self._window_samples)
+        if abs_data is None:
             return self._state
-        snapshot = self._pipeline.get_snapshot(self._n_samples)
-        abs_data = np.abs(snapshot.astype(np.int32))
-        spp      = self._spp
-        spp_int  = int(spp)
 
-        # Signal scan: find the phase with the highest pulse amplitude.
-        best_sig_amp = -1.0
-        best_phase   = self._peak_phase
-        best_offset  = 0
-        for offset in range(-self.PHASE_SEARCH_RADIUS, self.PHASE_SEARCH_RADIUS + 1):
-            candidate = (self._peak_phase + offset) % spp_int
-            start     = max(candidate, self._noise_phase)
-            size      = int((len(abs_data) - start) // spp)
-            if size < 1:
-                continue
-            amp = float(average_pulse_amplitude(
-                abs_data, self._sample_rate, self._pulse_rate, size, candidate))
-            if amp > best_sig_amp:
-                best_sig_amp = amp
-                best_phase   = candidate
-                best_offset  = offset
+        # Signal scan: loudest candidate near _peak_phase.
+        best_phase, best_offset = self._scan_phase(
+            abs_data, self._peak_phase, anchor=self._noise_phase, minimize=False)
         with self._result_lock:
             self._latest_signal_correction = best_offset
 
-        # Noise scan: independently find the quietest phase near _noise_phase.
-        best_noise_amp    = float('inf')
-        best_noise_phase  = self._noise_phase
-        best_noise_offset = 0
-        for offset in range(-self.PHASE_SEARCH_RADIUS, self.PHASE_SEARCH_RADIUS + 1):
-            candidate = (self._noise_phase + offset) % spp_int
-            start     = max(best_phase, candidate)
-            size      = int((len(abs_data) - start) // spp)
-            if size < 1:
-                continue
-            amp = float(average_pulse_amplitude(
-                abs_data, self._sample_rate, self._pulse_rate, size, candidate))
-            if amp < best_noise_amp:
-                best_noise_amp    = amp
-                best_noise_phase  = candidate
-                best_noise_offset = offset
+        # Noise scan: independently, the quietest candidate near _noise_phase.
+        best_noise_phase, best_noise_offset = self._scan_phase(
+            abs_data, self._noise_phase, anchor=best_phase, minimize=True)
         with self._result_lock:
             self._latest_noise_correction = best_noise_offset
 
-        # Recompute both amplitudes over a consistent window before the SNR decision.
-        start = max(best_phase, best_noise_phase)
-        size  = int((len(abs_data) - start) // spp)
-        if size < 1:
+        # Re-measure both winners over a consistent window before the SNR decision.
+        measured = self._sample_phases(abs_data, best_phase, best_noise_phase)
+        if measured is None:
             return self._state
-        sig_amp   = float(average_pulse_amplitude(
-            abs_data, self._sample_rate, self._pulse_rate, size, best_phase))
-        noise_amp = float(average_pulse_amplitude(
-            abs_data, self._sample_rate, self._pulse_rate, size, best_noise_phase))
+        sig_dbm, noise_dbm, snr = measured
 
-        sig_dbm   = self._to_dbm(sig_amp)
-        noise_dbm = self._to_dbm(noise_amp)
-
-        if sig_dbm - noise_dbm >= self.LOCK_ACQUIRE_SNR:
+        if snr >= self.LOCK_ACQUIRE_SNR:
             self._peak_phase  = best_phase
             self._noise_phase = best_noise_phase
             self._publish(AnalysisResult(
-                signal_dbm=sig_dbm, noise_dbm=noise_dbm,
-                snr=sig_dbm - noise_dbm, locked=True,
+                signal_dbm=sig_dbm, noise_dbm=noise_dbm, snr=snr, locked=True,
             ))
-            return 'LOCKED'
+            return AnalyzerState.LOCKED
         return self._state
 
-    def _noise_check(self) -> str:
+    def _noise_check(self) -> AnalyzerState:
         """Live noise + fast signal re-acquisition at stored phases (SIGNAL_LOST only).
 
         Samples the noise floor at _noise_phase every tick so the NF meter stays
-        current.  Also samples _peak_phase; if SNR is high enough, returns 'LOCKED'
+        current.  Also samples _peak_phase; if SNR is high enough, returns LOCKED
         without needing a full FFT fit.
         """
-        if not self._pipeline.wait_for_data(self._n_samples, timeout=2.0):
+        abs_data = self._capture(self._window_samples)
+        if abs_data is None:
             return self._state
-        snapshot = self._pipeline.get_snapshot(self._n_samples)
-        abs_data = np.abs(snapshot.astype(np.int32))
 
         measured = self._sample_phases(abs_data)
         if measured is None:
@@ -402,18 +419,15 @@ class ContinuousAnalyzer:
             self._publish(AnalysisResult(
                 signal_dbm=sig_dbm, noise_dbm=noise_dbm, snr=snr, locked=True,
             ))
-            return 'LOCKED'
-        self._publish(AnalysisResult(
-            signal_dbm=noise_dbm, noise_dbm=noise_dbm, snr=0.0, locked=False,
-        ))
+            return AnalyzerState.LOCKED
+        self._publish(AnalysisResult.unlocked(noise_dbm))
         return self._state
 
-    def _quick_check(self) -> str:
+    def _quick_check(self) -> AnalyzerState:
         """Cheap amplitude check at stored phases; debounces lock loss (LOCKED only)."""
-        if not self._pipeline.wait_for_data(self._n_samples, timeout=2.0):
+        abs_data = self._capture(self._window_samples)
+        if abs_data is None:
             return self._state
-        snapshot = self._pipeline.get_snapshot(self._n_samples)
-        abs_data = np.abs(snapshot.astype(np.int32))
 
         measured = self._sample_phases(abs_data)
         if measured is None:
@@ -423,10 +437,8 @@ class ContinuousAnalyzer:
         if snr < self.LOCK_LOSE_SNR:
             self._consecutive_low_snr += 1
             if self._consecutive_low_snr >= self.LOSE_LOCK_COUNT:
-                self._publish(AnalysisResult(
-                    signal_dbm=noise_dbm, noise_dbm=noise_dbm, snr=0.0, locked=False,
-                ))
-                return 'SIGNAL_LOST'
+                self._publish(AnalysisResult.unlocked(noise_dbm))
+                return AnalyzerState.SIGNAL_LOST
             # else: hold current result during debounce window — don't publish
             return self._state
         self._consecutive_low_snr = 0

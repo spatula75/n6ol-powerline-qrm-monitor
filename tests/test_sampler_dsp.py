@@ -9,7 +9,9 @@ from numpy import uint32, zeros
 
 from buzz.config import BuzzConfig
 from buzz.dsp import (
+    SILENCE_DBFS,
     amplitude_to_dbfs,
+    amplitude_to_dbm,
     analyze_window,
     average_pulse_amplitude,
     build_pulse_kernel,
@@ -167,6 +169,20 @@ class TestAmplitudeToDbfs:
 
     def test_negative_amplitude_returns_sentinel(self):
         assert amplitude_to_dbfs(-1.0) == -128.0
+
+
+class TestAmplitudeToDbm:
+    def test_offset_is_applied(self):
+        assert amplitude_to_dbm(32768.0, -32.0) == pytest.approx(-32.0)
+
+    def test_matches_dbfs_plus_offset(self):
+        assert amplitude_to_dbm(1000.0, -32.0) == pytest.approx(amplitude_to_dbfs(1000.0) - 32.0)
+
+    def test_silence_sentinel_is_not_offset(self):
+        assert amplitude_to_dbm(0.0, -32.0) == SILENCE_DBFS
+
+    def test_negative_amplitude_returns_sentinel(self):
+        assert amplitude_to_dbm(-1.0, 10.0) == SILENCE_DBFS
 
 
 class TestAnalyzeWindow:

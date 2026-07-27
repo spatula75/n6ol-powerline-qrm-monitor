@@ -11,7 +11,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
-from buzz.analyzer import AnalysisResult, ContinuousAnalyzer
+from buzz.analyzer import AnalysisResult, AnalyzerState, ContinuousAnalyzer
 from buzz.config import BuzzConfig
 from buzz.sampler import AudioPipeline
 
@@ -73,6 +73,21 @@ class TestAnalysisResult:
         assert r.noise_dbm  == -90.0
         assert r.snr        == 20.0
         assert r.locked     is True
+
+    def test_unlocked_signal_coincides_with_noise(self):
+        """The plotter and meter panel rely on this convention — see AnalysisResult.unlocked."""
+        r = AnalysisResult.unlocked(-92.5)
+        assert r.signal_dbm == r.noise_dbm == -92.5
+        assert r.snr == 0.0
+        assert r.locked is False
+
+
+class TestAnalyzerState:
+    def test_states_compare_equal_to_their_names(self):
+        """StrEnum keeps string comparison working for logs and tests."""
+        assert AnalyzerState.LOCKED == 'LOCKED'
+        assert AnalyzerState.SEARCHING == 'SEARCHING'
+        assert AnalyzerState.SIGNAL_LOST == 'SIGNAL_LOST'
 
 
 # ---------------------------------------------------------------------------
@@ -145,7 +160,7 @@ class TestTickMethods:
             interval = az._searching_tick()
         fa.assert_called_once()
         assert interval == ContinuousAnalyzer.SEARCH_INTERVAL
-        assert az._last_fft > 0.0
+        assert az._last_full_fft > 0.0
 
     def test_locked_tick_quick_checks_between_refines(self):
         az = _make_analyzer()
@@ -155,7 +170,7 @@ class TestTickMethods:
             interval = az._locked_tick()
         qc.assert_called_once()
         ps.assert_not_called()
-        assert interval == ContinuousAnalyzer.LOCKED_INTERVAL
+        assert interval == ContinuousAnalyzer.FAST_TICK_INTERVAL
 
     def test_locked_tick_refines_when_interval_elapsed(self):
         az = _make_analyzer()
@@ -177,7 +192,7 @@ class TestTickMethods:
              patch.object(az, '_full_analysis', return_value='SIGNAL_LOST'):
             interval = az._signal_lost_tick()
         nc.assert_called_once()
-        assert interval == ContinuousAnalyzer.LOCKED_INTERVAL
+        assert interval == ContinuousAnalyzer.FAST_TICK_INTERVAL
 
     def test_signal_lost_tick_skips_lower_tiers_after_tier1_relock(self):
         az = _make_analyzer()
@@ -204,7 +219,7 @@ class TestTickMethods:
     def test_signal_lost_tick_skips_full_fft_without_hit_before_backstop(self):
         az = _make_analyzer()
         az._transition('SIGNAL_LOST')
-        az._last_fft = time.monotonic()   # backstop not yet due
+        az._last_full_fft = time.monotonic()   # backstop not yet due
         with patch.object(az, '_noise_check', return_value='SIGNAL_LOST'), \
              patch.object(az, '_phase_search', return_value='SIGNAL_LOST'), \
              patch.object(az, '_fast_scan', return_value=False), \
@@ -215,7 +230,7 @@ class TestTickMethods:
     def test_signal_lost_tick_respects_narrow_scan_cadence(self):
         az = _make_analyzer()
         az._transition('SIGNAL_LOST')
-        az._last_narrow = time.monotonic()   # Tier 2 not yet due
+        az._last_narrow_scan = time.monotonic()   # Tier 2 not yet due
         with patch.object(az, '_noise_check', return_value='SIGNAL_LOST'), \
              patch.object(az, '_phase_search') as ps, \
              patch.object(az, '_fast_scan', return_value=False), \

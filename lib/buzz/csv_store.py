@@ -35,10 +35,10 @@ class CsvStore:
     def __init__(self, config: BuzzConfig) -> None:
         self._config = config
         pps = config.audio.pulse_rate
-        self._headers = (f'ISO datetime,{pps}pps SNR,{pps}pps signal (dBm),Noise floor (dBm),'
-                         f'Signal Lock Status,'
-                         f'Temperature (F),Humidity (%),Solar radiation (w/m^2),'
-                         f'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)\n')
+        self._header_line = (f'ISO datetime,{pps}pps SNR,{pps}pps signal (dBm),Noise floor (dBm),'
+                             f'Signal Lock Status,'
+                             f'Temperature (F),Humidity (%),Solar radiation (w/m^2),'
+                             f'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)\n')
 
     def filename_for_date(self, date: datetime) -> Path:
         return Path(self._config.station.path) / f'noise_data.{date.strftime("%Y-%m-%d")}.csv'
@@ -48,14 +48,14 @@ class CsvStore:
                temperature: CsvValue, humidity: CsvValue, solar_radiation: CsvValue,
                wind_speed: CsvValue, wind_gust: CsvValue, wind_bearing: CsvValue) -> str:
         csv_filename = self.filename_for_date(now)
-        write_headers = not csv_filename.exists()
+        write_header = not csv_filename.exists()
         csv_str = (f'{now.isoformat()},{snr:.2f},{signal:.2f},{noise:.2f},'
                    f'{lock_status},'
                    f'{temperature},{humidity},{solar_radiation},'
                    f'{wind_speed},{wind_gust},{wind_bearing}')
         with open(csv_filename, 'a') as f:
-            if write_headers:
-                f.write(self._headers)
+            if write_header:
+                f.write(self._header_line)
             f.write(f'{csv_str}\n')
         return csv_str
 
@@ -85,8 +85,8 @@ class CsvStore:
                     continue
         return rows
 
-    def _read_date_to_time_dict(self, input_filename: Path | str) -> dict[time, int]:
-        """Read one CSV file and return a {time: score} dict bucketed to 15-minute intervals.
+    def _read_day_scores(self, input_filename: Path | str) -> dict[time, int]:
+        """Read one day's CSV file and return a {time: score} dict bucketed to 15-minute intervals.
 
         Only rows where the signal is at or above the noise threshold AND the SNR is at
         or above snr_gate are counted.  Each qualifying row contributes log(snr, snr_gate)
@@ -109,7 +109,7 @@ class CsvStore:
             time_to_score[t] += log(row.snr, snr_gate)
         return {k: int(v) for k, v in time_to_score.items()}
 
-    def read_range_to_time_dict(self, start_date: datetime, end_date: datetime) -> dict[time, int]:
+    def read_range_scores(self, start_date: datetime, end_date: datetime) -> dict[time, int]:
         """Aggregate scores across a date range into a single {time: score} dict.
 
         Missing CSV files (days with no data) are silently skipped.  The returned
@@ -117,13 +117,13 @@ class CsvStore:
         summary graph generator.
         """
         time_to_score = defaultdict(int)
-        now_date = start_date
-        while now_date <= end_date:
-            csv_filename = self.filename_for_date(now_date)
-            now_date += timedelta(days=1)
+        day = start_date
+        while day <= end_date:
+            csv_filename = self.filename_for_date(day)
+            day += timedelta(days=1)
             try:
-                for t, val in self._read_date_to_time_dict(csv_filename).items():
-                    time_to_score[t] += val
+                for t, score in self._read_day_scores(csv_filename).items():
+                    time_to_score[t] += score
             except FileNotFoundError:
                 pass
         return dict(time_to_score)

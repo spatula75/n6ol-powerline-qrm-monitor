@@ -53,16 +53,27 @@ def amplitude_to_dbfs(amplitude: float) -> float:
     return 20 * log10(amplitude) - DB_REFERENCE if amplitude > 0 else SILENCE_DBFS
 
 
+def amplitude_to_dbm(amplitude: float, offset_db: float) -> float:
+    """Convert a mean-absolute amplitude to approximate dBm at the receiver input.
+
+    offset_db is the station's audio_rf_conversion_db calibration value.  Silence
+    returns SILENCE_DBFS with no offset applied, so the sentinel reads identically
+    regardless of calibration.
+    """
+    return amplitude_to_dbfs(amplitude) + offset_db if amplitude > 0 else SILENCE_DBFS
+
+
 @njit(boundscheck=True)  # boundscheck raises IndexError instead of segfaulting on OOB access
 def average_pulse_amplitude(mono_amplitude_array: np.ndarray, sample_rate: int,
-                            pulse_rate: int, analysis_size: int, start_index: int) -> int:
+                            pulse_rate: int, n_pulses: int, start_index: int) -> int:
     """Average the amplitude at each pulse position across the analysis window.
 
-    Samples PULSE_WIDTH_SAMPLES adjacent values per pulse position, then divides by the
-    total sample count.  Equivalent to correlating with the pulse kernel but without
-    multiplying through the ~97% zeros.
+    n_pulses is the number of pulse positions to average.  Samples PULSE_WIDTH_SAMPLES
+    adjacent values per pulse position, then divides by the total sample count.
+    Equivalent to correlating with the pulse kernel but without multiplying through
+    the ~97% zeros.
 
-    Internally clamps analysis_size so the last access (start_index + pos + width - 1)
+    Internally clamps n_pulses so the last access (start_index + pos + width - 1)
     cannot exceed the array bounds regardless of what the caller passes.  Returns 0 when
     there is insufficient room for even one pulse group.
     """
@@ -70,8 +81,8 @@ def average_pulse_amplitude(mono_amplitude_array: np.ndarray, sample_rate: int,
     # Maximum pulses that fit: last group ends at start_index + pos + PULSE_WIDTH_SAMPLES - 1.
     # pos = round((n-1) * spp) <= (n-1)*spp + 0.5, so last index <= start_index + n*spp - spp + 0.5 + width - 1.
     # Solving for n: n <= (len - start_index - width) / spp  (the 0.5 slack is absorbed by spp > 100).
-    max_size = int((len(mono_amplitude_array) - start_index - PULSE_WIDTH_SAMPLES) // samples_per_pulse)
-    n = min(analysis_size, max_size)
+    max_pulses = int((len(mono_amplitude_array) - start_index - PULSE_WIDTH_SAMPLES) // samples_per_pulse)
+    n = min(n_pulses, max_pulses)
     if n < 1:
         return 0
     total = 0
@@ -139,12 +150,12 @@ def analyze_window(mono_amplitude_array: np.ndarray, sample_rate: int, pulse_rat
     # Start the analysis window after whichever phase offset is larger, so both
     # the peak and noise trains fit entirely within the recording.
     analysis_start = max(peak_phase, noise_phase)
-    analysis_size = int((len(mono_amplitude_array) - analysis_start) // samples_per_pulse)
-    if analysis_size < 1:
+    n_pulses = int((len(mono_amplitude_array) - analysis_start) // samples_per_pulse)
+    if n_pulses < 1:
         return None
 
     signal_amplitude = float(average_pulse_amplitude(
-        mono_amplitude_array, sample_rate, pulse_rate, analysis_size, peak_phase))
+        mono_amplitude_array, sample_rate, pulse_rate, n_pulses, peak_phase))
     noise_amplitude = float(average_pulse_amplitude(
-        mono_amplitude_array, sample_rate, pulse_rate, analysis_size, noise_phase))
+        mono_amplitude_array, sample_rate, pulse_rate, n_pulses, noise_phase))
     return WindowAnalysis(signal_amplitude, noise_amplitude, peak_phase, noise_phase)

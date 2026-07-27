@@ -1,7 +1,12 @@
 """Tests for pure-numpy functions in waterfall.py (no Qt required)."""
 import numpy as np
 
-from buzz.waterfall import build_colormap, _correction_offset, _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE
+from buzz.analyzer import AnalysisResult
+from buzz.dsp import SILENCE_DBFS
+from buzz.waterfall import (
+    build_colormap, _aggregate_meter_history, _correction_offset,
+    _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE,
+)
 
 
 class TestBuildColormap:
@@ -61,6 +66,40 @@ class TestCorrectionOffset:
     def test_small_nonzero_correction_still_at_least_one_pixel(self):
         px, _ = _correction_offset(1, half_w=11, max_corr=10)
         assert px >= 1
+
+
+def _locked(signal_dbm: float, noise_dbm: float) -> AnalysisResult:
+    return AnalysisResult(signal_dbm=signal_dbm, noise_dbm=noise_dbm,
+                          snr=signal_dbm - noise_dbm, locked=True)
+
+
+class TestAggregateMeterHistory:
+    def test_empty_history_reads_as_silence(self):
+        assert _aggregate_meter_history([]) == (SILENCE_DBFS, SILENCE_DBFS, False)
+
+    def test_all_locked_averages_both_channels(self):
+        history = [_locked(-70.0, -90.0), _locked(-80.0, -100.0)]
+        nf_dbm, sig_dbm, locked = _aggregate_meter_history(history)
+        assert nf_dbm == -95.0
+        assert sig_dbm == -75.0
+        assert locked is True
+
+    def test_signal_averages_only_locked_results(self):
+        history = [_locked(-70.0, -90.0), AnalysisResult.unlocked(-90.0)]
+        nf_dbm, sig_dbm, locked = _aggregate_meter_history(history)
+        assert sig_dbm == -70.0   # unlocked reading excluded from the signal average
+        assert locked is True
+
+    def test_noise_averages_all_results(self):
+        history = [_locked(-70.0, -90.0), AnalysisResult.unlocked(-94.0)]
+        nf_dbm, _, _ = _aggregate_meter_history(history)
+        assert nf_dbm == -92.0
+
+    def test_all_unlocked_signal_falls_back_to_noise(self):
+        history = [AnalysisResult.unlocked(-90.0), AnalysisResult.unlocked(-92.0)]
+        nf_dbm, sig_dbm, locked = _aggregate_meter_history(history)
+        assert sig_dbm == nf_dbm == -91.0
+        assert locked is False
 
 
 class TestWaterfallConstants:

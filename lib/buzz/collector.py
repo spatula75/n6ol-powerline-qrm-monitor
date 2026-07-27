@@ -16,9 +16,10 @@ from zoneinfo import ZoneInfo
 from buzz.analyzer import ContinuousAnalyzer
 from buzz.config import BuzzConfig
 from buzz.csv_store import CsvStore
+from buzz.dsp import SILENCE_DBFS
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher
-from buzz.weather import WeatherClient
+from buzz.weather import EMPTY_WEATHER, WeatherClient
 
 logger = logging.getLogger(__name__)
 
@@ -47,18 +48,20 @@ class Collector:
         zone = ZoneInfo(station.timezone)
         now = datetime.now(zone).replace(second=0, microsecond=0)
 
-        results = self._analyzer.get_results_snapshot()
-        locked  = [r for r in results if r.locked]
+        results        = self._analyzer.get_results_snapshot()
+        locked_results = [r for r in results if r.locked]
 
         if not results:
-            snr_mean, signal_mean, noise_mean = 0.0, -128.0, -128.0
+            snr_mean, signal_mean, noise_mean = 0.0, SILENCE_DBFS, SILENCE_DBFS
             lock_status = 'none'
-        elif locked:
-            signal_mean = round(sum(r.signal_dbm for r in locked)  / len(locked),  2)
-            snr_mean    = round(sum(r.snr         for r in locked)  / len(locked),  2)
-            noise_mean  = round(sum(r.noise_dbm   for r in results) / len(results), 2)
-            lock_status = 'full' if len(locked) == len(results) else 'partial'
+        elif locked_results:
+            signal_mean = round(sum(r.signal_dbm for r in locked_results) / len(locked_results), 2)
+            snr_mean    = round(sum(r.snr        for r in locked_results) / len(locked_results), 2)
+            noise_mean  = round(sum(r.noise_dbm  for r in results)        / len(results),        2)
+            lock_status = 'full' if len(locked_results) == len(results) else 'partial'
         else:
+            # Mirror AnalysisResult.unlocked(): a lock-less minute records
+            # signal == noise so the plotted traces coincide instead of gapping.
             noise_mean  = round(sum(r.noise_dbm for r in results) / len(results), 2)
             signal_mean = noise_mean
             snr_mean    = 0.0
@@ -71,13 +74,10 @@ class Collector:
         except Exception:
             logger.warning('Weather fetch failed — recording measurement without weather data.',
                            exc_info=True)
-            weather_data = ('', '', '', '', '', '')
-        temperature, humidity, solar_radiation, wind_speed, wind_gust, wind_bearing = weather_data
+            weather_data = EMPTY_WEATHER
 
         csv_str = self._store.append(now, snr_mean, signal_mean, noise_mean,
-                                     lock_status,
-                                     temperature, humidity, solar_radiation,
-                                     wind_speed, wind_gust, wind_bearing)
+                                     lock_status, *weather_data)
 
         output_dir = Path(station.path)
         now_date_str = now.strftime('%Y-%m-%d')
