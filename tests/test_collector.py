@@ -39,7 +39,7 @@ def _make_collector(cfg: BuzzConfig) -> Collector:
 
 
 def _setup_defaults(collector: Collector, tmp_path: Path, minute: int = 30) -> datetime:
-    collector._analyzer.get_results_snapshot.return_value = [_LOCKED_RESULT] * 60
+    collector._analyzer.drain_results.return_value = [_LOCKED_RESULT] * 60
     collector._weather.fetch.return_value = ('72', '45', '120', '5', '8', '180')
     collector._store.append.return_value = 'csv_row'
     collector._store.filename_for_date.return_value = tmp_path / 'data.csv'
@@ -47,7 +47,7 @@ def _setup_defaults(collector: Collector, tmp_path: Path, minute: int = 30) -> d
 
 
 class TestRunCollectionAveraging:
-    def test_calls_get_results_snapshot_once(self, tmp_path):
+    def test_calls_drain_results_once(self, tmp_path):
         cfg = _make_config(tmp_path)
         collector = _make_collector(cfg)
         now = _setup_defaults(collector, tmp_path)
@@ -55,7 +55,7 @@ class TestRunCollectionAveraging:
             mock_dt.now.return_value = now
             mock_dt.fromisoformat = datetime.fromisoformat
             collector._run_collection()
-        collector._analyzer.get_results_snapshot.assert_called_once()
+        collector._analyzer.drain_results.assert_called_once()
 
     def test_averaged_snr_from_locked_results(self, tmp_path):
         cfg = _make_config(tmp_path)
@@ -64,7 +64,7 @@ class TestRunCollectionAveraging:
             AnalysisResult(signal_dbm=-80.0, noise_dbm=-90.0, snr=10.0, locked=True),
             AnalysisResult(signal_dbm=-70.0, noise_dbm=-80.0, snr=20.0, locked=True),
         ]
-        collector._analyzer.get_results_snapshot.return_value = results
+        collector._analyzer.drain_results.return_value = results
         collector._weather.fetch.return_value = ('72', '45', '120', '5', '8', '180')
         collector._store.append.return_value = 'csv'
         collector._store.filename_for_date.return_value = tmp_path / 'data.csv'
@@ -115,19 +115,19 @@ class TestRunCollectionLockStatus:
 
     def test_all_locked_gives_full(self, tmp_path):
         collector = _make_collector(_make_config(tmp_path))
-        collector._analyzer.get_results_snapshot.return_value = [_LOCKED_RESULT] * 60
+        collector._analyzer.drain_results.return_value = [_LOCKED_RESULT] * 60
         args = self._run(collector, tmp_path)
         assert args[4] == 'full'
 
     def test_all_unlocked_gives_none(self, tmp_path):
         collector = _make_collector(_make_config(tmp_path))
-        collector._analyzer.get_results_snapshot.return_value = [_UNLOCKED_RESULT] * 60
+        collector._analyzer.drain_results.return_value = [_UNLOCKED_RESULT] * 60
         args = self._run(collector, tmp_path)
         assert args[4] == 'none'
 
     def test_mixed_gives_partial(self, tmp_path):
         collector = _make_collector(_make_config(tmp_path))
-        collector._analyzer.get_results_snapshot.return_value = (
+        collector._analyzer.drain_results.return_value = (
             [_LOCKED_RESULT] * 30 + [_UNLOCKED_RESULT] * 30
         )
         args = self._run(collector, tmp_path)
@@ -135,13 +135,13 @@ class TestRunCollectionLockStatus:
 
     def test_no_results_gives_none(self, tmp_path):
         collector = _make_collector(_make_config(tmp_path))
-        collector._analyzer.get_results_snapshot.return_value = []
+        collector._analyzer.drain_results.return_value = []
         args = self._run(collector, tmp_path)
         assert args[4] == 'none'
 
     def test_no_lock_signal_equals_noise(self, tmp_path):
         collector = _make_collector(_make_config(tmp_path))
-        collector._analyzer.get_results_snapshot.return_value = [_UNLOCKED_RESULT] * 60
+        collector._analyzer.drain_results.return_value = [_UNLOCKED_RESULT] * 60
         args = self._run(collector, tmp_path)
         assert args[2] == args[3]   # signal_mean == noise_mean
 

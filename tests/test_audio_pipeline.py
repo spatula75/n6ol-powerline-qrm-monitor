@@ -38,6 +38,13 @@ def _fire(callback, amplitude: int = 5000, n: int = CHUNK) -> None:
     callback(data, n, None, None)
 
 
+def _fire_indexed(callback, chunk_index: int) -> None:
+    """Deliver a chunk whose sample values are their global stream indices."""
+    start = chunk_index * CHUNK
+    data = (np.arange(start, start + CHUNK) % 32768).astype(np.int16).reshape(-1, 1)
+    callback(data, CHUNK, None, None)
+
+
 class TestAudioPipelineInit:
     def test_stream_started_on_init(self):
         _, mock_sd, _ = _make_pipeline()
@@ -145,32 +152,67 @@ class TestAudioPipelineGetSnapshot:
         result = pipeline.get_snapshot(100)
         assert len(result) == 100
 
-    def test_offset_shifts_window_back(self):
-        pipeline, _, callback = _make_pipeline()
-        _fire(callback, amplitude=111)
-        _fire(callback, amplitude=222)
-        # with offset=CHUNK, skip the last chunk and read the one before it
-        result = pipeline.get_snapshot(CHUNK, offset=CHUNK)
-        assert np.all(result == 111)
+class TestAudioPipelineGetSnapshotAligned:
+    """Phase-aligned snapshots: the window must end at a multiple of `align`
+    samples in the global stream, so every window shares a phase origin no
+    matter where the chunk-quantised tail happens to be."""
 
-    def test_offset_zero_is_most_recent(self):
-        pipeline, _, callback = _make_pipeline()
-        _fire(callback, amplitude=111)
-        _fire(callback, amplitude=222)
-        result = pipeline.get_snapshot(CHUNK, offset=0)
-        assert np.all(result == 222)
+    ALIGN = 400   # 3 pulse periods at 16 kHz / 120 pps
 
-    def test_non_overlapping_windows_are_distinct(self):
+    def _pipeline_with_chunks(self, n_chunks: int):
         pipeline, _, callback = _make_pipeline()
-        _fire(callback, amplitude=100)
-        _fire(callback, amplitude=200)
-        _fire(callback, amplitude=300)
-        w0 = pipeline.get_snapshot(CHUNK, offset=2 * CHUNK)
-        w1 = pipeline.get_snapshot(CHUNK, offset=CHUNK)
-        w2 = pipeline.get_snapshot(CHUNK, offset=0)
-        assert np.all(w0 == 100)
-        assert np.all(w1 == 200)
-        assert np.all(w2 == 300)
+        for i in range(n_chunks):
+            _fire_indexed(callback, i)
+        return pipeline, callback
+
+    def test_default_window_ends_at_tail(self):
+        pipeline, _ = self._pipeline_with_chunks(33)
+        result = pipeline.get_snapshot(1600)
+        assert result[-1] == 33 * CHUNK - 1
+
+    def test_aligned_window_ends_at_align_multiple(self):
+        # tail = 33 × 512 = 16896; greatest multiple of 400 below it is 16800
+        pipeline, _ = self._pipeline_with_chunks(33)
+        result = pipeline.get_snapshot(1600, align=self.ALIGN)
+        assert len(result) == 1600
+        assert result[-1] == 16800 - 1
+        assert result[0] == 16800 - 1600
+
+    def test_aligned_windows_share_phase_origin_as_tail_advances(self):
+        pipeline, callback = self._pipeline_with_chunks(33)
+        for i in range(33, 40):
+            _fire_indexed(callback, i)
+            window = pipeline.get_snapshot(800, align=self.ALIGN)
+            assert (int(window[-1]) + 1) % self.ALIGN == 0
+
+    def test_unaligned_windows_move_with_tail(self):
+        """Documents the problem align solves: default windows end mid-period."""
+        pipeline, _ = self._pipeline_with_chunks(33)
+        assert (int(pipeline.get_snapshot(800)[-1]) + 1) % self.ALIGN != 0
+
+    def test_empty_buffer_returns_zeros_with_align(self):
+        pipeline, _, _ = _make_pipeline()
+        result = pipeline.get_snapshot(CHUNK, align=self.ALIGN)
+        assert np.all(result == 0)
+
+
+class TestAudioPipelineTotalSamples:
+    def test_zero_before_any_callback(self):
+        pipeline, _, _ = _make_pipeline()
+        assert pipeline.total_samples == 0
+
+    def test_counts_every_captured_sample(self):
+        pipeline, _, callback = _make_pipeline()
+        for _ in range(3):
+            _fire(callback)
+        assert pipeline.total_samples == 3 * CHUNK
+
+    def test_keeps_growing_after_buffer_discards_old_chunks(self):
+        pipeline, _, callback = _make_pipeline()
+        n = pipeline._buffer.maxlen + 10
+        for _ in range(n):
+            _fire(callback)
+        assert pipeline.total_samples == n * CHUNK
 
 
 class TestAudioPipelineWaitForData:
@@ -203,27 +245,6 @@ class TestAudioPipelineWaitForData:
         assert pipeline.wait_for_data(CHUNK + 1, timeout=0.05) is False
         _fire(callback)  # now two chunks cover it
         assert pipeline.wait_for_data(CHUNK + 1, timeout=0.05) is True
-
-
-class TestAudioPipelineLatestChunk:
-    def test_returns_none_when_buffer_empty(self):
-        pipeline, _, _ = _make_pipeline()
-        assert pipeline.latest_chunk() is None
-
-    def test_returns_most_recent_chunk(self):
-        pipeline, _, callback = _make_pipeline()
-        _fire(callback, amplitude=100)
-        _fire(callback, amplitude=200)
-        chunk = pipeline.latest_chunk()
-        assert chunk is not None
-        assert np.all(chunk == 200)
-
-    def test_returns_copy(self):
-        pipeline, _, callback = _make_pipeline()
-        _fire(callback, amplitude=500)
-        chunk = pipeline.latest_chunk()
-        chunk[0] = 0
-        assert pipeline._buffer[-1][0] == 500  # buffer unaffected
 
 
 class TestAudioPipelineClose:

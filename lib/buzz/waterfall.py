@@ -9,6 +9,7 @@ MainWindow composes both widgets side-by-side and handles clean shutdown.
 
 from collections import deque
 from collections.abc import Sequence
+from math import ceil
 
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
@@ -32,11 +33,17 @@ _N_ROWS = 100                               # history rows (~10 s at 100 ms/fram
 _PIXELS_PER_ROW = 2                         # vertical scale; _WINDOW_H is derived from this
 _UPDATE_MS = 100
 _DB_RANGE = 48.0                            # colour scale dynamic range in dB (8 S-units)
-_DB_REF = 20 * np.log10(32768.0 * _CHUNK / 4)  # 0 dBFS for a full-scale Hann-windowed sinusoid
+# FFT magnitude that corresponds to 0 dBFS: a full-scale (amplitude 32768)
+# sinusoid centred on a bin peaks at 32768 × _CHUNK/4.  The /4 is two factors
+# of 1/2: the Hann window attenuates the average sample to half (its coherent
+# gain, sum(w)/N = 1/2), and a real sinusoid's FFT splits its magnitude
+# equally between the +f and −f bins.
+_DB_REF = 20 * np.log10(32768.0 * _CHUNK / 4)
 # Broadband noise spreads across CHUNK/2 bins; each bin sits ~23 dB below the
 # time-domain power that the level meter measures.  Subtract this so the noise
-# floor anchor applies to per-bin energy, not total broadband power.
-_DB_FFT_NOISE_CORR = float(10 * np.log10(_CHUNK * 3 / 8))  # ≈ 22.8 dB for Hann
+# floor anchor applies to per-bin energy, not total broadband power.  The
+# _CHUNK × 3/8 is the Hann window's noise power gain: sum(w²) = 3N/8.
+_DB_FFT_NOISE_CORR = float(10 * np.log10(_CHUNK * 3 / 8))  # ≈ 22.8 dB
 _AXIS_H = 24                                # pixels reserved for frequency axis / header
 
 _HANN = np.hanning(_CHUNK).astype(np.float32)
@@ -75,7 +82,7 @@ _WINDOW_H    = _N_ROWS * _PIXELS_PER_ROW + _AXIS_H  # 224 px
 _CORR_H      = _SEG_H // 4                 # 3 px — phase-correction indicator height
 _CORR_TOP    = _AXIS_H + 2                 # top of correction strip (just below header)
 _SEGS_TOP    = _CORR_TOP + _CORR_H + 1    # S-meter bars start here
-_SEGS_BOTTOM = _WINDOW_H - 4
+_SEGS_BOTTOM = _WINDOW_H - 4              # 4 px bottom margin
 _SEGS_H      = _SEGS_BOTTOM - _SEGS_TOP   # ≈ 190 px for 13 segments
 
 _METER_UPDATE_MS = 200                    # meter poll cadence (matches analyzer LOCKED tick)
@@ -117,6 +124,26 @@ def _aggregate_meter_history(history: Sequence[AnalysisResult]) -> tuple[float, 
     return nf_dbm, sum(r.signal_dbm for r in locked_results) / len(locked_results), True
 
 
+def _mean_spectrum_db(samples: np.ndarray, display_bins: int, db_min: float) -> np.ndarray | None:
+    """Mean FFT magnitude in dB across all whole chunks in samples, or None if
+    there isn't a single whole chunk.
+
+    Averaging every chunk captured since the previous frame — instead of FFT'ing
+    only the newest one — means no audio goes unrendered: a transient shorter
+    than the frame interval still contributes to its row instead of falling in
+    the ~68 ms gap a single-chunk frame would leave.
+    """
+    n_whole = len(samples) // _CHUNK
+    if n_whole == 0:
+        return None
+    frames = samples[len(samples) - n_whole * _CHUNK:].reshape(n_whole, _CHUNK)
+    windowed = frames.astype(np.float32) * _HANN
+    spectrum = np.abs(np.fft.rfft(windowed, axis=1))[:, :display_bins].mean(axis=0)
+    # log10(0) bins are replaced by db_min via the where(); suppress the -inf warning
+    with np.errstate(divide='ignore'):
+        return np.where(spectrum > 0, 20 * np.log10(spectrum) - _DB_REF, db_min)
+
+
 def build_colormap() -> np.ndarray:
     """Return a 256×3 uint8 RGB lookup table: black → blue → cyan → yellow → red."""
     lut = np.zeros((256, 3), dtype=np.uint8)
@@ -145,7 +172,11 @@ _COLORMAP = build_colormap()
 # ---------------------------------------------------------------------------
 
 class WaterfallWidget(QWidget):
-    """Scrolling FFT spectrogram, updated by a QTimer at ~10 fps."""
+    """Scrolling FFT spectrogram, updated by a QTimer at ~10 fps.
+
+    Each frame renders the averaged FFT of all audio captured since the previous
+    frame, so the display covers the full timeline rather than sampling it.
+    """
 
     def __init__(self, pipeline: AudioPipeline, config: BuzzConfig,
                  parent: QWidget | None = None) -> None:
@@ -161,6 +192,10 @@ class WaterfallWidget(QWidget):
         self._db_min = (config.station.noise_floor
                         - config.station.audio_rf_conversion_db
                         - _DB_FFT_NOISE_CORR)
+        # Chunks per frame, rounded up so consecutive frames overlap slightly
+        # (4 chunks = 128 ms per 100 ms frame at 16 kHz) rather than leaving gaps.
+        self._frame_chunks = ceil(_UPDATE_MS / 1000 * sample_rate / _CHUNK)
+        self._last_total_samples = 0
         self._history_db = np.full((_N_ROWS, self._display_bins), self._db_min, dtype=np.float32)
         self.setFixedSize(self._display_bins * _PIXELS_PER_BIN, _WINDOW_H)
 
@@ -169,14 +204,19 @@ class WaterfallWidget(QWidget):
         self._timer.start(_UPDATE_MS)
 
     def _tick(self) -> None:
-        chunk = self._pipeline.latest_chunk()
-        if chunk is None:
+        # If the stream has stalled, freeze the display rather than scrolling
+        # duplicated rows of stale audio (which would fabricate repeated time).
+        total = self._pipeline.total_samples
+        if total == self._last_total_samples:
             return
-        windowed = chunk.astype(np.float32) * _HANN
-        spectrum = np.abs(np.fft.rfft(windowed, n=_CHUNK))[:self._display_bins]
-        db = np.where(spectrum > 0, 20 * np.log10(spectrum) - _DB_REF, self._db_min)
+        self._last_total_samples = total
+
+        samples = self._pipeline.get_snapshot(self._frame_chunks * _CHUNK)
+        db = _mean_spectrum_db(samples, self._display_bins, self._db_min)
+        if db is None:
+            return
         self._history_db[1:] = self._history_db[:-1]
-        self._history_db[0] = db.astype(np.float32)
+        self._history_db[0] = db
         self.update()
 
     def paintEvent(self, event) -> None:  # noqa: N802
@@ -193,7 +233,9 @@ class WaterfallWidget(QWidget):
             painter.drawLine(x, _AXIS_H - 5, x, _AXIS_H)
             painter.drawText(x + 2, _AXIS_H - 6, f'{int(b * self._hz_per_bin)} Hz')
 
-        # Waterfall — each row is exactly _PIXELS_PER_ROW pixels tall
+        # Waterfall — each row is exactly _PIXELS_PER_ROW pixels tall.
+        # Map dB-above-noise-floor onto the 0–255 colormap index range:
+        # the floor renders as the colormap's cold end, floor + _DB_RANGE as hot.
         norm = np.clip(
             (self._history_db - self._db_min) / _DB_RANGE * 255, 0, 255,
         ).astype(np.uint8)

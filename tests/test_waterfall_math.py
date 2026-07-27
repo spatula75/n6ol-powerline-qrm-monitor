@@ -4,7 +4,7 @@ import numpy as np
 from buzz.analyzer import AnalysisResult
 from buzz.dsp import SILENCE_DBFS
 from buzz.waterfall import (
-    build_colormap, _aggregate_meter_history, _correction_offset,
+    build_colormap, _aggregate_meter_history, _correction_offset, _mean_spectrum_db,
     _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE,
 )
 
@@ -100,6 +100,46 @@ class TestAggregateMeterHistory:
         nf_dbm, sig_dbm, locked = _aggregate_meter_history(history)
         assert sig_dbm == nf_dbm == -91.0
         assert locked is False
+
+
+class TestMeanSpectrumDb:
+    _BINS = 128
+    _DB_MIN = -88.0
+
+    def _tone(self, n_chunks: int, bin_index: int = 10, amplitude: float = 32767.0) -> np.ndarray:
+        """Sinusoid at an exact FFT bin frequency, n_chunks × 512 samples long."""
+        t = np.arange(n_chunks * _CHUNK)
+        return (amplitude * np.cos(2 * np.pi * bin_index * t / _CHUNK)).astype(np.int16)
+
+    def test_full_scale_tone_reads_near_zero_dbfs(self):
+        """Validates the _DB_REF calibration: a full-scale sinusoid peaks at ~0 dBFS."""
+        db = _mean_spectrum_db(self._tone(1), self._BINS, self._DB_MIN)
+        assert abs(db.max()) < 0.1
+
+    def test_tone_peak_lands_in_its_bin(self):
+        db = _mean_spectrum_db(self._tone(4, bin_index=20), self._BINS, self._DB_MIN)
+        assert int(np.argmax(db)) == 20
+
+    def test_averages_across_chunks(self):
+        # Tone in one of two chunks: mean magnitude halves, so the peak reads −6 dB
+        samples = np.concatenate([self._tone(1), np.zeros(_CHUNK, dtype=np.int16)])
+        db = _mean_spectrum_db(samples, self._BINS, self._DB_MIN)
+        assert abs(db.max() - (-6.02)) < 0.1
+
+    def test_partial_chunk_is_trimmed_from_the_front(self):
+        tone = self._tone(2)
+        with_partial = np.concatenate([np.full(100, 30000, dtype=np.int16), tone])
+        np.testing.assert_allclose(
+            _mean_spectrum_db(with_partial, self._BINS, self._DB_MIN),
+            _mean_spectrum_db(tone, self._BINS, self._DB_MIN))
+
+    def test_less_than_one_chunk_returns_none(self):
+        assert _mean_spectrum_db(np.zeros(_CHUNK - 1, dtype=np.int16),
+                                 self._BINS, self._DB_MIN) is None
+
+    def test_silence_reads_db_min(self):
+        db = _mean_spectrum_db(np.zeros(_CHUNK, dtype=np.int16), self._BINS, self._DB_MIN)
+        assert np.all(db == self._DB_MIN)
 
 
 class TestWaterfallConstants:

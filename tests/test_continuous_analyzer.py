@@ -245,27 +245,35 @@ class TestTickMethods:
 
 class TestResultBuffer:
     def test_buffer_initially_empty(self):
-        assert _make_analyzer().get_results_snapshot() == []
+        assert _make_analyzer().drain_results() == []
 
     def test_publish_appends_to_buffer(self):
         az = _make_analyzer()
         r = AnalysisResult(signal_dbm=-70.0, noise_dbm=-90.0, snr=20.0, locked=True)
         az._publish(r)
-        assert az.get_results_snapshot() == [r]
+        assert az.drain_results() == [r]
 
-    def test_get_results_snapshot_returns_list_copy(self):
+    def test_drain_clears_the_buffer(self):
+        """Each collection cycle must average a disjoint set of results — a
+        non-draining read would re-average the previous minute's tail."""
         az = _make_analyzer()
         az._publish(AnalysisResult(signal_dbm=-70.0, noise_dbm=-90.0, snr=20.0, locked=True))
-        snap = az.get_results_snapshot()
-        snap.clear()
-        assert len(az.get_results_snapshot()) == 1   # original buffer unaffected
+        az.drain_results()
+        assert az.drain_results() == []
 
-    def test_buffer_bounded_to_360(self):
+    def test_drain_does_not_affect_latest_result(self):
         az = _make_analyzer()
         r = AnalysisResult(signal_dbm=-70.0, noise_dbm=-90.0, snr=20.0, locked=True)
-        for _ in range(400):
+        az._publish(r)
+        az.drain_results()
+        assert az.latest_result() == r   # the meters keep their reading
+
+    def test_buffer_bounded_to_600(self):
+        az = _make_analyzer()
+        r = AnalysisResult(signal_dbm=-70.0, noise_dbm=-90.0, snr=20.0, locked=True)
+        for _ in range(700):
             az._publish(r)
-        assert len(az.get_results_snapshot()) == 360
+        assert len(az.drain_results()) == 600
 
     def test_multiple_results_preserved_in_order(self):
         az = _make_analyzer()
@@ -273,9 +281,9 @@ class TestResultBuffer:
         r2 = AnalysisResult(signal_dbm=-75.0, noise_dbm=-92.0, snr=17.0, locked=False)
         az._publish(r1)
         az._publish(r2)
-        snap = az.get_results_snapshot()
-        assert snap[0] is r1
-        assert snap[1] is r2
+        drained = az.drain_results()
+        assert drained[0] is r1
+        assert drained[1] is r2
 
 
 # ---------------------------------------------------------------------------
@@ -609,6 +617,63 @@ class TestPhaseSearch:
     def test_signal_lost_refine_interval_much_longer_than_search(self):
         """FFT fallback should be infrequent compared to the cheap narrow scan."""
         assert ContinuousAnalyzer.SIGNAL_LOST_REFINE >= 5 * ContinuousAnalyzer.SEARCH_INTERVAL
+
+
+# ---------------------------------------------------------------------------
+# Snapshot phase alignment (regression)
+# ---------------------------------------------------------------------------
+
+class _AlignedStreamPipeline:
+    """Reproduces AudioPipeline snapshot semantics over a synthetic stream: the
+    window ends at the chunk-quantised tail, adjusted down to a multiple of
+    `align`.  Honouring `align` is the behaviour under test — with align=1 the
+    window's phase origin moves with the tail and stored phases go stale."""
+
+    CHUNK = 512
+
+    def __init__(self, stream: np.ndarray, start_chunks: int = 40):
+        self._stream = stream
+        self.chunks = start_chunks
+
+    def wait_for_data(self, n_samples: int, timeout: float | None = None) -> bool:
+        return self.chunks * self.CHUNK >= n_samples
+
+    def get_snapshot(self, n_samples: int, align: int = 1) -> np.ndarray:
+        tail = self.chunks * self.CHUNK
+        end = tail - tail % align
+        return self._stream[max(0, end - n_samples):end]
+
+
+class TestSnapshotPhaseAlignment:
+    """Regression for the moving-phase-origin bug: 512-sample chunks are not a
+    whole number of 133.33-sample pulse periods, so an unaligned snapshot's
+    phase origin cycles through 25 offsets (multiples of 5.33 samples) as the
+    tail advances — and phases learned in one snapshot point at the wrong
+    samples in the next.  With aligned capture, lock must survive arbitrary
+    tail movement on a perfect, drift-free signal."""
+
+    def _perfect_stream(self, seconds: int = 30) -> np.ndarray:
+        n = seconds * SAMPLE_RATE
+        spp = SAMPLE_RATE / PULSE_RATE
+        data = np.random.default_rng(7).integers(50, 150, size=n).astype(np.int16)
+        for i in range(int(n / spp)):
+            pos = 5 + round(i * spp)
+            if pos + 3 < n:
+                data[pos:pos + 3] = 20000
+        return data
+
+    def test_lock_survives_chunkwise_tail_movement(self):
+        pipe = _AlignedStreamPipeline(self._perfect_stream())
+        az = ContinuousAnalyzer(pipe, _make_config())
+        _step(az, az._full_analysis)
+        assert az._state == 'LOCKED'
+        # 200 ms ticks advance ~6.25 chunks (6,6,6,7 pattern) — plus deliberate
+        # jitter so many residues of the 25-chunk misalignment cycle are visited.
+        for advance in [6, 6, 6, 7, 7, 6, 8, 5, 31, 6, 13, 6, 6, 7, 9, 25]:
+            pipe.chunks += advance
+            _step(az, az._quick_check)
+            assert az._state == 'LOCKED'
+            assert az.latest_result().snr >= ContinuousAnalyzer.LOCK_ACQUIRE_SNR
 
 
 # ---------------------------------------------------------------------------

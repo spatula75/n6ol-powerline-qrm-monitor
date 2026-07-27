@@ -40,7 +40,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from enum import StrEnum
-from math import log10
+from math import gcd, log10
 
 import numpy as np
 
@@ -103,11 +103,16 @@ class ContinuousAnalyzer:
         self._pulse_rate        = audio.pulse_rate
         self._offset_db         = config.station.audio_rf_conversion_db
         self._window_samples    = audio.sample_rate    # 1 s analysis window
-        self._scan_pulses       = audio.pulse_rate // 2
+        self._scan_pulses       = audio.pulse_rate // 2   # half a second of pulses (full kernel)
         self._samples_per_pulse = audio.sample_rate / audio.pulse_rate
         self._kernel            = build_pulse_kernel(audio.sample_rate, audio.pulse_rate)
         self._fast_kernel       = build_pulse_kernel(
             audio.sample_rate, audio.pulse_rate, n_pulses=self.FAST_SCAN_PULSES)
+        # Snapshot alignment: the smallest whole-sample interval that is an exact
+        # number of pulse periods (400 samples = 3 periods at 16 kHz / 120 pps).
+        # Windows ending on multiples of this share a phase origin, so phases
+        # learned in one snapshot stay valid in every later one.
+        self._phase_align = audio.sample_rate // gcd(audio.sample_rate, audio.pulse_rate)
 
         self._state       = AnalyzerState.SEARCHING
         self._peak_phase  = 0
@@ -125,7 +130,10 @@ class ContinuousAnalyzer:
         self._last_fast_scan   = 0.0  # last _fast_scan while SIGNAL_LOST
 
         self._latest_result: AnalysisResult | None = None
-        self._result_buffer: deque[AnalysisResult] = deque(maxlen=360)
+        # Drained by the collector once per minute.  At the fastest publish cadence
+        # (one per FAST_TICK_INTERVAL) a minute produces ~300 results; 600 gives a
+        # late collection cycle a full extra minute before results are lost.
+        self._result_buffer: deque[AnalysisResult] = deque(maxlen=600)
         self._latest_signal_correction: int = 0
         self._latest_noise_correction: int = 0
         self._result_lock = threading.Lock()
@@ -153,9 +161,17 @@ class ContinuousAnalyzer:
         with self._result_lock:
             return self._latest_noise_correction
 
-    def get_results_snapshot(self) -> list[AnalysisResult]:
+    def drain_results(self) -> list[AnalysisResult]:
+        """Return all results published since the last drain (oldest first) and clear them.
+
+        Draining rather than copying keeps successive collector cycles averaging
+        disjoint sets of results — a non-draining read would re-average the tail
+        of the previous minute into every row.
+        """
         with self._result_lock:
-            return list(self._result_buffer)
+            results = list(self._result_buffer)
+            self._result_buffer.clear()
+            return results
 
     # ----------------------------------------------------- state machine core
 
@@ -232,14 +248,22 @@ class ContinuousAnalyzer:
         return amplitude_to_dbm(amplitude, self._offset_db)
 
     def _capture(self, n_samples: int) -> np.ndarray | None:
-        """Wait for n_samples of audio and return it rectified (absolute int32).
+        """Wait for n_samples of phase-aligned audio and return it rectified (absolute int32).
+
+        Snapshots are aligned to _phase_align so every window starts at the same
+        offset within the pulse period.  Without this the window origin moves with
+        the ring buffer tail between ticks, and phases stored from one snapshot
+        point at the wrong samples in the next — silently breaking _quick_check,
+        _noise_check, and _phase_search.
 
         Returns None when the pipeline cannot supply the data within
         CAPTURE_TIMEOUT — the caller should leave the state machine unchanged.
         """
-        if not self._pipeline.wait_for_data(n_samples, timeout=self.CAPTURE_TIMEOUT):
+        if not self._pipeline.wait_for_data(n_samples + self._phase_align,
+                                            timeout=self.CAPTURE_TIMEOUT):
             return None
-        return np.abs(self._pipeline.get_snapshot(n_samples).astype(np.int32))
+        snapshot = self._pipeline.get_snapshot(n_samples, align=self._phase_align)
+        return np.abs(snapshot.astype(np.int32))
 
     def _sample_phases(self, abs_data: np.ndarray,
                        peak_phase: int | None = None,
@@ -250,6 +274,8 @@ class ContinuousAnalyzer:
         """
         peak     = self._peak_phase if peak_phase is None else peak_phase
         noise    = self._noise_phase if noise_phase is None else noise_phase
+        # Start after the larger of the two phase offsets so both pulse trains
+        # fit entirely inside the window and are averaged over the same pulses.
         start    = max(peak, noise)
         n_pulses = int((len(abs_data) - start) // self._samples_per_pulse)
         if n_pulses < 1:
@@ -279,6 +305,8 @@ class ContinuousAnalyzer:
         peak   = float(fit.max())
         trough = float(fit.min())
         if trough <= 0:
+            # Quantised fit scores can floor to zero on very quiet audio; the dB
+            # ratio is undefined then, so treat any positive peak as a candidate.
             return peak > 0
         return 20 * log10(peak / trough) >= self.FAST_SCAN_SNR
 

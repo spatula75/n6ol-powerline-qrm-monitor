@@ -22,9 +22,9 @@ from buzz.dsp import SILENCE_DBFS, amplitude_to_dbm
 
 logger = logging.getLogger(__name__)
 
-# Ring buffer capacity in chunks.  300 × 512 samples at 16 kHz ≈ 160 seconds — enough
-# headroom for the continuous analyzer's 1 s windows and any display consumer that
-# wants a few seconds of history.
+# Ring buffer capacity in chunks.  300 × 512 samples at 16 kHz ≈ 9.6 seconds — ample
+# headroom for the continuous analyzer's 1 s aligned windows and the waterfall's
+# per-frame reads.
 _BUFFER_CHUNKS = 300
 
 
@@ -35,7 +35,7 @@ class AudioPipeline:
     consumers can block-wait for new data.  Multiple independent consumers (analysis
     thread, waterfall display, etc.) read from the buffer via get_snapshot() without
     removing data; the deque's maxlen acts as a sliding window that discards audio
-    older than ~160 seconds.
+    older than ~10 seconds.
 
     CHUNK_SIZE is a power of two so FFT-based consumers get clean window boundaries
     without padding or resampling.
@@ -46,6 +46,10 @@ class AudioPipeline:
     def __init__(self, config: BuzzConfig, device_index: int) -> None:
         self._buffer: deque[np.ndarray] = deque(maxlen=_BUFFER_CHUNKS)
         self._condition = threading.Condition()
+        # Monotonic count of samples ever captured; keeps growing after the deque
+        # starts discarding old chunks.  Global sample positions derived from this
+        # are what make phase-aligned snapshots possible.
+        self._total_samples = 0
 
         def _callback(indata: np.ndarray, frames: int,
                       time: object, status: sd.CallbackFlags) -> None:
@@ -54,6 +58,7 @@ class AudioPipeline:
             chunk = indata[:, 0].copy()
             with self._condition:
                 self._buffer.append(chunk)
+                self._total_samples += len(chunk)
                 self._condition.notify_all()
 
         self._stream = sd.InputStream(
@@ -66,21 +71,40 @@ class AudioPipeline:
         )
         self._stream.start()
 
-    def get_snapshot(self, n_samples: int, offset: int = 0) -> np.ndarray:
-        """Return n_samples ending offset samples before the current tail.
+    def get_snapshot(self, n_samples: int, align: int = 1) -> np.ndarray:
+        """Return the most recent n_samples of audio, optionally phase-aligned.
 
-        offset=0 (default) returns the most recent n_samples.
-        offset=n_samples returns the window immediately before that, and so on.
-        Caller should ensure wait_for_data(n_samples + offset) has returned True.
+        With align > 1 the window ends at the greatest multiple of align samples
+        since the stream started, rather than at the live tail.  Every aligned
+        window then has the same start position modulo align, at the cost of being
+        up to align-1 samples staler than the newest audio.  The analyzer depends
+        on this: it compares pulse phases across snapshots, and an unaligned
+        window's phase origin moves with the tail (512-sample chunks are not a
+        whole number of pulse periods), silently invalidating stored phases.
+
+        Caller should ensure wait_for_data(n_samples + align) has returned True.
         """
-        n_chunks = ceil((n_samples + offset) / self.CHUNK_SIZE)
+        n_chunks = ceil((n_samples + align - 1) / self.CHUNK_SIZE)
         with self._condition:
             chunks = list(self._buffer)[-n_chunks:]
+            total = self._total_samples
         if not chunks:
             return np.zeros(n_samples, dtype=np.int16)
         arr = np.concatenate(chunks)
-        end = len(arr) - offset
+        end = len(arr) - total % align
+        if end <= 0:
+            return np.zeros(n_samples, dtype=np.int16)
         return arr[max(0, end - n_samples):end]
+
+    @property
+    def total_samples(self) -> int:
+        """Monotonic count of samples captured since the stream started.
+
+        Lets consumers detect a stalled stream (count stops advancing) without
+        comparing audio content.
+        """
+        with self._condition:
+            return self._total_samples
 
     def wait_for_data(self, n_samples: int, timeout: float | None = None) -> bool:
         """Block until at least n_samples worth of chunks are in the buffer.
@@ -95,13 +119,6 @@ class AudioPipeline:
                 lambda: len(self._buffer) >= n_chunks,
                 timeout=timeout,
             )
-
-    def latest_chunk(self) -> np.ndarray | None:
-        """Return a copy of the most recently captured chunk, or None if the buffer is empty."""
-        with self._condition:
-            if not self._buffer:
-                return None
-            return self._buffer[-1].copy()
 
     def close(self) -> None:
         self._stream.stop()

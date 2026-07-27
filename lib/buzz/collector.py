@@ -38,17 +38,18 @@ class Collector:
     def _run_collection(self) -> None:
         """Take one complete measurement cycle and write all outputs.
 
-        Averages the last minute's worth of AnalysisResult objects from the analyzer
-        ring buffer, appends a CSV row, generates the raw and smoothed daily plots,
-        and on the hour also regenerates the all-time, 7-day, and 30-day summary
-        graphs.  If server uploads are enabled, also renders the HTML index and SCPs
-        all changed files.
+        Drains the AnalysisResult objects the analyzer published since the previous
+        cycle and averages them (draining keeps consecutive rows from re-averaging
+        each other's data), appends a CSV row, generates the raw and smoothed daily
+        plots, and on the hour also regenerates the all-time, 7-day, and 30-day
+        summary graphs.  If server uploads are enabled, also renders the HTML index
+        and SCPs all changed files.
         """
         station = self._config.station
         zone = ZoneInfo(station.timezone)
         now = datetime.now(zone).replace(second=0, microsecond=0)
 
-        results        = self._analyzer.get_results_snapshot()
+        results        = self._analyzer.drain_results()
         locked_results = [r for r in results if r.locked]
 
         if not results:
