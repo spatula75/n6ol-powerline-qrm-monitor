@@ -3,7 +3,8 @@ Entry point for the powerline QRM monitor.
 
 Loads configuration, wires up the audio pipeline, collector, weather client,
 CSV store, plotter, and publisher, then either launches the Qt waterfall
-display (default) or runs headlessly (--headless).
+display (default) or runs headlessly (--headless).  --top keeps the waterfall
+window always on top of other windows.
 
 In GUI mode the Qt event loop runs on the main thread; the collector runs
 on a daemon thread.  Closing the window (or ^C) stops the audio pipeline
@@ -97,6 +98,8 @@ def main() -> None:  # pragma: no cover
     parser = argparse.ArgumentParser(description='N6OL Powerline QRM Monitor')
     parser.add_argument('--headless', action='store_true',
                         help='Run without GUI waterfall display')
+    parser.add_argument('--top', action='store_true',
+                        help='Keep the waterfall window always on top of other windows')
     args = parser.parse_args()
 
     configure_logging()
@@ -136,7 +139,7 @@ def main() -> None:  # pragma: no cover
         return
 
     app = QApplication(sys.argv)
-    window = MainWindow(sampler.pipeline, analyzer, config)
+    window = MainWindow(sampler.pipeline, analyzer, config, always_on_top=args.top)
     window.show()
 
     # Allow Ctrl+C to close the window cleanly from the console

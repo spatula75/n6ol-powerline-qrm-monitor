@@ -246,6 +246,12 @@ system service or on a machine without a monitor):
 python -m buzz.main --headless
 ```
 
+To keep the display window pinned on top of other windows:
+
+```
+python -m buzz.main --top
+```
+
 ---
 
 ## Display Window

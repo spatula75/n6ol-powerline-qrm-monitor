@@ -308,9 +308,11 @@ class MainWindow(QMainWindow):
     """Top-level window; closing it shuts down the audio pipeline and analyzer."""
 
     def __init__(self, pipeline: AudioPipeline, analyzer: ContinuousAnalyzer,
-                 config: BuzzConfig) -> None:
+                 config: BuzzConfig, always_on_top: bool = False) -> None:
         super().__init__()
         self.setWindowTitle('N6OL QRM Monitor')
+        if always_on_top:
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self._pipeline = pipeline
         self._analyzer = analyzer
 
