@@ -232,10 +232,54 @@ between what the sound card measures and the actual RF level at your receiver in
 python -m buzz.main
 ```
 
-The monitor wakes up at the top of each minute, takes `measurements_to_take`
-recordings, appends a row to today's CSV, regenerates the plots, and uploads
-everything to the web server. At the top of each hour it also regenerates the
-three probability summary graphs (all-time, 7-day, 30-day).
+The monitor runs continuous audio analysis in the background, processing
+frames approximately every 200 ms and accumulating results in a rolling
+buffer.  At the top of each minute it averages the last full minute of
+results, appends a row to today's CSV, regenerates the plots, and uploads
+everything to the web server.  At the top of each hour it also regenerates
+the three probability summary graphs (all-time, 7-day, 30-day).
+
+To suppress the display window and run headlessly (useful when running as a
+system service or on a machine without a monitor):
+
+```
+python -m buzz.main --headless
+```
+
+---
+
+## Display Window
+
+When started without `--headless`, the monitor opens a live display window
+with two panels.
+
+### Waterfall
+
+The top panel is a scrolling waterfall spectrogram.  Each horizontal strip
+represents one short audio frame; newer frames scroll in from the top.
+Brighter colors indicate higher energy.  Powerline interference appears as a
+repeating pattern of bright bands spaced evenly at the harmonic frequencies of
+the configured pulse rate.
+
+### S-meters
+
+The lower panel shows two signal-strength bars that update in real time.
+
+- **NF** (noise floor) — average amplitude at the between-pulse positions,
+  representing background noise.
+- **SIG** (signal) — average amplitude at the pulse positions, representing
+  the powerline interference.
+
+Both bars use the standard ham radio scale: S9 = −73 dBm, each S-unit = 6 dB.
+The difference between SIG and NF is the SNR.
+
+Above each bar is a narrow 3-pixel strip showing the phase offset applied by
+the most recent internal correction step.  A dot at center means no correction
+was needed; a line extending left or right shows the direction and relative
+magnitude of the correction.  This is a diagnostic indicator — most users can
+safely ignore it, but it confirms the analyzer is actively tracking the pulse
+train's phase as propagation conditions, sound-card clock variation, and
+scheduling jitter cause gradual drift.
 
 ---
 
@@ -249,10 +293,13 @@ a 60 Hz grid, 100 pps on a 50 Hz grid. Each pulse is very short and broadband.
 The monitor exploits this periodicity to separate the interference from background
 noise.
 
-### Measurement pipeline (once per minute)
+### Continuous analysis pipeline
 
-1. **Record audio.** `sounddevice` captures a mono 16-bit PCM recording of
-   `duration` seconds from the configured input device.
+The analyzer processes audio continuously, running the following steps
+approximately every 200 ms:
+
+1. **Record audio.** `sounddevice` captures a short mono 16-bit PCM frame
+   from the configured input device.
 
 2. **Build a pulse-train kernel.** A sparse coefficient array is constructed
    with groups of three non-zero samples placed at the expected pulse positions
@@ -261,7 +308,7 @@ noise.
    separate correlation step needed.
 
 3. **FFT convolution.** `scipy.signal.fftconvolve` slides the kernel across the
-   recording in O((N+M) log(N+M)) time. The output is a score at every sample
+   frame in O((N+M) log(N+M)) time. The output is a score at every sample
    position reflecting how well a pulse train starting there fits the data.
    The position with the highest score is the pulse phase; the position with the
    lowest score is the noise floor phase (halfway between pulses).
@@ -274,13 +321,29 @@ noise.
    (dB relative to full scale), then `audio_rf_conversion_db` is applied to get
    dBm. SNR is the difference between the two.
 
-6. **Average.** Steps 1–5 repeat `measurements_to_take` times and the results
-   are averaged before being written to the CSV.
+Results are stored in a rolling buffer covering approximately the last 72 seconds.
+Every two seconds the analyzer also runs a phase-refinement step, scanning a
+small window around the current pulse phase to keep the kernel aligned as
+propagation conditions, sound-card clock imprecision, and processing jitter
+cause gradual drift.
+
+At each minute boundary the collector reads the buffer and averages the last
+full minute of results.  Signal and SNR values are averaged only from frames
+where the analyzer held a confirmed lock on the pulse train; noise floor is
+averaged across all frames regardless of lock status.
 
 ### Output
 
 - **Daily CSV** (`noise_data.YYYY-MM-DD.csv`) — one row per minute with
-  timestamp, SNR, signal level, noise floor, and weather data.
+  timestamp, SNR, signal level (dBm), noise floor (dBm), Signal Lock Status,
+  and weather data.  All dBm values are averages over the last full minute of
+  continuous analysis.  **Signal Lock Status** is `full` when the analyzer
+  held a confirmed lock on the pulse train for the entire minute, `partial`
+  when lock was held for part of the minute, or `none` when no lock was
+  established (e.g., the interference was absent or too weak to acquire).
+  When the status is `none`, the signal level equals the noise floor and SNR
+  is 0; the daily chart omits the red signal line for those intervals and
+  draws only the green noise floor.
 - **Daily plots** — a 1600×640 px chart of signal vs noise floor over the day,
   plus a 6-point moving average version.
 - **Probability summary graphs** — bar charts showing the normalized probability
