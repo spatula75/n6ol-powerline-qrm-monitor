@@ -346,7 +346,7 @@ class MeterPanelWidget(QWidget):
             if i % 2 == 0 or i >= 9:
                 painter.setPen(QColor(160, 160, 160))
                 painter.drawText(lbl_x, y, _LABEL_W, _SEG_H,
-                                 Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
+                                 Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
                                  _S_LABELS[i])
 
     def stop(self) -> None:
