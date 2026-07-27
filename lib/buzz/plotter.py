@@ -6,8 +6,11 @@ from a CSV file.  Plotter.generate_summary_graph() renders a bar chart showing t
 normalised probability of interference at each 15-minute interval of the day,
 aggregated across a configurable date range.
 
-All output is saved as PNG.  The _force_post_gc decorator works around a matplotlib
-memory-leak bug that causes handles to accumulate across repeated savefig calls.
+All output is saved as PNG.  The _gc_guarded decorator does two things: forces a
+gc.collect() after each render (working around a matplotlib memory-leak bug that
+causes handles to accumulate across repeated savefig calls), and disables the
+cyclic GC for the duration of the render itself (working around a PySide6/shiboken
+crash — see the decorator's docstring for the full story).
 """
 
 import gc  # noqa: I001
@@ -60,11 +63,53 @@ def _bar_color(val: int) -> str:
     return f'#{r:02x}{g:02x}{b:02x}'
 
 
-def _force_post_gc(func):
-    # Workaround for https://github.com/matplotlib/matplotlib/issues/27713
+def _gc_guarded(func):
+    # ------------------------------------------------------------------------
+    # WHY THIS DECORATOR DISABLES THE GC DURING THE CALL — READ BEFORE REMOVING
+    #
+    # We have hit a real, reproducible crash in production: a Windows access
+    # violation (0xC0000005) that took the whole process down. faulthandler
+    # caught it and the traceback showed the collector thread mid-gc.collect(),
+    # inside matplotlib's Artist.set() -> cbook.normalize_kwargs(), which had
+    # called into shibokensupport/signature/loader.py — that's PySide6/shiboken
+    # internals, not matplotlib's.
+    #
+    # The mechanism: importing PySide6 anywhere in the process (this app does,
+    # for the GUI waterfall window) makes shiboken globally replace
+    # builtins.__import__ for every thread, not just the Qt thread. That hook
+    # supports a Qt-for-Python feature (__feature__ snake_case/true_property)
+    # this codebase never uses, but it installs unconditionally regardless.
+    # When matplotlib's kwarg-normalization internals do an import in the
+    # course of rendering — on this, the collector thread, which has nothing
+    # to do with Qt — it gets routed through that hook. Qt for Python has a
+    # documented history of reference-counting bugs in this exact module
+    # (see PYSIDE-2660, "Crash on deallocating None triggered via Shiboken" —
+    # fixed for that specific repro, but the crash we hit is a new one on a
+    # newer Python/PySide6 combination). Our crash happened when the cyclic GC
+    # ran *while* that hook's C-level bookkeeping was mid-flight, and walked a
+    # corrupted object graph.
+    #
+    # A threading.Lock cannot fix this: shiboken's internals don't know our
+    # lock exists and have no reason to respect it, and the PySIDE-2660 repro
+    # crashed with no second thread involved at all, so this isn't purely a
+    # race we could serialize away. The one thing that actually protects every
+    # thread — ours and Qt's — is disabling the GC itself for the narrow
+    # window where matplotlib is exercising this code path, since gc.disable()
+    # is a single interpreter-wide switch with authority over all of them.
+    # ------------------------------------------------------------------------
+    # The gc.collect() afterward is unrelated: a workaround for a separate
+    # matplotlib memory leak (https://github.com/matplotlib/matplotlib/issues/27713)
+    # that causes handles to accumulate across repeated savefig calls. It runs
+    # after re-enabling GC, once we're past the risky window.
     @wraps(func)
     def wrapper(*args, **kwargs):
-        result = func(*args, **kwargs)
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            result = func(*args, **kwargs)
+        finally:
+            if was_enabled:
+                gc.enable()
         gc.collect()
         return result
     return wrapper
@@ -80,7 +125,7 @@ class Plotter:
         ret[points:] = ret[points:] - ret[:-points]
         return ret[points - 1:] / points
 
-    @_force_post_gc
+    @_gc_guarded
     def generate_graph_from_csv(self, input_filename: Path | str, output_filename: Path | str, smooth: int = 0) -> None:
         """Render a daily noise trace and save it as a PNG.
 
@@ -179,7 +224,7 @@ class Plotter:
         plt.savefig(output_filename, pil_kwargs={'optimize': True})
         plt.close()
 
-    @_force_post_gc
+    @_gc_guarded
     def generate_summary_graph(self, output_filename: Path | str, start_date: datetime) -> None:
         """Render a time-of-day interference probability bar chart and save it as a PNG.
 

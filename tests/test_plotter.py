@@ -1,8 +1,9 @@
 """Tests for Plotter: moving average, daily graph, and summary graph generation."""
 
+import gc
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -10,7 +11,7 @@ import pytest
 
 from buzz.config import BuzzConfig
 from buzz.csv_store import CsvStore
-from buzz.plotter import Plotter
+from buzz.plotter import Plotter, _gc_guarded
 
 _TZ = ZoneInfo('America/Los_Angeles')
 
@@ -46,6 +47,79 @@ def _write_csv_with_lock(path: Path, lock_statuses: list[str]) -> None:
         sig = '-95.0' if status == 'none' else '-80.0'
         lines.append(f'{ts},15.0,{sig},-95.0,{status},68,52,300,7,12,225')
     path.write_text('\n'.join(lines) + '\n')
+
+
+class TestGcGuarded:
+    """_gc_guarded disables GC around the call (PySide6/shiboken crash workaround —
+    see the decorator's docstring in plotter.py) and forces a collect() afterward
+    (matplotlib leak workaround). These tests exercise the decorator directly rather
+    than through Plotter, since the behavior has nothing to do with plotting."""
+
+    @pytest.fixture(autouse=True)
+    def restore_gc_state(self):
+        was_enabled = gc.isenabled()
+        yield
+        if was_enabled:
+            gc.enable()
+        else:
+            gc.disable()
+
+    def test_gc_disabled_during_call(self):
+        observed = {}
+
+        @_gc_guarded
+        def func():
+            observed['enabled'] = gc.isenabled()
+
+        gc.enable()
+        func()
+        assert observed['enabled'] is False
+
+    def test_gc_re_enabled_after_call_when_previously_enabled(self):
+        @_gc_guarded
+        def func():
+            pass
+
+        gc.enable()
+        func()
+        assert gc.isenabled() is True
+
+    def test_gc_left_disabled_if_already_disabled_before_call(self):
+        @_gc_guarded
+        def func():
+            pass
+
+        gc.disable()
+        func()
+        assert gc.isenabled() is False
+
+    def test_gc_re_enabled_even_if_wrapped_function_raises(self):
+        @_gc_guarded
+        def func():
+            raise ValueError('boom')
+
+        gc.enable()
+        with pytest.raises(ValueError):
+            func()
+        assert gc.isenabled() is True
+
+    def test_return_value_passes_through(self):
+        @_gc_guarded
+        def func():
+            return 42
+
+        assert func() == 42
+
+    def test_collect_runs_after_call(self):
+        calls = []
+
+        @_gc_guarded
+        def func():
+            assert calls == []   # not yet called during the guarded call
+
+        with patch('buzz.plotter.gc.collect', side_effect=lambda: calls.append(1)):
+            func()
+        assert calls == [1]
 
 
 class TestSmooth:
