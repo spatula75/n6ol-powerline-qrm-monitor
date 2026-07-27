@@ -619,6 +619,75 @@ class TestPhaseSearch:
         assert ContinuousAnalyzer.SIGNAL_LOST_REFINE >= 5 * ContinuousAnalyzer.SEARCH_INTERVAL
 
 
+class TestPhaseSearchTrackingThreshold:
+    """Acquire/track hysteresis: acquiring a lock from SIGNAL_LOST demands
+    LOCK_ACQUIRE_SNR, but tracking drift while LOCKED only requires
+    LOCK_LOSE_SNR — otherwise signals in the 2–6 dB band would hold lock
+    without being able to follow drift, guaranteeing eventual loss."""
+
+    WEAK_AMPLITUDE = 160   # vs ~100 mean noise → SNR ≈ 4 dB, between the thresholds
+
+    def test_weak_signal_tracks_drift_while_locked(self):
+        az = _make_analyzer()
+        az._pipeline.get_snapshot.return_value = _pulse_audio()
+        _step(az, az._full_analysis)
+        assert az._state == 'LOCKED'
+        moved_phase = az._peak_phase + 2
+        az._pipeline.get_snapshot.return_value = _pulse_audio(
+            amplitude=self.WEAK_AMPLITUDE, phase=moved_phase)
+        _step(az, az._phase_search)
+        assert az._state == 'LOCKED'
+        assert az._peak_phase == moved_phase
+
+    def test_weak_signal_does_not_acquire_from_signal_lost(self):
+        az = _signal_lost_analyzer()
+        original_phase = az._peak_phase
+        az._pipeline.get_snapshot.return_value = _pulse_audio(
+            amplitude=self.WEAK_AMPLITUDE, phase=original_phase + 2)
+        _step(az, az._phase_search)
+        assert az._state == 'SIGNAL_LOST'
+        assert az._peak_phase == original_phase
+
+
+class TestScanPhaseHysteresis:
+    """The incumbent phase keeps its place unless a challenger beats it by
+    PHASE_MOVE_MARGIN, so phases (and the correction indicators) don't dance
+    on measurement noise."""
+
+    def _two_train_data(self, phase_a: int, amp_a: int, phase_b: int, amp_b: int) -> np.ndarray:
+        """Silent background with two interleaved pulse trains at fixed phases."""
+        data = np.zeros(SAMPLE_RATE, dtype=np.int32)
+        spp = SAMPLE_RATE / PULSE_RATE
+        for i in range(int(SAMPLE_RATE / spp)):
+            base = int(i * spp)
+            for phase, amp in ((phase_a, amp_a), (phase_b, amp_b)):
+                pos = base + phase
+                if pos + 3 < SAMPLE_RATE:
+                    data[pos:pos + 3] = amp
+        return data
+
+    def test_marginally_louder_challenger_does_not_move_the_phase(self):
+        az = _make_analyzer()
+        data = self._two_train_data(30, 10000, 35, 10300)   # +3 % — inside the margin
+        phase, offset = az._scan_phase(data, center=30, anchor=100, minimize=False)
+        assert (phase, offset) == (30, 0)
+
+    def test_clearly_louder_challenger_moves_the_phase(self):
+        az = _make_analyzer()
+        data = self._two_train_data(30, 10000, 35, 11000)   # +10 % — beats the margin
+        phase, offset = az._scan_phase(data, center=30, anchor=100, minimize=False)
+        assert (phase, offset) == (35, 5)
+
+    def test_noise_scan_keeps_incumbent_on_flat_noise(self):
+        """The noise scan picks the quietest of 21 noisy measurements; without the
+        deadband the winner is essentially random every call and the NF correction
+        indicator dances.  On featureless noise it must stay put."""
+        az = _make_analyzer()
+        data = np.abs(_noise_audio().astype(np.int32))
+        phase, offset = az._scan_phase(data, center=60, anchor=5, minimize=True)
+        assert (phase, offset) == (60, 0)
+
+
 # ---------------------------------------------------------------------------
 # Snapshot phase alignment (regression)
 # ---------------------------------------------------------------------------
@@ -652,9 +721,9 @@ class TestSnapshotPhaseAlignment:
     samples in the next.  With aligned capture, lock must survive arbitrary
     tail movement on a perfect, drift-free signal."""
 
-    def _perfect_stream(self, seconds: int = 30) -> np.ndarray:
+    def _pulse_stream(self, seconds: int = 30, pulse_rate: float = PULSE_RATE) -> np.ndarray:
         n = seconds * SAMPLE_RATE
-        spp = SAMPLE_RATE / PULSE_RATE
+        spp = SAMPLE_RATE / pulse_rate
         data = np.random.default_rng(7).integers(50, 150, size=n).astype(np.int16)
         for i in range(int(n / spp)):
             pos = 5 + round(i * spp)
@@ -663,7 +732,7 @@ class TestSnapshotPhaseAlignment:
         return data
 
     def test_lock_survives_chunkwise_tail_movement(self):
-        pipe = _AlignedStreamPipeline(self._perfect_stream())
+        pipe = _AlignedStreamPipeline(self._pulse_stream())
         az = ContinuousAnalyzer(pipe, _make_config())
         _step(az, az._full_analysis)
         assert az._state == 'LOCKED'
@@ -674,6 +743,26 @@ class TestSnapshotPhaseAlignment:
             _step(az, az._quick_check)
             assert az._state == 'LOCKED'
             assert az.latest_result().snr >= ContinuousAnalyzer.LOCK_ACQUIRE_SNR
+
+    def test_lock_tracks_realistic_mains_drift(self):
+        """A +0.05 Hz pulse-rate error (ordinary grid drift) slips the phase
+        ~6.7 samples/s.  Emulating the LOCKED cadence — two quick checks then a
+        refine per REFINE_INTERVAL — the analyzer must hold lock continuously
+        for ~25 simulated seconds and keep every correction well inside
+        PHASE_SEARCH_RADIUS."""
+        pipe = _AlignedStreamPipeline(self._pulse_stream(pulse_rate=120.05))
+        az = ContinuousAnalyzer(pipe, _make_config())
+        _step(az, az._full_analysis)
+        assert az._state == 'LOCKED'
+        for _ in range(40):                      # 40 refine cycles ≈ 24 s
+            for i, advance in enumerate([6, 6, 7]):   # 3 ticks ≈ REFINE_INTERVAL
+                pipe.chunks += advance
+                if i < 2:
+                    _step(az, az._quick_check)
+                else:
+                    _step(az, az._phase_search)
+                    assert abs(az.latest_signal_correction()) <= 6
+                assert az._state == 'LOCKED'
 
 
 # ---------------------------------------------------------------------------

@@ -10,9 +10,11 @@ ContinuousAnalyzer runs on a daemon thread and maintains a three-state machine:
                 tick (~200 ms) it calls average_pulse_amplitude at the stored
                 peak and noise phases — O(scan_pulses) ≈ 60 operations.
                 Every REFINE_INTERVAL seconds it runs _phase_search() to
-                correct slow mains-frequency drift.  A full FFT isn't needed
-                here: any drift too large for the narrow scan would already
-                cause _quick_check() to lose lock first.
+                correct mains-frequency drift — which is faster than it looks:
+                a grid error of only 0.04 Hz at 120 pps slips the pulse phase
+                ~5 samples per second.  A full FFT isn't needed here: any
+                drift too large for the narrow scan would already cause
+                _quick_check() to lose lock first.
 
   SIGNAL_LOST — phase pair known but signal absent.  Four-tier re-acquisition:
                 Tier 1 (200 ms): _noise_check() samples live noise at _noise_phase
@@ -87,9 +89,20 @@ class ContinuousAnalyzer:
     LOSE_LOCK_COUNT     = 3     # consecutive _quick_check failures before SIGNAL_LOST
     FAST_TICK_INTERVAL  = 0.2   # s  — tick cadence in LOCKED and SIGNAL_LOST
     SEARCH_INTERVAL     = 1.0   # s  — SEARCHING tick cadence; also the Tier-2 narrow-scan cadence in SIGNAL_LOST
-    REFINE_INTERVAL     = 2.0   # s  — phase-search refinement interval while LOCKED
+    # Refine cadence must outpace mains drift: a 0.04 Hz grid error at 120 pps
+    # slips ~5 samples/s, so 0.6 s keeps the error to a few samples — small
+    # corrections, and far inside PHASE_SEARCH_RADIUS.  (2 s let worst-case
+    # drift reach the radius limit and drop lock between refines.)
+    REFINE_INTERVAL     = 0.6   # s  — phase-search refinement interval while LOCKED
     SIGNAL_LOST_REFINE  = 120.0 # s  — unconditional full-FFT safety net in SIGNAL_LOST
     PHASE_SEARCH_RADIUS = 10    # samples either side of stored peak to scan in SIGNAL_LOST
+    # A challenger phase must beat the incumbent's amplitude by this ratio
+    # (~0.4 dB) before the stored phase moves.  Without the deadband, noise
+    # flips the winner between adjacent offsets — and the noise scan, which
+    # picks the QUIETEST of 21 noisy measurements, moves almost every refine —
+    # so the phases and their correction indicators dance even when nothing
+    # real changed.
+    PHASE_MOVE_MARGIN   = 1.05
     FAST_SCAN_PULSES    = 15    # pulses in the Tier-3a screening kernel (~1/4 of full)
     FAST_SCAN_SAMPLES   = 4000  # audio window for Tier-3a (~0.25 s at 16 kHz)
     FAST_SCAN_INTERVAL  = 5.0   # s  — Tier-3a cadence in SIGNAL_LOST
@@ -351,13 +364,21 @@ class ContinuousAnalyzer:
         anchor is the other pulse train's phase; the analysis window starts at
         max(candidate, anchor) so both trains fit within the same audio.  minimize
         selects the quietest candidate (noise scan) instead of the loudest (signal
-        scan).  Returns (best_phase, best_offset); center with offset 0 if no
-        candidate fits.
+        scan).
+
+        The incumbent (offset 0) keeps its place unless a challenger beats it by
+        PHASE_MOVE_MARGIN — genuine drift shows large amplitude differences (one
+        sample of offset already costs ~1/3 of a pulse's overlap), so the deadband
+        only suppresses noise-driven flicker, not real movement.
+
+        Returns (best_phase, best_offset); center with offset 0 if no candidate
+        fits or no challenger clears the margin.
         """
-        spp_int     = int(self._samples_per_pulse)
-        best_amp    = float('inf') if minimize else -1.0
-        best_phase  = center
-        best_offset = 0
+        spp_int       = int(self._samples_per_pulse)
+        best_amp      = None
+        best_phase    = center
+        best_offset   = 0
+        incumbent_amp = None
         for offset in range(-self.PHASE_SEARCH_RADIUS, self.PHASE_SEARCH_RADIUS + 1):
             candidate = (center + offset) % spp_int
             start     = max(candidate, anchor)
@@ -366,10 +387,19 @@ class ContinuousAnalyzer:
                 continue
             amp = float(average_pulse_amplitude(
                 abs_data, self._sample_rate, self._pulse_rate, n_pulses, candidate))
-            if (amp < best_amp) if minimize else (amp > best_amp):
+            if offset == 0:
+                incumbent_amp = amp
+            if best_amp is None or ((amp < best_amp) if minimize else (amp > best_amp)):
                 best_amp    = amp
                 best_phase  = candidate
                 best_offset = offset
+        if best_amp is None:
+            return center, 0
+        if best_offset != 0 and incumbent_amp is not None:
+            challenger_wins = (best_amp * self.PHASE_MOVE_MARGIN < incumbent_amp if minimize
+                               else best_amp > incumbent_amp * self.PHASE_MOVE_MARGIN)
+            if not challenger_wins:
+                return center, 0
         return best_phase, best_offset
 
     def _phase_search(self) -> AnalyzerState:
@@ -392,9 +422,17 @@ class ContinuousAnalyzer:
         UI can display how much each phase actually moved rather than assuming they
         track together.
 
-        If the best signal candidate passes LOCK_ACQUIRE_SNR both phases are updated
-        and LOCKED is returned; otherwise the current state.  Does not publish on
-        failure; _noise_check() already published the noise result on this tick.
+        The SNR bar for updating the phases depends on how we got here.  Acquiring
+        from SIGNAL_LOST demands LOCK_ACQUIRE_SNR — strong evidence before trusting
+        a new phase pair.  While already LOCKED, tracking only requires
+        LOCK_LOSE_SNR, the same bar _quick_check() holds the lock at; requiring
+        the acquisition bar here would create a dead zone (LOCK_LOSE_SNR ≤ snr <
+        LOCK_ACQUIRE_SNR) where the lock is held but drift can't be followed,
+        guaranteeing eventual loss on weak signals.
+
+        On success both phases are updated and LOCKED is returned; otherwise the
+        current state.  Does not publish on failure; _noise_check() already
+        published the noise result on this tick.
         """
         abs_data = self._capture(self._window_samples)
         if abs_data is None:
@@ -418,7 +456,9 @@ class ContinuousAnalyzer:
             return self._state
         sig_dbm, noise_dbm, snr = measured
 
-        if snr >= self.LOCK_ACQUIRE_SNR:
+        tracking  = self._state == AnalyzerState.LOCKED
+        threshold = self.LOCK_LOSE_SNR if tracking else self.LOCK_ACQUIRE_SNR
+        if snr >= threshold:
             self._peak_phase  = best_phase
             self._noise_phase = best_noise_phase
             self._publish(AnalysisResult(

@@ -44,7 +44,7 @@ stateDiagram-v2
     SEARCHING --> LOCKED      : SNR ≥ 6 dB (full FFT)
     LOCKED    --> SIGNAL_LOST : 3 consecutive checks below 2 dB
     SIGNAL_LOST --> LOCKED    : SNR ≥ 6 dB (any tier)
-    LOCKED    --> LOCKED      : quick check every 200 ms\nphase-search refinement every 2 s
+    LOCKED    --> LOCKED      : quick check every 200 ms\nphase-search refinement every 0.6 s
 ```
 
 ### SEARCHING
@@ -65,15 +65,28 @@ below 2 dB for up to three consecutive checks before declaring signal loss.
 A single noisy frame doesn't cause a state change; three consecutive failures
 are required.
 
-Every 2 seconds `_phase_search()` runs to correct for slow mains frequency
-drift, scanning ±10 samples around each stored phase. A full FFT isn't needed
-here: any drift fast enough to exceed the search radius would already cause
-`_quick_check()` to fail first, dropping to SIGNAL_LOST where the full FFT
-runs anyway via Tier 3b.
+Every 0.6 seconds `_phase_search()` runs to correct for mains frequency
+drift, scanning ±10 samples around each stored phase. Mains drift is faster
+than intuition suggests: a grid error of just 0.04 Hz at 120 pps slips the
+pulse phase about 5 samples per second, so the refine cadence must keep the
+accumulated slip to a few samples. A full FFT isn't needed here: any drift
+fast enough to exceed the search radius would already cause `_quick_check()`
+to fail first, dropping to SIGNAL_LOST where the full FFT runs anyway via
+Tier 3b.
+
+Each scan keeps the incumbent phase unless a challenger beats its amplitude
+by `PHASE_MOVE_MARGIN` (~0.4 dB), so measurement noise doesn't random-walk
+the stored phases (or dance the correction indicators) when nothing real
+moved — this matters most for the noise phase, which is chosen as the
+*quietest* of 21 noisy measurements and would otherwise move nearly every
+scan.
 
 **Lock is acquired at SNR ≥ 6 dB and lost after three checks below 2 dB.**
 The hysteresis gap between those thresholds prevents a signal right at the
-margin from flipping back and forth.
+margin from flipping back and forth. While LOCKED, `_phase_search()` updates
+the phases at the lower 2 dB bar — the same bar `_quick_check()` holds lock
+at — so a weak signal that can keep its lock can also follow drift; requiring
+6 dB to re-point would strand signals in the 2–6 dB band at a stale phase.
 
 ### SIGNAL_LOST
 
@@ -127,9 +140,10 @@ even if Tier 3a's threshold is too conservative to fire on a weak signal.
 | `LOCK_LOSE_SNR` | 2.0 dB | SNR below which a failure is counted |
 | `LOSE_LOCK_COUNT` | 3 | Consecutive failures before SIGNAL_LOST |
 | `FAST_TICK_INTERVAL` | 0.2 s | Tick cadence in LOCKED and SIGNAL_LOST |
-| `REFINE_INTERVAL` | 2 s | Phase-search refinement cadence while LOCKED |
+| `REFINE_INTERVAL` | 0.6 s | Phase-search refinement cadence while LOCKED |
 | `SEARCH_INTERVAL` | 1 s | Full-FFT cadence in SEARCHING; narrow-scan cadence in SIGNAL_LOST |
 | `PHASE_SEARCH_RADIUS` | 10 samples | Scan radius for Tier 2 in each direction |
+| `PHASE_MOVE_MARGIN` | ×1.05 | Amplitude ratio a challenger phase must beat the incumbent by |
 | `FAST_SCAN_INTERVAL` | 5 s | Tier 3a cadence in SIGNAL_LOST |
 | `FAST_SCAN_PULSES` | 15 | Pulses in the short Tier 3a kernel |
 | `FAST_SCAN_SAMPLES` | 4000 | Audio window for Tier 3a (~0.25 s at 16 kHz) |
