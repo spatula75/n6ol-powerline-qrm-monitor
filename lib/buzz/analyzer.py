@@ -108,7 +108,8 @@ class ContinuousAnalyzer:
 
         self._result: AnalysisResult | None = None
         self._result_buffer: deque[AnalysisResult] = deque(maxlen=360)
-        self._last_correction: int = 0
+        self._latest_signal_correction: int = 0
+        self._latest_noise_correction: int = 0
         self._result_lock = threading.Lock()
         self._stop        = threading.Event()
 
@@ -126,9 +127,13 @@ class ContinuousAnalyzer:
         with self._result_lock:
             return self._result
 
-    def latest_correction(self) -> int:
+    def latest_signal_correction(self) -> int:
         with self._result_lock:
-            return self._last_correction
+            return self._latest_signal_correction
+
+    def latest_noise_correction(self) -> int:
+        with self._result_lock:
+            return self._latest_noise_correction
 
     def get_results_snapshot(self) -> list[AnalysisResult]:
         with self._result_lock:
@@ -299,6 +304,11 @@ class ContinuousAnalyzer:
         source's phase.  Searching both independently costs one extra pass of 21
         Numba amplitude averages and correctly handles all source configurations.
 
+        Each scan's winning offset is recorded separately (_latest_signal_correction for
+        signal, _latest_noise_correction for noise) on every call, win or lose, so the
+        UI can display how much each phase actually moved rather than assuming they
+        track together.
+
         If the best signal candidate passes LOCK_ACQUIRE_SNR both phases are updated
         and 'LOCKED' is returned; otherwise the current state.  Does not publish on
         failure; _noise_check() already published the noise result on this tick.
@@ -327,11 +337,12 @@ class ContinuousAnalyzer:
                 best_phase   = candidate
                 best_offset  = offset
         with self._result_lock:
-            self._last_correction = best_offset
+            self._latest_signal_correction = best_offset
 
         # Noise scan: independently find the quietest phase near _noise_phase.
-        best_noise_amp   = float('inf')
-        best_noise_phase = self._noise_phase
+        best_noise_amp    = float('inf')
+        best_noise_phase  = self._noise_phase
+        best_noise_offset = 0
         for offset in range(-self.PHASE_SEARCH_RADIUS, self.PHASE_SEARCH_RADIUS + 1):
             candidate = (self._noise_phase + offset) % spp_int
             start     = max(best_phase, candidate)
@@ -341,8 +352,11 @@ class ContinuousAnalyzer:
             amp = float(average_pulse_amplitude(
                 abs_data, self._sample_rate, self._pulse_rate, size, candidate))
             if amp < best_noise_amp:
-                best_noise_amp   = amp
-                best_noise_phase = candidate
+                best_noise_amp    = amp
+                best_noise_phase  = candidate
+                best_noise_offset = offset
+        with self._result_lock:
+            self._latest_noise_correction = best_noise_offset
 
         # Recompute both amplitudes over a consistent window before the SNR decision.
         start = max(best_phase, best_noise_phase)

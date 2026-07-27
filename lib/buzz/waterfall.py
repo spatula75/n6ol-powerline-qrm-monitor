@@ -83,6 +83,18 @@ def _n_lit(dbm: float) -> int:
     return sum(1 for level in _S_LEVELS_DBM if dbm >= level)
 
 
+def _correction_offset(correction: int, half_w: int, max_corr: int) -> tuple[int, int]:
+    """Map a ±max_corr phase correction to (tick width, left offset from bar center).
+
+    0 -> a one-pixel dot at center; otherwise a bar growing left or right,
+    scaled so ±max_corr reaches the bar edge.
+    """
+    if correction == 0:
+        return 1, 0
+    px = max(1, round(abs(correction) * half_w / max_corr))
+    return px, (-px if correction < 0 else 0)
+
+
 def build_colormap() -> np.ndarray:
     """Return a 256×3 uint8 RGB lookup table: black → blue → cyan → yellow → red."""
     lut = np.zeros((256, 3), dtype=np.uint8)
@@ -240,20 +252,20 @@ class MeterPanelWidget(QWidget):
         nf_lit  = _n_lit(nf_dbm)
         sig_lit = _n_lit(sig_dbm)
 
-        # Phase-correction indicator — above both bars.
-        # Range: ±PHASE_SEARCH_RADIUS (10 samples).  0 → one-pixel dot at center.
-        correction = self._analyzer.latest_correction()
+        # Phase-correction indicators — above each bar, independent per NF/SIG since
+        # the noise and signal phases are searched (and can drift) independently —
+        # see ContinuousAnalyzer._phase_search().  Range: ±PHASE_SEARCH_RADIUS
+        # (10 samples) each.  0 → one-pixel dot at center.
         grey       = QColor(160, 160, 160)
         half_w     = _BAR_W // 2
         max_corr   = ContinuousAnalyzer.PHASE_SEARCH_RADIUS
         line_y     = _CORR_TOP + _CORR_H // 2
-        if correction == 0:
-            px, left_offset = 1, 0
-        else:
-            px          = max(1, round(abs(correction) * half_w / max_corr))
-            left_offset = -px if correction < 0 else 0
-        for bar_x in (nf_x, sig_x):
-            painter.fillRect(bar_x + half_w + left_offset, line_y, px, 1, grey)
+        noise_px, noise_offset   = _correction_offset(
+            self._analyzer.latest_noise_correction(), half_w, max_corr)
+        signal_px, signal_offset = _correction_offset(
+            self._analyzer.latest_signal_correction(), half_w, max_corr)
+        painter.fillRect(nf_x + half_w + noise_offset, line_y, noise_px, 1, grey)
+        painter.fillRect(sig_x + half_w + signal_offset, line_y, signal_px, 1, grey)
 
         # Integer layout: anchor each bar from the bottom so the 1 px remainder
         # from 25 px of total gap / 12 spaces falls above the top bar, not below S1.

@@ -543,8 +543,8 @@ class TestPhaseSearch:
         """Search radius must cover at least a few samples of phase drift."""
         assert ContinuousAnalyzer.PHASE_SEARCH_RADIUS >= 5
 
-    def test_latest_correction_initial_zero(self):
-        assert _make_analyzer().latest_correction() == 0
+    def test_latest_signal_correction_initial_zero(self):
+        assert _make_analyzer().latest_signal_correction() == 0
 
     def test_phase_search_records_signal_offset(self):
         """Correction is updated to the winning offset when phase_search finds the signal."""
@@ -554,16 +554,42 @@ class TestPhaseSearch:
         az._pipeline.get_snapshot.return_value = _pulse_audio(phase=new_phase)
         _step(az, az._phase_search)
         assert az._state == 'LOCKED'
-        assert az.latest_correction() == 3
+        assert az.latest_signal_correction() == 3
 
     def test_phase_search_updates_correction_even_without_relock(self):
         """Correction field is written on every phase_search call, not only on relock."""
         az = _signal_lost_analyzer()
-        az._last_correction = 999   # sentinel — must be overwritten
+        az._latest_signal_correction = 999   # sentinel — must be overwritten
         az._pipeline.get_snapshot.return_value = _noise_audio()
         _step(az, az._phase_search)
         assert az._state == 'SIGNAL_LOST'
-        assert az.latest_correction() != 999
+        assert az.latest_signal_correction() != 999
+
+    def test_latest_noise_correction_initial_zero(self):
+        assert _make_analyzer().latest_noise_correction() == 0
+
+    def test_phase_search_records_noise_offset_independently_of_signal(self):
+        """Noise correction reflects the noise scan's own winning offset, not the signal's."""
+        az = _signal_lost_analyzer()
+        spp_int   = int(SAMPLE_RATE / PULSE_RATE)
+        new_phase = (az._peak_phase + 3) % spp_int
+        az._pipeline.get_snapshot.return_value = _pulse_audio(phase=new_phase)
+        _step(az, az._phase_search)
+        assert az._state == 'LOCKED'
+        # Noise data is random, so the winning offset isn't predictable, but it must
+        # be a real result of the scan: within the search radius, and not simply
+        # mirroring the (different, known) signal offset of 3.
+        r = ContinuousAnalyzer.PHASE_SEARCH_RADIUS
+        assert -r <= az.latest_noise_correction() <= r
+
+    def test_phase_search_updates_noise_correction_even_without_relock(self):
+        """Noise correction is written on every phase_search call, not only on relock."""
+        az = _signal_lost_analyzer()
+        az._latest_noise_correction = 999   # sentinel — must be overwritten
+        az._pipeline.get_snapshot.return_value = _noise_audio()
+        _step(az, az._phase_search)
+        assert az._state == 'SIGNAL_LOST'
+        assert az.latest_noise_correction() != 999
 
     def test_signal_lost_refine_interval_much_longer_than_search(self):
         """FFT fallback should be infrequent compared to the cheap narrow scan."""

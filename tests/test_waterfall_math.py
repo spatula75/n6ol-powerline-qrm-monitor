@@ -1,7 +1,7 @@
 """Tests for pure-numpy functions in waterfall.py (no Qt required)."""
 import numpy as np
 
-from buzz.waterfall import build_colormap, _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE
+from buzz.waterfall import build_colormap, _correction_offset, _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE
 
 
 class TestBuildColormap:
@@ -33,6 +33,34 @@ class TestBuildColormap:
         lut = build_colormap()
         assert lut.min() >= 0
         assert lut.max() <= 255
+
+
+class TestCorrectionOffset:
+    def test_zero_correction_is_one_pixel_dot_centered(self):
+        assert _correction_offset(0, half_w=11, max_corr=10) == (1, 0)
+
+    def test_positive_correction_grows_right_from_center(self):
+        px, offset = _correction_offset(5, half_w=11, max_corr=10)
+        assert px > 1
+        assert offset == 0
+
+    def test_negative_correction_grows_left_from_center(self):
+        px, offset = _correction_offset(-5, half_w=11, max_corr=10)
+        assert px > 1
+        assert offset == -px
+
+    def test_max_correction_reaches_bar_edge(self):
+        px, offset = _correction_offset(10, half_w=11, max_corr=10)
+        assert px == 11
+
+    def test_negative_and_positive_same_magnitude_give_same_width(self):
+        px_pos, _ = _correction_offset(4, half_w=11, max_corr=10)
+        px_neg, _ = _correction_offset(-4, half_w=11, max_corr=10)
+        assert px_pos == px_neg
+
+    def test_small_nonzero_correction_still_at_least_one_pixel(self):
+        px, _ = _correction_offset(1, half_w=11, max_corr=10)
+        assert px >= 1
 
 
 class TestWaterfallConstants:
