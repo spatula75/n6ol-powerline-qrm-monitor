@@ -21,6 +21,17 @@ jobs:
       - name: Install PortAudio (required by sounddevice)
         run: sudo apt-get install -y libportaudio2
 
+      - name: Install Qt runtime libraries (required by PySide6)
+        # PySide6's compiled QtGui extension dynamically links against these at
+        # import time -- not just when a window is actually shown -- so even the
+        # pure-function tests in test_waterfall_math.py need them, despite never
+        # creating a QApplication or a display.  The bare ubuntu-latest runner
+        # doesn't ship any of them.  libegl1/libgl1/libxkbcommon0 are the
+        # well-known minimum for QtGui to import cleanly on headless Linux; if a
+        # future PySide6 bump needs more, the ImportError will name the next
+        # missing .so and it can be added here.
+        run: sudo apt-get install -y libegl1 libgl1 libxkbcommon0
+
       - name: Install dependencies
         run: pip install -r requirements.txt
 
