@@ -89,6 +89,16 @@ class TestScpToServer:
             'testhost', username='testuser', password='', key_filename=pub._config.server.key_path
         )
 
+    def test_rejects_unknown_host_keys(self, tmp_path):
+        import paramiko
+        pub = _make_publisher(tmp_path)
+        mock_client, _ = self._mock_ssh()
+        with patch('buzz.publisher.paramiko.SSHClient', return_value=mock_client):
+            pub.scp_to_server([])
+        mock_client.load_system_host_keys.assert_called_once()
+        policy = mock_client.set_missing_host_key_policy.call_args[0][0]
+        assert isinstance(policy, paramiko.RejectPolicy)
+
     def test_puts_file_at_correct_remote_path(self, tmp_path):
         pub = _make_publisher(tmp_path)
         local = tmp_path / 'data.csv'

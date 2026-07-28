@@ -45,6 +45,8 @@ class DeviceInfo:
 
 
 def _amplitude_bar(amplitude: float) -> str:
+    """Render amplitude as a logarithmic bar: empty at 1 LSB, full at 16-bit
+    full scale (32768), so each filled char spans an equal number of dB."""
     n = min(_BAR_WIDTH, int(_BAR_WIDTH * log10(max(1.0, amplitude)) / log10(32768.0)))
     return _FILL * n + _EMPTY * (_BAR_WIDTH - n)
 
@@ -150,6 +152,41 @@ def _print_device_table(devices: list[DeviceInfo], current_real_index: int | Non
     print()
 
 
+def _build_selection_prompt(devices: list[DeviceInfo], selectable: list[DeviceInfo],
+                            current_real_index: int | None) -> tuple[str, set[int]]:
+    """Build the "Select device (...)" prompt text and the set of valid numbers."""
+    valid_nums = sorted(d.display_index for d in selectable)
+    current_display = next(
+        (d.display_index for d in devices if d.real_index == current_real_index),
+        None,
+    )
+    default_str = f', or Enter to keep current [{current_display}]' if current_display else ''
+    nums_str = ', '.join(str(n) for n in valid_nums)
+    prompt = f'Select device ({nums_str}{default_str}): '
+    return prompt, set(valid_nums)
+
+
+def _prompt_for_device_number(prompt: str, valid_set: set[int], selectable: list[DeviceInfo],
+                              current_real_index: int | None) -> int:
+    """Read device numbers from stdin until the user picks a valid one.
+
+    Enter alone keeps current_real_index if one was given; anything else that
+    isn't a valid number re-prompts rather than failing.
+    """
+    nums_str = ', '.join(str(n) for n in sorted(valid_set))
+    while True:
+        raw = input(prompt).strip()
+        if not raw and current_real_index is not None:
+            return current_real_index
+        try:
+            n = int(raw)
+            if n in valid_set:
+                return next(d.real_index for d in selectable if d.display_index == n)
+        except ValueError:
+            pass
+        print(f'  Please enter one of: {nums_str}')
+
+
 def select_device(sample_rate: int, current_real_index: int | None = None) -> int | None:
     """Display the device table and prompt for selection.
 
@@ -166,25 +203,5 @@ def select_device(sample_rate: int, current_real_index: int | None = None) -> in
         print('No compatible input devices found.')
         return None
 
-    valid_nums = sorted(d.display_index for d in selectable)
-    valid_set = set(valid_nums)
-    current_display = next(
-        (d.display_index for d in devices if d.real_index == current_real_index),
-        None,
-    )
-
-    default_str = f', or Enter to keep current [{current_display}]' if current_display else ''
-    nums_str = ', '.join(str(n) for n in valid_nums)
-    prompt = f'Select device ({nums_str}{default_str}): '
-
-    while True:
-        raw = input(prompt).strip()
-        if not raw and current_real_index is not None:
-            return current_real_index
-        try:
-            n = int(raw)
-            if n in valid_set:
-                return next(d.real_index for d in selectable if d.display_index == n)
-        except ValueError:
-            pass
-        print(f'  Please enter one of: {nums_str}')
+    prompt, valid_set = _build_selection_prompt(devices, selectable, current_real_index)
+    return _prompt_for_device_number(prompt, valid_set, selectable, current_real_index)

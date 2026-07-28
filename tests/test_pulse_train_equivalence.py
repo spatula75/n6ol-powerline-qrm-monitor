@@ -11,26 +11,26 @@ import numpy as np
 import pytest
 from numpy import uint32, zeros
 
-from buzz.sampler import _average_pulse_amplitude as _sum_pulse_train
+from buzz.dsp import average_pulse_amplitude as _sum_pulse_train
 
 SAMPLE_RATE = 16000
 PULSE_RATE = 120
 
 
-def _direct_sum(data, sample_rate, analysis_size, start_index):
+def _direct_sum(data, sample_rate, n_pulses, start_index):
     """Reference: walk the pulse positions and sum the samples by hand."""
     pf = sample_rate / 120
     total = 0
-    for i in range(analysis_size):
-        pos = int(i * pf)
+    for i in range(n_pulses):
+        pos = round(i * pf)
         total += int(data[start_index + pos])
         total += int(data[start_index + pos + 1])
         total += int(data[start_index + pos + 2])
-    return total // (3 * analysis_size)
+    return total / (3 * n_pulses)
 
 
-def _fast_result(data, analysis_size, start_index):
-    return int(_sum_pulse_train(data, SAMPLE_RATE, PULSE_RATE, analysis_size, start_index))
+def _fast_result(data, n_pulses, start_index):
+    return _sum_pulse_train(data, SAMPLE_RATE / PULSE_RATE, n_pulses, start_index)
 
 
 def _random_data(seed, length=48000):
@@ -51,7 +51,7 @@ class TestSumPulseTrainEquivalence:
         data = zeros(48000, dtype=uint32)
         pf = SAMPLE_RATE / 120
         for i in range(60):
-            pos = int(i * pf)
+            pos = round(i * pf)
             data[pos] = data[pos + 1] = data[pos + 2] = 5000
         assert _fast_result(data, 60, 0) == _direct_sum(data, SAMPLE_RATE, 60, 0) == 5000
 
@@ -60,10 +60,10 @@ class TestSumPulseTrainEquivalence:
         data = _random_data(7)
         assert _fast_result(data, 60, start_index) == _direct_sum(data, SAMPLE_RATE, 60, start_index)
 
-    @pytest.mark.parametrize("analysis_size", [30, 60, 90, 110])
-    def test_various_analysis_sizes(self, analysis_size):
+    @pytest.mark.parametrize("n_pulses", [30, 60, 90, 110])
+    def test_various_pulse_counts(self, n_pulses):
         data = _random_data(99)
-        assert _fast_result(data, analysis_size, 0) == _direct_sum(data, SAMPLE_RATE, analysis_size, 0)
+        assert _fast_result(data, n_pulses, 0) == _direct_sum(data, SAMPLE_RATE, n_pulses, 0)
 
     @pytest.mark.parametrize("seed", range(20))
     def test_twenty_random_seeds(self, seed):

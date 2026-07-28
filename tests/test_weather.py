@@ -7,8 +7,22 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from buzz.weather import (
-    CumulusMXWeatherClient, NullWeatherClient, OpenMeteoWeatherClient, WeatherData,
+    EMPTY_WEATHER, CumulusMXWeatherClient, NullWeatherClient, OpenMeteoWeatherClient, WeatherData,
 )
+
+
+class TestWeatherData:
+    def test_fields_in_csv_order(self):
+        assert WeatherData._fields == ('temperature', 'humidity', 'solar_radiation',
+                                       'wind_speed', 'wind_gust', 'wind_bearing')
+
+    def test_named_field_access(self):
+        data = WeatherData(68.2, 52.0, 320.0, 7.5, 12.0, 225)
+        assert data.temperature == 68.2
+        assert data.wind_bearing == 225
+
+    def test_empty_weather_is_all_blank(self):
+        assert all(v == '' for v in EMPTY_WEATHER)
 
 
 class TestNullWeatherClient:
@@ -16,13 +30,12 @@ class TestNullWeatherClient:
         result = NullWeatherClient().fetch()
         assert len(result) == 6
 
-    def test_fetch_returns_empty_strings(self):
-        result = NullWeatherClient().fetch()
-        assert all(v == '' for v in result)
+    def test_fetch_returns_empty_weather(self):
+        assert NullWeatherClient().fetch() == EMPTY_WEATHER
 
     def test_fetch_type_matches_weather_data(self):
         result = NullWeatherClient().fetch()
-        assert isinstance(result, tuple)
+        assert isinstance(result, WeatherData)
 
 
 class TestCumulusMXWeatherClient:
