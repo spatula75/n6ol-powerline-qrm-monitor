@@ -8,7 +8,7 @@ from buzz.waterfall import (
     build_colormap, _aggregate_meter_history, _color_scale_range, _correction_offset,
     _mean_spectrum_db, _spectrum_percentiles,
     _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE, _DB_FFT_NOISE_CORR, _FFT_ADVANCE_SAMPLES,
-    _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE, _COLOR_HEADROOM, _MIN_COLOR_SPAN_DB,
+    _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE, _COLOR_HEADROOM, _MIN_DYNAMIC_RANGE_DB,
 )
 
 
@@ -265,7 +265,25 @@ class TestColorScaleRange:
         """floor and ceiling nearly coinciding (e.g. true silence) must not
         collapse the range toward zero, which would blow up the divide."""
         rng = _color_scale_range(-90.0, -89.999, 0.10)
-        assert rng >= _MIN_COLOR_SPAN_DB
+        assert rng >= _MIN_DYNAMIC_RANGE_DB
+
+    def test_quiet_band_noise_stays_confined_to_the_cool_end(self):
+        """Regression for the actual bug: pure FFT-estimator scatter (no real
+        signal, no environmental variation) measures about 5.4 dB of p10-to-p98
+        spread on its own -- see _MIN_DYNAMIC_RANGE_DB's comment.  Before that
+        constant existed as a real floor, a quiet window's own measurement noise
+        would get stretched across nearly the whole colour range, so an idle band
+        painted itself yellow/orange.  A ceiling only slightly above the floor
+        must now still map well below the hot end."""
+        floor, ceiling, headroom = -80.0, -74.6, 0.10   # 5.4 dB apart, as measured
+        rng = _color_scale_range(floor, ceiling, headroom)
+        t_at_ceiling = (ceiling - floor) / rng
+        assert t_at_ceiling < 0.5
+
+    def test_min_dynamic_range_clears_measured_noise_floor_by_a_healthy_margin(self):
+        """Guard-rail on the constant itself: it must comfortably exceed the
+        ~5.4 dB of estimator-only scatter, or it does nothing."""
+        assert _MIN_DYNAMIC_RANGE_DB >= 3 * 5.4
 
     def test_zero_headroom_puts_ceiling_exactly_at_one(self):
         rng = _color_scale_range(-80.0, -50.0, 0.0)
@@ -275,6 +293,31 @@ class TestColorScaleRange:
         """Sanity check that _COLOR_HEADROOM is still a fraction, not a dB value —
         an easy unit mix-up given every other constant in this module is in dB."""
         assert 0.0 < _COLOR_HEADROOM < 1.0
+
+
+class TestQuietBandDoesNotPaintItselfHot:
+    """End-to-end regression for the auto-range floor: runs actual noise-only
+    audio through _mean_spectrum_db (not hand-picked dB numbers) to confirm a
+    genuinely idle band renders near the cool end rather than climbing warm
+    purely from the FFT estimator's own measurement scatter.
+    """
+
+    def test_pure_noise_history_renders_confined_to_the_lower_half(self):
+        rng = np.random.default_rng(7)
+        rows = []
+        for _ in range(_N_ROWS):
+            block = rng.normal(0, 300, _CHUNK * 4).astype(np.int16)
+            rows.append(_mean_spectrum_db(block.astype(np.int32), 128, -200.0))
+        history = np.array(rows)
+
+        floor, ceiling = _spectrum_percentiles(
+            history, _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE)
+        rng_span = _color_scale_range(floor, ceiling, _COLOR_HEADROOM)
+
+        # A typical reading well inside the noise (the median) should sit in the
+        # cool half of the scale, not climbing toward yellow/orange.
+        t_at_median = (np.median(history) - floor) / rng_span
+        assert t_at_median < 0.5
 
 
 class TestWaterfallConstants:

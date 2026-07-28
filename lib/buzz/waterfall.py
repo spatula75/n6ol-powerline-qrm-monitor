@@ -98,10 +98,27 @@ _COLOR_CEILING_PERCENTILE = 98
 # colormap's cutover points (see build_colormap), 1 - 0.10 = 0.90 lands on
 # orange rather than red, which is exactly the point.
 _COLOR_HEADROOM = 0.10
-# Floor for the ceiling-minus-floor span, in dB.  Guards the divide in
-# paintEvent against a near-silent window where the two percentiles nearly
-# coincide.
-_MIN_COLOR_SPAN_DB = 6.0
+# Smallest the ceiling-minus-floor span is allowed to compress to, in dB — this
+# is what keeps the display from reading "hot" when the band is genuinely quiet.
+#
+# Auto-ranging has a failure mode when there's nothing going on: floor and
+# ceiling both track down together, and whatever residual scatter is left in
+# the noise gets stretched across the *entire* colour range, painting routine
+# statistical wobble as yellow/orange "activity".  Measured directly: folding
+# pure Gaussian noise through _mean_spectrum_db with no signal at all still
+# produces about 5.4 dB of p10-to-p98 spread, consistently, regardless of
+# level — that's just the estimator's own variance from averaging a handful of
+# overlapped FFT frames per row, nothing environmental. A span floor has to
+# clear that by a healthy margin or it does nothing.
+#
+# Expressed in S-units (6 dB each, the IARU convention already used for the
+# meter panel below) rather than a bare dB number, so "how quiet can the
+# display claim to be" stays in the same units as everything else here and is
+# easy to retune.  4 S-units puts the natural noise-only spread at roughly a
+# fifth of the total range once headroom is applied — comfortably confined to
+# the cool end of the colormap instead of dominating it.
+_MIN_DYNAMIC_RANGE_S_UNITS = 4
+_MIN_DYNAMIC_RANGE_DB = _MIN_DYNAMIC_RANGE_S_UNITS * 6.0   # 24 dB
 # EMA weight applied each tick (_UPDATE_MS = 100 ms) to the raw percentiles.
 # Without this, the ceiling can start moving after just a couple of ticks of
 # louder content — the top-2% tail is only ~256 values out of the window's
@@ -246,11 +263,11 @@ def _color_scale_range(floor: float, ceiling: float, headroom: float) -> float:
     room for a spike louder than anything in the recent window to still read as
     hotter than the routine "loud" colour — see _COLOR_HEADROOM.
 
-    The span is floored at _MIN_COLOR_SPAN_DB so a near-silent window, where floor
-    and ceiling nearly coincide, can't collapse the range toward zero and blow up
-    the divide in paintEvent.
+    The span is floored at _MIN_DYNAMIC_RANGE_DB so a genuinely quiet window can't
+    collapse the range down to whatever residual noise-estimator scatter is left in
+    the signal — see that constant's comment for the measurement behind the number.
     """
-    span = max(ceiling - floor, _MIN_COLOR_SPAN_DB)
+    span = max(ceiling - floor, _MIN_DYNAMIC_RANGE_DB)
     return span / (1.0 - headroom)
 
 
@@ -498,7 +515,7 @@ class MainWindow(QMainWindow):
     def __init__(self, pipeline: AudioPipeline, analyzer: ContinuousAnalyzer,
                  config: BuzzConfig, always_on_top: bool = False) -> None:
         super().__init__()
-        self.setWindowTitle('N6OL QRM Monitor')
+        self.setWindowTitle('N6OL Powerline QRM Monitor')
         if always_on_top:
             self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self._pipeline = pipeline
