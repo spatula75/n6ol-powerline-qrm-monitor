@@ -41,7 +41,16 @@ def _make_level_stream(cfg=None, blocksize=320):
 
 
 def _audio(amplitude: int, n: int = 320) -> np.ndarray:
-    return np.full((n, 1), amplitude, dtype=np.int16)
+    """One block of zero-mean audio whose mean-absolute level is `amplitude`.
+
+    Alternating +/-amplitude rather than a constant: LSB receiver audio is bipolar,
+    and LevelStream removes DC before rectifying, so a constant block is exactly the
+    signal the DC correction is designed to null to zero.  A square wave carries the
+    intended level through unchanged.
+    """
+    block = np.full((n, 1), amplitude, dtype=np.int16)
+    block[1::2] = -amplitude
+    return block
 
 
 class TestLevelStreamInit:

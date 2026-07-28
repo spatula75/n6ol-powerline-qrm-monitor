@@ -7,26 +7,57 @@ ContinuousAnalyzer runs on a daemon thread and maintains a three-state machine:
                 train is found.
 
   LOCKED      — the 120 pps phase is known and the signal is present.  Each
-                tick (~200 ms) it calls average_pulse_amplitude at the stored
-                peak and noise phases — O(scan_pulses) ≈ 60 operations.
-                Every REFINE_INTERVAL seconds it runs _phase_search() to
-                correct mains-frequency drift — which is faster than it looks:
-                a grid error of only 0.04 Hz at 120 pps slips the pulse phase
-                ~5 samples per second.  A full FFT isn't needed here: any
-                drift too large for the narrow scan would already cause
-                _quick_check() to lose lock first.
+                tick (~200 ms) it calls average_pulse_amplitude at the
+                *predicted* peak and noise phases — O(scan_pulses) ≈ 60
+                operations.  Every REFINE_INTERVAL seconds it runs
+                _phase_search() to re-measure the phase and refine the drift
+                estimate.  A full FFT isn't needed here: any drift too large
+                for the narrow scan would already cause _quick_check() to lose
+                lock first.
 
   SIGNAL_LOST — phase pair known but signal absent.  Four-tier re-acquisition:
                 Tier 1 (200 ms): _noise_check() samples live noise at _noise_phase
                   and tries _peak_phase for instant re-acquisition.
                 Tier 2 (1 s): _phase_search() scans ±PHASE_SEARCH_RADIUS samples
                   around _peak_phase using Numba amplitude averaging — ~40× cheaper
-                  than an FFT, handles slow mains-frequency drift.
+                  than an FFT, handles slow grid-frequency drift.
                 Tier 3a (5 s): _fast_scan() runs a short-kernel FFT (FAST_SCAN_PULSES
                   pulses, FAST_SCAN_SAMPLES audio) as a cheap candidate detector; ~6×
                   cheaper than the full FFT, skips Tier 3b when nothing is present.
                 Tier 3b (on Tier-3a hit, or every SIGNAL_LOST_REFINE as safety net):
                   _full_analysis() with the full kernel to confirm and refresh phases.
+
+Tracking utility power drift
+----------------------------
+Utility power is never exactly 60 Hz, and a grid error of only 0.02 Hz walks the
+pulse phase about 5 samples every second — in either direction, depending on
+whether the grid is running fast or slow.  With pulses only PULSE_WIDTH_SAMPLES
+wide, three samples of error is enough to sample the gap between pulses instead
+of the pulses themselves.
+
+So the analyzer does not just store where the pulse train was; it also estimates
+how fast that position is moving.  Each refine compares where the train was
+predicted to be against where it actually turned up, and nudges the rate estimate
+to close the gap (_record_phase_measurement).  That one number then fixes two
+separate problems:
+
+  * The phase goes stale between refines.  Projecting it forward on every tick
+    keeps each measurement sampling the pulses rather than the gaps
+    (_predicted_phases).
+
+  * The sampling grid walks away from the pulses *within* a single analysis
+    window, because the nominal spacing assumes an exact 60 Hz grid.  Spacing the
+    samples at the measured rate instead fixes this
+    (_effective_samples_per_pulse).  This is the larger of the two effects, and no
+    amount of phase correction touches it.
+
+Untracked, both together bias every published level downward by 5-7 dB at
+ordinary drift rates.  Tracked, the residual is about a dB, which is the floor
+set by phases being whole numbers of samples: the prediction is always up to half
+a sample off.  Going below that would need sub-sample interpolation of the audio.
+
+The estimate starts at zero and takes roughly ten seconds to converge, so levels
+read low for the first few seconds after a cold acquisition.
 
 State transitions are centralised: each tier method measures, publishes, and
 returns the state it believes the machine should be in; the per-state tick
@@ -42,7 +73,7 @@ import time
 from collections import deque
 from dataclasses import dataclass
 from enum import StrEnum
-from math import gcd, log10
+from math import log10
 
 import numpy as np
 
@@ -53,6 +84,7 @@ from buzz.dsp import (
     average_pulse_amplitude,
     build_pulse_kernel,
     calculate_pps_fit_array,
+    pulse_phase_period,
 )
 from buzz.sampler import AudioPipeline
 
@@ -85,14 +117,20 @@ class ContinuousAnalyzer:
     """Background analysis thread; call start() once, then poll latest_result()."""
 
     LOCK_ACQUIRE_SNR    = 6.0   # dB — minimum SNR to enter LOCKED
-    LOCK_LOSE_SNR       = 2.0   # dB — SNR below which consecutive failures are counted
+    # dB — SNR below which consecutive failures are counted.  Both the FFT fit and the
+    # narrow scan take a max and a min over many noisy candidates, and that selection
+    # alone yields ~1.2 dB of apparent SNR (measured up to 1.9 dB) on pure Gaussian
+    # noise with no pulse train present.  Holding lock at 2.0 dB therefore demanded
+    # almost no real signal; 3.0 keeps a genuine margin above the selection floor.
+    LOCK_LOSE_SNR       = 3.0
     LOSE_LOCK_COUNT     = 3     # consecutive _quick_check failures before SIGNAL_LOST
     FAST_TICK_INTERVAL  = 0.2   # s  — tick cadence in LOCKED and SIGNAL_LOST
     SEARCH_INTERVAL     = 1.0   # s  — SEARCHING tick cadence; also the Tier-2 narrow-scan cadence in SIGNAL_LOST
-    # Refine cadence must outpace mains drift: a 0.04 Hz grid error at 120 pps
-    # slips ~5 samples/s, so 0.6 s keeps the error to a few samples — small
-    # corrections, and far inside PHASE_SEARCH_RADIUS.  (2 s let worst-case
-    # drift reach the radius limit and drop lock between refines.)
+    # How often to re-measure the phase and refine the drift estimate.  Between
+    # refines the phase is predicted forward rather than held constant, so this no
+    # longer has to outpace the drift by itself — but it still sets how quickly the
+    # drift estimate can follow a changing grid, and every refine is a fresh
+    # correction against accumulated prediction error.
     REFINE_INTERVAL     = 0.6   # s  — phase-search refinement interval while LOCKED
     SIGNAL_LOST_REFINE  = 120.0 # s  — unconditional full-FFT safety net in SIGNAL_LOST
     PHASE_SEARCH_RADIUS = 10    # samples either side of stored peak to scan in SIGNAL_LOST
@@ -106,8 +144,44 @@ class ContinuousAnalyzer:
     FAST_SCAN_PULSES    = 15    # pulses in the Tier-3a screening kernel (~1/4 of full)
     FAST_SCAN_SAMPLES   = 4000  # audio window for Tier-3a (~0.25 s at 16 kHz)
     FAST_SCAN_INTERVAL  = 5.0   # s  — Tier-3a cadence in SIGNAL_LOST
-    FAST_SCAN_SNR       = 4.0   # dB — Tier-3a hit threshold; triggers Tier-3b full FFT
+    # dB — Tier-3a hit threshold; triggers Tier-3b full FFT.  This statistic is a
+    # peak/trough ratio over a short fit array, so it has a large noise-only floor:
+    # measured on pure Gaussian noise it averages 6.4 dB and reaches 7.6 dB.  The
+    # previous 4.0 sat below that floor, so the gate fired on every call and Tier 3a
+    # was pure overhead — a short FFT that never once saved the full one.  (It was
+    # tuned against audio carrying a DC pedestal, which compressed the ratio; real
+    # zero-mean audio never looked like that.)  8.0 clears the noise floor while
+    # still admitting signals at LOCK_ACQUIRE_SNR, which measure 8.8 dB and up.
+    FAST_SCAN_SNR       = 8.0
     CAPTURE_TIMEOUT     = 2.0   # s  — max wait for the pipeline to supply a window
+    # EMA weight for the input DC estimate.  At the ~5 Hz capture cadence 0.02 is a
+    # ~10 s time constant: slow enough to average out per-window estimation noise,
+    # fast enough to follow sound-card thermal drift and receiver AGC baseline wander.
+    DC_EMA_ALPHA        = 0.02
+
+    # --- Drift tracking ----------------------------------------------------
+    #
+    # Utility power is never exactly 60 Hz, so the pulse train slowly walks through the
+    # sample grid.  Rather than only correcting that walk after the fact, the
+    # analyzer estimates how fast it is happening and projects the phase forward
+    # between measurements — see _predicted_phases().
+    #
+    # How much of each prediction error is blamed on the drift-rate estimate being
+    # wrong.  The rate converges geometrically at this fraction per refine, so 0.2
+    # at a 0.6 s REFINE_INTERVAL settles in roughly 3 s.  Higher tracks a changing
+    # grid sooner but lets measurement noise into the rate; lower is steadier but
+    # lags real changes.
+    DRIFT_LEARNING_RATE = 0.2
+    # Don't learn from refines closer together than this.  The rate is derived from
+    # error / elapsed, so a near-zero elapsed would turn a one-sample measurement
+    # wobble into an enormous apparent drift.
+    MIN_DRIFT_UPDATE_INTERVAL = 0.3   # s
+    # Hard limit on the estimated rate, in samples of phase per second.  60 samples/s
+    # corresponds to a grid error of about 0.22 Hz — far outside anything the power
+    # system does in normal operation.  This is a safety rail: if the scan ever
+    # latches onto the wrong peak, the clamp stops a bad error from compounding into
+    # a runaway prediction.
+    MAX_PHASE_DRIFT_RATE = 60.0       # samples/s
 
     def __init__(self, pipeline: AudioPipeline, config: BuzzConfig) -> None:
         self._pipeline          = pipeline
@@ -124,12 +198,31 @@ class ContinuousAnalyzer:
         # Snapshot alignment: the smallest whole-sample interval that is an exact
         # number of pulse periods (400 samples = 3 periods at 16 kHz / 120 pps).
         # Windows ending on multiples of this share a phase origin, so phases
-        # learned in one snapshot stay valid in every later one.
-        self._phase_align = audio.sample_rate // gcd(audio.sample_rate, audio.pulse_rate)
+        # learned in one snapshot stay valid in every later one.  It doubles as the
+        # modulus for phase arithmetic — the same quantity analyze_window reduces by.
+        self._phase_align = pulse_phase_period(audio.sample_rate, audio.pulse_rate)
 
         self._state       = AnalyzerState.SEARCHING
-        self._peak_phase  = 0
-        self._noise_phase = 0
+        # Phase of the pulse train and of the quiet gap between pulses, in samples
+        # from the start of a snapshot.  Kept as floats so that fractional drift
+        # accumulates instead of being rounded away between refines; they are
+        # rounded only at the moment they are used to index audio.
+        self._peak_phase  = 0.0
+        self._noise_phase = 0.0
+        # How fast those phases are walking, in samples of phase per second of audio.
+        # Positive means the pulses are arriving later than a perfect pulse_rate
+        # train would predict, i.e. the grid is running slightly slow.  Zero until a
+        # lock has been held long enough to measure it.
+        self._phase_drift_rate = 0.0
+        # When the phases above were last measured, on the audio clock (see
+        # _audio_clock_seconds).  Predictions are made relative to this instant, so
+        # it must be stamped whenever the phases are.
+        self._phases_measured_at = 0.0
+
+        # EMA of the input DC offset, subtracted before rectification in _capture.
+        # None until the first window seeds it, so startup converges immediately
+        # instead of ramping up from zero.  Only ever touched on the analysis thread.
+        self._dc: float | None = None
 
         # True once we have acquired at least one lock; kept True even after the
         # signal disappears so SIGNAL_LOST can reuse the stored phases.
@@ -252,6 +345,143 @@ class ContinuousAnalyzer:
     # machine should be in.  None of them mutates _state directly — that is
     # _transition()'s job.
 
+    # ------------------------------------------------------------ drift tracking
+
+    def _effective_samples_per_pulse(self) -> float:
+        """Actual spacing between consecutive pulses, corrected for measured drift.
+
+        The nominal spacing (sample_rate / pulse_rate) assumes the grid sits exactly
+        at pulse_rate.  When it does not, the sampling grid does not merely start in
+        the wrong place — it walks away from the real pulses *within* a single
+        analysis window.  At 0.05 pps of error the two diverge by 6.7 samples over
+        one second, which with 3-sample pulses costs about 6 dB.
+
+        That loss is invisible to phase tracking, because it is a spacing error
+        rather than an offset: no matter where the window starts, pulses at one end
+        of it line up only if pulses at the other end do not.  Correcting it needs
+        the drift rate, which is exactly what the tracker measures.
+
+        A drift of `rate` samples per second is spread across pulse_rate pulses in
+        that second, so each successive pulse sits rate / pulse_rate samples further
+        along than the nominal spacing predicts.
+        """
+        return self._samples_per_pulse + self._phase_drift_rate / self._pulse_rate
+
+    def _audio_clock_seconds(self) -> float:
+        """Seconds of audio captured since the stream started.
+
+        Drift is measured against the audio timeline, not the wall clock.  The two
+        agree while capture is healthy, but if the sound device stalls, wall time
+        keeps running while no audio arrives — and the pulse train cannot drift
+        through samples that were never recorded.  Predicting against wall time
+        would then extrapolate straight past the real position.  Counting captured
+        samples instead makes a stalled stream simply freeze the prediction, which
+        is the correct behaviour.
+        """
+        return self._pipeline.total_samples / self._sample_rate
+
+    def _shortest_phase_move(self, difference: float) -> float:
+        """Fold a raw difference between two phases into the shortest equivalent move.
+
+        Phases wrap around at _phase_align, so going from 395 to 5 is a move of +10
+        samples forward, not -390 backwards.  Taking the raw subtraction would make
+        every wrap look like an enormous jump and would throw the drift estimate
+        badly off, so differences are always folded into +/- half a period.
+        """
+        half_period = self._phase_align / 2
+        return (difference + half_period) % self._phase_align - half_period
+
+    def _predicted_phases(self, at_time: float | None = None) -> tuple[int, int]:
+        """Where the signal and noise phases should be at `at_time` (default: now).
+
+        This is the point of tracking a drift rate at all.  The pulse train walks
+        through the sample grid at _phase_drift_rate samples per second, so a phase
+        measured even half a second ago is already stale — and with pulses only
+        PULSE_WIDTH_SAMPLES wide, being three samples late means sampling the gap
+        between pulses instead of the pulses, which reads as pure noise.  Projecting
+        the last measurement forward keeps every tick sampling the right place
+        instead of drifting off between refines.
+
+        Both phases are shifted by the same amount because both are anchored to the
+        same power cycle: the noise phase marks a gap *between* pulses, so when the
+        pulses walk the gap walks with them.  (They are still searched separately in
+        _phase_search, because which gap is quietest can change for reasons that have
+        nothing to do with drift — see that method's docstring.)
+
+        `at_time` is a reading of the audio clock; it defaults to right now.  Drift
+        can be either sign — a grid running fast walks the phase one way, a grid
+        running slow walks it the other — so `shift` is signed, and the modulo below
+        wraps correctly for negative values because Python's % always returns a
+        non-negative result.
+        """
+        now = self._audio_clock_seconds() if at_time is None else at_time
+        shift = self._phase_drift_rate * (now - self._phases_measured_at)
+        peak = int(round(self._peak_phase + shift)) % self._phase_align
+        noise = int(round(self._noise_phase + shift)) % self._phase_align
+        return peak, noise
+
+    def _record_phase_measurement(self, peak_phase: int, noise_phase: int,
+                                  measured_at: float,
+                                  predicted_peak: float | None = None) -> None:
+        """Store a freshly measured phase pair, and learn the drift rate from it.
+
+        When `predicted_peak` is given, the gap between where the pulse train was
+        predicted to be and where it actually turned up tells us how wrong the drift
+        estimate is.  If the rate were perfect the prediction would land exactly on
+        the measurement; an error of `e` samples after `elapsed` seconds means the
+        rate is off by roughly e / elapsed, so we move the estimate a fraction
+        (DRIFT_LEARNING_RATE) of the way there.  Correcting only a fraction rather
+        than jumping straight to the implied value averages out measurement noise,
+        the same way any running average does.
+
+        The rate can only be resolved so finely: phases are measured to the nearest
+        whole sample, so once the estimate is close enough that the predicted and
+        measured phases round to the same value, there is no error left to learn
+        from.  That floor is about 0.5 / REFINE_INTERVAL, or roughly 0.8 samples/s
+        at the default cadence — which over one refine interval is half a sample of
+        prediction error, comfortably below the point where it costs any signal.
+        Resolving finer would need sub-sample interpolation of the scan peak.
+
+        `predicted_peak` is omitted when the phase came from a full FFT search rather
+        than from tracking — after a cold start or a long signal outage there is no
+        meaningful prediction to compare against, so there is nothing to learn.
+
+        `measured_at` is a reading of the audio clock, not the wall clock.
+        """
+        elapsed = measured_at - self._phases_measured_at
+        if predicted_peak is not None and elapsed >= self.MIN_DRIFT_UPDATE_INTERVAL:
+            prediction_error = self._shortest_phase_move(peak_phase - predicted_peak)
+            adjusted = self._phase_drift_rate + self.DRIFT_LEARNING_RATE * prediction_error / elapsed
+            self._phase_drift_rate = max(-self.MAX_PHASE_DRIFT_RATE,
+                                         min(self.MAX_PHASE_DRIFT_RATE, adjusted))
+        self._peak_phase = float(peak_phase)
+        self._noise_phase = float(noise_phase)
+        self._phases_measured_at = measured_at
+
+    def phase_drift_rate(self) -> float:
+        """Current estimate of the pulse-train drift, in samples of phase per second."""
+        return self._phase_drift_rate
+
+    def grid_frequency_hz(self) -> float:
+        """Utility line frequency implied by the measured drift, in Hz.
+
+        Note the direction.  A *positive* drift means each pulse turns up later than
+        the configured rate predicts, so the true pulse rate is *lower* than
+        configured and the grid is running slow.  Frequency therefore moves opposite
+        to the drift.
+
+        Writing the true rate as r, matching the sampling grid to the actual pulses
+        requires drift = sample_rate * (pulse_rate - r) / r, which rearranges to
+        r = sample_rate * pulse_rate / (sample_rate + drift).  Arcing happens twice
+        per power cycle — once per half-cycle, at each voltage peak — so halving
+        that converts pulses per second into cycles per second.
+        """
+        true_pulse_rate = (self._sample_rate * self._pulse_rate
+                           / (self._sample_rate + self._phase_drift_rate))
+        return true_pulse_rate / 2
+
+    # ------------------------------------------------------------ tier helpers
+
     def _publish(self, result: AnalysisResult) -> None:
         with self._result_lock:
             self._latest_result = result
@@ -261,7 +491,7 @@ class ContinuousAnalyzer:
         return amplitude_to_dbm(amplitude, self._offset_db)
 
     def _capture(self, n_samples: int) -> np.ndarray | None:
-        """Wait for n_samples of phase-aligned audio and return it rectified (absolute int32).
+        """Wait for n_samples of phase-aligned audio and return it DC-corrected and rectified.
 
         Snapshots are aligned to _phase_align so every window starts at the same
         offset within the pulse period.  Without this the window origin moves with
@@ -269,34 +499,60 @@ class ContinuousAnalyzer:
         point at the wrong samples in the next — silently breaking _quick_check,
         _noise_check, and _phase_search.
 
+        The DC offset is removed before rectification.  The receiver is in LSB, so its
+        audio is a frequency-translated slice of RF: bipolar and zero-mean by
+        construction, and any constant is the sound card's own offset.  abs(x + d)
+        adds that offset to the pulse positions and the inter-pulse positions alike,
+        which compresses the ratio between them and costs SNR — worst at the weak-signal
+        end.
+
+        The estimator is the median, not the mean.  The mean is not robust to the very
+        thing being measured: a 120 pps train of 20000-count pulses pulls the window
+        mean to ~450 counts when the true offset is zero, so subtracting it would
+        inject an error that grows with signal strength.  The pulses occupy ~2% of
+        samples, which the median ignores entirely.  It costs ~270 us per window
+        against ~1185 us for one FFT fit.
+
+        The estimate is additionally EMA-smoothed (see DC_EMA_ALPHA) rather than taken
+        fresh per window, so per-window estimation noise isn't injected into every
+        reading while genuine drift is still followed.
+
         Returns None when the pipeline cannot supply the data within
         CAPTURE_TIMEOUT — the caller should leave the state machine unchanged.
         """
         if not self._pipeline.wait_for_data(n_samples + self._phase_align,
                                             timeout=self.CAPTURE_TIMEOUT):
             return None
-        snapshot = self._pipeline.get_snapshot(n_samples, align=self._phase_align)
-        return np.abs(snapshot.astype(np.int32))
+        snapshot = self._pipeline.get_snapshot(n_samples, align=self._phase_align).astype(np.float32)
+        window_dc = float(np.median(snapshot))
+        self._dc = (window_dc if self._dc is None
+                    else self._dc + self.DC_EMA_ALPHA * (window_dc - self._dc))
+        return np.abs(snapshot - self._dc)
 
     def _sample_phases(self, abs_data: np.ndarray,
                        peak_phase: int | None = None,
                        noise_phase: int | None = None) -> tuple[float, float, float] | None:
-        """Sample signal and noise amplitudes at the given phases (stored ones by default).
+        """Sample signal and noise amplitudes at the given phases.
+
+        With no phases supplied it uses the *predicted* ones — where drift says the
+        pulse train should be right now — rather than wherever it was last measured.
+        That is what stops the reading sagging between refines; see
+        _predicted_phases().
 
         Returns (sig_dbm, noise_dbm, snr) or None if the buffer is too short.
         """
-        peak     = self._peak_phase if peak_phase is None else peak_phase
-        noise    = self._noise_phase if noise_phase is None else noise_phase
+        predicted_peak, predicted_noise = self._predicted_phases()
+        peak     = predicted_peak if peak_phase is None else peak_phase
+        noise    = predicted_noise if noise_phase is None else noise_phase
+        spacing  = self._effective_samples_per_pulse()
         # Start after the larger of the two phase offsets so both pulse trains
         # fit entirely inside the window and are averaged over the same pulses.
         start    = max(peak, noise)
-        n_pulses = int((len(abs_data) - start) // self._samples_per_pulse)
+        n_pulses = int((len(abs_data) - start) // spacing)
         if n_pulses < 1:
             return None
-        sig_amp   = float(average_pulse_amplitude(
-            abs_data, self._sample_rate, self._pulse_rate, n_pulses, peak))
-        noise_amp = float(average_pulse_amplitude(
-            abs_data, self._sample_rate, self._pulse_rate, n_pulses, noise))
+        sig_amp   = float(average_pulse_amplitude(abs_data, spacing, n_pulses, peak))
+        noise_amp = float(average_pulse_amplitude(abs_data, spacing, n_pulses, noise))
         sig_dbm   = self._to_dbm(sig_amp)
         noise_dbm = self._to_dbm(noise_amp)
         return sig_dbm, noise_dbm, sig_dbm - noise_dbm
@@ -318,8 +574,9 @@ class ContinuousAnalyzer:
         peak   = float(fit.max())
         trough = float(fit.min())
         if trough <= 0:
-            # Quantised fit scores can floor to zero on very quiet audio; the dB
-            # ratio is undefined then, so treat any positive peak as a candidate.
+            # Only reachable on a digitally silent input, where every fit score is
+            # exactly zero and the dB ratio is undefined.  Treat any positive peak
+            # as a candidate rather than dividing by zero.
             return peak > 0
         return 20 * log10(peak / trough) >= self.FAST_SCAN_SNR
 
@@ -345,8 +602,16 @@ class ContinuousAnalyzer:
         snr       = sig_dbm - noise_dbm
 
         if snr >= self.LOCK_ACQUIRE_SNR:
-            self._peak_phase  = window.peak_phase
-            self._noise_phase = window.noise_phase
+            if not self._phases_valid:
+                # Cold start: no history, so there is no drift estimate to keep.
+                # (After a signal outage the previous estimate IS kept — the grid
+                # went on drifting while our signal was gone, and the old rate is a
+                # better starting guess than zero.)
+                self._phase_drift_rate = 0.0
+            # No predicted_peak: a full FFT search is an absolute re-measurement, not
+            # a tracking step, so there is no prediction error worth learning from.
+            self._record_phase_measurement(window.peak_phase, window.noise_phase,
+                                           measured_at=self._audio_clock_seconds())
             self._publish(AnalysisResult(
                 signal_dbm=sig_dbm, noise_dbm=noise_dbm, snr=snr, locked=True,
             ))
@@ -374,19 +639,21 @@ class ContinuousAnalyzer:
         Returns (best_phase, best_offset); center with offset 0 if no candidate
         fits or no challenger clears the margin.
         """
-        spp_int       = int(self._samples_per_pulse)
         best_amp      = None
         best_phase    = center
         best_offset   = 0
         incumbent_amp = None
+        spacing       = self._effective_samples_per_pulse()
         for offset in range(-self.PHASE_SEARCH_RADIUS, self.PHASE_SEARCH_RADIUS + 1):
-            candidate = (center + offset) % spp_int
+            # Wrap on the exact repeat period, not samples_per_pulse: offsets one
+            # period apart sample identical positions, so this is the only modulus
+            # under which a wrapped candidate really is the same phase.
+            candidate = (center + offset) % self._phase_align
             start     = max(candidate, anchor)
-            n_pulses  = int((len(abs_data) - start) // self._samples_per_pulse)
+            n_pulses  = int((len(abs_data) - start) // spacing)
             if n_pulses < 1:
                 continue
-            amp = float(average_pulse_amplitude(
-                abs_data, self._sample_rate, self._pulse_rate, n_pulses, candidate))
+            amp = float(average_pulse_amplitude(abs_data, spacing, n_pulses, candidate))
             if offset == 0:
                 incumbent_amp = amp
             if best_amp is None or ((amp < best_amp) if minimize else (amp > best_amp)):
@@ -403,7 +670,15 @@ class ContinuousAnalyzer:
         return best_phase, best_offset
 
     def _phase_search(self) -> AnalyzerState:
-        """Narrow amplitude scan ± PHASE_SEARCH_RADIUS around each stored phase.
+        """Narrow amplitude scan ± PHASE_SEARCH_RADIUS around each predicted phase.
+
+        This is the analyzer's tracking step, and it does two jobs: it finds where
+        the pulse train actually is now, and it uses the gap between that and where
+        drift predicted it would be to refine the drift estimate itself.  Scanning
+        around the *prediction* rather than the last measurement is what keeps the
+        search centred — under steady drift the pulse has already moved by the time
+        we look again, so a search centred on the old position starts off-target and
+        has to spend its radius catching up.
 
         ~40× cheaper than _full_analysis() — evaluates average_pulse_amplitude at
         2*PHASE_SEARCH_RADIUS+1 candidates per phase (Numba JIT) rather than running
@@ -420,7 +695,9 @@ class ContinuousAnalyzer:
         Each scan's winning offset is recorded separately (_latest_signal_correction for
         signal, _latest_noise_correction for noise) on every call, win or lose, so the
         UI can display how much each phase actually moved rather than assuming they
-        track together.
+        track together.  Note that these are offsets from the predicted phase, so once
+        drift is being tracked well they read near zero even while the grid is drifting
+        hard — they show the tracker's residual error, not the raw movement.
 
         The SNR bar for updating the phases depends on how we got here.  Acquiring
         from SIGNAL_LOST demands LOCK_ACQUIRE_SNR — strong evidence before trusting
@@ -438,15 +715,20 @@ class ContinuousAnalyzer:
         if abs_data is None:
             return self._state
 
-        # Signal scan: loudest candidate near _peak_phase.
+        # Stamp the audio clock after the capture, so it refers to the audio we
+        # actually just analysed rather than to whatever had arrived before we waited.
+        measured_at = self._audio_clock_seconds()
+        predicted_peak, predicted_noise = self._predicted_phases(measured_at)
+
+        # Signal scan: loudest candidate near where the peak is predicted to be.
         best_phase, best_offset = self._scan_phase(
-            abs_data, self._peak_phase, anchor=self._noise_phase, minimize=False)
+            abs_data, predicted_peak, anchor=predicted_noise, minimize=False)
         with self._result_lock:
             self._latest_signal_correction = best_offset
 
-        # Noise scan: independently, the quietest candidate near _noise_phase.
+        # Noise scan: independently, the quietest candidate near the predicted gap.
         best_noise_phase, best_noise_offset = self._scan_phase(
-            abs_data, self._noise_phase, anchor=best_phase, minimize=True)
+            abs_data, predicted_noise, anchor=best_phase, minimize=True)
         with self._result_lock:
             self._latest_noise_correction = best_noise_offset
 
@@ -459,8 +741,11 @@ class ContinuousAnalyzer:
         tracking  = self._state == AnalyzerState.LOCKED
         threshold = self.LOCK_LOSE_SNR if tracking else self.LOCK_ACQUIRE_SNR
         if snr >= threshold:
-            self._peak_phase  = best_phase
-            self._noise_phase = best_noise_phase
+            # Commit the measurement, and let how far it landed from the prediction
+            # sharpen the drift estimate for next time.
+            self._record_phase_measurement(
+                best_phase, best_noise_phase,
+                measured_at=measured_at, predicted_peak=predicted_peak)
             self._publish(AnalysisResult(
                 signal_dbm=sig_dbm, noise_dbm=noise_dbm, snr=snr, locked=True,
             ))

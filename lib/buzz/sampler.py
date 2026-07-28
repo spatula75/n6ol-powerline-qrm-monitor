@@ -168,19 +168,35 @@ class LevelStream:
     whenever the hardware delivers a new buffer; read() blocks on a threading.Event
     until that happens, then returns immediately with the latest dBm level.
 
+    The sound card's DC offset is removed before rectification, using the same
+    EMA-smoothed median estimate the analyzer applies (see ContinuousAnalyzer._capture
+    for why the median rather than the mean).  It matters more here than anywhere
+    else: this is the reading the operator calibrates audio_rf_conversion_db against,
+    so an uncorrected offset would be baked into every measurement the monitor ever
+    reports.  Smoothing is what makes it viable at this block size — a 320-sample
+    block is far too short to estimate an offset from on its own.
+
     Use as a context manager:
         with sampler.level_stream() as stream:
             dbm = stream.read()
     """
 
+    # ~10 s time constant at the 50 Hz callback rate of the default 320-sample block.
+    DC_EMA_ALPHA = 0.002
+
     def __init__(self, config: BuzzConfig, device_index: int, blocksize: int) -> None:
         self._event = threading.Event()
         self._latest_dbm: float = SILENCE_DBFS
         self._offset_db = config.station.audio_rf_conversion_db
+        self._dc: float | None = None   # None until the first block seeds it
 
         def _callback(indata: np.ndarray, frames: int,
                       time: object, status: sd.CallbackFlags) -> None:
-            amplitude = float(np.mean(np.abs(indata.astype(np.int32))))
+            block = indata[:, 0].astype(np.float32)
+            block_dc = float(np.median(block))
+            self._dc = (block_dc if self._dc is None
+                        else self._dc + self.DC_EMA_ALPHA * (block_dc - self._dc))
+            amplitude = float(np.mean(np.abs(block - self._dc)))
             self._latest_dbm = amplitude_to_dbm(amplitude, self._offset_db)
             self._event.set()
 

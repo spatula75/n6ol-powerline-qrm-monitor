@@ -26,11 +26,11 @@ def _direct_sum(data, sample_rate, n_pulses, start_index):
         total += int(data[start_index + pos])
         total += int(data[start_index + pos + 1])
         total += int(data[start_index + pos + 2])
-    return total // (3 * n_pulses)
+    return total / (3 * n_pulses)
 
 
 def _fast_result(data, n_pulses, start_index):
-    return int(_sum_pulse_train(data, SAMPLE_RATE, PULSE_RATE, n_pulses, start_index))
+    return _sum_pulse_train(data, SAMPLE_RATE / PULSE_RATE, n_pulses, start_index)
 
 
 def _random_data(seed, length=48000):
