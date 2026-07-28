@@ -6,6 +6,11 @@ configured output directory.  CsvStore owns the file format end to end: writing
 new rows, parsing files back into typed CsvRow records (including old-format
 files that predate the Signal Lock Status column), and aggregating a date range
 into the time-bucketed score dict the summary graphs consume.
+
+Column order is: timestamp, SNR, signal, noise floor, lock status, grid frequency,
+phase drift, then the six weather fields.  New columns belong immediately after
+lock status, because read_rows() stops reading at index 4 and every field past
+that point is written for humans and external tools rather than parsed here.
 """
 
 import csv
@@ -41,6 +46,7 @@ class CsvStore:
         pps = config.audio.pulse_rate
         self._header_line = (f'ISO datetime,{pps}pps SNR,{pps}pps signal (dBm),Noise floor (dBm),'
                              f'Signal Lock Status,'
+                             f'Grid frequency (Hz),Phase drift (samples/s),'
                              f'Temperature (F),Humidity (%),Solar radiation (w/m^2),'
                              f'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)\n')
 
@@ -50,11 +56,22 @@ class CsvStore:
     def append(self, now: datetime, snr: float, signal: float, noise: float,
                lock_status: str,
                temperature: CsvValue, humidity: CsvValue, solar_radiation: CsvValue,
-               wind_speed: CsvValue, wind_gust: CsvValue, wind_bearing: CsvValue) -> str:
+               wind_speed: CsvValue, wind_gust: CsvValue, wind_bearing: CsvValue,
+               *, grid_frequency: CsvValue = '', phase_drift: CsvValue = '') -> str:
+        """Append one measurement row, writing the header first if the file is new.
+
+        grid_frequency and phase_drift are keyword-only and default to blank: they are
+        by-products of the analyzer's drift tracking rather than measurements the
+        monitor depends on, and a row with no pulse-train lock has nothing to report
+        for them.  They are written after Signal Lock Status, ahead of the weather
+        fields — read_rows() only ever reads up to index 4, so inserting there leaves
+        parsing of both older and newer files completely unaffected.
+        """
         csv_filename = self.filename_for_date(now)
         write_header = not csv_filename.exists()
         csv_str = (f'{now.isoformat()},{snr:.2f},{signal:.2f},{noise:.2f},'
                    f'{lock_status},'
+                   f'{grid_frequency},{phase_drift},'
                    f'{temperature},{humidity},{solar_radiation},'
                    f'{wind_speed},{wind_gust},{wind_bearing}')
         with open(csv_filename, 'a') as f:
@@ -70,6 +87,10 @@ class CsvStore:
         the Signal Lock Status column get a non-'none' value at index 4 (either the
         temperature field or nothing), which correctly reads as locked; rows too
         short to hold the measurement fields default the status to 'full'.
+
+        Nothing beyond index 4 is read.  That is deliberate and is what lets columns
+        be added after Signal Lock Status without breaking files written by older
+        versions — the fields that shift are ones this parser never looks at.
         """
         zone = ZoneInfo(self._config.station.timezone)
         rows: list[CsvRow] = []

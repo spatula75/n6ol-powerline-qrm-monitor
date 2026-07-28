@@ -28,9 +28,15 @@ _UNLOCKED_RESULT = AnalysisResult(signal_dbm=-90.0, noise_dbm=-90.0, snr=0.0,  l
 
 
 def _make_collector(cfg: BuzzConfig) -> Collector:
+    analyzer = MagicMock()
+    # The collector formats these as numbers, so the mock has to return real ones.
+    # Defaults here keep tests that aren't about drift tracking from having to
+    # configure it; the tests that are override them.
+    analyzer.grid_frequency_hz.return_value = 60.0
+    analyzer.phase_drift_rate.return_value = 0.0
     return Collector(
         config=cfg,
-        analyzer=MagicMock(),
+        analyzer=analyzer,
         weather=MagicMock(),
         store=MagicMock(),
         plotter=MagicMock(),
@@ -99,6 +105,62 @@ class TestRunCollectionAveraging:
         collector._store.append.assert_called_once()
         args = collector._store.append.call_args[0]
         assert args[5:] == ('', '', '', '', '', '')   # blank weather fields
+
+
+class TestRunCollectionGridFrequency:
+    """The collector reads the drift tracker's by-products and logs them."""
+
+    def _run(self, collector: Collector, tmp_path: Path) -> dict:
+        now = datetime(2024, 1, 15, 10, 30, 0, tzinfo=_TZ)
+        collector._weather.fetch.return_value = ('72', '45', '120', '5', '8', '180')
+        collector._store.append.return_value = 'csv'
+        collector._store.filename_for_date.return_value = tmp_path / 'data.csv'
+        with patch('buzz.collector.datetime') as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            collector._run_collection()
+        return collector._store.append.call_args[1]
+
+    def test_logged_when_the_minute_had_a_lock(self, tmp_path):
+        collector = _make_collector(_make_config(tmp_path))
+        collector._analyzer.drain_results.return_value = [_LOCKED_RESULT] * 60
+        collector._analyzer.grid_frequency_hz.return_value = 60.0234
+        collector._analyzer.phase_drift_rate.return_value = -6.123
+        kwargs = self._run(collector, tmp_path)
+        assert kwargs['grid_frequency'] == '60.023'
+        assert kwargs['phase_drift'] == '-6.12'
+
+    def test_three_decimals_for_frequency(self, tmp_path):
+        """One digit past the absolute accuracy, so relative changes survive; see
+        the note in Collector._run_collection about the sound-card timebase."""
+        collector = _make_collector(_make_config(tmp_path))
+        collector._analyzer.drain_results.return_value = [_LOCKED_RESULT] * 60
+        collector._analyzer.grid_frequency_hz.return_value = 60.0
+        collector._analyzer.phase_drift_rate.return_value = 0.0
+        assert self._run(collector, tmp_path)['grid_frequency'] == '60.000'
+
+    def test_blank_when_no_lock_was_held(self, tmp_path):
+        """With no lock the tracker's rate is stale — a number here would be a lie."""
+        collector = _make_collector(_make_config(tmp_path))
+        collector._analyzer.drain_results.return_value = [_UNLOCKED_RESULT] * 60
+        collector._analyzer.grid_frequency_hz.return_value = 60.0234
+        kwargs = self._run(collector, tmp_path)
+        assert kwargs['grid_frequency'] == ''
+        assert kwargs['phase_drift'] == ''
+
+    def test_blank_when_no_results_at_all(self, tmp_path):
+        collector = _make_collector(_make_config(tmp_path))
+        collector._analyzer.drain_results.return_value = []
+        kwargs = self._run(collector, tmp_path)
+        assert kwargs['grid_frequency'] == ''
+        assert kwargs['phase_drift'] == ''
+
+    def test_partial_lock_still_logs_a_frequency(self, tmp_path):
+        collector = _make_collector(_make_config(tmp_path))
+        collector._analyzer.drain_results.return_value = [_LOCKED_RESULT, _UNLOCKED_RESULT]
+        collector._analyzer.grid_frequency_hz.return_value = 59.9812
+        collector._analyzer.phase_drift_rate.return_value = 5.01
+        assert self._run(collector, tmp_path)['grid_frequency'] == '59.981'
 
 
 class TestRunCollectionLockStatus:
@@ -197,14 +259,8 @@ class TestRunCollectionUploads:
         # publisher's presence is the gate, so this must run without uploads
         # and without AttributeError
         cfg = _make_config(tmp_path, server_enabled=False)
-        collector = Collector(
-            config=cfg,
-            analyzer=MagicMock(),
-            weather=MagicMock(),
-            store=MagicMock(),
-            plotter=MagicMock(),
-            publisher=None,
-        )
+        collector = _make_collector(cfg)
+        collector._publisher = None
         now = _setup_defaults(collector, tmp_path)
         with patch('buzz.collector.datetime') as mock_dt:
             mock_dt.now.return_value = now

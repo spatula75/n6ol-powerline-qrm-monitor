@@ -342,14 +342,32 @@ averaged across all frames regardless of lock status.
 
 - **Daily CSV** (`noise_data.YYYY-MM-DD.csv`) — one row per minute with
   timestamp, SNR, signal level (dBm), noise floor (dBm), Signal Lock Status,
-  and weather data.  All dBm values are averages over the last full minute of
-  continuous analysis.  **Signal Lock Status** is `full` when the analyzer
-  held a confirmed lock on the pulse train for the entire minute, `partial`
-  when lock was held for part of the minute, or `none` when no lock was
-  established (e.g., the interference was absent or too weak to acquire).
-  When the status is `none`, the signal level equals the noise floor and SNR
-  is 0; the daily chart omits the red signal line for those intervals and
-  draws only the green noise floor.
+  grid frequency, phase drift, and weather data.  All dBm values are averages
+  over the last full minute of continuous analysis.  **Signal Lock Status** is
+  `full` when the analyzer held a confirmed lock on the pulse train for the
+  entire minute, `partial` when lock was held for part of the minute, or `none`
+  when no lock was established (e.g., the interference was absent or too weak
+  to acquire).  When the status is `none`, the signal level equals the noise
+  floor and SNR is 0; the daily chart omits the red signal line for those
+  intervals and draws only the green noise floor.
+
+  **Grid frequency (Hz)** and **Phase drift (samples/s)** come from the
+  analyzer's phase tracker and are blank for any minute with no lock, since the
+  tracker has nothing current to report then.  Grid frequency is logged to three
+  decimals, which is one digit past what the *absolute* accuracy supports: the
+  whole reading is scaled by the sound card's sample-clock error, typically
+  50–100 ppm, or 0.003–0.006 Hz at 60 Hz.  Treat the third decimal as meaningful
+  for how the frequency **changes** — that error is a fixed scale factor and
+  cancels out of any comparison — but read the absolute value as good to about
+  ±0.01 Hz unless you have calibrated the sound card.  Because the error is a
+  single multiplicative constant, calibrating later lets you correct the entire
+  logged history by one scale factor; the raw phase drift is logged alongside so
+  the underlying measurement is preserved rather than only the derived figure.
+
+  These two columns sit immediately after Signal Lock Status.  Anything that
+  parses these files by column position and reads past index 4 (the weather
+  fields) needs updating for files written by this version onward; the monitor's
+  own reader stops at index 4 and is unaffected, so older files still load.
 - **Daily plots** — a 1600×640 px chart of signal vs noise floor over the day,
   plus a 6-point moving average version.
 - **Probability summary graphs** — bar charts showing the normalized probability

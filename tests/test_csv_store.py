@@ -43,6 +43,68 @@ class TestFilenameForDate:
         assert p1 != p2
 
 
+class TestGridFrequencyColumns:
+    """Grid frequency and phase drift are logged after Signal Lock Status.
+
+    That position is chosen so the change is invisible to read_rows(), which stops
+    at index 4 — files written before and after the change parse identically.
+    """
+
+    def _row(self, tmp_path, **kwargs) -> list[str]:
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.append(now, 15.0, -80.0, -95.0, 'full', 68.0, 52.0, 300.0, 7.5, 12.0, 225, **kwargs)
+        lines = store.filename_for_date(now).read_text().splitlines()
+        return lines[1].split(',')
+
+    def test_header_names_both_columns(self, tmp_path):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.append(now, 15.0, -80.0, -95.0, 'full', '', '', '', '', '', '')
+        header = store.filename_for_date(now).read_text().splitlines()[0].split(',')
+        assert header[5] == 'Grid frequency (Hz)'
+        assert header[6] == 'Phase drift (samples/s)'
+
+    def test_values_land_immediately_after_lock_status(self, tmp_path):
+        fields = self._row(tmp_path, grid_frequency='60.023', phase_drift='-6.12')
+        assert fields[4] == 'full'
+        assert fields[5] == '60.023'
+        assert fields[6] == '-6.12'
+
+    def test_weather_still_follows_them(self, tmp_path):
+        fields = self._row(tmp_path, grid_frequency='60.023', phase_drift='-6.12')
+        assert fields[7:] == ['68.0', '52.0', '300.0', '7.5', '12.0', '225']
+
+    def test_default_is_blank_not_zero(self, tmp_path):
+        """A minute with no lock has nothing to report, and 0.000 Hz would be a lie."""
+        fields = self._row(tmp_path)
+        assert fields[5] == '' and fields[6] == ''
+
+    def test_row_still_parses_with_the_new_columns(self, tmp_path):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.append(now, 15.0, -80.0, -95.0, 'partial', 68.0, 52.0, 300.0, 7.5, 12.0, 225,
+                     grid_frequency='60.023', phase_drift='-6.12')
+        rows = store.read_rows(store.filename_for_date(now))
+        assert len(rows) == 1
+        assert (rows[0].snr, rows[0].signal, rows[0].noise) == (15.0, -80.0, -95.0)
+        assert rows[0].lock_status == 'partial'
+
+    def test_old_format_rows_written_before_the_change_still_parse(self, tmp_path):
+        """The compatibility guarantee: rows with the pre-change column layout."""
+        path = tmp_path / 'old.csv'
+        path.write_text(
+            'ISO datetime,120pps SNR,120pps signal (dBm),Noise floor (dBm),Signal Lock Status,'
+            'Temperature (F),Humidity (%),Solar radiation (w/m^2),'
+            'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)\n'
+            '2024-01-15T10:30:00-08:00,15.00,-80.00,-95.00,partial,68.0,52.0,300.0,7.5,12.0,225\n'
+        )
+        rows = _make_store(tmp_path).read_rows(path)
+        assert len(rows) == 1
+        assert (rows[0].snr, rows[0].signal, rows[0].noise) == (15.0, -80.0, -95.0)
+        assert rows[0].lock_status == 'partial'
+
+
 class TestAppend:
     def test_creates_file_with_headers_on_first_call(self, tmp_path):
         store = _make_store(tmp_path)

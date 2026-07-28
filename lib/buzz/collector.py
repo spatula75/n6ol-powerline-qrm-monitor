@@ -68,6 +68,24 @@ class Collector:
             snr_mean    = 0.0
             lock_status = 'none'
 
+        # Grid frequency and drift come from the analyzer's phase tracker, which only
+        # has a meaningful estimate while it is following a pulse train.  With no
+        # locked results this minute the stored rate is stale, so record blanks
+        # rather than a number that looks like a measurement.
+        #
+        # Three decimal places is one digit past what the absolute accuracy supports:
+        # the reading is scaled by the sound card's sample-clock error (50-100 ppm on
+        # typical hardware, or 0.003-0.006 Hz at 60 Hz), so the third digit is only
+        # meaningful for how the frequency *changes*, not for what it is.  That error
+        # is a single multiplicative constant, so if the card is ever calibrated the
+        # whole logged history can be corrected by one scale factor — which is also
+        # why the raw drift rate is worth keeping alongside the derived frequency.
+        if locked_results:
+            grid_frequency = f'{self._analyzer.grid_frequency_hz():.3f}'
+            phase_drift    = f'{self._analyzer.phase_drift_rate():.2f}'
+        else:
+            grid_frequency = phase_drift = ''
+
         # Weather is decoration on the noise measurement — a failed fetch must not
         # cost us the CSV row, so degrade to blank fields and keep going.
         try:
@@ -78,7 +96,8 @@ class Collector:
             weather_data = EMPTY_WEATHER
 
         csv_str = self._store.append(now, snr_mean, signal_mean, noise_mean,
-                                     lock_status, *weather_data)
+                                     lock_status, *weather_data,
+                                     grid_frequency=grid_frequency, phase_drift=phase_drift)
 
         output_dir = Path(station.path)
         now_date_str = now.strftime('%Y-%m-%d')
