@@ -7,41 +7,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
-### Changed
-- Extracted the pulse-train DSP core into `buzz.dsp` (kernel builder, FFT fit
-  array, Numba amplitude averaging, dBFS conversion, and a shared
-  `analyze_window()`); `sampler.py` is now pure audio I/O and `analyzer.py`
-  pure state machine.
-- Centralised `ContinuousAnalyzer` state transitions: tier methods return the
-  state they propose and `_transition()` owns all bookkeeping (debounce reset,
-  phase validation, refine-timer stamp); per-state tick methods own cadence.
-- Weather fetches now have a 10 s timeout, and a failed fetch degrades to
-  blank weather fields instead of dropping the minute's CSV row.
-- CSV row parsing moved into `CsvStore.read_rows()`; the plotter consumes
-  typed rows instead of parsing files itself.
-- Waterfall display derives its bin geometry and frequency axis from the
-  configured sample rate instead of a hardcoded 16 kHz.
-- SCP uploads now verify the server host key against known_hosts
-  (`~/.ssh/known_hosts` plus optional `~/.buzz/known_hosts`) instead of
-  auto-accepting any key; add new hosts with
-  `ssh-keyscan <host> >> ~/.buzz/known_hosts`.
-- Collector uploads are gated on the publisher's presence rather than
-  re-checking `server.enabled`.
-- Unknown `[weather] source` values now log a warning instead of silently
-  disabling weather.
+## [1.1.0] — 2026-07-27
 
-### Fixed
-- `generate_summary_graph()` leaked a matplotlib figure when there was no data
-  to plot (up to three figures per hour on a quiet station).
-- `analyze_window()` returns None instead of crashing when the audio window is
-  shorter than the scan kernel.
-
-### Removed
-- Legacy `AudioSampler.take_sample()` path (superseded by the continuous
-  analyzer ring buffer) and the now-unused `duration` and
-  `measurements_to_take` config fields.
+Continuous live analysis and display replace the old once-a-minute sampling
+loop, plus a DSP correctness pass and utility-line drift tracking on top of it.
 
 ### Added
+- Continuously-running audio pipeline (`AudioPipeline`) and a
+  `ContinuousAnalyzer` state machine (`SEARCHING` → `LOCKED` → `SIGNAL_LOST`,
+  with tiered re-acquisition) replacing per-minute FFT sampling — sub-second
+  signal/noise readings instead of once-a-minute snapshots.
+- Live PySide6 waterfall display and S-band meter panel (run without
+  `--headless` to open it); `--top` keeps the window always on top.
+- Utility-line drift tracking: the analyzer estimates how fast grid frequency
+  is drifting and uses it to predict the pulse phase forward between refines
+  and correct the sample spacing within an analysis window, removing 5–7 dB
+  of systematic level bias that existed at ordinary drift rates.
+  `phase_drift_rate()` and `grid_frequency_hz()` expose the estimate; grid
+  frequency and phase drift are now logged to the daily CSV (columns inserted
+  after Signal Lock Status, so old files still parse unchanged).
+- `tools/pulse_probe.py` — diagnostic that measures the real pulse shape,
+  drift rate, and number of active mains phases from live audio, for future
+  tuning of `PULSE_WIDTH_SAMPLES`.
 - `level_meter.py` — live text S-meter for receiver gain calibration.  Displays
   a continuously-updating 21-char bar (S1–S9 linear, then +20/+40/+60 sections
   with 3 ticks each) plus dBm and S-unit readout.  Uses a persistent
@@ -51,6 +38,79 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `AudioSampler.level_stream()` / `LevelStream` in `sampler.py` — persistent
   callback-driven input stream; `.read()` blocks on a `threading.Event` until
   the next hardware buffer fires.
+
+### Changed
+- Extracted the pulse-train DSP core into `buzz.dsp` (kernel builder, FFT fit
+  array, Numba amplitude averaging, dBFS conversion, and a shared
+  `analyze_window()`); `sampler.py` is now pure audio I/O and `analyzer.py`
+  pure state machine.
+- Centralised `ContinuousAnalyzer` state transitions: tier methods return the
+  state they propose and `_transition()` owns all bookkeeping (debounce reset,
+  phase validation, refine-timer stamp); per-state tick methods own cadence.
+- Pulse kernel and amplitude averager now agree exactly on pulse positions
+  (both round to the nearest sample, where the kernel previously truncated);
+  phase reduction uses the exact integer repeat period instead of a
+  fractional modulus that could misround near a period boundary.
+- DSP amplitudes and FFT fit scores kept as floating point instead of being
+  floor-divided to integers, preserving resolution near the noise floor.
+- DC offset removal switched from mean to median before rectification — the
+  receiver runs LSB, and a mean gets dragged by the pulse train itself,
+  injecting an error that grows with signal strength.
+- `LOCK_LOSE_SNR` raised 2.0 → 3.0 dB and `FAST_SCAN_SNR` raised 4.0 → 8.0 dB,
+  both retuned against measured pure-noise statistics rather than guesses.
+- Waterfall FFT frames now overlap 75% (was non-overlapping) so Hann satisfies
+  COLA in power, not just amplitude, and averages power instead of magnitude;
+  corrected a noise-floor anchor that was 4.4 dB off.  The colour scale now
+  auto-ranges continuously off the live spectrum (10th/98th percentile floor
+  and ceiling, with headroom reserved for transients) instead of a fixed
+  calibration that goes stale with receiver or band conditions, floored at a
+  minimum dynamic range so a genuinely quiet band can't paint itself warm
+  from measurement noise alone.
+- Weather fetches now have a 10 s timeout, and a failed fetch degrades to
+  blank weather fields instead of dropping the minute's CSV row.
+- CSV row parsing moved into `CsvStore.read_rows()`; the plotter consumes
+  typed rows instead of parsing files itself.
+- Waterfall display derives its bin geometry and frequency axis from the
+  configured sample rate instead of a hardcoded 16 kHz.
+- SCP uploads now verify the server host key against known_hosts
+  (`~/.ssh/known_hosts` plus optional `~/.buzz/known_hosts`) instead of
+  auto-accepting any key — closes a man-in-the-middle vector; add new hosts
+  with `ssh-keyscan <host> >> ~/.buzz/known_hosts`.
+- Collector uploads are gated on the publisher's presence rather than
+  re-checking `server.enabled`.
+- Unknown `[weather] source` values now log a warning instead of silently
+  disabling weather.
+- `ContinuousAnalyzer._run()` now catches and logs a tick failure and retries,
+  instead of an uncaught exception silently killing analysis for the rest of
+  the session.
+- Coverage measurement no longer excludes all of `waterfall.py`; only the
+  three Qt widget classes are marked uncovered, so the module's pure
+  functions count toward the total.  Coverage gate raised 90% → 96%.
+- Minimum supported Python raised to 3.12 (3.11 dropped from CI and packaging
+  metadata).
+- Window title corrected to "N6OL Powerline QRM Monitor".
+
+### Fixed
+- `generate_summary_graph()` leaked a matplotlib figure when there was no data
+  to plot (up to three figures per hour on a quiet station).
+- `analyze_window()` returns None instead of crashing when the audio window is
+  shorter than the scan kernel.
+- `phase_drift_rate()` / `grid_frequency_hz()` read analyzer state with no
+  synchronization; now locked consistently with the rest of the class's
+  cross-thread reads.
+- Headless mode didn't stop the analyzer thread before closing the audio
+  pipeline, risking a race against an already-closed stream during shutdown;
+  now stops the analyzer first, matching the GUI shutdown path.
+- CI: a hardcoded `--cov-fail-under` flag was silently overriding
+  `pyproject.toml`'s coverage gate; removed so the config file is the single
+  source of truth.  Also fixed PySide6 failing to import on the GitHub Actions
+  runner (missing Qt/EGL system libraries) and moved off `actions/checkout`
+  and `actions/setup-python` versions running on a deprecated Node.js runtime.
+
+### Removed
+- Legacy `AudioSampler.take_sample()` path (superseded by the continuous
+  analyzer ring buffer) and the now-unused `duration` and
+  `measurements_to_take` config fields.
 
 ## [1.0.0] — 2026-06-10
 
