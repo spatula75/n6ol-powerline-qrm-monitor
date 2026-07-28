@@ -14,6 +14,7 @@ crash — see the decorator's docstring for the full story).
 """
 
 import gc  # noqa: I001
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
@@ -145,10 +146,120 @@ def _gc_guarded(func):
     return wrapper
 
 
+@dataclass(frozen=True)
+class _DailySeries:
+    """One day's data for the daily chart, already smoothed if requested."""
+    timestamps: list
+    signals: list
+    noises: list
+    source_power_estimate: list
+    title: str
+
+
 class Plotter:
     def __init__(self, config: BuzzConfig, store: CsvStore) -> None:
         self._config = config
         self._store = store
+
+    def _load_daily_series(self, input_filename: Path | str, smooth: int) -> '_DailySeries | None':
+        """Read one day's CSV rows and, if requested, apply a moving average.
+
+        Returns None when there is nothing to plot: an empty file, or fewer rows
+        than the requested smoothing window.
+        """
+        station = self._config.station
+        rows = self._store.read_rows(input_filename)
+        if not rows:
+            return None
+        timestamps = [r.timestamp for r in rows]
+        snrs       = [r.snr for r in rows]
+        signals    = [r.signal for r in rows]
+        noises     = [r.noise for r in rows]
+
+        if smooth:
+            if len(timestamps) <= smooth:
+                return None
+            signals = _smooth(signals, smooth)
+            noises = _smooth(noises, smooth)
+            timestamps    = timestamps[smooth - 1:]
+            title = (f'Powerline Noise vs Noise Floor ({smooth} point moving avg), '
+                     f'{timestamps[0].strftime("%Y-%m-%d")} ({station.timezone} Timezone)')
+        else:
+            title = (f'Powerline Noise vs Noise Floor, '
+                     f'{timestamps[0].strftime("%Y-%m-%d")} ({station.timezone} Timezone)')
+
+        return _DailySeries(timestamps=timestamps, signals=signals, noises=noises,
+                            source_power_estimate=self._estimate_source_power(signals, snrs),
+                            title=title)
+
+    def _estimate_source_power(self, signals, snrs) -> list:
+        """Estimate the noise source's transmitted power by adding back the
+        measured path loss, for qualifying detections only.
+
+        Not plotted as a separate line, but included in the y-axis upper bound so
+        the scale accommodates the estimated source-power level alongside the
+        measured values.  (Adjusted values are always >= the originals, so they
+        have no effect on the lower bound.)
+
+        A row qualifies either by passing both the level threshold and the SNR
+        gate, or by exceeding the threshold by half the SNR margin on signal
+        level alone (catches strong events whose SNR was diluted by smoothing or
+        partial-minute lock).
+        """
+        station = self._config.station
+        return [
+            val + station.distance_attenuation
+            if ((val > station.noise_threshold and snrs[i] > station.noise_min_snr)
+                or val > station.noise_threshold + 0.5 * station.noise_min_snr)
+            else val
+            for i, val in enumerate(signals)
+        ]
+
+    def _daily_chart_y_bounds(self, series: '_DailySeries') -> tuple[float, float]:
+        """Y-axis (dBm) bounds that fit the signal, noise, and estimated source
+        power traces, always including the configured audio-level anchor so a
+        quiet or flat trace still gets a sensible scale.
+
+        1.33 is a margin factor: since dBm values are negative, multiplying the
+        most-negative value by 1.33 pushes the lower axis edge further down,
+        while dividing the least-negative value by 1.33 pulls the upper edge
+        down — keeping reference lines (noise floor, threshold, S9) away from
+        the plot borders.
+        """
+        station = self._config.station
+        anchor = _AXIS_ANCHOR_DBFS + station.audio_rf_conversion_db
+        min_y = min(min(series.signals), min(series.noises), anchor) * 1.33
+        max_y = max(max(series.signals), max(series.noises),
+                   max(series.source_power_estimate), anchor) / 1.33
+        return min_y, max_y
+
+    def _draw_reference_lines(self, axes) -> list:
+        """Draw the S9, detection-threshold, and typical-noise-floor reference
+        lines on the daily chart, returning their handles for the legend.
+        """
+        station = self._config.station
+        plot_s9 = axes.axhline(y=_S9_DBM, color='tan', linestyle='dashed',
+                               label=f'S9 ({_S9_DBM} dBm) signal strength')
+        plot_threshold = axes.axhline(y=station.noise_threshold, color='gray', linestyle='dashed',
+                                      label=f'{station.noise_threshold} dBm threshold')
+        plot_floor = axes.axhline(y=station.noise_floor, color='gray',
+                                  label=f'{station.noise_floor} dBm typical noise floor')
+        return [plot_s9, plot_threshold, plot_floor]
+
+    def _style_dual_axes(self, axes, noise_twin, plot_signal, plot_noise) -> None:
+        """Label the shared x/y axes, colour each y-axis to match its trace, and
+        hide the twin axis's own tick labels since it shares its scale with the
+        primary axis.
+        """
+        axes.set_xlabel('Time')
+        axes.set_ylabel('dBm')
+        noise_twin.get_yaxis().set_ticks([])
+
+        axes.yaxis.label.set_color(plot_signal.get_color())
+        noise_twin.yaxis.label.set_color(plot_noise.get_color())
+        tick_kwargs = dict(size=4, width=1.5)
+        axes.tick_params(axis='y', colors=plot_signal.get_color(), **tick_kwargs)
+        noise_twin.tick_params(axis='y', colors=plot_noise.get_color(), **tick_kwargs)
 
     @_gc_guarded
     def generate_graph_from_csv(self, input_filename: Path | str, output_filename: Path | str, smooth: int = 0) -> None:
@@ -164,40 +275,10 @@ class Plotter:
         """
         station = self._config.station
         audio = self._config.audio
-        rows = self._store.read_rows(input_filename)
-        if not rows:
+
+        series = self._load_daily_series(input_filename, smooth)
+        if series is None:
             return
-        timestamps = [r.timestamp for r in rows]
-        snrs       = [r.snr for r in rows]
-        signals    = [r.signal for r in rows]
-        noises     = [r.noise for r in rows]
-
-        if smooth:
-            if len(timestamps) <= smooth:
-                return
-            signals = _smooth(signals, smooth)
-            noises = _smooth(noises, smooth)
-            timestamps    = timestamps[smooth - 1:]
-            title = (f'Powerline Noise vs Noise Floor ({smooth} point moving avg), '
-                     f'{timestamps[0].strftime("%Y-%m-%d")} ({station.timezone} Timezone)')
-        else:
-            title = (f'Powerline Noise vs Noise Floor, '
-                     f'{timestamps[0].strftime("%Y-%m-%d")} ({station.timezone} Timezone)')
-
-        # For qualifying detections, estimate the source power by adding back the measured
-        # path loss.  Not plotted as a separate line, but included in the y-axis upper bound
-        # so the scale accommodates the estimated source-power level alongside the measured values.
-        # (Adjusted values are always >= the originals, so they have no effect on min_y.)
-        # A row qualifies either by passing both the level threshold and the SNR gate, or
-        # by exceeding the threshold by half the SNR margin on signal level alone (catches
-        # strong events whose SNR was diluted by smoothing or partial-minute lock).
-        source_power_estimate = [
-            val + station.distance_attenuation
-            if ((val > station.noise_threshold and snrs[i] > station.noise_min_snr)
-                or val > station.noise_threshold + 0.5 * station.noise_min_snr)
-            else val
-            for i, val in enumerate(signals)
-        ]
 
         # rc_context scopes the timezone setting (used by matplotlib's date
         # machinery) to this render instead of mutating global state.
@@ -206,19 +287,11 @@ class Plotter:
             figure, axes = plt.subplots(figsize=(_GRAPH_W * px, _GRAPH_H * px))
             figure.subplots_adjust(left=_M_LEFT/_GRAPH_W, right=1 - _M_RIGHT/_GRAPH_W,
                                    top=1 - _M_TOP/_GRAPH_H, bottom=_M_BOTTOM/_GRAPH_H)
-            axes.set_title(title)
+            axes.set_title(series.title)
             axes.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
 
             noise_twin = axes.twinx()
-
-            # 1.33 is a margin factor: since dBm values are negative, multiplying the most-negative
-            # value by 1.33 pushes the lower axis edge further down, while dividing the
-            # least-negative value by 1.33 pulls the upper edge down — keeping reference lines
-            # (noise floor, threshold, S9) away from the plot borders.
-            min_y = min(min(signals), min(noises),
-                        _AXIS_ANCHOR_DBFS + station.audio_rf_conversion_db) * 1.33
-            max_y = max(max(signals), max(noises), max(source_power_estimate),
-                        _AXIS_ANCHOR_DBFS + station.audio_rf_conversion_db) / 1.33
+            min_y, max_y = self._daily_chart_y_bounds(series)
 
             # Both lines plot every row's value continuously, with no NaN gaps: when
             # unlocked, Collector._run_collection() already writes signal == noise for
@@ -229,33 +302,45 @@ class Plotter:
             # on and off for a minute or two — worse than useless once smoothed, since
             # the moving average blended real signal readings with unlocked rows'
             # noise-floor stand-in before the mask was even applied.
-            plot_signal, = axes.plot(timestamps, signals, 'r-', label=f'{audio.pulse_rate}pps dBm', zorder=2)
-            plot_noise, = noise_twin.plot(timestamps, noises, 'g-', label='Noise Floor dBm', zorder=3)
+            plot_signal, = axes.plot(series.timestamps, series.signals, 'r-',
+                                     label=f'{audio.pulse_rate}pps dBm', zorder=2)
+            plot_noise, = noise_twin.plot(series.timestamps, series.noises, 'g-',
+                                          label='Noise Floor dBm', zorder=3)
 
-            axes.set_xlim(timestamps[0], timestamps[-1])
+            axes.set_xlim(series.timestamps[0], series.timestamps[-1])
             axes.set_ylim(min_y, max_y)
             noise_twin.set_ylim(min_y, max_y)
-            axes.set_xlabel('Time')
-            axes.set_ylabel('dBm')
-            noise_twin.get_yaxis().set_ticks([])
+            self._style_dual_axes(axes, noise_twin, plot_signal, plot_noise)
 
-            axes.yaxis.label.set_color(plot_signal.get_color())
-            noise_twin.yaxis.label.set_color(plot_noise.get_color())
-            tick_kwargs = dict(size=4, width=1.5)
-            axes.tick_params(axis='y', colors=plot_signal.get_color(), **tick_kwargs)
-            noise_twin.tick_params(axis='y', colors=plot_noise.get_color(), **tick_kwargs)
-
-            plot_s9 = axes.axhline(y=_S9_DBM, color='tan', linestyle='dashed',
-                                   label=f'S9 ({_S9_DBM} dBm) signal strength')
-            plot_threshold = axes.axhline(y=station.noise_threshold, color='gray', linestyle='dashed',
-                                          label=f'{station.noise_threshold} dBm threshold')
-            plot_floor = axes.axhline(y=station.noise_floor, color='gray',
-                                      label=f'{station.noise_floor} dBm typical noise floor')
-
-            axes.legend(loc='lower left',
-                        handles=[plot_signal, plot_noise, plot_s9, plot_threshold, plot_floor])
+            reference_lines = self._draw_reference_lines(axes)
+            axes.legend(loc='lower left', handles=[plot_signal, plot_noise, *reference_lines])
             figure.savefig(output_filename, pil_kwargs={'optimize': True})
             plt.close(figure)
+
+    def _summary_bar_data(self, start_date: datetime, end_date: datetime) -> tuple[list, list, list] | None:
+        """Aggregate scores into 15-minute buckets across the date range, normalise
+        to the peak bucket (= 100%), and pick each bar's colour by intensity.
+
+        Deciding whether there is anything to draw happens here, before the caller
+        creates a figure, so a no-data result can't leak an unclosed figure.
+
+        Returns (slot_datetimes, normalized_scores, colors), or None if there is no
+        data anywhere in the date range.
+        """
+        time_to_score = self._store.read_range_scores(start_date, end_date)
+
+        midnight = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
+        slots_per_day = 24 * 60 // BUCKET_MINUTES   # 96
+        slot_datetimes = [midnight + timedelta(minutes=BUCKET_MINUTES * i)
+                          for i in range(slots_per_day)]
+
+        slot_scores = [time_to_score.get(dt.time(), 0) for dt in slot_datetimes]
+        max_score = max(slot_scores)
+        if max_score == 0:
+            return None
+        normalized_scores = [int(100 * (score / max_score)) for score in slot_scores]
+        colors = [_bar_color(score) for score in normalized_scores]
+        return slot_datetimes, normalized_scores, colors
 
     @_gc_guarded
     def generate_summary_graph(self, output_filename: Path | str, start_date: datetime) -> None:
@@ -270,22 +355,11 @@ class Plotter:
         audio = self._config.audio
         zone = ZoneInfo(station.timezone)
         end_date = datetime.now(zone)
-        time_to_score = self._store.read_range_scores(start_date, end_date)
 
-        midnight = end_date.replace(hour=0, minute=0, second=0, microsecond=0)
-        slots_per_day = 24 * 60 // BUCKET_MINUTES   # 96
-        slot_datetimes = [midnight + timedelta(minutes=BUCKET_MINUTES * i)
-                          for i in range(slots_per_day)]
-
-        # Decide whether there is anything to draw BEFORE creating the figure, so
-        # the no-data early return can't leak an unclosed figure.
-        slot_scores = [time_to_score.get(dt.time(), 0) for dt in slot_datetimes]
-        max_score = max(slot_scores)
-        if max_score == 0:
+        bar_data = self._summary_bar_data(start_date, end_date)
+        if bar_data is None:
             return
-        normalized_scores = [int(100 * (score / max_score)) for score in slot_scores]
-
-        colors = [_bar_color(score) for score in normalized_scores]
+        slot_datetimes, normalized_scores, colors = bar_data
 
         # rc_context scopes the timezone setting (used by matplotlib's date
         # machinery) to this render instead of mutating global state.

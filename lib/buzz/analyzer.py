@@ -622,6 +622,25 @@ class ContinuousAnalyzer:
         # else: SIGNAL_LOST with valid phases — _noise_check() handles publishing
         return self._state
 
+    def _is_new_best(self, amplitude: float, best_amp: float | None, minimize: bool) -> bool:
+        """Whether `amplitude` beats the best candidate found so far in a
+        _scan_phase pass: the quietest one when hunting for the noise gap, the
+        loudest one when hunting for the signal.
+        """
+        if best_amp is None:
+            return True
+        return amplitude < best_amp if minimize else amplitude > best_amp
+
+    def _challenger_beats_incumbent(self, best_amp: float, incumbent_amp: float,
+                                    minimize: bool) -> bool:
+        """Whether the scan's winning candidate cleared PHASE_MOVE_MARGIN over the
+        incumbent (offset 0) — see _scan_phase's docstring for why this deadband
+        exists.
+        """
+        if minimize:
+            return best_amp * self.PHASE_MOVE_MARGIN < incumbent_amp
+        return best_amp > incumbent_amp * self.PHASE_MOVE_MARGIN
+
     def _scan_phase(self, abs_data: np.ndarray, center: int, anchor: int,
                     minimize: bool) -> tuple[int, int]:
         """Scan ± PHASE_SEARCH_RADIUS around center for the best pulse amplitude.
@@ -656,18 +675,42 @@ class ContinuousAnalyzer:
             amp = float(average_pulse_amplitude(abs_data, spacing, n_pulses, candidate))
             if offset == 0:
                 incumbent_amp = amp
-            if best_amp is None or ((amp < best_amp) if minimize else (amp > best_amp)):
+            if self._is_new_best(amp, best_amp, minimize):
                 best_amp    = amp
                 best_phase  = candidate
                 best_offset = offset
         if best_amp is None:
             return center, 0
-        if best_offset != 0 and incumbent_amp is not None:
-            challenger_wins = (best_amp * self.PHASE_MOVE_MARGIN < incumbent_amp if minimize
-                               else best_amp > incumbent_amp * self.PHASE_MOVE_MARGIN)
-            if not challenger_wins:
-                return center, 0
+        if (best_offset != 0 and incumbent_amp is not None
+                and not self._challenger_beats_incumbent(best_amp, incumbent_amp, minimize)):
+            return center, 0
         return best_phase, best_offset
+
+    def _scan_signal_and_noise_phases(self, abs_data: np.ndarray, predicted_peak: int,
+                                      predicted_noise: int) -> tuple[int, int]:
+        """Scan for the current signal and noise phases around their predictions,
+        recording each scan's winning offset for the UI's correction indicators.
+        Returns (signal_phase, noise_phase).  See _phase_search's docstring for why
+        the two are searched independently rather than shifted together.
+        """
+        signal_phase, signal_offset = self._scan_phase(
+            abs_data, predicted_peak, anchor=predicted_noise, minimize=False)
+        with self._result_lock:
+            self._latest_signal_correction = signal_offset
+
+        noise_phase, noise_offset = self._scan_phase(
+            abs_data, predicted_noise, anchor=signal_phase, minimize=True)
+        with self._result_lock:
+            self._latest_noise_correction = noise_offset
+
+        return signal_phase, noise_phase
+
+    def _phase_search_snr_threshold(self) -> float:
+        """SNR bar for accepting a _phase_search measurement: LOCK_ACQUIRE_SNR when
+        re-acquiring from SIGNAL_LOST, LOCK_LOSE_SNR while already LOCKED.  See
+        _phase_search's docstring for why these differ.
+        """
+        return self.LOCK_LOSE_SNR if self._state == AnalyzerState.LOCKED else self.LOCK_ACQUIRE_SNR
 
     def _phase_search(self) -> AnalyzerState:
         """Narrow amplitude scan ± PHASE_SEARCH_RADIUS around each predicted phase.
@@ -719,32 +762,20 @@ class ContinuousAnalyzer:
         # actually just analysed rather than to whatever had arrived before we waited.
         measured_at = self._audio_clock_seconds()
         predicted_peak, predicted_noise = self._predicted_phases(measured_at)
-
-        # Signal scan: loudest candidate near where the peak is predicted to be.
-        best_phase, best_offset = self._scan_phase(
-            abs_data, predicted_peak, anchor=predicted_noise, minimize=False)
-        with self._result_lock:
-            self._latest_signal_correction = best_offset
-
-        # Noise scan: independently, the quietest candidate near the predicted gap.
-        best_noise_phase, best_noise_offset = self._scan_phase(
-            abs_data, predicted_noise, anchor=best_phase, minimize=True)
-        with self._result_lock:
-            self._latest_noise_correction = best_noise_offset
+        signal_phase, noise_phase = self._scan_signal_and_noise_phases(
+            abs_data, predicted_peak, predicted_noise)
 
         # Re-measure both winners over a consistent window before the SNR decision.
-        measured = self._sample_phases(abs_data, best_phase, best_noise_phase)
+        measured = self._sample_phases(abs_data, signal_phase, noise_phase)
         if measured is None:
             return self._state
         sig_dbm, noise_dbm, snr = measured
 
-        tracking  = self._state == AnalyzerState.LOCKED
-        threshold = self.LOCK_LOSE_SNR if tracking else self.LOCK_ACQUIRE_SNR
-        if snr >= threshold:
+        if snr >= self._phase_search_snr_threshold():
             # Commit the measurement, and let how far it landed from the prediction
             # sharpen the drift estimate for next time.
             self._record_phase_measurement(
-                best_phase, best_noise_phase,
+                signal_phase, noise_phase,
                 measured_at=measured_at, predicted_peak=predicted_peak)
             self._publish(AnalysisResult(
                 signal_dbm=sig_dbm, noise_dbm=noise_dbm, snr=snr, locked=True,

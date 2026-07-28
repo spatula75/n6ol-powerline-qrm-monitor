@@ -214,17 +214,15 @@ def capture(config: BuzzConfig, seconds: float) -> np.ndarray:
         sampler.close()
 
 
-def report(rectified: np.ndarray, config: BuzzConfig, show_profile: bool) -> None:
-    """Print the full diagnostic for one captured recording."""
-    sample_rate = config.audio.sample_rate
-    pulse_rate = config.audio.pulse_rate
-    samples_per_pulse = sample_rate / pulse_rate
-    half_width = int(samples_per_pulse // 2)
-
+def _print_drift_section(rectified: np.ndarray, sample_rate: int, pulse_rate: int,
+                         half_width: int) -> tuple[np.ndarray, int]:
+    """Print the "UTILITY LINE DRIFT" section; return (profile, n_pulses) for the
+    sections that follow, so the drift-corrected fold is computed exactly once.
+    """
+    duration = len(rectified) / sample_rate
     drift_rate = estimate_drift_rate(rectified, sample_rate, pulse_rate, half_width)
     profile, n_pulses = fold_pulses(rectified, sample_rate, pulse_rate, drift_rate, half_width)
     uncorrected, _ = fold_pulses(rectified, sample_rate, pulse_rate, 0.0, half_width)
-    duration = len(rectified) / sample_rate
 
     print('=' * 72)
     print('UTILITY LINE DRIFT')
@@ -237,7 +235,13 @@ def report(rectified: np.ndarray, config: BuzzConfig, show_profile: bool) -> Non
     print(f'  smear avoided     : {abs(drift_rate) * duration:.0f} samples over this {duration:.0f} s capture')
     print(f'  sharpness         : {profile_sharpness(profile):.3f} corrected'
           f'  vs {profile_sharpness(uncorrected):.3f} uncorrected')
+    return profile, n_pulses
 
+
+def _print_active_phases_section(profile: np.ndarray, samples_per_pulse: float) -> None:
+    """Print the "ACTIVE UTILITY PHASES" section: how many sources appear to be
+    arcing, based on secondary peaks in the folded profile.
+    """
     peaks = find_source_peaks(profile)
     strongest = int(profile.argmax())
     third_of_period = samples_per_pulse / 3
@@ -258,17 +262,25 @@ def report(rectified: np.ndarray, config: BuzzConfig, show_profile: bool) -> Non
         print('  NOTE: with several sources overlapping, the width sweep below measures a')
         print('        blend of them, not one pulse.  Re-run when one source dominates.')
 
-    if show_profile:
-        print()
-        print('=' * 72)
-        print(f'FOLDED PULSE PROFILE  ({n_pulses} pulses averaged)')
-        print('=' * 72)
-        floor = profile.min()
-        span = max(profile.max() - floor, 1e-9)
-        for i, value in enumerate(profile):
-            bar = '#' * int(round(50 * (value - floor) / span))
-            print(f'  {i - strongest:+5d} {value:8.1f} |{bar}' + (' <-PEAK' if i == strongest else ''))
 
+def _print_profile_section(profile: np.ndarray, n_pulses: int) -> None:
+    """Print the "FOLDED PULSE PROFILE" section: a sample-by-sample bar chart of
+    the drift-corrected fold, for a close look at the pulse shape itself.
+    """
+    strongest = int(profile.argmax())
+    print()
+    print('=' * 72)
+    print(f'FOLDED PULSE PROFILE  ({n_pulses} pulses averaged)')
+    print('=' * 72)
+    floor = profile.min()
+    span = max(profile.max() - floor, 1e-9)
+    for i, value in enumerate(profile):
+        bar = '#' * int(round(50 * (value - floor) / span))
+        print(f'  {i - strongest:+5d} {value:8.1f} |{bar}' + (' <-PEAK' if i == strongest else ''))
+
+
+def _print_width_sweep_section(profile: np.ndarray, sample_rate: int) -> None:
+    """Print the "MATCHED WIDTH SWEEP" section: the recommended PULSE_WIDTH_SAMPLES."""
     sweep = matched_width_sweep(profile)
     current = next(fom for width, _, fom in sweep if width == 3)
     best_width, best_offset, best_fom = max(sweep, key=lambda row: row[2])
@@ -290,6 +302,20 @@ def report(rectified: np.ndarray, config: BuzzConfig, show_profile: bool) -> Non
         print('  WARNING: the score never turned over, so the pulse is not resolved here.')
         print('           That happens when sources overlap enough to fill the period.')
         print('           Treat this as "no answer", not as a recommendation.')
+
+
+def report(rectified: np.ndarray, config: BuzzConfig, show_profile: bool) -> None:
+    """Print the full diagnostic for one captured recording."""
+    sample_rate = config.audio.sample_rate
+    pulse_rate = config.audio.pulse_rate
+    samples_per_pulse = sample_rate / pulse_rate
+    half_width = int(samples_per_pulse // 2)
+
+    profile, n_pulses = _print_drift_section(rectified, sample_rate, pulse_rate, half_width)
+    _print_active_phases_section(profile, samples_per_pulse)
+    if show_profile:
+        _print_profile_section(profile, n_pulses)
+    _print_width_sweep_section(profile, sample_rate)
 
 
 def main() -> None:
