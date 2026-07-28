@@ -267,6 +267,12 @@ Brighter colors indicate higher energy.  Powerline interference appears as a
 repeating pattern of bright bands spaced evenly at the harmonic frequencies of
 the configured pulse rate.
 
+The color scale auto-ranges based on recent activity, so it stays readable
+regardless of receiver gain or band conditions. It may take a little time to
+settle into the live range after a cold start.
+
+![Waterfall display](docs/sample_waterfall_display.png)
+
 ### S-meters
 
 The lower panel shows two signal-strength bars that update in real time.
@@ -279,7 +285,7 @@ The lower panel shows two signal-strength bars that update in real time.
 Both bars use the standard ham radio scale: S9 = −73 dBm, each S-unit = 6 dB.
 The difference between SIG and NF is the SNR.
 
-Above each bar is a narrow 3-pixel strip showing the phase offset applied by
+Above each bar is a thin line showing the phase offset applied by
 the most recent internal correction step.  A dot at center means no correction
 was needed; a line extending left or right shows the direction and relative
 magnitude of the correction.  This is a diagnostic indicator — most users can

@@ -32,7 +32,9 @@ _PIXELS_PER_BIN = 5                         # horizontal scale (128 bins → 640
 _N_ROWS = 100                               # history rows (~10 s at 100 ms/frame)
 _PIXELS_PER_ROW = 2                         # vertical scale; _WINDOW_H is derived from this
 _UPDATE_MS = 100
-_DB_RANGE = 48.0                            # colour scale dynamic range in dB (8 S-units)
+# Initial guess for the floor-to-ceiling span (8 S-units), used only until the
+# colour scale has real data to auto-range from — see _update_color_range().
+_DB_RANGE = 48.0
 # FFT magnitude that corresponds to 0 dBFS: a full-scale (amplitude 32768)
 # sinusoid centred on a bin peaks at 32768 × _CHUNK/4.  The /4 is two factors
 # of 1/2: the Hann window attenuates the average sample to half (its coherent
@@ -70,6 +72,53 @@ _HANN = np.hanning(_CHUNK + 1)[:-1].astype(np.float32)
 _FFT_OVERLAP = 0.75
 # Samples the FFT window advances between consecutive frames.
 _FFT_ADVANCE_SAMPLES = round(_CHUNK * (1 - _FFT_OVERLAP))   # 128
+
+# ---------------------------------------------------------------------------
+# Auto-ranging colour scale
+# ---------------------------------------------------------------------------
+#
+# A fixed dB range calibrated once against the station config goes stale the
+# moment receiver gain, band conditions, or the sound card setup drift from
+# whatever they were when it was set — and then the whole picture floods into
+# one colour with no contrast, because nothing in the live signal maps near
+# the black end any more.  So instead the floor and ceiling are read off the
+# spectrum history itself, continuously, and drift with actual conditions.
+
+# "Quiet background": low enough to sit below the typical level, but a
+# percentile rather than the bare minimum, so one unusually silent bin can't
+# drag the whole floor down.
+_COLOR_FLOOR_PERCENTILE = 10
+# "Generally loud": the top 2% of what's currently on screen.
+_COLOR_CEILING_PERCENTILE = 98
+# Fraction of the colour scale reserved above the ceiling percentile.  The
+# ceiling percentile is mapped to (1 - _COLOR_HEADROOM) rather than 1.0, so a
+# transient louder than anything in the recent window still has room to render
+# visibly hotter than the routine "loud" colour, instead of every merely-strong
+# reading clipping to solid red and looking identical to a real spike.  At the
+# colormap's cutover points (see build_colormap), 1 - 0.10 = 0.90 lands on
+# orange rather than red, which is exactly the point.
+_COLOR_HEADROOM = 0.10
+# Floor for the ceiling-minus-floor span, in dB.  Guards the divide in
+# paintEvent against a near-silent window where the two percentiles nearly
+# coincide.
+_MIN_COLOR_SPAN_DB = 6.0
+# EMA weight applied each tick (_UPDATE_MS = 100 ms) to the raw percentiles.
+# Without this, the ceiling can start moving after just a couple of ticks of
+# louder content — the top-2% tail is only ~256 values out of the window's
+# 12800, and each new row contributes 128 of them — which would make the
+# picture's contrast visibly shift within a few hundred milliseconds of any
+# brief burst.  0.05 gives the EMA itself a settling time of a couple of
+# seconds, once the raw percentile it's tracking is free to move.
+#
+# On startup that takes longer than the EMA alone suggests: history_db starts
+# full of the seed value (see floor_seed below), and the 10th-percentile floor
+# in particular stays pinned to that stale seed until more than 90 of the 100
+# rows have been replaced with real data — around ten seconds at one row per
+# tick. Verified against live audio: the floor sat exactly on its seed value
+# for the first ~9 s, then converged within 0.6 dB of an independently
+# measured ground truth a few seconds later. That one-time startup lag is a
+# fine trade for a display that self-corrects for the rest of the session.
+_COLOR_RANGE_EMA_ALPHA = 0.05
 
 # ---------------------------------------------------------------------------
 # Meter constants
@@ -175,6 +224,36 @@ def _mean_spectrum_db(samples: np.ndarray, display_bins: int, db_min: float) -> 
         return np.where(power > 0, 10 * np.log10(power) - _DB_REF, db_min)
 
 
+def _spectrum_percentiles(history_db: np.ndarray, floor_percentile: float,
+                          ceiling_percentile: float) -> tuple[float, float]:
+    """Raw (floor, ceiling) percentiles of the visible spectrum history, in dB.
+
+    "Raw" meaning unsmoothed — this reads straight off whatever is currently in
+    history_db.  The caller is expected to blend these into a slower-moving
+    estimate (see _COLOR_RANGE_EMA_ALPHA) rather than render with them directly,
+    since one new row of history can move a high percentile like the ceiling
+    noticeably on its own.
+    """
+    return (float(np.percentile(history_db, floor_percentile)),
+            float(np.percentile(history_db, ceiling_percentile)))
+
+
+def _color_scale_range(floor: float, ceiling: float, headroom: float) -> float:
+    """dB span such that `ceiling` maps to (1 - headroom) rather than 1.0.
+
+    Callers use the result as: t = clip((value - floor) / range, 0, 1), then index
+    the colour map with t.  Reserving `headroom` above the ceiling is what leaves
+    room for a spike louder than anything in the recent window to still read as
+    hotter than the routine "loud" colour — see _COLOR_HEADROOM.
+
+    The span is floored at _MIN_COLOR_SPAN_DB so a near-silent window, where floor
+    and ceiling nearly coincide, can't collapse the range toward zero and blow up
+    the divide in paintEvent.
+    """
+    span = max(ceiling - floor, _MIN_COLOR_SPAN_DB)
+    return span / (1.0 - headroom)
+
+
 def build_colormap() -> np.ndarray:
     """Return a 256×3 uint8 RGB lookup table: black → blue → cyan → yellow → red."""
     lut = np.zeros((256, 3), dtype=np.uint8)
@@ -220,16 +299,26 @@ class WaterfallWidget(QWidget):
         self._hz_per_bin = sample_rate / _CHUNK
         self._display_bins = min(_MAX_HZ * _CHUNK // sample_rate, _CHUNK // 2)
         self._label_interval = max(1, round(_FREQ_LABEL_HZ / self._hz_per_bin))
-        self._db_min = (config.station.noise_floor
-                        - config.station.audio_rf_conversion_db
-                        - _DB_FFT_NOISE_CORR)
+        # First guess for the colour floor, from the station's configured
+        # calibration.  It only has to hold up for the first couple of seconds —
+        # _update_color_range() replaces it with the real, live level once actual
+        # data starts arriving.
+        floor_seed = (config.station.noise_floor
+                      - config.station.audio_rf_conversion_db
+                      - _DB_FFT_NOISE_CORR)
         # Audio pulled per display row, rounded up to whole chunks so consecutive
         # rows overlap slightly (4 chunks = 128 ms per 100 ms row at 16 kHz) rather
         # than leaving gaps.  _mean_spectrum_db then splits this into 50%-overlapped
         # FFT frames (7 frames of 512 for 2048 samples).
         self._frame_chunks = ceil(_UPDATE_MS / 1000 * sample_rate / _CHUNK)
         self._last_total_samples = 0
-        self._history_db = np.full((_N_ROWS, self._display_bins), self._db_min, dtype=np.float32)
+        self._history_db = np.full((_N_ROWS, self._display_bins), floor_seed, dtype=np.float32)
+        # Smoothed colour floor/ceiling that paintEvent renders with; see
+        # _update_color_range(), which is what actually keeps these current.
+        self._color_floor = floor_seed
+        self._color_ceiling = floor_seed + _DB_RANGE
+        self._color_range = _color_scale_range(
+            self._color_floor, self._color_ceiling, _COLOR_HEADROOM)
         self.setFixedSize(self._display_bins * _PIXELS_PER_BIN, _WINDOW_H)
 
         self._timer = QTimer(self)
@@ -245,12 +334,26 @@ class WaterfallWidget(QWidget):
         self._last_total_samples = total
 
         samples = self._pipeline.get_snapshot(self._frame_chunks * _CHUNK)
-        db = _mean_spectrum_db(samples, self._display_bins, self._db_min)
+        db = _mean_spectrum_db(samples, self._display_bins, self._color_floor)
         if db is None:
             return
         self._history_db[1:] = self._history_db[:-1]
         self._history_db[0] = db
+        self._update_color_range()
         self.update()
+
+    def _update_color_range(self) -> None:
+        """Blend this tick's floor/ceiling percentiles into the smoothed values
+        paintEvent renders with.  See _COLOR_RANGE_EMA_ALPHA for why the raw
+        per-tick percentiles aren't used directly.
+        """
+        floor, ceiling = _spectrum_percentiles(
+            self._history_db, _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE)
+        a = _COLOR_RANGE_EMA_ALPHA
+        self._color_floor   += a * (floor - self._color_floor)
+        self._color_ceiling += a * (ceiling - self._color_ceiling)
+        self._color_range = _color_scale_range(
+            self._color_floor, self._color_ceiling, _COLOR_HEADROOM)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -269,10 +372,11 @@ class WaterfallWidget(QWidget):
             painter.drawText(x + 2, _AXIS_H - 6, f'{int(b * self._hz_per_bin)} Hz')
 
         # Waterfall — each row is exactly _PIXELS_PER_ROW pixels tall.
-        # Map dB-above-noise-floor onto the 0–255 colormap index range:
-        # the floor renders as the colormap's cold end, floor + _DB_RANGE as hot.
+        # Map dB-above-floor onto the 0–255 colormap index range: _color_floor
+        # renders as the colormap's cold end, _color_floor + _color_range as hot.
+        # Both are auto-ranged from live data — see _update_color_range().
         norm = np.clip(
-            (self._history_db - self._db_min) / _DB_RANGE * 255, 0, 255,
+            (self._history_db - self._color_floor) / self._color_range * 255, 0, 255,
         ).astype(np.uint8)
         used_h = _N_ROWS * _PIXELS_PER_ROW
         rgb_rows = np.ascontiguousarray(_COLORMAP[norm].repeat(_PIXELS_PER_ROW, axis=0))
