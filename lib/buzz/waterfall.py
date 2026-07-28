@@ -39,14 +39,37 @@ _DB_RANGE = 48.0                            # colour scale dynamic range in dB (
 # gain, sum(w)/N = 1/2), and a real sinusoid's FFT splits its magnitude
 # equally between the +f and −f bins.
 _DB_REF = 20 * np.log10(32768.0 * _CHUNK / 4)
-# Broadband noise spreads across CHUNK/2 bins; each bin sits ~23 dB below the
-# time-domain power that the level meter measures.  Subtract this so the noise
-# floor anchor applies to per-bin energy, not total broadband power.  The
-# _CHUNK × 3/8 is the Hann window's noise power gain: sum(w²) = 3N/8.
-_DB_FFT_NOISE_CORR = float(10 * np.log10(_CHUNK * 3 / 8))  # ≈ 22.8 dB
+# Maps a broadband time-domain level onto the per-bin level the display reads.
+#
+# _DB_REF references a *tone* (coherent gain, sum(w)/N = 1/2).  Broadband noise
+# obeys the window's *noise power* gain instead: a signal of RMS sigma gives
+# E|X|^2 = sigma^2 * sum(w^2) = sigma^2 * 3N/8.  So the per-bin reading for noise is
+#     20log10(sigma) + 10log10(3N/8) - 20log10(32768 * N/4)
+# and undoing the tone reference to recover a per-bin anchor from a known broadband
+# floor needs 20log10(N/4) - 10log10(3N/8) = 10log10(N/6).  Using 10log10(3N/8)
+# here instead applies the window's ENBW (1.5 bins) in the wrong direction and
+# lands the anchor 20log10(1.5) = 3.5 dB low.
+_DB_FFT_NOISE_CORR = float(10 * np.log10(_CHUNK / 6))  # ≈ 19.3 dB
 _AXIS_H = 24                                # pixels reserved for frequency axis / header
 
-_HANN = np.hanning(_CHUNK).astype(np.float32)
+# Periodic (not symmetric) Hann: spectral analysis wants w[n] = 0.5(1-cos(2*pi*n/N)),
+# which is what np.hanning(N+1)[:-1] gives.  np.hanning(N) alone divides by N-1 and
+# is the symmetric variant intended for filter design.
+_HANN = np.hanning(_CHUNK + 1)[:-1].astype(np.float32)
+# How much of each FFT frame is re-analysed in the next one.  Hann tapers to zero at
+# both edges, so without overlap an impulse's contribution depends entirely on where
+# it happens to land: a third of arrival positions are attenuated by more than 12 dB,
+# on a display whose whole subject is a 120 pps impulse train.
+#
+# The overlap has to satisfy COLA in *power*, because _mean_spectrum_db averages |X|².
+# That is stricter than the familiar 50% overlap-add rule, which is the COLA condition
+# for amplitude: at 50% the summed w² still ripples by 3.01 dB with impulse position
+# (over the two overlapping frames it is 0.5(1+cos²), not a constant).  Hann² has
+# harmonic content up to twice the fundamental, so it takes 75% to flatten — measured
+# ripple there is exactly 0.00 dB.
+_FFT_OVERLAP = 0.75
+# Samples the FFT window advances between consecutive frames.
+_FFT_ADVANCE_SAMPLES = round(_CHUNK * (1 - _FFT_OVERLAP))   # 128
 
 # ---------------------------------------------------------------------------
 # Meter constants
@@ -125,23 +148,31 @@ def _aggregate_meter_history(history: Sequence[AnalysisResult]) -> tuple[float, 
 
 
 def _mean_spectrum_db(samples: np.ndarray, display_bins: int, db_min: float) -> np.ndarray | None:
-    """Mean FFT magnitude in dB across all whole chunks in samples, or None if
-    there isn't a single whole chunk.
+    """Mean FFT power in dB across overlapped frames of samples, or None if
+    there isn't a single whole frame.
 
-    Averaging every chunk captured since the previous frame — instead of FFT'ing
-    only the newest one — means no audio goes unrendered: a transient shorter
-    than the frame interval still contributes to its row instead of falling in
-    the ~68 ms gap a single-chunk frame would leave.
+    Averaging every frame captured since the previous display row — instead of
+    FFT'ing only the newest one — means no audio goes unrendered: a transient
+    shorter than the frame interval still contributes to its row instead of
+    falling in the ~68 ms gap a single-frame row would leave.
+
+    Frames advance by _FFT_ADVANCE_SAMPLES and are aligned so the last one ends on
+    the newest sample.  Power (|X|^2) is averaged rather than magnitude: Welch
+    averaging is defined on power, and averaging magnitude biases the result
+    10log10(4/pi) = 1.05 dB low for Gaussian noise while converging more slowly.
     """
-    n_whole = len(samples) // _CHUNK
-    if n_whole == 0:
+    if len(samples) < _CHUNK:
         return None
-    frames = samples[len(samples) - n_whole * _CHUNK:].reshape(n_whole, _CHUNK)
+    n_frames = (len(samples) - _CHUNK) // _FFT_ADVANCE_SAMPLES + 1
+    start = len(samples) - ((n_frames - 1) * _FFT_ADVANCE_SAMPLES + _CHUNK)
+    frames = np.lib.stride_tricks.sliding_window_view(samples[start:], _CHUNK)[::_FFT_ADVANCE_SAMPLES]
     windowed = frames.astype(np.float32) * _HANN
-    spectrum = np.abs(np.fft.rfft(windowed, axis=1))[:, :display_bins].mean(axis=0)
-    # log10(0) bins are replaced by db_min via the where(); suppress the -inf warning
+    spectrum = np.fft.rfft(windowed, axis=1)[:, :display_bins]
+    power = (spectrum.real ** 2 + spectrum.imag ** 2).mean(axis=0)
+    # log10(0) bins are replaced by db_min via the where(); suppress the -inf warning.
+    # 10*log10(power) is the same scale as 20*log10(magnitude), so _DB_REF still applies.
     with np.errstate(divide='ignore'):
-        return np.where(spectrum > 0, 20 * np.log10(spectrum) - _DB_REF, db_min)
+        return np.where(power > 0, 10 * np.log10(power) - _DB_REF, db_min)
 
 
 def build_colormap() -> np.ndarray:
@@ -192,8 +223,10 @@ class WaterfallWidget(QWidget):
         self._db_min = (config.station.noise_floor
                         - config.station.audio_rf_conversion_db
                         - _DB_FFT_NOISE_CORR)
-        # Chunks per frame, rounded up so consecutive frames overlap slightly
-        # (4 chunks = 128 ms per 100 ms frame at 16 kHz) rather than leaving gaps.
+        # Audio pulled per display row, rounded up to whole chunks so consecutive
+        # rows overlap slightly (4 chunks = 128 ms per 100 ms row at 16 kHz) rather
+        # than leaving gaps.  _mean_spectrum_db then splits this into 50%-overlapped
+        # FFT frames (7 frames of 512 for 2048 samples).
         self._frame_chunks = ceil(_UPDATE_MS / 1000 * sample_rate / _CHUNK)
         self._last_total_samples = 0
         self._history_db = np.full((_N_ROWS, self._display_bins), self._db_min, dtype=np.float32)
@@ -228,7 +261,9 @@ class WaterfallWidget(QWidget):
         painter.setPen(QColor(200, 200, 200))
         painter.setFont(QFont('Monospace', 8))
         bin_px = w / self._display_bins
-        for b in range(0, self._display_bins + 1, self._label_interval):
+        # Stop before _display_bins: a tick at that bin sits at x == width, drawing
+        # its label off the right edge of the widget.
+        for b in range(0, self._display_bins, self._label_interval):
             x = int(b * bin_px)
             painter.drawLine(x, _AXIS_H - 5, x, _AXIS_H)
             painter.drawText(x + 2, _AXIS_H - 6, f'{int(b * self._hz_per_bin)} Hz')

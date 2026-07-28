@@ -1,11 +1,12 @@
 """Tests for pure-numpy functions in waterfall.py (no Qt required)."""
 import numpy as np
+import pytest
 
 from buzz.analyzer import AnalysisResult
 from buzz.dsp import SILENCE_DBFS
 from buzz.waterfall import (
     build_colormap, _aggregate_meter_history, _correction_offset, _mean_spectrum_db,
-    _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE,
+    _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE, _DB_FFT_NOISE_CORR, _FFT_ADVANCE_SAMPLES,
 )
 
 
@@ -120,11 +121,41 @@ class TestMeanSpectrumDb:
         db = _mean_spectrum_db(self._tone(4, bin_index=20), self._BINS, self._DB_MIN)
         assert int(np.argmax(db)) == 20
 
-    def test_averages_across_chunks(self):
-        # Tone in one of two chunks: mean magnitude halves, so the peak reads −6 dB
-        samples = np.concatenate([self._tone(1), np.zeros(_CHUNK, dtype=np.int16)])
-        db = _mean_spectrum_db(samples, self._BINS, self._DB_MIN)
-        assert abs(db.max() - (-6.02)) < 0.1
+    def test_averages_power_not_magnitude(self):
+        """A tone present in half the frames must read −3 dB (mean of |X|²), not
+        −6 dB (mean of |X|).  Welch averaging is defined on power; averaging
+        magnitude biases low and converges more slowly."""
+        full = _mean_spectrum_db(self._tone(16), self._BINS, self._DB_MIN).max()
+        samples = np.concatenate([self._tone(8), np.zeros(8 * _CHUNK, dtype=np.int16)])
+        half = _mean_spectrum_db(samples, self._BINS, self._DB_MIN).max()
+        assert half - full == pytest.approx(-3.01, abs=0.15)
+
+    def test_impulse_energy_is_independent_of_position(self):
+        """The reason for the 75% overlap.  Hann tapers to zero at the frame edges,
+        so with non-overlapping frames an impulse landing on a boundary was
+        attenuated by >12 dB relative to one at a frame centre — on a display whose
+        subject is a 120 pps impulse train.
+
+        The hop must satisfy COLA in power, since power is what gets averaged; the
+        familiar 50% rule is the amplitude condition and still leaves 3.01 dB of
+        ripple.  Sweeping a whole hop's worth of positions must be flat."""
+        def _impulse_db(pos: int) -> float:
+            x = np.zeros(8 * _CHUNK, dtype=np.int16)
+            x[pos] = 30000
+            return float(_mean_spectrum_db(x, self._BINS, self._DB_MIN).mean())
+
+        levels = [_impulse_db(2 * _CHUNK + d) for d in range(0, _FFT_ADVANCE_SAMPLES, 8)]
+        assert max(levels) - min(levels) < 0.01
+
+    def test_noise_floor_anchor_matches_measured_per_bin_level(self):
+        """Pins _DB_FFT_NOISE_CORR.  Broadband noise of known RMS must land on the
+        anchor the widget computes for db_min, within a fraction of a dB.  The old
+        constant applied the Hann ENBW in the wrong direction and sat 4.4 dB low."""
+        sigma = 800.0
+        noise = np.random.default_rng(3).normal(0, sigma, _CHUNK * 400).astype(np.int16)
+        db = _mean_spectrum_db(noise.astype(np.int32), self._BINS, -200.0)
+        rms_dbfs = 20 * np.log10(sigma) - 20 * np.log10(32768.0)
+        assert float(db.mean()) == pytest.approx(rms_dbfs - _DB_FFT_NOISE_CORR, abs=0.2)
 
     def test_partial_chunk_is_trimmed_from_the_front(self):
         tone = self._tone(2)
