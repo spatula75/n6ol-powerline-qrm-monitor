@@ -28,11 +28,10 @@ classifiers = [
     "Operating System :: POSIX :: Linux",
     "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Topic :: Communications :: Ham Radio",
 ]
-requires-python = ">=3.11"
+requires-python = ">=3.12"
 
 [tool.ruff]
 line-length = 120
@@ -46,8 +45,8 @@ testpaths = ["tests"]
 
 [tool.coverage.run]
 source = ["lib/buzz", "configure"]
-omit = ["tests/*", "lib/buzz/device_setup.py", "lib/buzz/waterfall.py"]
+omit = ["tests/*", "lib/buzz/device_setup.py"]
 
 [tool.coverage.report]
-fail_under = 90
+fail_under = 96
 show_missing = true

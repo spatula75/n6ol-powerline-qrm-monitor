@@ -9,17 +9,14 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12"]
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up Python ${{ matrix.python-version }}
+      - name: Set up Python 3.12
         uses: actions/setup-python@v5
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
       - name: Install PortAudio (required by sounddevice)
         run: sudo apt-get install -y libportaudio2
@@ -31,4 +28,7 @@ jobs:
         run: ruff check .
 
       - name: Run tests with coverage
-        run: pytest tests/ --cov --cov-fail-under=90
+        # --cov-fail-under intentionally omitted: pyproject.toml's
+        # [tool.coverage.report] fail_under is the single source of truth for
+        # the gate. A CLI flag here would silently override it.
+        run: pytest tests/ --cov

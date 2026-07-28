@@ -7,10 +7,11 @@ display (default) or runs headlessly (--headless).  --top keeps the waterfall
 window always on top of other windows.
 
 In GUI mode the Qt event loop runs on the main thread; the collector runs
-on a daemon thread.  Closing the window (or ^C) stops the audio pipeline
-and lets the daemon thread exit with the process.
+on a daemon thread.  Closing the window (or ^C) stops the analyzer, then
+the audio pipeline, and lets the daemon thread exit with the process.
 
-In headless mode the main thread blocks until ^C, then stops the pipeline.
+In headless mode the main thread blocks until ^C, then stops the analyzer
+and the pipeline in that same order.
 """
 
 import argparse
@@ -98,13 +99,19 @@ def make_weather_client(config: BuzzConfig) -> WeatherClient:
     return NullWeatherClient()
 
 
-def _wait_until_interrupted(sampler: AudioSampler) -> None:
-    """Headless main loop: block until ^C, then stop the audio pipeline."""
+def _wait_until_interrupted(sampler: AudioSampler, analyzer: ContinuousAnalyzer) -> None:
+    """Headless main loop: block until ^C, then stop the analyzer and the audio pipeline.
+
+    Stops the analyzer first, mirroring MainWindow.closeEvent() — otherwise the
+    analyzer thread's in-flight tick can end up calling into an already-closed
+    audio stream during shutdown.
+    """
     try:
         threading.Event().wait()
     except KeyboardInterrupt:
         pass
     finally:
+        analyzer.stop()
         sampler.close()
 
 
@@ -137,7 +144,7 @@ def main() -> None:  # pragma: no cover
     collector_thread.start()
 
     if args.headless:
-        _wait_until_interrupted(sampler)
+        _wait_until_interrupted(sampler, analyzer)
         return
 
     try:
@@ -149,7 +156,7 @@ def main() -> None:  # pragma: no cover
             'PySide6 not installed — falling back to headless mode. '
             'Install PySide6 or run with --headless to suppress this warning.'
         )
-        _wait_until_interrupted(sampler)
+        _wait_until_interrupted(sampler, analyzer)
         return
 
     app = QApplication(sys.argv)

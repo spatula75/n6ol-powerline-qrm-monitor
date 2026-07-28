@@ -68,6 +68,7 @@ Results are deposited in a lock-protected slot; the Qt UI polls it on each
 paint tick without blocking.
 """
 
+import logging
 import threading
 import time
 from collections import deque
@@ -87,6 +88,8 @@ from buzz.dsp import (
     pulse_phase_period,
 )
 from buzz.sampler import AudioPipeline
+
+logger = logging.getLogger(__name__)
 
 
 class AnalyzerState(StrEnum):
@@ -298,13 +301,27 @@ class ContinuousAnalyzer:
         self._state = new_state
 
     def _run(self) -> None:  # pragma: no cover
+        # Guards against a transient failure (a numerical edge case, a hiccup from
+        # the audio device) silently killing this daemon thread.  Without this, an
+        # uncaught exception here stops all analysis for the rest of the process
+        # with no indication anything is wrong — the GUI keeps showing the last
+        # published result frozen forever, and the collector keeps writing minutes
+        # of stale-looking data.  Mirrors Collector.collection_loop()'s same
+        # catch-log-retry approach to the same class of failure.
         while not self._stop.is_set():
-            if self._state == AnalyzerState.LOCKED:
-                interval = self._locked_tick()
-            elif self._state == AnalyzerState.SIGNAL_LOST:
-                interval = self._signal_lost_tick()
-            else:
-                interval = self._searching_tick()
+            try:
+                if self._state == AnalyzerState.LOCKED:
+                    interval = self._locked_tick()
+                elif self._state == AnalyzerState.SIGNAL_LOST:
+                    interval = self._signal_lost_tick()
+                else:
+                    interval = self._searching_tick()
+            except Exception:
+                logger.exception(
+                    'Analyzer tick failed — likely a transient audio-device or '
+                    'numerical error; retrying rather than stopping analysis.'
+                )
+                interval = self.FAST_TICK_INTERVAL
             self._stop.wait(interval)
 
     def _searching_tick(self) -> float:
@@ -450,17 +467,27 @@ class ContinuousAnalyzer:
         """
         elapsed = measured_at - self._phases_measured_at
         if predicted_peak is not None and elapsed >= self.MIN_DRIFT_UPDATE_INTERVAL:
+            # Reading the old value here needs no lock: this method only ever runs
+            # on the analyzer thread, which is the sole writer, so it always sees
+            # its own last write.  The write below is locked because
+            # phase_drift_rate()/grid_frequency_hz() read it from other threads.
             prediction_error = self._shortest_phase_move(peak_phase - predicted_peak)
             adjusted = self._phase_drift_rate + self.DRIFT_LEARNING_RATE * prediction_error / elapsed
-            self._phase_drift_rate = max(-self.MAX_PHASE_DRIFT_RATE,
-                                         min(self.MAX_PHASE_DRIFT_RATE, adjusted))
+            with self._result_lock:
+                self._phase_drift_rate = max(-self.MAX_PHASE_DRIFT_RATE,
+                                             min(self.MAX_PHASE_DRIFT_RATE, adjusted))
         self._peak_phase = float(peak_phase)
         self._noise_phase = float(noise_phase)
         self._phases_measured_at = measured_at
 
     def phase_drift_rate(self) -> float:
-        """Current estimate of the pulse-train drift, in samples of phase per second."""
-        return self._phase_drift_rate
+        """Current estimate of the pulse-train drift, in samples of phase per second.
+
+        Locked because this is written on the analyzer thread and read from
+        others (the collector, when logging grid frequency to the CSV).
+        """
+        with self._result_lock:
+            return self._phase_drift_rate
 
     def grid_frequency_hz(self) -> float:
         """Utility line frequency implied by the measured drift, in Hz.
@@ -476,8 +503,9 @@ class ContinuousAnalyzer:
         per power cycle — once per half-cycle, at each voltage peak — so halving
         that converts pulses per second into cycles per second.
         """
-        true_pulse_rate = (self._sample_rate * self._pulse_rate
-                           / (self._sample_rate + self._phase_drift_rate))
+        with self._result_lock:
+            drift_rate = self._phase_drift_rate
+        true_pulse_rate = self._sample_rate * self._pulse_rate / (self._sample_rate + drift_rate)
         return true_pulse_rate / 2
 
     # ------------------------------------------------------------ tier helpers
@@ -606,8 +634,10 @@ class ContinuousAnalyzer:
                 # Cold start: no history, so there is no drift estimate to keep.
                 # (After a signal outage the previous estimate IS kept — the grid
                 # went on drifting while our signal was gone, and the old rate is a
-                # better starting guess than zero.)
-                self._phase_drift_rate = 0.0
+                # better starting guess than zero.)  Locked for the same reason as
+                # the write in _record_phase_measurement().
+                with self._result_lock:
+                    self._phase_drift_rate = 0.0
             # No predicted_peak: a full FFT search is an absolute re-measurement, not
             # a tracking step, so there is no prediction error worth learning from.
             self._record_phase_measurement(window.peak_phase, window.noise_phase,

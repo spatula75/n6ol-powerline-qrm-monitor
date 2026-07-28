@@ -2,9 +2,8 @@
 import logging
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 import buzz.main as main_module
+import pytest
 from buzz.config import BuzzConfig
 from buzz.main import _wait_until_interrupted, configure_logging, make_weather_client
 from buzz.weather import CumulusMXWeatherClient, NullWeatherClient, OpenMeteoWeatherClient
@@ -117,7 +116,29 @@ class TestMakeWeatherClient:
 class TestWaitUntilInterrupted:
     def test_closes_sampler_on_keyboard_interrupt(self):
         sampler = MagicMock()
+        analyzer = MagicMock()
         with patch('buzz.main.threading.Event') as mock_event:
             mock_event.return_value.wait.side_effect = KeyboardInterrupt
-            _wait_until_interrupted(sampler)
+            _wait_until_interrupted(sampler, analyzer)
         sampler.close.assert_called_once()
+
+    def test_stops_analyzer_on_keyboard_interrupt(self):
+        sampler = MagicMock()
+        analyzer = MagicMock()
+        with patch('buzz.main.threading.Event') as mock_event:
+            mock_event.return_value.wait.side_effect = KeyboardInterrupt
+            _wait_until_interrupted(sampler, analyzer)
+        analyzer.stop.assert_called_once()
+
+    def test_analyzer_stopped_before_sampler_closed(self):
+        """Mirrors MainWindow.closeEvent()'s order: the analyzer thread must be
+        told to stop before its audio pipeline is closed out from under it."""
+        calls = []
+        sampler = MagicMock()
+        sampler.close.side_effect = lambda: calls.append('sampler.close')
+        analyzer = MagicMock()
+        analyzer.stop.side_effect = lambda: calls.append('analyzer.stop')
+        with patch('buzz.main.threading.Event') as mock_event:
+            mock_event.return_value.wait.side_effect = KeyboardInterrupt
+            _wait_until_interrupted(sampler, analyzer)
+        assert calls == ['analyzer.stop', 'sampler.close']

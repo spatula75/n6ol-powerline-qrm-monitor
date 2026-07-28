@@ -30,7 +30,7 @@ Daily signal vs. noise floor (6-minute moving average):
 
 ## Requirements
 
-- Python 3.11 or later
+- Python 3.12 or later
 - A radio receiver with an audio output connected to a sound card line input
 - An SSH-accessible web server for publishing output (optional but expected)
 - A [CumulusMX](https://cumulusmx.com/) weather station or Open-Meteo API access for weather data (optional)

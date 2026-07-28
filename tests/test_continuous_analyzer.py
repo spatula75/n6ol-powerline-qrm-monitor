@@ -10,7 +10,6 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-
 from buzz.analyzer import AnalysisResult, AnalyzerState, ContinuousAnalyzer
 from buzz.config import BuzzConfig
 from buzz.dsp import pulse_phase_period
@@ -1090,3 +1089,40 @@ class TestFastScan:
     def test_fast_scan_pulses_less_than_scan_pulses(self):
         az = _make_analyzer()
         assert ContinuousAnalyzer.FAST_SCAN_PULSES < az._scan_pulses
+
+
+class TestRunResilience:
+    """_run() must not let a single bad tick silently kill the daemon thread —
+    see the exception guard's comment for why that matters for an unattended
+    monitor."""
+
+    def test_run_survives_a_tick_that_raises(self):
+        az = _make_analyzer()
+        calls = []
+
+        def flaky_searching_tick():
+            calls.append(1)
+            if len(calls) == 1:
+                raise RuntimeError('simulated transient failure')
+            az._stop.set()   # let the loop exit cleanly on the second pass
+            return 0.0
+
+        az._searching_tick = flaky_searching_tick
+        az._run()   # would raise and never reach the second call if unguarded
+        assert len(calls) == 2
+
+    def test_run_logs_the_failure(self, caplog):
+        az = _make_analyzer()
+        calls = []
+
+        def flaky_searching_tick():
+            calls.append(1)
+            if len(calls) == 1:
+                raise ValueError('boom')
+            az._stop.set()
+            return 0.0
+
+        az._searching_tick = flaky_searching_tick
+        with caplog.at_level('ERROR'):
+            az._run()
+        assert 'Analyzer tick failed' in caplog.text

@@ -5,6 +5,15 @@ WaterfallWidget renders a scrolling FFT spectrogram driven by a QTimer.
 MeterPanelWidget draws a pair of vertical bar-graph S-meters (noise floor
 and signal level) updated by polling the ContinuousAnalyzer result slot.
 MainWindow composes both widgets side-by-side and handles clean shutdown.
+
+These three classes carry `# pragma: no cover`: they need a live Qt display to
+exercise, which the test suite doesn't have.  Everything else in this module —
+the colour math, percentile logic, and meter-aggregation helpers the widgets
+call into — is plain functions with no Qt dependency, and is unit tested in
+test_waterfall_math.py.  Keeping the exclusion at the class level rather than
+omitting the whole file from coverage.run means that testable code actually
+counts, and a new untested helper added outside these three classes will still
+trip the coverage gate.
 """
 
 from collections import deque
@@ -298,7 +307,7 @@ _COLORMAP = build_colormap()
 # Widgets
 # ---------------------------------------------------------------------------
 
-class WaterfallWidget(QWidget):
+class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt display
     """Scrolling FFT spectrogram, updated by a QTimer at ~10 fps.
 
     Each frame renders the averaged FFT of all audio captured since the previous
@@ -409,7 +418,7 @@ class WaterfallWidget(QWidget):
         self._timer.stop()
 
 
-class MeterPanelWidget(QWidget):
+class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt display
     """Pair of vertical S-band bar-graph meters: noise floor (left) and signal (right).
 
     _tick() polls the analyzer and reduces the recent history to the displayed
@@ -509,7 +518,7 @@ class MeterPanelWidget(QWidget):
         self._timer.stop()
 
 
-class MainWindow(QMainWindow):
+class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
     """Top-level window; closing it shuts down the audio pipeline and analyzer."""
 
     def __init__(self, pipeline: AudioPipeline, analyzer: ContinuousAnalyzer,
