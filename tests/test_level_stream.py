@@ -16,7 +16,6 @@ def _make_config(offset_db: float = 0.0) -> BuzzConfig:
     cfg.audio.input_device_name = 'Test, DirectSound'
     cfg.audio.sample_rate = SAMPLE_RATE
     cfg.audio.pulse_rate = PULSE_RATE
-    cfg.audio.duration = 3
     cfg.station.audio_rf_conversion_db = offset_db
     return cfg
 
@@ -24,7 +23,8 @@ def _make_config(offset_db: float = 0.0) -> BuzzConfig:
 def _make_sampler() -> AudioSampler:
     cfg = _make_config()
     device = {'index': 0, 'name': 'Test', 'hostapi': 0}
-    with patch('buzz.sampler.sd.query_devices', return_value=device):
+    with patch('buzz.sampler.sd.query_devices', return_value=device), \
+         patch('buzz.sampler.sd.InputStream', return_value=MagicMock()):
         return AudioSampler(cfg)
 
 
@@ -41,7 +41,16 @@ def _make_level_stream(cfg=None, blocksize=320):
 
 
 def _audio(amplitude: int, n: int = 320) -> np.ndarray:
-    return np.full((n, 1), amplitude, dtype=np.int16)
+    """One block of zero-mean audio whose mean-absolute level is `amplitude`.
+
+    Alternating +/-amplitude rather than a constant: LSB receiver audio is bipolar,
+    and LevelStream removes DC before rectifying, so a constant block is exactly the
+    signal the DC correction is designed to null to zero.  A square wave carries the
+    intended level through unchanged.
+    """
+    block = np.full((n, 1), amplitude, dtype=np.int16)
+    block[1::2] = -amplitude
+    return block
 
 
 class TestLevelStreamInit:
@@ -56,7 +65,7 @@ class TestLevelStreamInit:
     def test_offset_stored_from_config(self):
         cfg = _make_config(offset_db=12.5)
         stream, _, _ = _make_level_stream(cfg=cfg)
-        assert stream._offset == pytest.approx(12.5)
+        assert stream._offset_db == pytest.approx(12.5)
 
     def test_blocksize_passed_to_input_stream(self):
         cfg = _make_config()

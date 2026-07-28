@@ -9,20 +9,28 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.11", "3.12"]
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v7
         with:
-          python-version: ${{ matrix.python-version }}
+          python-version: "3.12"
 
       - name: Install PortAudio (required by sounddevice)
         run: sudo apt-get install -y libportaudio2
+
+      - name: Install Qt runtime libraries (required by PySide6)
+        # PySide6's compiled QtGui extension dynamically links against these at
+        # import time -- not just when a window is actually shown -- so even the
+        # pure-function tests in test_waterfall_math.py need them, despite never
+        # creating a QApplication or a display.  The bare ubuntu-latest runner
+        # doesn't ship any of them.  libegl1/libgl1/libxkbcommon0 are the
+        # well-known minimum for QtGui to import cleanly on headless Linux; if a
+        # future PySide6 bump needs more, the ImportError will name the next
+        # missing .so and it can be added here.
+        run: sudo apt-get install -y libegl1 libgl1 libxkbcommon0
 
       - name: Install dependencies
         run: pip install -r requirements.txt
@@ -31,4 +39,7 @@ jobs:
         run: ruff check .
 
       - name: Run tests with coverage
-        run: pytest tests/ --cov --cov-fail-under=90
+        # --cov-fail-under intentionally omitted: pyproject.toml's
+        # [tool.coverage.report] fail_under is the single source of truth for
+        # the gate. A CLI flag here would silently override it.
+        run: pytest tests/ --cov

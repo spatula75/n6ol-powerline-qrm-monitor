@@ -28,10 +28,6 @@ class AudioConfig:
     device_index: int | None = None
     # Audio sample rate in Hz. Must match what the input device is configured to use.
     sample_rate: int = 16000
-    # Length of each audio recording in seconds. Longer = more pulses to average over.
-    duration: int = 3
-    # Number of recordings averaged together per CSV entry. Higher = less noisy readings.
-    measurements_to_take: int = 3
     # Powerline interference pulse rate in Hz: 120 for 60 Hz grid (North America),
     # 100 for 50 Hz grid (Europe and most of the rest of the world).
     pulse_rate: int = 120

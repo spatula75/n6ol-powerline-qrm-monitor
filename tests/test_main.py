@@ -1,10 +1,12 @@
-"""Tests for buzz.main: configure_logging() and module-level constants."""
+"""Tests for buzz.main: configure_logging(), weather client factory, and headless wait."""
 import logging
-
-import pytest
+from unittest.mock import MagicMock, patch
 
 import buzz.main as main_module
-from buzz.main import configure_logging
+import pytest
+from buzz.config import BuzzConfig
+from buzz.main import _wait_until_interrupted, configure_logging, make_weather_client
+from buzz.weather import CumulusMXWeatherClient, NullWeatherClient, OpenMeteoWeatherClient
 
 
 @pytest.fixture(autouse=True)
@@ -47,3 +49,96 @@ class TestConfigureLogging:
 class TestModuleConstants:
     def test_root_package_is_buzz(self):
         assert main_module.ROOT_PACKAGE == 'buzz'
+
+
+class TestMakeWeatherClient:
+    def _config(self, source: str) -> BuzzConfig:
+        cfg = BuzzConfig()
+        cfg.weather.source = source
+        cfg.weather.url = 'http://weather.local/realtime.json'
+        cfg.weather.latitude = 37.8
+        cfg.weather.longitude = -122.4
+        return cfg
+
+    def test_openmeteo(self):
+        client = make_weather_client(self._config('openmeteo'))
+        assert isinstance(client, OpenMeteoWeatherClient)
+
+    def test_cumulusmx(self):
+        client = make_weather_client(self._config('cumulusmx'))
+        assert isinstance(client, CumulusMXWeatherClient)
+
+    def test_none(self):
+        client = make_weather_client(self._config('none'))
+        assert isinstance(client, NullWeatherClient)
+
+    def test_unknown_source_returns_null_client(self):
+        client = make_weather_client(self._config('wunderground'))
+        assert isinstance(client, NullWeatherClient)
+
+    def test_unknown_source_logs_warning(self, caplog):
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            make_weather_client(self._config('wunderground'))
+        assert 'Unknown weather source' in caplog.text
+
+    def test_none_source_does_not_warn(self, caplog):
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            make_weather_client(self._config('none'))
+        assert caplog.text == ''
+
+    def test_openmeteo_without_coordinates_returns_null_client(self):
+        cfg = self._config('openmeteo')
+        cfg.weather.latitude = None
+        client = make_weather_client(cfg)
+        assert isinstance(client, NullWeatherClient)
+
+    def test_openmeteo_without_coordinates_logs_warning(self, caplog):
+        cfg = self._config('openmeteo')
+        cfg.weather.longitude = None
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            make_weather_client(cfg)
+        assert 'latitude/longitude' in caplog.text
+
+    def test_cumulusmx_without_url_returns_null_client(self):
+        cfg = self._config('cumulusmx')
+        cfg.weather.url = ''
+        client = make_weather_client(cfg)
+        assert isinstance(client, NullWeatherClient)
+
+    def test_cumulusmx_without_url_logs_warning(self, caplog):
+        cfg = self._config('cumulusmx')
+        cfg.weather.url = ''
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            make_weather_client(cfg)
+        assert 'url is not set' in caplog.text
+
+
+class TestWaitUntilInterrupted:
+    def test_closes_sampler_on_keyboard_interrupt(self):
+        sampler = MagicMock()
+        analyzer = MagicMock()
+        with patch('buzz.main.threading.Event') as mock_event:
+            mock_event.return_value.wait.side_effect = KeyboardInterrupt
+            _wait_until_interrupted(sampler, analyzer)
+        sampler.close.assert_called_once()
+
+    def test_stops_analyzer_on_keyboard_interrupt(self):
+        sampler = MagicMock()
+        analyzer = MagicMock()
+        with patch('buzz.main.threading.Event') as mock_event:
+            mock_event.return_value.wait.side_effect = KeyboardInterrupt
+            _wait_until_interrupted(sampler, analyzer)
+        analyzer.stop.assert_called_once()
+
+    def test_analyzer_stopped_before_sampler_closed(self):
+        """Mirrors MainWindow.closeEvent()'s order: the analyzer thread must be
+        told to stop before its audio pipeline is closed out from under it."""
+        calls = []
+        sampler = MagicMock()
+        sampler.close.side_effect = lambda: calls.append('sampler.close')
+        analyzer = MagicMock()
+        analyzer.stop.side_effect = lambda: calls.append('analyzer.stop')
+        with patch('buzz.main.threading.Event') as mock_event:
+            mock_event.return_value.wait.side_effect = KeyboardInterrupt
+            _wait_until_interrupted(sampler, analyzer)
+        assert calls == ['analyzer.stop', 'sampler.close']

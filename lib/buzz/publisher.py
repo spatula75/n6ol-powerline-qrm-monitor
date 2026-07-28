@@ -55,7 +55,13 @@ class Publisher:
         client = None
         try:
             client = paramiko.SSHClient()
-            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            # Verify the server's host key against known_hosts rather than trusting
+            # whatever answers (AutoAddPolicy would accept a man-in-the-middle).
+            client.load_system_host_keys()
+            known_hosts = Path.home() / '.buzz' / 'known_hosts'
+            if known_hosts.exists():
+                client.load_host_keys(str(known_hosts))
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
             client.connect(server.host, username=server.username,
                            password='', key_filename=server.key_path)
             sftp = client.open_sftp()
@@ -65,9 +71,11 @@ class Publisher:
         except Exception:
             logger.exception(
                 'Uploading output files to %s failed — check SSH key (%s), '
-                'remote path (%s), and host reachability. '
+                'remote path (%s), and host reachability.  If the error is an '
+                'unknown host key, add it with: ssh-keyscan %s >> %s . '
                 'Files will be re-uploaded next cycle.',
                 server.host, server.key_path, server.remote_path,
+                server.host, Path.home() / '.buzz' / 'known_hosts',
             )
         finally:
             if sftp:

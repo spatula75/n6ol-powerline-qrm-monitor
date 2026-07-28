@@ -7,6 +7,40 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- Extracted the pulse-train DSP core into `buzz.dsp` (kernel builder, FFT fit
+  array, Numba amplitude averaging, dBFS conversion, and a shared
+  `analyze_window()`); `sampler.py` is now pure audio I/O and `analyzer.py`
+  pure state machine.
+- Centralised `ContinuousAnalyzer` state transitions: tier methods return the
+  state they propose and `_transition()` owns all bookkeeping (debounce reset,
+  phase validation, refine-timer stamp); per-state tick methods own cadence.
+- Weather fetches now have a 10 s timeout, and a failed fetch degrades to
+  blank weather fields instead of dropping the minute's CSV row.
+- CSV row parsing moved into `CsvStore.read_rows()`; the plotter consumes
+  typed rows instead of parsing files itself.
+- Waterfall display derives its bin geometry and frequency axis from the
+  configured sample rate instead of a hardcoded 16 kHz.
+- SCP uploads now verify the server host key against known_hosts
+  (`~/.ssh/known_hosts` plus optional `~/.buzz/known_hosts`) instead of
+  auto-accepting any key; add new hosts with
+  `ssh-keyscan <host> >> ~/.buzz/known_hosts`.
+- Collector uploads are gated on the publisher's presence rather than
+  re-checking `server.enabled`.
+- Unknown `[weather] source` values now log a warning instead of silently
+  disabling weather.
+
+### Fixed
+- `generate_summary_graph()` leaked a matplotlib figure when there was no data
+  to plot (up to three figures per hour on a quiet station).
+- `analyze_window()` returns None instead of crashing when the audio window is
+  shorter than the scan kernel.
+
+### Removed
+- Legacy `AudioSampler.take_sample()` path (superseded by the continuous
+  analyzer ring buffer) and the now-unused `duration` and
+  `measurements_to_take` config fields.
+
 ### Added
 - `level_meter.py` — live text S-meter for receiver gain calibration.  Displays
   a continuously-updating 21-char bar (S1–S9 linear, then +20/+40/+60 sections

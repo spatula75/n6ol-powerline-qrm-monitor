@@ -16,14 +16,6 @@
 # use. 16000 Hz is sufficient for powerline noise analysis and keeps CPU load low.
 sample_rate = 16000
 
-# Length of each audio recording in seconds. Longer recordings capture more
-# pulses and give a more stable reading, at the cost of slower updates.
-duration = 3
-
-# Number of recordings averaged together per CSV entry. More measurements
-# reduce noise in the readings but increase the time per collection cycle.
-measurements_to_take = 3
-
 # Expected interference pulse rate in Hz.
 # Use 120 for 60 Hz grids (North America).
 # Use 100 for 50 Hz grids (Europe and most of the rest of the world).
