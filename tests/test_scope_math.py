@@ -7,6 +7,7 @@ from buzz.scope import (
     build_phosphor_colormap, extract_sweeps, full_scale_dbfs, n_complete_sweeps,
     resample_to_columns, sweep_start_offset, trace_rows, update_running_average,
     _HEADER_H, _TRACE_H, _H_DIVISIONS, _V_DIVISIONS, _GRATICULE_LINE, _GRATICULE_AXIS,
+    _PRETRIGGER_DIVISIONS,
     _MIN_FULL_SCALE, _RANGE_HEADROOM, _RANGE_PERCENTILE, _RANGE_EMA_ALPHA,
 )
 from buzz.waterfall import _AXIS_H, _WATERFALL_H
@@ -401,6 +402,33 @@ class TestUpdateRunningAverage:
         # scatter around it without moving the mean.
         assert average.mean() == pytest.approx(0.798, rel=0.05)
         assert average.std() < 0.15
+
+
+class TestPretrigger:
+    """Where the triggering pulse sits, and why it isn't a whole division."""
+
+    WIDTH = 640   # ScopeWidget takes its width from the waterfall; 128 bins x 5 px
+
+    def _column(self):
+        pretrigger = round(SWEEP * _PRETRIGGER_DIVISIONS / _H_DIVISIONS)
+        return pretrigger * self.WIDTH / SWEEP
+
+    def test_lands_clear_of_any_graticule_line(self):
+        """A whole number of divisions would draw the pulse directly under a grid
+        line, hiding its leading edge and reading as pinned to the grid."""
+        division_px = self.WIDTH / _H_DIVISIONS
+        distance_to_line = abs((self._column() / division_px) % 1)
+        assert 0.25 < distance_to_line < 0.75
+
+    def test_leaves_room_for_the_leading_edge_and_halo(self):
+        assert self._column() >= 0.5 * self.WIDTH / _H_DIVISIONS
+
+    def test_does_not_push_the_train_off_the_right(self):
+        """Three pulses have to remain visible after the lead-in."""
+        assert _PRETRIGGER_DIVISIONS < _H_DIVISIONS / 3
+
+    def test_matches_the_documented_position(self):
+        assert self._column() == pytest.approx(96.0, abs=1.0)
 
 
 class TestPanelGeometry:

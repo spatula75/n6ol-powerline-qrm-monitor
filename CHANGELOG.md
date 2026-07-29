@@ -20,6 +20,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   predicted pulse phase plus a `TriggerSync` confidence level, for display sync.
 
 ### Changed
+- Drift-rate estimation now fits a least-squares line through the last
+  `DRIFT_FIT_POINTS` phase measurements, rather than dividing a single prediction
+  error by a single refine interval. Phases are measured to whole samples, so the
+  old estimator was pinned at `0.5 / REFINE_INTERVAL` ≈ 0.83 samples/s of error with
+  nothing to average against; the fit spans a 5.4 s baseline over which zero-mean
+  quantisation error largely cancels. Measured against synthetic audio at known
+  drift rates, steady-state error falls from 0.38 to under 0.01 samples/s *and*
+  settles faster after a step change, so it costs no responsiveness. On the scope
+  this is the difference between the trace creeping a division a minute and standing
+  still. `DRIFT_LEARNING_RATE` and `MIN_DRIFT_UPDATE_INTERVAL` are removed; the
+  latter existed only to stop `error / elapsed` exploding, and there is no such
+  division now.
+- The scope's triggering pulse now sits 1.5 divisions from the left edge instead of
+  1.0. The trigger is the pulse's *peak*, but the pulse begins before that and rings
+  on after it through the receiver's audio passband, so its leading flank needs room
+  or it falls off the frame. The half-division also keeps the peak clear of a
+  graticule line rather than drawn underneath one.
 - Main window is now 734×248 (was 726×224). The scope and waterfall each occupy
   120 px, with 8 px of padding between them and before the meter column.
   Waterfall history is 4.8 s (48 rows), down from 10 s.

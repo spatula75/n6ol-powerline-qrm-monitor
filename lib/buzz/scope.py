@@ -68,6 +68,26 @@ SCOPE_H = _HEADER_H + _TRACE_H           # 120 px, matching the waterfall panel
 _H_DIVISIONS = 10                        # 2.5 ms/div across a 25 ms sweep
 _V_DIVISIONS = 8                         # centre line at division 4
 
+# How far in from the left edge the triggering pulse sits, in divisions.
+#
+# The trigger is not the pulse's onset, it is its *peak*: peak_phase comes from the
+# argmax of average_pulse_amplitude, which scores a PULSE_WIDTH_SAMPLES-wide window,
+# so it lands where the pulse is brightest.  The pulse itself begins before that and
+# persists after it — the arc reaches us through the receiver's audio passband, which
+# rings, spreading a sharp impulse over milliseconds on both sides of its peak.  Give
+# the sweep too little lead-in and that leading flank simply falls off the left edge,
+# which looks like a pulse jammed against the frame.  1.5 divisions is 60 samples
+# (3.75 ms at 16 kHz) of room ahead of the peak.
+#
+# The half-division is deliberate too: a whole number of divisions would land the
+# peak exactly on a graticule line, hiding the leading flank under it and reading as
+# pinned to the grid rather than placed on it.  x.5 sits midway between two lines.
+#
+# If the flank still reaches the edge, the real pulse is wider than this allows for
+# and the fix is to measure it — tools/pulse_probe.py --profile reports the actual
+# shape — rather than to keep enlarging this by eye.
+_PRETRIGGER_DIVISIONS = 1.5
+
 _UPDATE_MS = 100                         # matches the waterfall's frame cadence
 
 # Audio pulled per frame, in sweeps.  _UPDATE_MS covers 4 sweeps of 25 ms; taking 6
@@ -398,7 +418,8 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
         # modulus the analyzer's phases are reduced by — see the module docstring.
         self._sweep_samples = pulse_phase_period(config.audio.sample_rate,
                                                  config.audio.pulse_rate)
-        self._pretrigger = round(self._sweep_samples / _H_DIVISIONS)   # one division
+        self._pretrigger = round(
+            self._sweep_samples * _PRETRIGGER_DIVISIONS / _H_DIVISIONS)
         self._capture_samples = self._sweep_samples * _CAPTURE_SWEEPS
         self._ms_per_division = (self._sweep_samples / self._sample_rate
                                  * 1000 / _H_DIVISIONS)

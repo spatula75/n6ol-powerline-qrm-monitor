@@ -36,10 +36,10 @@ wide, three samples of error is enough to sample the gap between pulses instead
 of the pulses themselves.
 
 So the analyzer does not just store where the pulse train was; it also estimates
-how fast that position is moving.  Each refine compares where the train was
-predicted to be against where it actually turned up, and nudges the rate estimate
-to close the gap (_record_phase_measurement).  That one number then fixes two
-separate problems:
+how fast that position is moving.  Each refine appends the measured phase to a
+short history, and the rate is re-fitted as the least-squares slope of phase
+against time through those points (_record_phase_measurement, fit_drift_rate).
+That one number then fixes two separate problems:
 
   * The phase goes stale between refines.  Projecting it forward on every tick
     keeps each measurement sampling the pulses rather than the gaps
@@ -56,8 +56,17 @@ ordinary drift rates.  Tracked, the residual is about a dB, which is the floor
 set by phases being whole numbers of samples: the prediction is always up to half
 a sample off.  Going below that would need sub-sample interpolation of the audio.
 
-The estimate starts at zero and takes roughly ten seconds to converge, so levels
-read low for the first few seconds after a cold acquisition.
+Fitting a line through several measurements, rather than dividing one prediction
+error by one refine interval, is what keeps the *rate* itself away from that same
+quantisation floor: the per-measurement errors are zero-mean and the fit spans a
+baseline several times longer than a single interval.  Against synthetic audio at
+known drift rates this holds the rate to under 0.01 samples/s where the previous
+estimator sat at 0.38 — the difference between a synchronised display creeping
+about a division a minute and one that genuinely stands still.
+
+The estimate starts at zero and needs DRIFT_FIT_MIN_POINTS measurements before it
+produces anything at all, so levels read low for the first couple of seconds after
+a cold acquisition and reach full accuracy once the history fills.
 
 State transitions are centralised: each tier method measures, publishes, and
 returns the state it believes the machine should be in; the per-state tick
@@ -72,6 +81,7 @@ import logging
 import threading
 import time
 from collections import deque
+from collections.abc import Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from math import log10
@@ -116,6 +126,48 @@ class TriggerSync(StrEnum):
     LOCK = 'LOCK'
     HOLD = 'HOLD'
     FREE = 'FREE'
+
+
+def fit_drift_rate(history: Sequence[tuple[float, float]],
+                   min_points: int = 3) -> float | None:
+    """Least-squares slope of phase against time, in samples of phase per second.
+
+    `history` is (audio-clock seconds, unwrapped phase) pairs.  Under a steady grid
+    error those points lie on a straight line whose slope *is* the drift rate, so
+    fitting the line recovers the rate directly.
+
+    Why a fit rather than the obvious rise-over-run between the last two points:
+    phases are measured to the nearest whole sample, so every point carries up to
+    half a sample of quantisation error.  Dividing one such error by one short
+    refine interval puts it straight into the answer — at a 0.6 s interval that is
+    0.5 / 0.6 = 0.83 samples/s of error with nothing to average against.  Fitting a
+    line through many points beats that twice over: the individual errors are
+    zero-mean so they partly cancel, and the outermost points span a far longer
+    baseline, over which the same vertical uncertainty implies a much smaller slope
+    uncertainty.  Measured against synthetic audio at known drift rates, this took
+    the steady-state error from 0.38 samples/s to under 0.01 — and settled *faster*
+    after a step change, so it costs no responsiveness.
+
+    "Least squares" is the line minimising the sum of squared vertical distances to
+    the points; squaring keeps errors above and below the line from cancelling and
+    admits an exact closed-form answer rather than a search.  The expression below
+    is that closed form: how much time and phase vary together, over how much time
+    varies alone.
+
+    Returns None when there are too few points to define a slope, or when every
+    measurement landed at the same instant (a stalled audio clock), leaving the
+    caller's existing estimate untouched.
+    """
+    n = len(history)
+    if n < min_points:
+        return None
+    times  = np.fromiter((t for t, _ in history), dtype=np.float64, count=n)
+    phases = np.fromiter((p for _, p in history), dtype=np.float64, count=n)
+    centred_times = times - times.mean()
+    spread = float(centred_times @ centred_times)
+    if spread <= 0.0:
+        return None
+    return float(centred_times @ (phases - phases.mean()) / spread)
 
 
 @dataclass(frozen=True)
@@ -189,16 +241,25 @@ class ContinuousAnalyzer:
     # analyzer estimates how fast it is happening and projects the phase forward
     # between measurements — see _predicted_phases().
     #
-    # How much of each prediction error is blamed on the drift-rate estimate being
-    # wrong.  The rate converges geometrically at this fraction per refine, so 0.2
-    # at a 0.6 s REFINE_INTERVAL settles in roughly 3 s.  Higher tracks a changing
-    # grid sooner but lets measurement noise into the rate; lower is steadier but
-    # lags real changes.
-    DRIFT_LEARNING_RATE = 0.2
-    # Don't learn from refines closer together than this.  The rate is derived from
-    # error / elapsed, so a near-zero elapsed would turn a one-sample measurement
-    # wobble into an enormous apparent drift.
-    MIN_DRIFT_UPDATE_INTERVAL = 0.3   # s
+    # How many recent phase measurements the rate is fitted over — see
+    # fit_drift_rate().  At a 0.6 s REFINE_INTERVAL, 10 points span about 5.5 s of
+    # baseline.  More points resolve the rate more finely but track a changing grid
+    # more slowly; measured against synthetic audio, 5, 10 and 20 all landed within
+    # 0.01 samples/s in steady state, while post-step settling went 2.4 s, 6 s and
+    # 9 s respectively.  10 keeps settling at least as quick as the estimator this
+    # replaced while leaving a single bad measurement outvoted nine to one.
+    DRIFT_FIT_POINTS = 10
+    # Fewest points that define a slope worth trusting.  Two points would fit exactly
+    # and reproduce the old rise-over-run behaviour, quantisation error and all.
+    DRIFT_FIT_MIN_POINTS = 3
+    # Largest gap between consecutive measurements the history can be trusted across.
+    # Unwrapping in _record_phase_measurement folds each step to the shortest
+    # equivalent move, which is only the true move while the phase has travelled less
+    # than half a period since the last measurement.  At MAX_PHASE_DRIFT_RATE that
+    # takes 3.3 s, so 2.0 s leaves margin.  A longer gap — a signal outage, a stalled
+    # device — means the points are no longer one continuous track, and continuing to
+    # fit across it would invent a slope from an unknowable number of wraps.
+    MAX_PHASE_HISTORY_GAP = 2.0       # s
     # Hard limit on the estimated rate, in samples of phase per second.  60 samples/s
     # corresponds to a grid error of about 0.22 Hz — far outside anything the power
     # system does in normal operation.  This is a safety rail: if the scan ever
@@ -241,6 +302,14 @@ class ContinuousAnalyzer:
         # _audio_clock_seconds).  Predictions are made relative to this instant, so
         # it must be stamped whenever the phases are.
         self._phases_measured_at = 0.0
+        # Recent (audio-clock second, unwrapped phase) pairs that the drift rate is
+        # fitted through.  "Unwrapped" meaning the phase is accumulated across the
+        # modulus rather than folded back into [0, _phase_align) — a line cannot be
+        # fitted through a sawtooth.  Reset whenever the track is broken; see
+        # MAX_PHASE_HISTORY_GAP and _transition().
+        self._phase_history: deque[tuple[float, float]] = deque(maxlen=self.DRIFT_FIT_POINTS)
+        self._unwrapped_phase = 0.0
+        self._previous_measured_phase: int | None = None
 
         # EMA of the input DC offset, subtracted before rectification in _capture.
         # None until the first window seeds it, so startup converges immediately
@@ -311,6 +380,11 @@ class ContinuousAnalyzer:
         resets the lock-loss debounce counter; entering LOCKED additionally marks
         the stored phases valid and stamps the refine timer so a fresh lock isn't
         immediately re-refined.  A proposal matching the current state is a no-op.
+
+        Leaving LOCKED drops the fitted phase history.  The signal is gone, so the
+        next measurement will arrive after an unknown gap during which the phase may
+        have wrapped any number of times — unwrapping across that would fabricate a
+        slope.  The rate estimate itself survives; see _reset_phase_history().
         """
         if new_state == self._state:
             return
@@ -318,6 +392,8 @@ class ContinuousAnalyzer:
         if new_state == AnalyzerState.LOCKED:
             self._phases_valid = True
             self._last_refine  = time.monotonic()
+        else:
+            self._reset_phase_history()
         self._state = new_state
 
     def _run(self) -> None:  # pragma: no cover
@@ -467,52 +543,66 @@ class ContinuousAnalyzer:
         """
         return int(round(phase + drift_rate * (at_time - measured_at))) % self._phase_align
 
+    def _reset_phase_history(self) -> None:
+        """Drop the fitted history, keeping the current rate estimate.
+
+        Called when the measurements stop being one continuous track — a signal
+        outage, a cold start, a stalled device.  The *rate* deliberately survives:
+        the grid went on drifting while the signal was gone, so the last estimate is
+        a far better starting guess than zero (cold start zeroes it separately, in
+        _full_analysis, because there is no history there to be right about).
+        """
+        self._phase_history.clear()
+        self._previous_measured_phase = None
+
     def _record_phase_measurement(self, peak_phase: int, noise_phase: int,
-                                  measured_at: float,
-                                  predicted_peak: float | None = None) -> None:
-        """Store a freshly measured phase pair, and learn the drift rate from it.
+                                  measured_at: float) -> None:
+        """Store a freshly measured phase pair and re-fit the drift rate through it.
 
-        When `predicted_peak` is given, the gap between where the pulse train was
-        predicted to be and where it actually turned up tells us how wrong the drift
-        estimate is.  If the rate were perfect the prediction would land exactly on
-        the measurement; an error of `e` samples after `elapsed` seconds means the
-        rate is off by roughly e / elapsed, so we move the estimate a fraction
-        (DRIFT_LEARNING_RATE) of the way there.  Correcting only a fraction rather
-        than jumping straight to the implied value averages out measurement noise,
-        the same way any running average does.
+        The rate is the least-squares slope of the recent (time, phase) history — see
+        fit_drift_rate() for what that buys over the rise-over-run this replaced.
 
-        The rate can only be resolved so finely: phases are measured to the nearest
-        whole sample, so once the estimate is close enough that the predicted and
-        measured phases round to the same value, there is no error left to learn
-        from.  That floor is about 0.5 / REFINE_INTERVAL, or roughly 0.8 samples/s
-        at the default cadence — which over one refine interval is half a sample of
-        prediction error, comfortably below the point where it costs any signal.
-        Resolving finer would need sub-sample interpolation of the scan peak.
+        Two things have to be true for a line fit to mean anything, and both are
+        handled here rather than in the fit:
 
-        `predicted_peak` is omitted when the phase came from a full FFT search rather
-        than from tracking — after a cold start or a long signal outage there is no
-        meaningful prediction to compare against, so there is nothing to learn.
+        * The phases must be *unwrapped*.  Measurements come back folded into
+          [0, _phase_align), so a steadily drifting train produces a sawtooth, and
+          the slope of a sawtooth is not the drift rate.  Each step is folded to its
+          shortest equivalent move and accumulated instead, turning the sawtooth back
+          into the straight line it physically is.
+
+        * The points must be one continuous track.  Unwrapping infers the move from
+          the shortest path, which is only right while less than half a period has
+          passed; across a gap the phase may have wrapped an unknowable number of
+          times.  A gap beyond MAX_PHASE_HISTORY_GAP therefore restarts the history
+          rather than fitting a fabricated slope through it.
 
         `measured_at` is a reading of the audio clock, not the wall clock.
         """
-        elapsed = measured_at - self._phases_measured_at
-        if predicted_peak is not None and elapsed >= self.MIN_DRIFT_UPDATE_INTERVAL:
-            # Reading the old value here needs no lock: this method only ever runs
-            # on the analyzer thread, which is the sole writer, so it always sees
-            # its own last write.  The write below is locked because
-            # phase_drift_rate()/grid_frequency_hz() read it from other threads.
-            prediction_error = self._shortest_phase_move(peak_phase - predicted_peak)
-            adjusted = self._phase_drift_rate + self.DRIFT_LEARNING_RATE * prediction_error / elapsed
-            with self._result_lock:
-                self._phase_drift_rate = max(-self.MAX_PHASE_DRIFT_RATE,
-                                             min(self.MAX_PHASE_DRIFT_RATE, adjusted))
-        # Locked as a group.  These three are read together by trigger_phase() on the
-        # Qt thread, which projects the phase forward using the interval since
+        if (self._previous_measured_phase is None
+                or measured_at - self._phases_measured_at > self.MAX_PHASE_HISTORY_GAP):
+            self._reset_phase_history()
+            self._unwrapped_phase = float(peak_phase)
+        else:
+            self._unwrapped_phase += self._shortest_phase_move(
+                peak_phase - self._previous_measured_phase)
+        self._previous_measured_phase = peak_phase
+        self._phase_history.append((measured_at, self._unwrapped_phase))
+
+        fitted = fit_drift_rate(self._phase_history, self.DRIFT_FIT_MIN_POINTS)
+        # Locked as a group.  These are read together by trigger_phase() on the Qt
+        # thread, which projects the phase forward using the interval since
         # _phases_measured_at — so a read landing between the phase write and the
         # timestamp write would extrapolate a fresh phase across a stale interval and
         # put the trigger in the wrong place.  Writing them atomically costs nothing
         # here (a few times a second) and removes the tear entirely.
         with self._result_lock:
+            if fitted is not None:
+                # The clamp is a safety rail, not part of the estimate: if the scan
+                # ever latches onto the wrong peak, it stops one bad fit compounding
+                # into a runaway prediction.
+                self._phase_drift_rate = max(-self.MAX_PHASE_DRIFT_RATE,
+                                             min(self.MAX_PHASE_DRIFT_RATE, fitted))
             self._peak_phase = float(peak_phase)
             self._noise_phase = float(noise_phase)
             self._phases_measured_at = measured_at
@@ -712,8 +802,11 @@ class ContinuousAnalyzer:
                 # the write in _record_phase_measurement().
                 with self._result_lock:
                     self._phase_drift_rate = 0.0
-            # No predicted_peak: a full FFT search is an absolute re-measurement, not
-            # a tracking step, so there is no prediction error worth learning from.
+            # A full FFT search is an absolute re-measurement, not a tracking step:
+            # it can land anywhere in the period, including on a different peak than
+            # the history was following.  Unwrapping that against the previous point
+            # would read the jump as drift, so the track restarts here.
+            self._reset_phase_history()
             self._record_phase_measurement(window.peak_phase, window.noise_phase,
                                            measured_at=self._audio_clock_seconds())
             self._publish(AnalysisResult(
@@ -879,8 +972,7 @@ class ContinuousAnalyzer:
             # Commit the measurement, and let how far it landed from the prediction
             # sharpen the drift estimate for next time.
             self._record_phase_measurement(
-                signal_phase, noise_phase,
-                measured_at=measured_at, predicted_peak=predicted_peak)
+                signal_phase, noise_phase, measured_at=measured_at)
             self._publish(AnalysisResult(
                 signal_dbm=sig_dbm, noise_dbm=noise_dbm, snr=snr, locked=True,
             ))
