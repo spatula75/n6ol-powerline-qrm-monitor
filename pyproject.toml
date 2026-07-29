@@ -48,5 +48,8 @@ source = ["lib/buzz", "configure"]
 omit = ["tests/*", "lib/buzz/device_setup.py"]
 
 [tool.coverage.report]
-fail_under = 96
+# Raised 96 -> 97 once NUMBA_DISABLE_JIT=1 (see tests/conftest.py) made JIT-compiled
+# function bodies visible to coverage.py.  Before that, every @njit function counted
+# as untested no matter how well exercised, which held the achievable ceiling down.
+fail_under = 97
 show_missing = true

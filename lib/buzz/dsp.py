@@ -120,7 +120,18 @@ def average_pulse_amplitude(mono_amplitude_array: np.ndarray, samples_per_pulse:
     for i in range(n):
         pos = round(i * samples_per_pulse)
         for j in range(PULSE_WIDTH_SAMPLES):
-            total += mono_amplitude_array[start_index + pos + j]
+            # float() pins the accumulator to double precision and is not redundant.
+            # Callers pass float32 audio, and under NumPy 2's NEP 50 promotion rules
+            # `python_float + np.float32` yields np.float32 — so without the cast the
+            # running total silently degrades to single precision after the first
+            # addition, and several hundred additions later it has drifted about 1e-4
+            # from the FFT path that calculate_pps_fit_array computes in float64.
+            #
+            # Numba types the accumulator as float64 regardless, so the JIT'd and
+            # interpreted paths disagreed: identical inputs, different answers,
+            # depending on whether NUMBA_DISABLE_JIT was set.  The cast makes both
+            # paths do the arithmetic the FFT path already does.
+            total += float(mono_amplitude_array[start_index + pos + j])
     return total / (PULSE_WIDTH_SAMPLES * n)
 
 

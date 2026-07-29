@@ -198,33 +198,43 @@ class TestSpectrumPercentiles:
 
     def test_floor_stays_pinned_to_a_stale_seed_until_the_window_mostly_refills(self):
         """Cold-start regression: WaterfallWidget seeds every row of history_db with
-        the same value at startup.  The 10th-percentile floor stays exactly on that
-        seed until more than 90 of the 100 rows have been replaced with real data —
-        below 90 replaced, fewer than 10 stale rows remain and the floor should have
-        moved on; at 90 replaced it's still right on the boundary.  See
-        _COLOR_RANGE_EMA_ALPHA for why this matters: it is what makes the display's
-        startup convergence take longer than the EMA settling time alone."""
+        the same value at startup.  Because the seed sits below everything real, the
+        floor percentile keeps selecting it until the stale rows shrink below that
+        percentile's share of the window — so convergence takes roughly
+        (100 - _COLOR_FLOOR_PERCENTILE)% of the history to scroll through, not the
+        EMA settling time.  See _COLOR_RANGE_EMA_ALPHA for why that matters.
+
+        Written against the constants rather than literal row counts: the exact
+        numbers move whenever _N_ROWS is retuned (it has been), but the relationship
+        being asserted does not."""
         seed = -85.31
+        rng = np.random.default_rng(1)
+
+        # Still more stale rows than the floor percentile's share: floor stays pinned.
+        stale_pinned = int(_N_ROWS * _COLOR_FLOOR_PERCENTILE / 100) + 1
         history = np.full((_N_ROWS, 128), seed)
-        real_rows = np.random.default_rng(1).normal(-70.0, 5.0, size=(89, 128))
-        history[:89] = real_rows   # 11 stale rows remain — still > 10% of the window
+        refilled = _N_ROWS - stale_pinned
+        history[:refilled] = rng.normal(-70.0, 5.0, size=(refilled, 128))
         floor, _ = _spectrum_percentiles(history, _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE)
         assert floor == pytest.approx(seed)
 
-        history[:95] = np.random.default_rng(2).normal(-70.0, 5.0, size=(95, 128))
+        # Comfortably under that share: the floor is free to follow the real data.
+        refilled = _N_ROWS - max(1, stale_pinned // 2)
+        history[:refilled] = rng.normal(-70.0, 5.0, size=(refilled, 128))
         floor, _ = _spectrum_percentiles(history, _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE)
-        assert floor > seed + 1.0   # comfortably past the stale value once it's freed
+        assert floor > seed + 1.0
 
     def test_a_few_loud_rows_move_the_ceiling(self):
         """The reason _update_color_range() smooths these rather than using them
-        directly: at the 98th percentile only the top 2% of values count, which
-        in a 100-row window is about two rows' worth — so it takes just a couple
-        of ticks of new, louder content for the raw ceiling to start moving."""
+        directly: at the 98th percentile only the top 2% of values count, which is
+        only a row or two of the history — so it takes just a couple of ticks of
+        new, louder content for the raw ceiling to start moving."""
         quiet = np.full((_N_ROWS, 128), -80.0)
         _, ceiling_quiet = _spectrum_percentiles(quiet, _COLOR_FLOOR_PERCENTILE,
                                                   _COLOR_CEILING_PERCENTILE)
         loud = quiet.copy()
-        loud[:3] = -20.0   # 3 rows = 3% of the window, just over the 2% ceiling slice
+        # Enough rows to clear the ceiling percentile's slice of the window.
+        loud[:max(3, _N_ROWS // 20)] = -20.0
         _, ceiling_loud = _spectrum_percentiles(loud, _COLOR_FLOOR_PERCENTILE,
                                                  _COLOR_CEILING_PERCENTILE)
         assert ceiling_loud > ceiling_quiet
@@ -329,7 +339,11 @@ class TestWaterfallConstants:
         assert _DB_RANGE == 48.0
 
     def test_n_rows_reasonable(self):
-        assert 50 <= _N_ROWS <= 200
+        """Typo guard on the history depth.  The lower rail keeps the colour
+        auto-range's percentiles resting on more than a couple of rows; the upper
+        keeps the panel from becoming absurdly tall.  The value inside this range is
+        a layout decision (it shares a height with the scope panel), not a DSP one."""
+        assert 24 <= _N_ROWS <= 200
 
     def test_color_floor_percentile_below_ceiling_percentile(self):
         assert _COLOR_FLOOR_PERCENTILE < _COLOR_CEILING_PERCENTILE

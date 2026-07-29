@@ -257,11 +257,82 @@ python -m buzz.main --top
 ## Display Window
 
 When started without `--headless`, the monitor opens a live display window
-with two panels.
+with three panels:
+
+```
++-----------------------------+--------+
+|  Oscilloscope               |        |
++-----------------------------+ NF SIG |
+|  Waterfall                  |        |
++-----------------------------+--------+
+```
+
+- **Oscilloscope** — top left, a synchronized view of the raw audio waveform.
+- **Waterfall** — below it, a scrolling spectrogram.
+- **S-meters** — the right-hand column, running the full height of the window.
+
+![Display window](docs/sample_waterfall_display.png)
+
+The three bursts on the scope above are one powerline arc, caught three times in
+a row — the sweep spans exactly three pulse periods, so the same event is drawn
+at the same place on every pass.
+
+### Oscilloscope
+
+The scope shows the actual audio waveform, swept in sync with the interference
+so that a repeating pulse train appears to stand still — the same effect as
+setting the sync control on a bench oscilloscope to match the signal you are
+looking at.
+
+Each sweep covers **25 ms**, which is exactly three pulse periods at 120 pps, at
+**2.5 ms per division**.  Rather than triggering on signal amplitude, the sweep
+is synchronized to the pulse phase the analyzer is already tracking, so a brief
+noise spike cannot false-trigger it and the picture holds steady even as utility
+frequency drifts.
+
+The trace has a **phosphor persistence** effect, like an analog storage scope.
+This carries real information: the bright core is where successive sweeps agree,
+and the dimmer halo around it is where they disagree.  The width of that halo is
+a direct readout of how much the interference varies from cycle to cycle.
+
+What powerline arcing typically looks like here may surprise you — not a sharp
+spike, but a **symmetric burst of broadband noise a few milliseconds wide**.  A
+gap discharge fires continuously for as long as the line voltage stays above the
+gap's breakdown threshold, which is a substantial slice of each half-cycle rather
+than an instant.  A wider burst generally means a worse fault, and unlike
+amplitude that reading does not depend on your gain, antenna, or propagation.
+
+The vertical scale auto-ranges from the signal, so the trace stays usefully sized
+regardless of receiver gain.
+
+**Press `A`** to switch between two views:
+
+- **RAW** (default) — the bipolar waveform as received, noise and all.
+- **AVG** — the rectified envelope, averaged over many sweeps.  Averaging pulls
+  the pulse *shape* out of the noise (about 22 dB of improvement), revealing
+  structure a single sweep buries.
+
+#### Scope header
+
+| Indicator | Meaning |
+|---|---|
+| **◆ LOCK** (green) | Sweep is synchronized to a live, tracked pulse train. |
+| **◇ HOLD** (amber) | Signal has faded, but the sweep is still synchronized using the last known phase and drift rate.  A returning signal often becomes visible here before the analyzer formally re-locks. |
+| **○ FREE** (grey) | No pulse train to synchronize to.  The sweep free-runs and its horizontal position is arbitrary. |
+| `59.98 Hz` | Measured utility line frequency, derived from how fast the pulse phase is drifting.  Shown only when there is a phase to measure. |
+| `RAW` / `AVG` | Which view is active — see `A` above. |
+| `2.50 ms/div` | Horizontal timebase. |
+| `FS −24.3 dBFS` | Vertical full scale, as headroom below digital clipping.  This is the auto-range's current setting. |
+| **CLIP** (red) | The input is hitting the converter's limit — reduce AF gain. |
+
+`HOLD` does not persist indefinitely.  If the signal stays away long enough that
+the extrapolated phase is no longer trustworthy, the analyzer gives up on it and
+the indicator drops to `FREE`, rather than continuing to claim a synchronization
+it cannot deliver.
 
 ### Waterfall
 
-The top panel is a scrolling waterfall spectrogram.  Each horizontal strip
+Below the scope is a scrolling waterfall spectrogram.  Each horizontal strip
 represents one short audio frame; newer frames scroll in from the top.
 Brighter colors indicate higher energy.  Powerline interference appears as a
 repeating pattern of bright bands spaced evenly at the harmonic frequencies of
@@ -271,11 +342,9 @@ The color scale auto-ranges based on recent activity, so it stays readable
 regardless of receiver gain or band conditions. It may take a little time to
 settle into the live range after a cold start.
 
-![Waterfall display](docs/sample_waterfall_display.png)
-
 ### S-meters
 
-The lower panel shows two signal-strength bars that update in real time.
+The right-hand column shows two signal-strength bars that update in real time.
 
 - **NF** (noise floor) — average amplitude at the between-pulse positions,
   representing background noise.

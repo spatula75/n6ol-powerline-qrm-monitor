@@ -10,13 +10,16 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-from buzz.analyzer import AnalysisResult, AnalyzerState, ContinuousAnalyzer
+from buzz.analyzer import (
+    AnalysisResult, AnalyzerState, ContinuousAnalyzer, TriggerSync, fit_drift_rate,
+)
 from buzz.config import BuzzConfig
 from buzz.dsp import pulse_phase_period
 from buzz.sampler import AudioPipeline
 
 SAMPLE_RATE = 16000
 PULSE_RATE  = 120
+MIN_FIT     = ContinuousAnalyzer.DRIFT_FIT_MIN_POINTS
 
 
 def _make_config() -> BuzzConfig:
@@ -804,8 +807,109 @@ class TestPredictedPhases:
         assert az._predicted_phases() == (50, 100)
 
 
+class TestPhaseHoldTimeout:
+    """SIGNAL_LOST gives up and returns to SEARCHING once the stored phases go stale.
+
+    Keeps the state machine and the display in step: trigger_phase() reports HOLD
+    purely on _phases_valid, so an unbounded SIGNAL_LOST would claim a synchronised
+    sweep indefinitely — all night, if the arc quits at dusk.
+    """
+
+    def _lost(self, phase_age_s):
+        """Analyzer sitting in SIGNAL_LOST with phases measured `phase_age_s` ago."""
+        az = _make_analyzer()
+        az._transition(AnalyzerState.LOCKED)      # marks phases valid
+        az._transition(AnalyzerState.SIGNAL_LOST)
+        az._phases_measured_at = 0.0
+        az._pipeline.total_samples = int(phase_age_s * SAMPLE_RATE)
+        # Tier methods can't measure anything from a MagicMock pipeline, so they
+        # leave the state alone and only the timeout can move it.
+        az._capture = lambda *a, **kw: None
+        return az
+
+    def test_holds_while_phases_are_fresh(self):
+        az = self._lost(ContinuousAnalyzer.PHASE_HOLD_TIMEOUT - 5.0)
+        az._signal_lost_tick()
+        assert az._state == AnalyzerState.SIGNAL_LOST
+        assert az._phases_valid is True
+
+    def test_falls_back_to_searching_once_stale(self):
+        az = self._lost(ContinuousAnalyzer.PHASE_HOLD_TIMEOUT + 5.0)
+        az._signal_lost_tick()
+        assert az._state == AnalyzerState.SEARCHING
+
+    def test_giving_up_invalidates_the_phases(self):
+        az = self._lost(ContinuousAnalyzer.PHASE_HOLD_TIMEOUT + 5.0)
+        az._signal_lost_tick()
+        assert az._phases_valid is False
+
+    def test_display_reports_free_after_giving_up(self):
+        """The parity that motivates this: no state claiming sync it cannot deliver."""
+        az = self._lost(ContinuousAnalyzer.PHASE_HOLD_TIMEOUT + 5.0)
+        assert az.trigger_phase()[1] is TriggerSync.HOLD
+        az._signal_lost_tick()
+        assert az.trigger_phase() == (0, TriggerSync.FREE)
+
+    def test_stalled_audio_does_not_age_the_phases(self):
+        """Measured on the audio clock: no audio captured means no drift happened,
+        so the stored phases are exactly as good as when they were taken."""
+        az = self._lost(ContinuousAnalyzer.PHASE_HOLD_TIMEOUT + 600.0)
+        az._pipeline.total_samples = 0            # device stalled; clock frozen at 0
+        az._signal_lost_tick()
+        assert az._state == AnalyzerState.SIGNAL_LOST
+        assert az._phases_valid is True
+
+    def test_searching_re_entry_clears_the_fit_history(self):
+        az = self._lost(ContinuousAnalyzer.PHASE_HOLD_TIMEOUT + 5.0)
+        az._phase_history.append((0.0, 50.0))
+        az._signal_lost_tick()
+        assert len(az._phase_history) == 0
+
+
+class TestFitDriftRate:
+    """The least-squares slope itself, independent of the analyzer."""
+
+    def test_perfect_line_recovers_its_slope_exactly(self):
+        history = [(t * 0.6, 100.0 + 7.5 * t * 0.6) for t in range(10)]
+        assert fit_drift_rate(history, MIN_FIT) == pytest.approx(7.5)
+
+    def test_negative_slope(self):
+        history = [(t * 0.6, 100.0 - 7.5 * t * 0.6) for t in range(10)]
+        assert fit_drift_rate(history, MIN_FIT) == pytest.approx(-7.5)
+
+    def test_flat_history_reads_as_no_drift(self):
+        assert fit_drift_rate([(t * 0.6, 42.0) for t in range(10)], MIN_FIT) == pytest.approx(0.0)
+
+    def test_too_few_points_is_none(self):
+        assert fit_drift_rate([(0.0, 1.0), (0.6, 2.0)], MIN_FIT) is None
+
+    def test_min_points_is_configurable(self):
+        history = [(0.0, 1.0), (0.6, 2.0)]
+        assert fit_drift_rate(history, min_points=2) == pytest.approx(1 / 0.6)
+
+    def test_all_points_at_one_instant_is_none(self):
+        """A stalled audio clock gives a vertical line, which has no slope."""
+        assert fit_drift_rate([(4.0, 1.0), (4.0, 2.0), (4.0, 3.0)], MIN_FIT) is None
+
+    def test_averages_zero_mean_noise_away(self):
+        """The whole reason for fitting rather than taking the last two points."""
+        rng = np.random.default_rng(7)
+        times = np.arange(10) * 0.6
+        noisy = [(t, 50.0 + 9.0 * t + rng.uniform(-0.5, 0.5)) for t in times]
+        assert fit_drift_rate(noisy, MIN_FIT) == pytest.approx(9.0, abs=0.35)
+
+    def test_beats_the_two_point_slope_it_replaced(self):
+        """Same quantised points, both estimators: the fit must be closer to truth."""
+        true_rate = 9.0
+        times = np.arange(10) * 0.6
+        quantised = [(t, float(round(50.0 + true_rate * t))) for t in times]
+        two_point = (quantised[-1][1] - quantised[-2][1]) / (times[-1] - times[-2])
+        fitted = fit_drift_rate(quantised, MIN_FIT)
+        assert abs(fitted - true_rate) < abs(two_point - true_rate)
+
+
 class TestDriftRateLearning:
-    """_record_phase_measurement turns prediction error into a drift-rate estimate."""
+    """_record_phase_measurement maintains the history the rate is fitted through."""
 
     def _analyzer(self):
         az = _make_analyzer()
@@ -813,57 +917,92 @@ class TestDriftRateLearning:
         az._phases_measured_at = 0.0
         return az
 
+    def _feed(self, az, true_rate, steps=40, start_phase=50, interval=None):
+        """Feed whole-sample phase measurements drifting at true_rate."""
+        interval = interval or ContinuousAnalyzer.REFINE_INTERVAL
+        period = pulse_phase_period(SAMPLE_RATE, PULSE_RATE)
+        at = 0.0
+        for _ in range(steps):
+            at += interval
+            phase = int(round(start_phase + true_rate * at)) % period
+            az._record_phase_measurement(phase, 100, measured_at=at)
+        return az
+
     def test_starts_at_zero(self):
         assert _make_analyzer().phase_drift_rate() == 0.0
 
-    def test_learns_positive_rate_from_a_late_pulse(self):
+    def test_no_rate_until_min_points_are_available(self):
         az = self._analyzer()
-        # Predicted 50, actually found at 56 one second later -> 6 samples/s of drift,
-        # of which DRIFT_LEARNING_RATE is applied.
-        az._record_phase_measurement(56, 100, measured_at=1.0, predicted_peak=50.0)
-        assert az.phase_drift_rate() == pytest.approx(6.0 * ContinuousAnalyzer.DRIFT_LEARNING_RATE)
+        for i in range(ContinuousAnalyzer.DRIFT_FIT_MIN_POINTS - 1):
+            az._record_phase_measurement(50 + 6 * (i + 1), 100, measured_at=(i + 1) * 1.0)
+        assert az.phase_drift_rate() == 0.0
 
-    def test_learns_negative_rate_from_an_early_pulse(self):
+    def test_fits_a_rate_once_min_points_arrive(self):
         az = self._analyzer()
-        az._record_phase_measurement(44, 100, measured_at=1.0, predicted_peak=50.0)
-        assert az.phase_drift_rate() == pytest.approx(-6.0 * ContinuousAnalyzer.DRIFT_LEARNING_RATE)
+        for i in range(ContinuousAnalyzer.DRIFT_FIT_MIN_POINTS):
+            az._record_phase_measurement(50 + 6 * (i + 1), 100, measured_at=(i + 1) * 1.0)
+        assert az.phase_drift_rate() == pytest.approx(6.0)
 
-    @pytest.mark.parametrize('true_rate', [6.0, -6.0, 15.0, -15.0])
-    def test_converges_to_the_true_rate_over_repeated_refines(self, true_rate):
-        """Both directions, to within the resolution whole-sample phases allow.
+    @pytest.mark.parametrize('true_rate', [6.0, -6.0, 15.0, -15.0, 1.5, -1.5])
+    def test_converges_to_the_true_rate(self, true_rate):
+        """Both directions, through whole-sample phases.
 
-        Learning stops once the predicted and measured phases round to the same
-        sample, which pins the achievable resolution at about
-        0.5 / REFINE_INTERVAL ~= 0.8 samples/s.
+        The old per-refine estimator was bounded by 0.5 / REFINE_INTERVAL ~= 0.83
+        samples/s, because it divided one quantisation error by one interval.  The fit
+        spans (DRIFT_FIT_POINTS - 1) intervals = 5.4 s, over which a half-sample error
+        at each end implies at most 1.0 / 5.4 = 0.185 samples/s.
+
+        The 0.15 bound is measured rather than assumed: swept across 1201 drift rates
+        from -30 to +30, this construction peaks at 0.146 (at +26.6) and averages
+        0.042.  Rounding is deterministic per rate, so some rates genuinely fare worse
+        than others — hence a bound near the measured maximum rather than the mean.
         """
-        az = self._analyzer()
-        at = 0.0
-        for _ in range(60):
-            at += ContinuousAnalyzer.REFINE_INTERVAL
-            predicted, _ = az._predicted_phases(at)
-            actual = int(round(az._peak_phase + true_rate * (at - az._phases_measured_at)))
-            az._record_phase_measurement(actual, 100, measured_at=at, predicted_peak=float(predicted))
-        quantisation_floor = 0.5 / ContinuousAnalyzer.REFINE_INTERVAL
-        assert az.phase_drift_rate() == pytest.approx(true_rate, abs=quantisation_floor + 0.2)
+        az = self._feed(self._analyzer(), true_rate)
+        assert az.phase_drift_rate() == pytest.approx(true_rate, abs=0.15)
 
-    def test_no_learning_without_a_prediction(self):
-        """A full FFT search is an absolute re-measurement, not a tracking step."""
-        az = self._analyzer()
-        az._record_phase_measurement(80, 100, measured_at=1.0)
-        assert az.phase_drift_rate() == 0.0
+    def test_unwraps_across_the_period_boundary(self):
+        """Measurements fold into [0, period); a line cannot be fitted to a sawtooth,
+        so the history has to accumulate the true move instead."""
+        period = pulse_phase_period(SAMPLE_RATE, PULSE_RATE)
+        az = self._feed(self._analyzer(), 40.0, steps=60, start_phase=period - 20)
+        assert az.phase_drift_rate() == pytest.approx(40.0, abs=0.15)
 
-    def test_no_learning_when_refines_are_too_close_together(self):
-        """error / elapsed would explode; MIN_DRIFT_UPDATE_INTERVAL guards it."""
-        az = self._analyzer()
-        az._record_phase_measurement(56, 100, measured_at=0.001, predicted_peak=50.0)
-        assert az.phase_drift_rate() == 0.0
+    def test_a_long_gap_restarts_the_history(self):
+        """Across a gap the phase may have wrapped any number of times, so the old
+        points must not be fitted against the new one."""
+        az = self._feed(self._analyzer(), 10.0)
+        before = az.phase_drift_rate()
+        assert before == pytest.approx(10.0, abs=0.15)
+        gap_at = az._phases_measured_at + ContinuousAnalyzer.MAX_PHASE_HISTORY_GAP + 1.0
+        az._record_phase_measurement(123, 100, measured_at=gap_at)
+        assert len(az._phase_history) == 1
+        # The rate itself survives the gap — the grid kept drifting while we were away.
+        assert az.phase_drift_rate() == pytest.approx(before)
+
+    def test_reset_keeps_the_rate_but_drops_the_points(self):
+        az = self._feed(self._analyzer(), 10.0)
+        rate = az.phase_drift_rate()
+        az._reset_phase_history()
+        assert len(az._phase_history) == 0
+        assert az.phase_drift_rate() == pytest.approx(rate)
+
+    def test_leaving_locked_clears_the_history(self):
+        az = self._feed(self._analyzer(), 10.0)
+        az._state = AnalyzerState.LOCKED
+        az._transition(AnalyzerState.SIGNAL_LOST)
+        assert len(az._phase_history) == 0
+
+    def test_history_is_bounded(self):
+        az = self._feed(self._analyzer(), 6.0, steps=200)
+        assert len(az._phase_history) == ContinuousAnalyzer.DRIFT_FIT_POINTS
 
     @pytest.mark.parametrize('sign', [1, -1])
     def test_rate_is_clamped_to_a_physically_plausible_range(self, sign):
+        """A scan latching onto the wrong peak must not compound into a runaway."""
         az = self._analyzer()
         for i in range(50):
-            az._record_phase_measurement(50 + sign * 300, 100,
-                                         measured_at=(i + 1) * 1.0, predicted_peak=50.0)
+            az._record_phase_measurement(50 + sign * 300 * (i % 2), 100,
+                                         measured_at=(i + 1) * 0.6)
         assert abs(az.phase_drift_rate()) <= ContinuousAnalyzer.MAX_PHASE_DRIFT_RATE
 
     def test_measurement_updates_the_stored_phases_and_timestamp(self):
@@ -960,7 +1099,10 @@ class TestSnapshotPhaseAlignment:
         pipe = _AlignedStreamPipeline(self._pulse_stream(seconds=60, pulse_rate=pulse_rate))
         az = ContinuousAnalyzer(pipe, _make_config())
         if not track_drift:
-            az.DRIFT_LEARNING_RATE = 0.0      # instance override; rate stays at zero
+            # Demand more points than the history can ever hold, so no fit is ever
+            # produced and the rate stays at its initial zero — reproducing the
+            # behaviour from before drift tracking existed.
+            az.DRIFT_FIT_MIN_POINTS = 10 ** 9
         _step(az, az._full_analysis)
         assert az._state == 'LOCKED'
         per_cycle = []
@@ -1126,3 +1268,84 @@ class TestRunResilience:
         with caplog.at_level('ERROR'):
             az._run()
         assert 'Analyzer tick failed' in caplog.text
+
+
+class TestTriggerPhase:
+    """The sync source for the scope display (buzz.scope).
+
+    Everything the scope draws hangs off this returning the *predicted* phase, so
+    these cover the projection and the three trust levels rather than just the
+    happy path.
+    """
+
+    PHASE_ALIGN = pulse_phase_period(SAMPLE_RATE, PULSE_RATE)   # 400
+
+    def _tracking(self, state=AnalyzerState.LOCKED, peak=100.0,
+                  drift=0.0, measured_at=0.0, elapsed_s=0.0):
+        az = _make_analyzer()
+        az._state = state
+        az._phases_valid = True
+        az._peak_phase = peak
+        az._phase_drift_rate = drift
+        az._phases_measured_at = measured_at
+        az._pipeline.total_samples = int(elapsed_s * SAMPLE_RATE)
+        return az
+
+    def test_free_before_any_lock(self):
+        az = _make_analyzer()
+        assert az.trigger_phase() == (0, TriggerSync.FREE)
+
+    def test_free_even_while_searching_with_a_stale_peak(self):
+        """_peak_phase holds whatever the last FFT saw even when nothing locked, so
+        validity has to gate the answer rather than the phase being non-zero."""
+        az = _make_analyzer()
+        az._peak_phase = 250.0
+        assert az.trigger_phase() == (0, TriggerSync.FREE)
+
+    def test_lock_when_locked(self):
+        _, sync = self._tracking(state=AnalyzerState.LOCKED).trigger_phase()
+        assert sync is TriggerSync.LOCK
+
+    def test_hold_when_signal_lost(self):
+        """The case that makes a fading signal reappear on the persistence display
+        before the analyzer formally re-locks."""
+        _, sync = self._tracking(state=AnalyzerState.SIGNAL_LOST).trigger_phase()
+        assert sync is TriggerSync.HOLD
+
+    def test_hold_when_searching_but_phases_still_valid(self):
+        _, sync = self._tracking(state=AnalyzerState.SEARCHING).trigger_phase()
+        assert sync is TriggerSync.HOLD
+
+    def test_returns_stored_phase_when_nothing_has_drifted(self):
+        phase, _ = self._tracking(peak=137.0).trigger_phase()
+        assert phase == 137
+
+    def test_projects_forward_at_the_drift_rate(self):
+        phase, _ = self._tracking(peak=100.0, drift=10.0, elapsed_s=2.0).trigger_phase()
+        assert phase == 120
+
+    def test_projects_backward_on_negative_drift(self):
+        """A grid running fast walks the phase the other way; the modulo must not
+        turn that into a huge positive jump."""
+        phase, _ = self._tracking(peak=100.0, drift=-10.0, elapsed_s=2.0).trigger_phase()
+        assert phase == 80
+
+    def test_wraps_on_the_phase_period(self):
+        phase, _ = self._tracking(peak=390.0, drift=10.0, elapsed_s=2.0).trigger_phase()
+        assert phase == 10
+
+    def test_always_within_one_phase_period(self):
+        for drift in (-60.0, -7.5, 0.0, 3.3, 60.0):
+            for elapsed in (0.0, 0.7, 5.0, 60.0):
+                phase, _ = self._tracking(peak=250.0, drift=drift,
+                                          elapsed_s=elapsed).trigger_phase()
+                assert 0 <= phase < self.PHASE_ALIGN
+
+    def test_agrees_with_the_analyzers_own_prediction(self):
+        """The property that actually matters: the scope must sync to the same place
+        the analyzer samples.  If these two ever diverge, the trace would sit at a
+        fixed offset from the pulses it claims to be showing."""
+        for drift in (-25.0, 0.0, 12.5):
+            for elapsed in (0.0, 1.3, 9.0):
+                az = self._tracking(peak=173.0, drift=drift, elapsed_s=elapsed)
+                assert az.trigger_phase()[0] == az._predicted_phases()[0]
