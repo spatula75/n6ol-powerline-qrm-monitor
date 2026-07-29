@@ -42,4 +42,21 @@ jobs:
         # --cov-fail-under intentionally omitted: pyproject.toml's
         # [tool.coverage.report] fail_under is the single source of truth for
         # the gate. A CLI flag here would silently override it.
+        #
+        # conftest.py sets NUMBA_DISABLE_JIT=1, so @njit functions run as plain
+        # Python and coverage.py can actually see their bodies -- machine code
+        # executes no bytecode to trace.
         run: pytest tests/ --cov
+
+      - name: Run tests against the compiled Numba path
+        # The interpreted and JIT'd paths are not automatically equivalent: the
+        # interpreter applies NumPy's NEP 50 promotion to mixed float32/float64
+        # arithmetic while Numba types the expression itself, and
+        # average_pulse_amplitude returned measurably different answers under the
+        # two before an explicit cast fixed it.  The run above cannot catch that
+        # class of bug by construction, so the suite runs a second time against
+        # the code production actually executes.  No coverage here -- that is the
+        # first run's job, and this one cannot report it anyway.
+        env:
+          NUMBA_DISABLE_JIT: "0"
+        run: pytest tests/

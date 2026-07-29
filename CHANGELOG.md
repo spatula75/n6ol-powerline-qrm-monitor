@@ -7,6 +7,72 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Phase-synchronised oscilloscope panel above the waterfall (`buzz.scope`). The
+  sweep is triggered from the analyzer's tracked pulse phase rather than an
+  amplitude threshold, so a 120 pps arc renders as a standing wave instead of
+  sliding across the screen. CRT-style phosphor persistence makes pulse-to-pulse
+  jitter visible as a halo around the trace. Press `A` to switch between the raw
+  bipolar view and a coherently-averaged rectified envelope. The vertical scale
+  auto-ranges from the signal and is reported in dBFS; the trigger indicator
+  reads `LOCK`, `HOLD` (extrapolating through a fade) or `FREE` (never locked).
+- `ContinuousAnalyzer.trigger_phase()` — thread-safe accessor returning the
+  predicted pulse phase plus a `TriggerSync` confidence level, for display sync.
+
+### Changed
+- `scope.accumulate_trace()` is now JIT-compiled. It runs once per sweep, about
+  fifty times a second, and the vectorised difference-and-cumsum formulation it
+  replaced allocated a quarter-megabyte temporary every call and integrated all of
+  it regardless of how few cells needed touching. Measured on a 96×640 buffer at
+  five sweeps per frame: 2088 µs → 50 µs, giving back ~1.8% of a core continuously.
+- Tests now run with `NUMBA_DISABLE_JIT=1` (set in `conftest.py`), so coverage can
+  see inside JIT-compiled functions — machine code executes no bytecode to trace,
+  and `dsp.py` had been reporting 82% for that reason alone. CI additionally runs
+  the whole suite a second time with the JIT enabled, since the two paths are not
+  automatically equivalent.
+- `SIGNAL_LOST` now falls back to `SEARCHING` once the stored phase pair is older
+  than `PHASE_HOLD_TIMEOUT` (60 s of captured audio), clearing `_phases_valid`.
+  Beyond that age the extrapolated phase is far outside `PHASE_SEARCH_RADIUS`, so
+  the cheap re-acquisition tiers cannot succeed anyway — and it keeps the scope's
+  trigger indicator honest, since `HOLD` is reported purely on having a valid phase
+  pair and would otherwise claim a synchronised sweep all night if the arc quit at
+  dusk. Aged on the audio clock, so a stalled sound device doesn't expire phases
+  that are still good.
+- Drift-rate estimation now fits a least-squares line through the last
+  `DRIFT_FIT_POINTS` phase measurements, rather than dividing a single prediction
+  error by a single refine interval. Phases are measured to whole samples, so the
+  old estimator was pinned at `0.5 / REFINE_INTERVAL` ≈ 0.83 samples/s of error with
+  nothing to average against; the fit spans a 5.4 s baseline over which zero-mean
+  quantisation error largely cancels. Measured against synthetic audio at known
+  drift rates, steady-state error falls from 0.38 to under 0.01 samples/s *and*
+  settles faster after a step change, so it costs no responsiveness. On the scope
+  this is the difference between the trace creeping a division a minute and standing
+  still. `DRIFT_LEARNING_RATE` and `MIN_DRIFT_UPDATE_INTERVAL` are removed; the
+  latter existed only to stop `error / elapsed` exploding, and there is no such
+  division now.
+- The scope's triggering pulse now sits 1.5 divisions from the left edge instead of
+  1.0. The trigger is the pulse's *peak*, but the pulse begins before that and rings
+  on after it through the receiver's audio passband, so its leading flank needs room
+  or it falls off the frame. The half-division also keeps the peak clear of a
+  graticule line rather than drawn underneath one.
+- Main window is now 734×248 (was 726×224). The scope and waterfall each occupy
+  120 px, with 8 px of padding between them and before the meter column.
+  Waterfall history is 4.8 s (48 rows), down from 10 s.
+
+### Fixed
+- `average_pulse_amplitude()` accumulated at single precision when called from
+  interpreted Python. Callers pass float32 audio, and under NumPy 2's NEP 50
+  promotion `python_float + np.float32` yields `np.float32`, so the running total
+  degraded after its first addition — drifting ~1e-4 from the float64 result
+  `calculate_pps_fit_array()` computes for the same data. Numba types the
+  accumulator as float64 regardless, so the JIT'd and interpreted paths returned
+  different answers for identical input. An explicit `float()` cast pins both to
+  double precision.
+- `ContinuousAnalyzer._record_phase_measurement()` now writes the phase pair and
+  its measurement timestamp as one locked group. They are read together by
+  `trigger_phase()` on the Qt thread, where a read landing between the two writes
+  would project a fresh phase across a stale interval and mis-place the trigger.
+
 ## [1.1.0] — 2026-07-27
 
 Continuous live analysis and display replace the old once-a-minute sampling
