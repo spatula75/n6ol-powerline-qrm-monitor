@@ -83,9 +83,17 @@ _V_DIVISIONS = 8                         # centre line at division 4
 # peak exactly on a graticule line, hiding the leading flank under it and reading as
 # pinned to the grid rather than placed on it.  x.5 sits midway between two lines.
 #
-# If the flank still reaches the edge, the real pulse is wider than this allows for
-# and the fix is to measure it — tools/pulse_probe.py --profile reports the actual
-# shape — rather than to keep enlarging this by eye.
+# Sized against the real burst rather than by eye.  Observed directly on this display:
+# the arc is not an impulse but a symmetric broadband burst 2.5-6 ms wide (40-96
+# samples), so at its widest it extends ~48 samples = 77 px either side of the peak.
+# 1.5 divisions puts the first burst's leading edge 19 px inside the left rail and
+# still leaves 40 px past the third burst's tail.  Going to 2.0 divisions would trade
+# that for only 8 px at the right, and past ~2.1 the third burst wraps off screen —
+# so this is near the middle of the usable range, not an arbitrary choice.
+#
+# tools/pulse_probe.py can quantify the burst, but note its MAX_PULSE_WIDTH = 20
+# ceiling is far below what is actually there; raise it before trusting a width from
+# it.  (Its flags are --seconds and --quiet only.)
 _PRETRIGGER_DIVISIONS = 1.5
 
 _UPDATE_MS = 100                         # matches the waterfall's frame cadence
@@ -112,11 +120,18 @@ _SWEEP_INTENSITY = 0.55
 _PHOSPHOR_DECAY = 0.72
 
 # EMA weight for averaging mode, applied once per frame to the mean of that frame's
-# sweeps.  0.05 gives an effective memory of ~20 frames, and at 4 sweeps per frame
-# that is roughly 80 sweeps of averaging — a ~9 dB improvement in noise floor over a
-# single sweep, which is what makes pulse shape visible at low SNR.  Kept as an EMA
-# rather than a fixed-N block average so the display keeps tracking a changing signal
-# instead of freezing once its bucket fills.
+# sweeps.  Two stages of averaging stack: the frame's own sweeps are meaned first
+# (4 of them at _UPDATE_MS = 100 and a 25 ms sweep), then folded into the EMA.
+#
+# For an EMA of weight a over inputs of variance s^2, the steady-state variance is
+# s^2 * a/(2-a); pre-averaging k sweeps divides the input variance by k.  So the
+# scatter shrinks by sqrt(a/(2-a)/k) = sqrt(0.05/1.95/4) = 0.080, which is 21.9 dB.
+# Measured against Gaussian noise: single-sweep |x| scatter 0.6029, averaged 0.0483,
+# ratio 21.9 dB — theory and measurement agree.  That is what makes pulse shape
+# visible at low SNR.
+#
+# Kept as an EMA rather than a fixed-N block average so the display keeps tracking a
+# changing signal instead of freezing once its bucket fills.
 _AVERAGE_ALPHA = 0.05
 
 # Colour ramp for the phosphor, as (intensity, (R, G, B)) stops.  The blue-green

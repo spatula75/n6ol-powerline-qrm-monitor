@@ -19,6 +19,7 @@ from buzz.sampler import AudioPipeline
 
 SAMPLE_RATE = 16000
 PULSE_RATE  = 120
+MIN_FIT     = ContinuousAnalyzer.DRIFT_FIT_MIN_POINTS
 
 
 def _make_config() -> BuzzConfig:
@@ -806,22 +807,81 @@ class TestPredictedPhases:
         assert az._predicted_phases() == (50, 100)
 
 
+class TestPhaseHoldTimeout:
+    """SIGNAL_LOST gives up and returns to SEARCHING once the stored phases go stale.
+
+    Keeps the state machine and the display in step: trigger_phase() reports HOLD
+    purely on _phases_valid, so an unbounded SIGNAL_LOST would claim a synchronised
+    sweep indefinitely — all night, if the arc quits at dusk.
+    """
+
+    def _lost(self, phase_age_s):
+        """Analyzer sitting in SIGNAL_LOST with phases measured `phase_age_s` ago."""
+        az = _make_analyzer()
+        az._transition(AnalyzerState.LOCKED)      # marks phases valid
+        az._transition(AnalyzerState.SIGNAL_LOST)
+        az._phases_measured_at = 0.0
+        az._pipeline.total_samples = int(phase_age_s * SAMPLE_RATE)
+        # Tier methods can't measure anything from a MagicMock pipeline, so they
+        # leave the state alone and only the timeout can move it.
+        az._capture = lambda *a, **kw: None
+        return az
+
+    def test_holds_while_phases_are_fresh(self):
+        az = self._lost(ContinuousAnalyzer.PHASE_HOLD_TIMEOUT - 5.0)
+        az._signal_lost_tick()
+        assert az._state == AnalyzerState.SIGNAL_LOST
+        assert az._phases_valid is True
+
+    def test_falls_back_to_searching_once_stale(self):
+        az = self._lost(ContinuousAnalyzer.PHASE_HOLD_TIMEOUT + 5.0)
+        az._signal_lost_tick()
+        assert az._state == AnalyzerState.SEARCHING
+
+    def test_giving_up_invalidates_the_phases(self):
+        az = self._lost(ContinuousAnalyzer.PHASE_HOLD_TIMEOUT + 5.0)
+        az._signal_lost_tick()
+        assert az._phases_valid is False
+
+    def test_display_reports_free_after_giving_up(self):
+        """The parity that motivates this: no state claiming sync it cannot deliver."""
+        az = self._lost(ContinuousAnalyzer.PHASE_HOLD_TIMEOUT + 5.0)
+        assert az.trigger_phase()[1] is TriggerSync.HOLD
+        az._signal_lost_tick()
+        assert az.trigger_phase() == (0, TriggerSync.FREE)
+
+    def test_stalled_audio_does_not_age_the_phases(self):
+        """Measured on the audio clock: no audio captured means no drift happened,
+        so the stored phases are exactly as good as when they were taken."""
+        az = self._lost(ContinuousAnalyzer.PHASE_HOLD_TIMEOUT + 600.0)
+        az._pipeline.total_samples = 0            # device stalled; clock frozen at 0
+        az._signal_lost_tick()
+        assert az._state == AnalyzerState.SIGNAL_LOST
+        assert az._phases_valid is True
+
+    def test_searching_re_entry_clears_the_fit_history(self):
+        az = self._lost(ContinuousAnalyzer.PHASE_HOLD_TIMEOUT + 5.0)
+        az._phase_history.append((0.0, 50.0))
+        az._signal_lost_tick()
+        assert len(az._phase_history) == 0
+
+
 class TestFitDriftRate:
     """The least-squares slope itself, independent of the analyzer."""
 
     def test_perfect_line_recovers_its_slope_exactly(self):
         history = [(t * 0.6, 100.0 + 7.5 * t * 0.6) for t in range(10)]
-        assert fit_drift_rate(history) == pytest.approx(7.5)
+        assert fit_drift_rate(history, MIN_FIT) == pytest.approx(7.5)
 
     def test_negative_slope(self):
         history = [(t * 0.6, 100.0 - 7.5 * t * 0.6) for t in range(10)]
-        assert fit_drift_rate(history) == pytest.approx(-7.5)
+        assert fit_drift_rate(history, MIN_FIT) == pytest.approx(-7.5)
 
     def test_flat_history_reads_as_no_drift(self):
-        assert fit_drift_rate([(t * 0.6, 42.0) for t in range(10)]) == pytest.approx(0.0)
+        assert fit_drift_rate([(t * 0.6, 42.0) for t in range(10)], MIN_FIT) == pytest.approx(0.0)
 
     def test_too_few_points_is_none(self):
-        assert fit_drift_rate([(0.0, 1.0), (0.6, 2.0)]) is None
+        assert fit_drift_rate([(0.0, 1.0), (0.6, 2.0)], MIN_FIT) is None
 
     def test_min_points_is_configurable(self):
         history = [(0.0, 1.0), (0.6, 2.0)]
@@ -829,14 +889,14 @@ class TestFitDriftRate:
 
     def test_all_points_at_one_instant_is_none(self):
         """A stalled audio clock gives a vertical line, which has no slope."""
-        assert fit_drift_rate([(4.0, 1.0), (4.0, 2.0), (4.0, 3.0)]) is None
+        assert fit_drift_rate([(4.0, 1.0), (4.0, 2.0), (4.0, 3.0)], MIN_FIT) is None
 
     def test_averages_zero_mean_noise_away(self):
         """The whole reason for fitting rather than taking the last two points."""
         rng = np.random.default_rng(7)
         times = np.arange(10) * 0.6
         noisy = [(t, 50.0 + 9.0 * t + rng.uniform(-0.5, 0.5)) for t in times]
-        assert fit_drift_rate(noisy) == pytest.approx(9.0, abs=0.35)
+        assert fit_drift_rate(noisy, MIN_FIT) == pytest.approx(9.0, abs=0.35)
 
     def test_beats_the_two_point_slope_it_replaced(self):
         """Same quantised points, both estimators: the fit must be closer to truth."""
@@ -844,7 +904,7 @@ class TestFitDriftRate:
         times = np.arange(10) * 0.6
         quantised = [(t, float(round(50.0 + true_rate * t))) for t in times]
         two_point = (quantised[-1][1] - quantised[-2][1]) / (times[-1] - times[-2])
-        fitted = fit_drift_rate(quantised)
+        fitted = fit_drift_rate(quantised, MIN_FIT)
         assert abs(fitted - true_rate) < abs(two_point - true_rate)
 
 

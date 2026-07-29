@@ -14,6 +14,9 @@ from buzz.waterfall import _AXIS_H, _WATERFALL_H
 
 SWEEP = 400          # pulse_phase_period(16000, 120)
 PULSE_OFFSETS = (0, 133, 267)   # round(i * 16000/120) for i = 0, 1, 2
+# Derived from the shipped constant rather than hardcoded, so these tests keep
+# exercising the pretrigger production actually uses.
+PRETRIGGER = round(SWEEP * _PRETRIGGER_DIVISIONS / _H_DIVISIONS)
 
 
 def pulse_train(n_samples, phase, amplitude=1000.0):
@@ -81,18 +84,18 @@ class TestSynchronisation:
     @pytest.mark.parametrize('phase', [0, 37, 133, 200, 267, 399])
     def test_triggered_pulse_lands_at_pretrigger_column(self, phase):
         signal = pulse_train(SWEEP * 6, phase)
-        start = sweep_start_offset(phase, pretrigger=40, sweep_samples=SWEEP)
+        start = sweep_start_offset(phase, PRETRIGGER, SWEEP)
         sweeps = extract_sweeps(signal, start, SWEEP)
         assert len(sweeps) >= 4
         for sweep in sweeps:
-            assert int(np.argmax(sweep)) == 40
+            assert int(np.argmax(sweep)) == PRETRIGGER
 
     @pytest.mark.parametrize('phase', [0, 37, 133, 200, 267, 399])
     def test_all_three_pulses_land_on_fixed_columns(self, phase):
         signal = pulse_train(SWEEP * 6, phase)
-        start = sweep_start_offset(phase, pretrigger=40, sweep_samples=SWEEP)
+        start = sweep_start_offset(phase, PRETRIGGER, SWEEP)
         sweeps = extract_sweeps(signal, start, SWEEP)
-        expected = sorted((40 + offset) % SWEEP for offset in PULSE_OFFSETS)
+        expected = sorted((PRETRIGGER + offset) % SWEEP for offset in PULSE_OFFSETS)
         for sweep in sweeps:
             assert sorted(np.flatnonzero(sweep).tolist()) == expected
 
@@ -102,7 +105,7 @@ class TestSynchronisation:
         positions = set()
         for phase in (0, 37, 133, 200):
             signal = pulse_train(SWEEP * 6, phase)
-            sweeps = extract_sweeps(signal, sweep_start_offset(0, 40, SWEEP), SWEEP)
+            sweeps = extract_sweeps(signal, sweep_start_offset(0, PRETRIGGER, SWEEP), SWEEP)
             positions.add(int(np.argmax(sweeps[0])))
         assert len(positions) > 1
 

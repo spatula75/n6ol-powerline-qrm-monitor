@@ -20,6 +20,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   predicted pulse phase plus a `TriggerSync` confidence level, for display sync.
 
 ### Changed
+- `SIGNAL_LOST` now falls back to `SEARCHING` once the stored phase pair is older
+  than `PHASE_HOLD_TIMEOUT` (60 s of captured audio), clearing `_phases_valid`.
+  Beyond that age the extrapolated phase is far outside `PHASE_SEARCH_RADIUS`, so
+  the cheap re-acquisition tiers cannot succeed anyway — and it keeps the scope's
+  trigger indicator honest, since `HOLD` is reported purely on having a valid phase
+  pair and would otherwise claim a synchronised sweep all night if the arc quit at
+  dusk. Aged on the audio clock, so a stalled sound device doesn't expire phases
+  that are still good.
 - Drift-rate estimation now fits a least-squares line through the last
   `DRIFT_FIT_POINTS` phase measurements, rather than dividing a single prediction
   error by a single refine interval. Phases are measured to whole samples, so the

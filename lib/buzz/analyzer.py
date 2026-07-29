@@ -2,9 +2,10 @@
 
 ContinuousAnalyzer runs on a daemon thread and maintains a three-state machine:
 
-  SEARCHING   — no valid phase pair (initial startup only).  Runs the full FFT
-                fit on 1 s of audio every SEARCH_INTERVAL seconds until a pulse
-                train is found.
+  SEARCHING   — no valid phase pair.  Runs the full FFT fit on 1 s of audio every
+                SEARCH_INTERVAL seconds until a pulse train is found.  Entered at
+                startup, and again from SIGNAL_LOST once the stored phases have
+                aged past PHASE_HOLD_TIMEOUT and are no longer worth extrapolating.
 
   LOCKED      — the 120 pps phase is known and the signal is present.  Each
                 tick (~200 ms) it calls average_pulse_amplitude at the
@@ -120,8 +121,10 @@ class TriggerSync(StrEnum):
              from before it faded, so the phase is being extrapolated forward.
              Still worth syncing to: it is what lets a returning signal build up
              on a persistence display before the analyzer formally re-locks.
-      FREE — never locked since startup.  There is no phase, and the sweep is
-             free-running.
+             Bounded — the analyzer abandons the phases and returns to SEARCHING
+             after PHASE_HOLD_TIMEOUT, so HOLD cannot outlive its own accuracy.
+      FREE — no phase pair at all: never locked, or locked once and since given up
+             on.  The sweep is free-running.
     """
     LOCK = 'LOCK'
     HOLD = 'HOLD'
@@ -129,8 +132,12 @@ class TriggerSync(StrEnum):
 
 
 def fit_drift_rate(history: Sequence[tuple[float, float]],
-                   min_points: int = 3) -> float | None:
+                   min_points: int) -> float | None:
     """Least-squares slope of phase against time, in samples of phase per second.
+
+    `min_points` is required rather than defaulted: the only correct value lives in
+    ContinuousAnalyzer.DRIFT_FIT_MIN_POINTS, and a default here would silently go on
+    testing the old number if that constant were ever retuned.
 
     `history` is (audio-clock seconds, unwrapped phase) pairs.  Under a steady grid
     error those points lie on a straight line whose slope *is* the drift rate, so
@@ -208,6 +215,25 @@ class ContinuousAnalyzer:
     # correction against accumulated prediction error.
     REFINE_INTERVAL     = 0.6   # s  — phase-search refinement interval while LOCKED
     SIGNAL_LOST_REFINE  = 120.0 # s  — unconditional full-FFT safety net in SIGNAL_LOST
+    # Age, in seconds of captured audio, past which the stored phase pair is abandoned
+    # and the machine falls back to SEARCHING.
+    #
+    # SIGNAL_LOST exists to re-acquire cheaply from a known phase, but that phase is
+    # only useful while it is still close enough for the narrow scan to find:
+    # _phase_search looks +/-PHASE_SEARCH_RADIUS (10 samples) around the prediction, and
+    # at ordinary drift the extrapolation is already outside that window well before a
+    # minute has passed.  Beyond it the cheap tiers cannot succeed by construction, so
+    # holding the state costs a re-acquisition path and buys nothing.
+    #
+    # Returning to SEARCHING also keeps the displays honest: trigger_phase() reports
+    # HOLD purely on the strength of a valid phase pair, so without this it would go on
+    # claiming a synchronised sweep for as long as the signal stayed away — overnight,
+    # if the arc quits at dusk.  One state machine, one answer.
+    #
+    # Measured against the audio clock rather than the wall clock, for the same reason
+    # _predicted_phases is: a stalled sound device means no audio elapsed, therefore no
+    # drift, therefore phases that are still exactly as good as when they were taken.
+    PHASE_HOLD_TIMEOUT  = 60.0  # s  — SIGNAL_LOST -> SEARCHING once phases go this stale
     PHASE_SEARCH_RADIUS = 10    # samples either side of stored peak to scan in SIGNAL_LOST
     # A challenger phase must beat the incumbent's amplitude by this ratio
     # (~0.4 dB) before the stored phase moves.  Without the deadband, noise
@@ -316,8 +342,11 @@ class ContinuousAnalyzer:
         # instead of ramping up from zero.  Only ever touched on the analysis thread.
         self._dc: float | None = None
 
-        # True once we have acquired at least one lock; kept True even after the
-        # signal disappears so SIGNAL_LOST can reuse the stored phases.
+        # Whether _peak_phase/_noise_phase describe where the train actually is.
+        # Set on the first lock and kept through SIGNAL_LOST, so the cheap
+        # re-acquisition tiers can reuse the stored phases — but cleared again on any
+        # return to SEARCHING, which is what PHASE_HOLD_TIMEOUT triggers once the
+        # phases have aged out.  Not monotonic: it goes back to False.
         self._phases_valid: bool = False
         self._consecutive_low_snr: int = 0
 
@@ -385,6 +414,13 @@ class ContinuousAnalyzer:
         next measurement will arrive after an unknown gap during which the phase may
         have wrapped any number of times — unwrapping across that would fabricate a
         slope.  The rate estimate itself survives; see _reset_phase_history().
+
+        Entering SEARCHING additionally invalidates the phase pair.  SEARCHING means
+        "we know nothing about where the train is" — that is true at startup and it is
+        true again once PHASE_HOLD_TIMEOUT has expired, and both callers want the same
+        consequences: a cold FFT search, a drift estimate reset on the next lock (see
+        _full_analysis), and trigger_phase() reporting FREE rather than a HOLD it can
+        no longer justify.
         """
         if new_state == self._state:
             return
@@ -394,6 +430,8 @@ class ContinuousAnalyzer:
             self._last_refine  = time.monotonic()
         else:
             self._reset_phase_history()
+            if new_state == AnalyzerState.SEARCHING:
+                self._phases_valid = False
         self._state = new_state
 
     def _run(self) -> None:  # pragma: no cover
@@ -450,6 +488,12 @@ class ContinuousAnalyzer:
             if triggered or time.monotonic() - self._last_full_fft >= self.SIGNAL_LOST_REFINE:
                 self._transition(self._full_analysis())
                 self._last_full_fft = time.monotonic()
+        # Give up on the stored phases once they are too stale for the cheap tiers to
+        # use, and drop back to a cold search.  See PHASE_HOLD_TIMEOUT.
+        if (self._state != AnalyzerState.LOCKED
+                and self._audio_clock_seconds() - self._phases_measured_at
+                > self.PHASE_HOLD_TIMEOUT):
+            self._transition(AnalyzerState.SEARCHING)
         return self.FAST_TICK_INTERVAL
 
     # ------------------------------------------------------------ tier methods
