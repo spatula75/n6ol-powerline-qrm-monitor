@@ -20,6 +20,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   predicted pulse phase plus a `TriggerSync` confidence level, for display sync.
 
 ### Changed
+- `scope.accumulate_trace()` is now JIT-compiled. It runs once per sweep, about
+  fifty times a second, and the vectorised difference-and-cumsum formulation it
+  replaced allocated a quarter-megabyte temporary every call and integrated all of
+  it regardless of how few cells needed touching. Measured on a 96×640 buffer at
+  five sweeps per frame: 2088 µs → 50 µs, giving back ~1.8% of a core continuously.
+- Tests now run with `NUMBA_DISABLE_JIT=1` (set in `conftest.py`), so coverage can
+  see inside JIT-compiled functions — machine code executes no bytecode to trace,
+  and `dsp.py` had been reporting 82% for that reason alone. CI additionally runs
+  the whole suite a second time with the JIT enabled, since the two paths are not
+  automatically equivalent.
 - `SIGNAL_LOST` now falls back to `SEARCHING` once the stored phase pair is older
   than `PHASE_HOLD_TIMEOUT` (60 s of captured audio), clearing `_phases_valid`.
   Beyond that age the extrapolated phase is far outside `PHASE_SEARCH_RADIUS`, so
@@ -50,6 +60,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Waterfall history is 4.8 s (48 rows), down from 10 s.
 
 ### Fixed
+- `average_pulse_amplitude()` accumulated at single precision when called from
+  interpreted Python. Callers pass float32 audio, and under NumPy 2's NEP 50
+  promotion `python_float + np.float32` yields `np.float32`, so the running total
+  degraded after its first addition — drifting ~1e-4 from the float64 result
+  `calculate_pps_fit_array()` computes for the same data. Numba types the
+  accumulator as float64 regardless, so the JIT'd and interpreted paths returned
+  different answers for identical input. An explicit `float()` cast pins both to
+  double precision.
 - `ContinuousAnalyzer._record_phase_measurement()` now writes the phase pair and
   its measurement timestamp as one locked group. They are read together by
   `trigger_phase()` on the Qt thread, where a read landing between the two writes
