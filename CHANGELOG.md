@@ -7,6 +7,29 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- Phase-synchronised oscilloscope panel above the waterfall (`buzz.scope`). The
+  sweep is triggered from the analyzer's tracked pulse phase rather than an
+  amplitude threshold, so a 120 pps arc renders as a standing wave instead of
+  sliding across the screen. CRT-style phosphor persistence makes pulse-to-pulse
+  jitter visible as a halo around the trace. Press `A` to switch between the raw
+  bipolar view and a coherently-averaged rectified envelope. The vertical scale
+  auto-ranges from the signal and is reported in dBFS; the trigger indicator
+  reads `LOCK`, `HOLD` (extrapolating through a fade) or `FREE` (never locked).
+- `ContinuousAnalyzer.trigger_phase()` — thread-safe accessor returning the
+  predicted pulse phase plus a `TriggerSync` confidence level, for display sync.
+
+### Changed
+- Main window is now 734×248 (was 726×224). The scope and waterfall each occupy
+  120 px, with 8 px of padding between them and before the meter column.
+  Waterfall history is 4.8 s (48 rows), down from 10 s.
+
+### Fixed
+- `ContinuousAnalyzer._record_phase_measurement()` now writes the phase pair and
+  its measurement timestamp as one locked group. They are read together by
+  `trigger_phase()` on the Qt thread, where a read landing between the two writes
+  would project a fresh phase across a stale interval and mis-place the trigger.
+
 ## [1.1.0] — 2026-07-27
 
 Continuous live analysis and display replace the old once-a-minute sampling

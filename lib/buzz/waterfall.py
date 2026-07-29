@@ -23,12 +23,13 @@ from math import ceil
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QImage, QPainter
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QVBoxLayout, QWidget
 
 from buzz.analyzer import AnalysisResult, ContinuousAnalyzer
 from buzz.config import BuzzConfig
 from buzz.dsp import SILENCE_DBFS
 from buzz.sampler import AudioPipeline
+from buzz.scope import SCOPE_H, ScopeWidget
 
 # ---------------------------------------------------------------------------
 # Waterfall constants
@@ -38,7 +39,7 @@ _CHUNK = AudioPipeline.CHUNK_SIZE           # 512 samples
 _MAX_HZ = 4000                              # top of the displayed band
 _FREQ_LABEL_HZ = 500                        # frequency-axis tick spacing
 _PIXELS_PER_BIN = 5                         # horizontal scale (128 bins → 640 px at 16 kHz)
-_N_ROWS = 100                               # history rows (~10 s at 100 ms/frame)
+_N_ROWS = 48                                # history rows (~4.8 s at 100 ms/frame)
 _PIXELS_PER_ROW = 2                         # vertical scale; _WINDOW_H is derived from this
 _UPDATE_MS = 100
 # Initial guess for the floor-to-ceiling span (8 S-units), used only until the
@@ -130,20 +131,30 @@ _MIN_DYNAMIC_RANGE_S_UNITS = 4
 _MIN_DYNAMIC_RANGE_DB = _MIN_DYNAMIC_RANGE_S_UNITS * 6.0   # 24 dB
 # EMA weight applied each tick (_UPDATE_MS = 100 ms) to the raw percentiles.
 # Without this, the ceiling can start moving after just a couple of ticks of
-# louder content — the top-2% tail is only ~256 values out of the window's
-# 12800, and each new row contributes 128 of them — which would make the
-# picture's contrast visibly shift within a few hundred milliseconds of any
-# brief burst.  0.05 gives the EMA itself a settling time of a couple of
-# seconds, once the raw percentile it's tracking is free to move.
+# louder content — the top-2% tail is only ~123 values out of the window's 6144,
+# and each new row contributes 128 of them — which would make the picture's
+# contrast visibly shift within a few hundred milliseconds of any brief burst.
+# 0.05 gives the EMA itself a settling time of a couple of seconds, once the raw
+# percentile it's tracking is free to move.
+#
+# Note how tight that has become: at the current _N_ROWS the ceiling's 2% slice is
+# about *one row* of bins, so a single loud row can carry the whole raw percentile.
+# The history was shortened for layout reasons when the scope panel was added, and
+# this smoothing is now the only thing standing between one loud row and a visible
+# contrast shift.  Lengthening the history would relax that; lowering the alpha
+# would too, at the cost of tracking speed.
 #
 # On startup that takes longer than the EMA alone suggests: history_db starts
 # full of the seed value (see floor_seed below), and the 10th-percentile floor
-# in particular stays pinned to that stale seed until more than 90 of the 100
-# rows have been replaced with real data — around ten seconds at one row per
-# tick. Verified against live audio: the floor sat exactly on its seed value
-# for the first ~9 s, then converged within 0.6 dB of an independently
-# measured ground truth a few seconds later. That one-time startup lag is a
-# fine trade for a display that self-corrects for the rest of the session.
+# in particular stays pinned to that stale seed until more than 90% of the rows
+# have been replaced with real data — about 4.3 s at one row per tick.  Verified
+# against live audio (at the 100-row history this display used before the scope
+# was added, where the same arithmetic gave ~10 s): the floor sat exactly on its
+# seed value for the first ~9 s, then converged within 0.6 dB of an
+# independently measured ground truth a few seconds later.  Shortening the
+# history scales that lag down proportionally; it has not been re-measured since.
+# Either way the one-time startup lag is a fine trade for a display that
+# self-corrects for the rest of the session.
 _COLOR_RANGE_EMA_ALPHA = 0.05
 
 # ---------------------------------------------------------------------------
@@ -174,7 +185,24 @@ _PAD      = 3    # outer and inner horizontal padding
 # Panel width: PAD + BAR + PAD + LABEL + PAD + BAR + PAD
 _PANEL_W  = _PAD + _BAR_W + _PAD + _LABEL_W + _PAD + _BAR_W + _PAD  # 86 px
 
-_WINDOW_H    = _N_ROWS * _PIXELS_PER_ROW + _AXIS_H  # 224 px
+# Height of the waterfall widget alone.  The scope sits above it at the same height,
+# so the two panels read as a matched pair.
+_WATERFALL_H = _N_ROWS * _PIXELS_PER_ROW + _AXIS_H  # 120 px
+# Breathing room between panels, used on both axes: vertically between the scope and
+# the waterfall, and horizontally between that stack and the meter panel.  One
+# constant for both so the layout stays visually consistent rather than having the
+# meters crammed against the displays.
+_PANEL_GAP   = 8
+# Full window height, which is also the meter panel's height: the meters run the
+# whole side of the window rather than aligning with either panel, so the 13
+# S-segments get the full travel.
+#
+# This height is not free to drift.  MeterPanelWidget lays out _N_SEGS segments of
+# _SEG_H each within _WINDOW_H - 34 pixels, so base_gap = (_WINDOW_H - 203) // 12:
+# every pixel of gap between segments costs 12 px of window.  Below 203 the gap goes
+# negative and the segments overlap.  At 248 the gap is 3 px, which reads as a
+# bar-graph rather than either a solid bar or a scattered row of ticks.
+_WINDOW_H    = SCOPE_H + _PANEL_GAP + _WATERFALL_H  # 248 px
 
 # Segment area geometry (within the panel widget)
 _CORR_H      = _SEG_H // 4                 # 3 px — phase-correction indicator height
@@ -345,7 +373,7 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         self._color_ceiling = floor_seed + _DB_RANGE
         self._color_range = _color_scale_range(
             self._color_floor, self._color_ceiling, _COLOR_HEADROOM)
-        self.setFixedSize(self._display_bins * _PIXELS_PER_BIN, _WINDOW_H)
+        self.setFixedSize(self._display_bins * _PIXELS_PER_BIN, _WATERFALL_H)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -519,7 +547,19 @@ class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt displ
 
 
 class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
-    """Top-level window; closing it shuts down the audio pipeline and analyzer."""
+    """Top-level window; closing it shuts down the audio pipeline and analyzer.
+
+    Layout is a scope over a waterfall on the left, with the S-meter panel running
+    the full height on the right:
+
+        +-------------------------+--------+
+        |  ScopeWidget            |        |
+        |  (SCOPE_H)              |        |
+        +----- _PANEL_GAP --------+ Meters |
+        |  WaterfallWidget        |        |
+        |  (_WATERFALL_H)         |        |
+        +-------------------------+--------+
+    """
 
     def __init__(self, pipeline: AudioPipeline, analyzer: ContinuousAnalyzer,
                  config: BuzzConfig, always_on_top: bool = False) -> None:
@@ -533,18 +573,37 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         container = QWidget()
         layout = QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(0)
+        layout.setSpacing(_PANEL_GAP)   # horizontal pad before the meter column
 
         self._waterfall = WaterfallWidget(pipeline, config)
-        self._meters    = MeterPanelWidget(analyzer)
+        # The scope takes its width from the waterfall rather than recomputing the
+        # bin geometry, so the two panels cannot drift out of alignment if the
+        # sample rate or displayed bandwidth ever changes.
+        self._scope  = ScopeWidget(pipeline, analyzer, config, self._waterfall.width())
+        self._meters = MeterPanelWidget(analyzer)
 
-        layout.addWidget(self._waterfall)
+        stack = QVBoxLayout()
+        stack.setContentsMargins(0, 0, 0, 0)
+        stack.setSpacing(_PANEL_GAP)
+        stack.addWidget(self._scope)
+        stack.addWidget(self._waterfall)
+
+        layout.addLayout(stack)
         layout.addWidget(self._meters)
 
         self.setCentralWidget(container)
-        self.setFixedSize(self._waterfall.width() + self._meters.width(), _WINDOW_H)
+        self.setFixedSize(
+            self._waterfall.width() + _PANEL_GAP + self._meters.width(), _WINDOW_H)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        """A toggles the scope between raw-persistence and averaged-envelope modes."""
+        if event.key() == Qt.Key.Key_A:
+            self._scope.toggle_mode()
+        else:
+            super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self._scope.stop()
         self._waterfall.stop()
         self._meters.stop()
         self._analyzer.stop()

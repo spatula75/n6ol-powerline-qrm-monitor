@@ -98,6 +98,26 @@ class AnalyzerState(StrEnum):
     SIGNAL_LOST = 'SIGNAL_LOST'
 
 
+class TriggerSync(StrEnum):
+    """How much a display should trust the phase returned by trigger_phase().
+
+    This is a coarser view of the state machine than AnalyzerState, because a
+    synchronised display cares about a different question than the analyzer does:
+    not "what am I doing" but "is the phase I am about to draw with real".
+
+      LOCK — measured from live audio; the pulse train is present and tracked.
+      HOLD — no signal right now, but a valid phase pair and drift rate survive
+             from before it faded, so the phase is being extrapolated forward.
+             Still worth syncing to: it is what lets a returning signal build up
+             on a persistence display before the analyzer formally re-locks.
+      FREE — never locked since startup.  There is no phase, and the sweep is
+             free-running.
+    """
+    LOCK = 'LOCK'
+    HOLD = 'HOLD'
+    FREE = 'FREE'
+
+
 @dataclass(frozen=True)
 class AnalysisResult:
     signal_dbm: float
@@ -432,10 +452,20 @@ class ContinuousAnalyzer:
         non-negative result.
         """
         now = self._audio_clock_seconds() if at_time is None else at_time
-        shift = self._phase_drift_rate * (now - self._phases_measured_at)
-        peak = int(round(self._peak_phase + shift)) % self._phase_align
-        noise = int(round(self._noise_phase + shift)) % self._phase_align
-        return peak, noise
+        return (self._project_phase(self._peak_phase, self._phase_drift_rate,
+                                    self._phases_measured_at, now),
+                self._project_phase(self._noise_phase, self._phase_drift_rate,
+                                    self._phases_measured_at, now))
+
+    def _project_phase(self, phase: float, drift_rate: float,
+                       measured_at: float, at_time: float) -> int:
+        """Walk one phase forward from when it was measured to `at_time`.
+
+        Split out from _predicted_phases so trigger_phase() can apply the identical
+        projection to a snapshot of the state it took under the lock, rather than
+        re-deriving the arithmetic and risking the two drifting apart.
+        """
+        return int(round(phase + drift_rate * (at_time - measured_at))) % self._phase_align
 
     def _record_phase_measurement(self, peak_phase: int, noise_phase: int,
                                   measured_at: float,
@@ -476,9 +506,16 @@ class ContinuousAnalyzer:
             with self._result_lock:
                 self._phase_drift_rate = max(-self.MAX_PHASE_DRIFT_RATE,
                                              min(self.MAX_PHASE_DRIFT_RATE, adjusted))
-        self._peak_phase = float(peak_phase)
-        self._noise_phase = float(noise_phase)
-        self._phases_measured_at = measured_at
+        # Locked as a group.  These three are read together by trigger_phase() on the
+        # Qt thread, which projects the phase forward using the interval since
+        # _phases_measured_at — so a read landing between the phase write and the
+        # timestamp write would extrapolate a fresh phase across a stale interval and
+        # put the trigger in the wrong place.  Writing them atomically costs nothing
+        # here (a few times a second) and removes the tear entirely.
+        with self._result_lock:
+            self._peak_phase = float(peak_phase)
+            self._noise_phase = float(noise_phase)
+            self._phases_measured_at = measured_at
 
     def phase_drift_rate(self) -> float:
         """Current estimate of the pulse-train drift, in samples of phase per second.
@@ -507,6 +544,43 @@ class ContinuousAnalyzer:
             drift_rate = self._phase_drift_rate
         true_pulse_rate = self._sample_rate * self._pulse_rate / (self._sample_rate + drift_rate)
         return true_pulse_rate / 2
+
+    def trigger_phase(self) -> tuple[int, TriggerSync]:
+        """Where the pulse train is right now, for a display to synchronise its sweep to.
+
+        Returns (phase in samples within pulse_phase_period, how much to trust it).
+        Safe to call from the Qt thread: the four pieces of tracker state are read as
+        one atomic group and projected forward outside the lock, so the analyzer
+        thread is never blocked for longer than four attribute reads.
+
+        The phase is the *predicted* one, not the last measured one — the same
+        projection the analyzer uses for its own sampling (see _predicted_phases).
+        A display syncing to a stale measurement would show the trace creeping across
+        the screen at the grid's drift rate, which is precisely what this view exists
+        to cancel out.
+
+        FREE returns phase 0 rather than a meaningless number.  Note that this still
+        yields a *stationary* trace rather than a sliding one, because the caller reads
+        phase-aligned snapshots: with no lock the sweep simply starts at an arbitrary
+        point in the pulse period instead of a chosen one.  For a display that is the
+        right failure mode — an un-synced trace that holds still is readable, whereas
+        one scrolling at an arbitrary rate is not, and the returned TriggerSync is what
+        tells the operator not to trust its horizontal position.
+        """
+        with self._result_lock:
+            # _state and _phases_valid are written on the analyzer thread outside this
+            # lock, but both are single stores of an immutable value, so the worst case
+            # is reading the previous one — never a torn one.  Taking them here anyway
+            # keeps the whole snapshot to one acquisition.
+            state       = self._state
+            valid       = self._phases_valid
+            peak        = self._peak_phase
+            drift_rate  = self._phase_drift_rate
+            measured_at = self._phases_measured_at
+        if not valid:
+            return 0, TriggerSync.FREE
+        phase = self._project_phase(peak, drift_rate, measured_at, self._audio_clock_seconds())
+        return phase, (TriggerSync.LOCK if state == AnalyzerState.LOCKED else TriggerSync.HOLD)
 
     # ------------------------------------------------------------ tier helpers
 

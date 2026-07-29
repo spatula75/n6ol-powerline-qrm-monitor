@@ -10,7 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-from buzz.analyzer import AnalysisResult, AnalyzerState, ContinuousAnalyzer
+from buzz.analyzer import AnalysisResult, AnalyzerState, ContinuousAnalyzer, TriggerSync
 from buzz.config import BuzzConfig
 from buzz.dsp import pulse_phase_period
 from buzz.sampler import AudioPipeline
@@ -1126,3 +1126,84 @@ class TestRunResilience:
         with caplog.at_level('ERROR'):
             az._run()
         assert 'Analyzer tick failed' in caplog.text
+
+
+class TestTriggerPhase:
+    """The sync source for the scope display (buzz.scope).
+
+    Everything the scope draws hangs off this returning the *predicted* phase, so
+    these cover the projection and the three trust levels rather than just the
+    happy path.
+    """
+
+    PHASE_ALIGN = pulse_phase_period(SAMPLE_RATE, PULSE_RATE)   # 400
+
+    def _tracking(self, state=AnalyzerState.LOCKED, peak=100.0,
+                  drift=0.0, measured_at=0.0, elapsed_s=0.0):
+        az = _make_analyzer()
+        az._state = state
+        az._phases_valid = True
+        az._peak_phase = peak
+        az._phase_drift_rate = drift
+        az._phases_measured_at = measured_at
+        az._pipeline.total_samples = int(elapsed_s * SAMPLE_RATE)
+        return az
+
+    def test_free_before_any_lock(self):
+        az = _make_analyzer()
+        assert az.trigger_phase() == (0, TriggerSync.FREE)
+
+    def test_free_even_while_searching_with_a_stale_peak(self):
+        """_peak_phase holds whatever the last FFT saw even when nothing locked, so
+        validity has to gate the answer rather than the phase being non-zero."""
+        az = _make_analyzer()
+        az._peak_phase = 250.0
+        assert az.trigger_phase() == (0, TriggerSync.FREE)
+
+    def test_lock_when_locked(self):
+        _, sync = self._tracking(state=AnalyzerState.LOCKED).trigger_phase()
+        assert sync is TriggerSync.LOCK
+
+    def test_hold_when_signal_lost(self):
+        """The case that makes a fading signal reappear on the persistence display
+        before the analyzer formally re-locks."""
+        _, sync = self._tracking(state=AnalyzerState.SIGNAL_LOST).trigger_phase()
+        assert sync is TriggerSync.HOLD
+
+    def test_hold_when_searching_but_phases_still_valid(self):
+        _, sync = self._tracking(state=AnalyzerState.SEARCHING).trigger_phase()
+        assert sync is TriggerSync.HOLD
+
+    def test_returns_stored_phase_when_nothing_has_drifted(self):
+        phase, _ = self._tracking(peak=137.0).trigger_phase()
+        assert phase == 137
+
+    def test_projects_forward_at_the_drift_rate(self):
+        phase, _ = self._tracking(peak=100.0, drift=10.0, elapsed_s=2.0).trigger_phase()
+        assert phase == 120
+
+    def test_projects_backward_on_negative_drift(self):
+        """A grid running fast walks the phase the other way; the modulo must not
+        turn that into a huge positive jump."""
+        phase, _ = self._tracking(peak=100.0, drift=-10.0, elapsed_s=2.0).trigger_phase()
+        assert phase == 80
+
+    def test_wraps_on_the_phase_period(self):
+        phase, _ = self._tracking(peak=390.0, drift=10.0, elapsed_s=2.0).trigger_phase()
+        assert phase == 10
+
+    def test_always_within_one_phase_period(self):
+        for drift in (-60.0, -7.5, 0.0, 3.3, 60.0):
+            for elapsed in (0.0, 0.7, 5.0, 60.0):
+                phase, _ = self._tracking(peak=250.0, drift=drift,
+                                          elapsed_s=elapsed).trigger_phase()
+                assert 0 <= phase < self.PHASE_ALIGN
+
+    def test_agrees_with_the_analyzers_own_prediction(self):
+        """The property that actually matters: the scope must sync to the same place
+        the analyzer samples.  If these two ever diverge, the trace would sit at a
+        fixed offset from the pulses it claims to be showing."""
+        for drift in (-25.0, 0.0, 12.5):
+            for elapsed in (0.0, 1.3, 9.0):
+                az = self._tracking(peak=173.0, drift=drift, elapsed_s=elapsed)
+                assert az.trigger_phase()[0] == az._predicted_phases()[0]
