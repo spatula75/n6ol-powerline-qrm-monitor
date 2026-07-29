@@ -7,6 +7,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-07-28
+
+A phase-synchronised oscilloscope display joins the waterfall, backed by a
+least-squares drift tracker precise enough to hold its trace still.
+
 ### Added
 - Phase-synchronised oscilloscope panel above the waterfall (`buzz.scope`). The
   sweep is triggered from the analyzer's tracked pulse phase rather than an
