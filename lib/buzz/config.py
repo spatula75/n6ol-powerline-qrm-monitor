@@ -107,6 +107,11 @@ class RecordingConfig:
     # Seconds without a lock before a recording is closed.  This audio is kept, so
     # the value also sets how much trailer every recording ends with.
     stop_after_seconds: float = 10.0
+    # How long the pulse train must be held before a recording starts, which is how
+    # a night of two-second blips is kept off the disk.  Every second spent waiting
+    # is a second of lead-in lost, since the buffer it comes from is a sliding
+    # window, so this is capped at what that buffer holds.  0 records every lock.
+    min_lock_seconds: float = 0.0
 
     def directory_path(self, station: StationConfig) -> Path:
         """Resolve `directory` against the station's output path when it is unset."""

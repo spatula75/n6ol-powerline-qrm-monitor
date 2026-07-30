@@ -199,6 +199,7 @@ class EventRecorder:
         # which reads as "stop as soon as the lock is lost".
         self._max_samples     = max(0, round(recording.max_seconds * self._sample_rate))
         self._timeout_samples = max(1, round(recording.stop_after_seconds * self._sample_rate))
+        self._min_lock_samples = self._qualifying_lock_samples(recording.min_lock_seconds)
         self._fade_in = fade_ramp(round(self.FADE_SECONDS * self._sample_rate))
 
         # Negative would leave the deadline permanently in the past, re-arming on
@@ -223,6 +224,7 @@ class EventRecorder:
         # poll interval still starts a recording instead of vanishing between polls.
         self._locked = analyzer.state == AnalyzerState.LOCKED
         self._lock_acquired = self._locked
+        self._lock_lost = False
         # Guards those two flags and nothing else, deliberately separate from the
         # _lock below: the analyzer thread has to take this one on every transition,
         # and the whole point of the push is that analysis never waits on the
@@ -239,6 +241,9 @@ class EventRecorder:
         # The most recent samples, held back from the file so the fade-out can be
         # applied to whichever ones turn out to be last.  See _write().
         self._tail = _EMPTY
+        # Pipeline position when the current unbroken lock began, or None when there
+        # is no lock to be timing.  See _lock_has_held.
+        self._locked_since: int | None = None
         self._position = 0              # next unread sample position in the pipeline
         self._event_start = 0           # position at the moment of lock (max_seconds origin)
         self._last_lock = 0             # position as of the most recent LOCKED tick
@@ -340,6 +345,26 @@ class EventRecorder:
 
     # ----------------------------------------------------------------- internal
 
+    def _qualifying_lock_samples(self, seconds: float) -> int:
+        """How long a lock must hold before it is worth a file, in samples.
+
+        Capped at what the ring buffer holds, because waiting is not free: the buffer
+        is a sliding window, so every second spent deciding is a second of run-up
+        that has fallen off the far end by the time the file opens.  Wait longer than
+        the buffer and the recording would begin *after* the lock — missing the onset
+        of the very event it exists to capture — which is a worse outcome than any
+        setting should be able to ask for.
+        """
+        capacity = self._pipeline.capacity_samples
+        wanted = max(0, round(seconds * self._sample_rate))
+        if wanted > capacity:
+            logger.warning(
+                'min_lock_seconds of %g is longer than the %.1f s of audio the buffer '
+                'holds; using %.1f s, beyond which a recording would start after the '
+                'event it is recording.',
+                seconds, capacity / self._sample_rate, capacity / self._sample_rate)
+        return min(wanted, capacity)
+
     def _can_record(self) -> bool:
         """Whether recording is possible at all, before anything is armed.
 
@@ -435,19 +460,44 @@ class EventRecorder:
             self._locked = state == AnalyzerState.LOCKED
             if self._locked:
                 self._lock_acquired = True
+            else:
+                self._lock_lost = True
 
-    def _consume_lock_state(self) -> bool:
-        """Whether the analyzer has been locked at any point since the previous tick.
+    def _lock_has_held(self) -> bool:
+        """Whether the current lock has lasted long enough to be worth a file.
 
-        Reading the live flag and clearing the sticky one are one operation because
+        Counted in captured samples from the moment the lock appeared, so a stalled
+        capture device cannot age a lock that no audio is arriving to support.
+
+        Any reported loss restarts the count, including one that comes and goes
+        between two polls.  The analyzer debounces a real loss across several checks
+        before it reports one, so a loss that reaches here is a genuine one — and
+        without this, a stream of blips accumulates: no tick ever observes the gaps,
+        because the next blip has set the flag again before it runs.
+        """
+        held = self._pipeline.total_samples - self._locked_since
+        return held >= self._min_lock_samples
+
+    def _consume_lock_state(self) -> tuple[bool, bool]:
+        """(locked since the previous tick, lost since the previous tick).
+
+        Reading the live flag and clearing the sticky ones are one operation because
         they have to be.  Done separately, a lock and a loss arriving in the gap
         between them would clear the flag that recorded the lock while leaving the
         level saying there is none — and a brief lock vanishing between two polls is
         precisely the failure the push exists to prevent.
+
+        Both edges are reported, not just the acquisition.  A run of brief locks
+        looks identical to one long lock if all you know is that there was a lock
+        since the last poll: no tick ever sees the gaps, because each blip sets the
+        flag again before the next one runs.  Knowing a loss happened is what tells
+        min_lock_seconds that the clock has to start again.
         """
         with self._state_lock:
-            locked, self._lock_acquired = self._locked or self._lock_acquired, False
-        return locked
+            locked = self._locked or self._lock_acquired
+            lost = self._lock_lost
+            self._lock_acquired = self._lock_lost = False
+        return locked, lost
 
     def _tick(self) -> None:
         # Before anything else, so a budget coming back round can record an event
@@ -456,12 +506,16 @@ class EventRecorder:
             self._reset_budget()
 
         # Either a lock right now, or one that came and went since the last tick.
-        locked = self._consume_lock_state()
+        locked, lost = self._consume_lock_state()
         if self._writer is None:
             if not locked:
+                self._locked_since = None
                 self._await_relock = False
-            elif self._armed and not self._await_relock:
-                self._begin()
+            else:
+                if lost or self._locked_since is None:
+                    self._locked_since = self._pipeline.total_samples
+                if self._armed and not self._await_relock and self._lock_has_held():
+                    self._begin()
             return
 
         self._capture()
@@ -506,13 +560,24 @@ class EventRecorder:
             return
         self._writer = writer
 
-        # Position 0 reads the whole buffer, which is the lead-in: audio captured
-        # before the lock that the ring buffer has not yet discarded.
+        # Position 0 reads the whole buffer: everything still held from before this
+        # moment, which is the run-up the file opens with.
         span = self._pipeline.read_from(0)
         self._frames_accepted, self._tail = 0, _EMPTY
-        self._lead_in, self._started_at = len(span.samples), now
-        self._event_start = self._last_lock = self._position = span.end
-        self._write(span.samples)
+        # Where the lock actually sits inside that, which is not where the file
+        # starts and not where this decision is being taken.  min_lock_seconds puts
+        # those seconds between the two, and they are part of the event: the cue
+        # marker, the metadata and the length cap all measure from the lock, so all
+        # three would be wrong by exactly that much if this used either end instead.
+        locked_at = span.end if self._locked_since is None else self._locked_since
+        self._lead_in, self._started_at = max(0, locked_at - span.start), now
+        self._event_start = locked_at
+        # Capped here too, not only in _capture: with min_lock_seconds this opening
+        # write already contains audio from after the lock, so a cap shorter than the
+        # wait would otherwise be overrun before the first poll ever looked at it.
+        samples, end = self._clamp_to_cap(span.samples, span.end)
+        self._last_lock = self._position = end
+        self._write(samples)
         logger.info('Recording %s (%.1f s lead-in)',
                     self._path.name, self._lead_in / self._sample_rate)
 
@@ -522,19 +587,27 @@ class EventRecorder:
         if span.start > self._position:
             logger.warning('Recorder fell behind the ring buffer — %d samples lost.',
                            span.start - self._position)
-        samples, end = span.samples, span.end
-        if self._max_samples:
-            # Trim the tail so a capped recording is exactly max_seconds long rather
-            # than however far past the cap this poll happened to land.
-            limit = self._event_start + self._max_samples
-            if end > limit:
-                # max(0) because the span can begin past the cap outright: a thread
-                # stalled longer than the ring buffer holds — a suspend and resume —
-                # comes back to find the oldest surviving sample already beyond it.
-                # A bare negative index would silently trim from the wrong end.
-                samples, end = samples[:max(0, len(samples) - (end - limit))], limit
+        samples, end = self._clamp_to_cap(span.samples, span.end)
         self._write(samples)
         self._position = end
+
+    def _clamp_to_cap(self, samples: np.ndarray, end: int) -> tuple[np.ndarray, int]:
+        """Trim a span so a capped recording ends exactly at the cap.
+
+        Without this a recording runs to wherever the poll that noticed happened to
+        land, rather than to the length that was asked for.
+
+        max(0) because the span can begin past the cap outright: a thread stalled for
+        longer than the ring buffer holds — a suspend and resume — comes back to find
+        the oldest surviving sample already beyond it.  A bare negative index would
+        silently trim from the wrong end.
+        """
+        if not self._max_samples:
+            return samples, end
+        limit = self._event_start + self._max_samples
+        if end <= limit:
+            return samples, end
+        return samples[:max(0, len(samples) - (end - limit))], limit
 
     def _write(self, samples: np.ndarray) -> None:
         """Take audio into the recording, holding back enough of it to fade out with.

@@ -314,12 +314,34 @@ fade is a raised cosine and costs less than one pulse out of the 120 per second.
 | `rearm_reset_minutes` | `0` | Minutes between resets of that budget.  `0` never re-arms. |
 | `max_seconds` | `120` | Cap on a single recording, timed from lock; lead-in and trailer are extra.  `0` is uncapped. |
 | `stop_after_seconds` | `10` | Silence before a recording is closed — and therefore how long the trailer is. |
+| `min_lock_seconds` | `0` | How long the signal must hold before a recording starts.  Keep it to 5 s or less. |
 
 Recording disarms itself once `max_events` events have been captured, so the
 defaults take the next ten events, at up to two minutes each, and then leave the
 disk alone.  Pressing **Record** again starts a fresh count.  A recording stopped
 by the length cap is not continued in a second file: the rest of that event is
 skipped, and the next event starts the next recording.
+
+### Ignoring events too short to be worth keeping
+
+Not every lock is worth a file.  A night of two-second blips leaves a directory
+full of recordings too short to sit and watch, and they count against
+`max_events` just as a real event would.  `min_lock_seconds` holds off until the
+interference has been present that long:
+
+```toml
+min_lock_seconds = 3
+```
+
+A signal that never lasts that long is never recorded at all, and a lock that
+drops and returns starts the count again rather than adding up.
+
+**Keep this short — 5 seconds or less.**  The wait is paid for out of the lead-in.
+That audio comes from a sliding buffer only a few seconds long, so a recording
+that waits two seconds opens two seconds later relative to the event than one that
+does not.  Ask for longer than the buffer holds and the file would begin *after*
+the event started, missing the onset that makes an arc worth looking at; the value
+is capped there, and setting more logs a warning telling you what it used instead.
 
 ### Recording to a schedule
 

@@ -131,6 +131,19 @@ max_seconds = 120
 # air off the end.
 stop_after_seconds = 10
 
+# How long the interference must be present before a recording starts.  A night of
+# two-second blips otherwise fills the directory with files too short to be worth
+# replaying; raise this until only the events you would actually sit and watch get
+# through.  0 records every lock, however brief.
+#
+# Keep it short — 5 seconds or less.  The wait is paid for out of the lead-in,
+# because the audio it comes from is a sliding window a few seconds long: wait two
+# seconds and every recording opens two seconds later relative to the event.  Ask
+# for longer than that window holds and the recording would start after the event
+# began, having missed the onset entirely, so the value is capped there and a
+# warning is logged if you set more.
+min_lock_seconds = 0
+
 
 [server]
 # Set enabled = true to upload output files to a web server via SCP after each

@@ -46,6 +46,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rather than the day's data. Arming re-checks, so fixing the path and pressing
   Record retries. Opening a file still copes with a directory that disappears
   mid-run, which no startup check can cover.
+- `min_lock_seconds` holds a recording off until the interference has been present
+  that long, so a night of two-second blips no longer fills the directory with
+  files too short to be worth replaying — or spends the event budget on them. A
+  lock that drops and returns starts the count again rather than adding up, which
+  needs the *loss* edge and not just the acquisition: no tick ever observes the
+  gaps in a stream of blips, because the next one has set the flag again before the
+  tick runs, so a run of them would otherwise look exactly like one long lock.
+  Capped at the ring buffer's own length, since the wait is paid for out of the
+  lead-in and waiting longer than the buffer holds would start the recording after
+  the onset of the event it exists to capture. Keep it to a few seconds; the docs
+  say so and say why.
 - `rearm_reset_minutes` turns the event budget into a rate rather than a one-off:
   `max_events = 10` with `rearm_reset_minutes = 1440` records up to ten events a
   day, every day, unattended, without being able to fill a disk. The cycle runs

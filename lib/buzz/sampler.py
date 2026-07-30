@@ -152,6 +152,16 @@ class RingBufferPipeline:
         return AudioSpan(np.concatenate(kept[::-1])[taken - wanted:], start, end)
 
     @property
+    def capacity_samples(self) -> int:
+        """The most audio the buffer ever holds, and so the longest lead-in possible.
+
+        Anything that waits before starting a recording is spending this: the window
+        slides, so a second spent waiting is a second of run-up that has fallen off
+        the far end by the time the file opens.
+        """
+        return _BUFFER_CHUNKS * self.CHUNK_SIZE
+
+    @property
     def total_samples(self) -> int:
         """Monotonic count of samples captured since the stream started.
 

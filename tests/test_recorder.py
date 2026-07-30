@@ -632,6 +632,127 @@ class TestMetadata:
         assert 'Could not tag' in caplog.text
 
 
+class TestMinimumLock:
+    """A night of two-second blips fills a disk with nothing worth replaying."""
+
+    def test_a_short_lock_records_nothing(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_seconds=3)
+        _feed(pipeline, 2)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 2)              # locked, but only for 2 s
+        recorder.tick()
+        assert _wav_files(tmp_path) == []
+
+    def test_a_lock_that_holds_records(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_seconds=3)
+        _feed(pipeline, 2)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 4)
+        recorder.tick()
+        assert len(_wav_files(tmp_path)) == 1
+
+    def test_the_wait_is_measured_from_the_lock(self, tmp_path):
+        """Audio already buffered before the lock is lead-in, not time served."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_seconds=3)
+        _feed(pipeline, 10)             # ten seconds of audio, none of it locked
+        analyzer.lock()
+        recorder.tick()
+        assert _wav_files(tmp_path) == []
+
+    def test_the_recording_still_opens_with_its_lead_in(self, tmp_path):
+        """Waiting costs lead-in but must not abolish it: the file still opens before
+        the lock, just less far before it."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_seconds=2)
+        _feed(pipeline, 3)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 2)
+        recorder.tick()
+        recorder.stop()
+        assert _durations(tmp_path) == [5.0]        # 3 s before the lock, 2 s after
+
+    def test_a_broken_lock_starts_the_wait_again(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_seconds=3)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 2)
+        analyzer.unlock()
+        recorder.tick()                 # two seconds in, and lost
+        analyzer.lock()
+        _feed(pipeline, 2)
+        recorder.tick()                 # two more, but from scratch
+        assert _wav_files(tmp_path) == []
+
+    def test_a_blip_between_polls_never_qualifies(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_seconds=3)
+        for _ in range(5):
+            analyzer.lock()
+            analyzer.unlock()
+            _feed(pipeline, 2)
+            recorder.tick()
+        assert _wav_files(tmp_path) == []
+
+    def test_zero_records_every_lock(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_seconds=0)
+        analyzer.lock()
+        recorder.tick()
+        assert len(_wav_files(tmp_path)) == 1
+
+    def test_the_wait_is_capped_by_the_ring_buffer(self, tmp_path):
+        """Beyond what the buffer holds, a recording would begin after the event it
+        is recording, having lost the onset entirely."""
+        recorder, pipeline, _ = _make_recorder(tmp_path, min_lock_seconds=10_000)
+        assert recorder._min_lock_samples == pipeline.capacity_samples
+
+    def test_an_over_long_wait_is_reported(self, tmp_path, caplog):
+        with caplog.at_level('WARNING'):
+            _make_recorder(tmp_path, min_lock_seconds=10_000)
+        assert 'longer than' in caplog.text
+
+    def test_a_negative_wait_records_every_lock(self, tmp_path):
+        recorder, _, _ = _make_recorder(tmp_path, min_lock_seconds=-5)
+        assert recorder._min_lock_samples == 0
+
+    def test_the_cue_marks_the_lock_not_the_file_start(self, tmp_path):
+        """The seconds spent waiting are part of the event, and sit inside the file
+        ahead of the point it was decided to keep it."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_seconds=2)
+        _feed(pipeline, 3)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 2)
+        recorder.tick()
+        recorder.stop()
+        data = _wav_files(tmp_path)[0].read_bytes()
+        offset = data.index(b'cue ') + 12
+        assert struct.unpack('<I', data[offset + 4:offset + 8])[0] == 3 * CHUNK
+
+    def test_the_metadata_lead_in_excludes_the_wait(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_seconds=2)
+        _feed(pipeline, 3)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 2)
+        recorder.tick()
+        recorder.stop()
+        settings = wavmeta.read_settings(_wav_files(tmp_path)[0])
+        assert float(settings['lead_in_seconds']) == pytest.approx(3.0)
+
+    def test_the_length_cap_still_measures_from_the_lock(self, tmp_path):
+        """A cap of N seconds gives N seconds of event however long the wait was."""
+        recorder, pipeline, analyzer = _make_recorder(
+            tmp_path, min_lock_seconds=2, max_seconds=4)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 10)
+        recorder.tick()
+        recorder.stop()
+        assert _durations(tmp_path) == [5.0]        # 1 s lead-in + 4 s from the lock
+
+
 class TestOddSettings:
     """Settings that contradict each other, or that nobody meant to type.
 
@@ -1026,21 +1147,42 @@ class TestLockStateHandoff:
         recorder, _, analyzer = _make_recorder(tmp_path)
         analyzer.lock()
         analyzer.unlock()
-        assert recorder._consume_lock_state() is True
+        assert recorder._consume_lock_state()[0] is True
 
     def test_consuming_clears_the_sticky_flag(self, tmp_path):
         recorder, _, analyzer = _make_recorder(tmp_path)
         analyzer.lock()
         analyzer.unlock()
         recorder._consume_lock_state()
-        assert recorder._consume_lock_state() is False
+        assert recorder._consume_lock_state()[0] is False
 
     def test_a_standing_lock_survives_being_consumed(self, tmp_path):
-        """Only the sticky flag is consumed; a signal still present is still present."""
+        """Only the sticky flags are consumed; a signal still present is still present."""
         recorder, _, analyzer = _make_recorder(tmp_path)
         analyzer.lock()
         recorder._consume_lock_state()
-        assert recorder._consume_lock_state() is True
+        assert recorder._consume_lock_state()[0] is True
+
+    def test_reports_a_loss_that_came_and_went(self, tmp_path):
+        """The edge min_lock_seconds needs: without it a stream of blips is
+        indistinguishable from one unbroken lock, since no tick sees the gaps."""
+        recorder, _, analyzer = _make_recorder(tmp_path)
+        analyzer.lock()
+        analyzer.unlock()
+        analyzer.lock()
+        assert recorder._consume_lock_state() == (True, True)
+
+    def test_an_unbroken_lock_reports_no_loss(self, tmp_path):
+        recorder, _, analyzer = _make_recorder(tmp_path)
+        analyzer.lock()
+        assert recorder._consume_lock_state() == (True, False)
+
+    def test_consuming_clears_the_loss_flag(self, tmp_path):
+        recorder, _, analyzer = _make_recorder(tmp_path)
+        analyzer.lock()
+        analyzer.unlock()
+        recorder._consume_lock_state()
+        assert recorder._consume_lock_state()[1] is False
 
     def test_the_listener_waits_for_a_consume_in_progress(self, tmp_path):
         """The mutual exclusion the flags' own lock exists for.  It is held only across
