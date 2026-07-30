@@ -952,6 +952,67 @@ class TestMinimumSnr:
         assert _wav_files(tmp_path) == []       # loud enough, not yet long enough
 
 
+class TestSayingWhyItWaited:
+    """Why a recording started when it did is not recoverable from the file.
+
+    Working it back from the length took three wrong guesses and a measurement rig
+    the first time somebody asked, so the recorder now says so itself.
+    """
+
+    def test_a_prompt_start_says_nothing_about_waiting(self, tmp_path, caplog):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path)
+        _feed(pipeline, 2)
+        analyzer.lock()
+        with caplog.at_level('INFO'):
+            recorder.tick()
+        assert 'after the lock' not in caplog.text
+
+    def test_a_wait_for_the_clock_names_min_lock_seconds(self, tmp_path, caplog):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_seconds=2)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 3)
+        with caplog.at_level('INFO'):
+            recorder.tick()
+        assert 'waiting out min_lock_seconds' in caplog.text
+
+    def test_a_wait_for_the_level_names_min_lock_snr(self, tmp_path, caplog):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_snr=10.0)
+        analyzer.publish(2.0)
+        analyzer.lock()
+        for _ in range(EventRecorder.SNR_WINDOW):
+            _feed(pipeline, 1)
+            recorder.tick()
+        analyzer.publish(30.0)
+        with caplog.at_level('INFO'):
+            for _ in range(EventRecorder.SNR_WINDOW):
+                _feed(pipeline, 1)
+                recorder.tick()
+        assert 'waiting for the signal to reach min_lock_snr' in caplog.text
+
+    def test_the_delay_is_reported(self, tmp_path, caplog):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_seconds=2)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 3)
+        with caplog.at_level('INFO'):
+            recorder.tick()
+        assert 'started 3.0 s after the lock' in caplog.text
+
+    def test_a_stale_reason_is_not_carried_into_a_new_event(self, tmp_path, caplog):
+        """Acquiring a lock forgets it, so an event that starts promptly is never
+        described with the reason some earlier one did not."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path)
+        recorder._held_back_by = 'waiting out min_lock_seconds'     # left from before
+        _feed(pipeline, 2)
+        analyzer.lock()
+        with caplog.at_level('INFO'):
+            recorder.tick()
+        assert 'after the lock' not in caplog.text
+
+
 class TestOddSettings:
     """Settings that contradict each other, or that nobody meant to type.
 

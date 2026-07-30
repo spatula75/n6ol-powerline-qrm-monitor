@@ -268,6 +268,9 @@ class EventRecorder:
         self._tail = _EMPTY
         # Pipeline position when the current unbroken lock began, or None when there
         # is no lock to be timing.  See _lock_has_held.
+        # Which gate last held a recording back, for the opening log line to explain
+        # itself with; None once nothing is holding it.  See _not_yet.
+        self._held_back_by: str | None = None
         self._locked_since: int | None = None
         self._position = 0              # next unread sample position in the pipeline
         self._event_start = 0           # position where recording began (max_seconds origin)
@@ -506,6 +509,20 @@ class EventRecorder:
             else:
                 self._lock_lost = True
 
+    def _not_yet(self) -> str | None:
+        """Which gate is still holding a recording back, phrased for the log.
+
+        Recorded rather than inferred afterwards.  By the time a recording starts
+        both gates are satisfied and nothing in its state says which of them the
+        waiting was for — a question that has already cost three wrong guesses and a
+        measurement rig to answer from the outside.
+        """
+        if not self._lock_has_held():
+            return 'waiting out min_lock_seconds'
+        if not self._is_loud_enough():
+            return 'waiting for the signal to reach min_lock_snr'
+        return None
+
     def _lock_has_held(self) -> bool:
         """Whether the current lock has lasted long enough to be worth a file.
 
@@ -588,15 +605,24 @@ class EventRecorder:
             if not locked:
                 self._locked_since = None
                 self._recent_snr.clear()
+                self._held_back_by = None
                 self._await_relock = False
             else:
                 if lost or self._locked_since is None:
                     self._locked_since = self._pipeline.total_samples
                     self._recent_snr.clear()
+                    self._held_back_by = None
                 self._sample_snr()
-                if (self._armed and not self._await_relock
-                        and self._lock_has_held() and self._is_loud_enough()):
-                    self._begin()
+                if self._armed and not self._await_relock:
+                    # Remembered only while something is blocking.  Overwriting it on
+                    # the tick that finally starts would clear the answer just as the
+                    # question is asked, since nothing is blocking by then; acquiring
+                    # a lock is what clears it, above.
+                    blocking = self._not_yet()
+                    if blocking is None:
+                        self._begin()
+                    else:
+                        self._held_back_by = blocking
             return
 
         self._capture()
@@ -669,13 +695,22 @@ class EventRecorder:
         samples, end = self._clamp_to_cap(span.samples, span.end)
         self._last_lock = self._position = end
         self._write(samples)
-        # Say when a short lead-in is short because there was no more audio yet,
-        # rather than because of any setting.  A monitor that has just started has not
-        # filled its buffer, so an arc already buzzing when it did gets a shorter
-        # run-up than the same arc would an hour later — which reads as a bug.
-        note = ' — all the audio captured so far' if span.start == 0 else ''
-        logger.info('Recording %s (%.1f s lead-in%s)',
-                    self._path.name, self._lead_in / self._sample_rate, note)
+        # Both of the reasons a recording is not what the settings might suggest, said
+        # plainly, because neither is recoverable from the file afterwards.  A monitor
+        # that has just started has not filled its buffer, so an arc already buzzing
+        # when it did gets a shorter run-up than the same arc would an hour later —
+        # which reads as a bug.  And a start delayed by a gate is a number the
+        # operator would otherwise have to work back to from the length of the file.
+        notes = []
+        if span.start == 0:
+            notes.append('all the audio captured so far')
+        if self._held_back_by is not None:
+            notes.append(f'started {(span.end - locked_at) / self._sample_rate:.1f} s '
+                         f'after the lock, {self._held_back_by}')
+        logger.info('Recording %s (%.1f s lead-in%s)', self._path.name,
+                    self._lead_in / self._sample_rate,
+                    '; ' + '; '.join(notes) if notes else '')
+        self._held_back_by = None
 
     def _capture(self) -> None:
         """Write every sample captured since the previous poll, up to any length cap."""
