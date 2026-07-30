@@ -95,10 +95,10 @@ class RecordingConfig:
     directory: str = ''
     # How many of the next events to record before disarming.  0 records every
     # event until recording is switched off by hand.
-    max_events: int = 1
+    max_events: int = 10
     # Longest single recording in seconds, measured from the moment of lock; the
     # lead-in and trailer are extra.  0 records the event however long it runs.
-    max_seconds: float = 0.0
+    max_seconds: float = 120.0
     # Seconds without a lock before a recording is closed.  This audio is kept, so
     # the value also sets how much trailer every recording ends with.
     stop_after_seconds: float = 10.0

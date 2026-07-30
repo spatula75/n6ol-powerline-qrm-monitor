@@ -1,6 +1,7 @@
 """Tests for EventRecorder: lead-in, trailer, length cap, event budget, and filenames."""
 
 import re
+import struct
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -10,6 +11,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 import pytest
 
+from buzz import __version__, wavmeta
 from buzz.analyzer import AnalyzerState
 from buzz.config import BuzzConfig
 from buzz.playback import load_wav
@@ -52,9 +54,14 @@ def _make_config(tmp_path: Path, sample_rate: int = SAMPLE_RATE, **recording) ->
     config = BuzzConfig()
     config.audio.sample_rate = sample_rate
     config.station.timezone = 'America/Los_Angeles'
+    # An explicit baseline rather than whatever the shipped defaults happen to be:
+    # these tests count in chunks, and a default retuned for real 16 kHz audio lands
+    # somewhere entirely different at this rate.  Length capping is off here so that
+    # only the tests actually about the cap have to think about it.
     config.recording.directory = str(tmp_path)
     config.recording.enabled = True
     config.recording.max_events = 1
+    config.recording.max_seconds = 0.0
     config.recording.stop_after_seconds = 2.0
     for key, value in recording.items():
         setattr(config.recording, key, value)
@@ -406,6 +413,96 @@ class TestFades:
         recorder.stop()
         samples = load_wav(_wav_files(tmp_path)[0])[0]
         assert (samples[0], samples[-1]) == (0, 0)
+
+
+class TestMetadata:
+    def _record(self, tmp_path, ended='timeout', **recording):
+        """Record one event, ending it the way `ended` names."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, **recording)
+        _feed(pipeline, 2)
+        analyzer.lock()
+        recorder.tick()
+        if ended == 'timeout':
+            analyzer.unlock()
+            _feed(pipeline, 2)
+            recorder.tick()
+        elif ended == 'capped':
+            _feed(pipeline, 20)
+            recorder.tick()
+        elif ended == 'operator':
+            recorder.disarm()
+        else:
+            recorder.stop()
+        return _wav_files(tmp_path)[0]
+
+    def test_names_the_station(self, tmp_path):
+        info = wavmeta.read_info(self._record(tmp_path))
+        assert info['IART'] == BuzzConfig().station.callsign
+
+    def test_title_describes_the_recording(self, tmp_path):
+        info = wavmeta.read_info(self._record(tmp_path))
+        assert 'powerline QRM event' in info['INAM']
+
+    def test_records_the_software_version(self, tmp_path):
+        info = wavmeta.read_info(self._record(tmp_path))
+        assert info['ISFT'].endswith(__version__)
+
+    def test_creation_date_is_an_iso_timestamp_with_an_offset(self, tmp_path):
+        info = wavmeta.read_info(self._record(tmp_path))
+        assert datetime.fromisoformat(info['ICRD']).tzinfo is not None
+
+    def test_records_the_pulse_rate(self, tmp_path):
+        settings = wavmeta.read_settings(self._record(tmp_path))
+        assert settings['pulse_rate'] == str(BuzzConfig().audio.pulse_rate)
+
+    def test_records_the_sample_rate(self, tmp_path):
+        settings = wavmeta.read_settings(self._record(tmp_path))
+        assert settings['sample_rate'] == str(SAMPLE_RATE)
+
+    def test_records_the_level_calibration(self, tmp_path):
+        settings = wavmeta.read_settings(self._record(tmp_path))
+        expected = BuzzConfig().station.audio_rf_conversion_db
+        assert float(settings['audio_rf_conversion_db']) == pytest.approx(expected)
+
+    def test_records_the_lead_in_length(self, tmp_path):
+        settings = wavmeta.read_settings(self._record(tmp_path))
+        assert float(settings['lead_in_seconds']) == pytest.approx(2.0)
+
+    @pytest.mark.parametrize('ended', ['timeout', 'operator', 'shutdown'])
+    def test_records_why_the_recording_ended(self, tmp_path, ended):
+        settings = wavmeta.read_settings(self._record(tmp_path, ended))
+        assert settings['ended'] == ended
+
+    def test_a_capped_recording_says_so(self, tmp_path):
+        """The one thing metadata can say that the audio cannot: this event was cut
+        short by the length limit rather than having actually finished."""
+        settings = wavmeta.read_settings(self._record(tmp_path, 'capped', max_seconds=3.0))
+        assert settings['ended'] == 'capped'
+
+    def test_cue_marks_the_moment_of_lock(self, tmp_path):
+        path = self._record(tmp_path)
+        data = path.read_bytes()
+        offset = data.index(b'cue ') + 12                 # past id, size, and point count
+        position = struct.unpack('<I', data[offset + 4:offset + 8])[0]
+        assert position == 2 * CHUNK                      # the 2 s lead-in
+
+    def test_cue_is_labelled(self, tmp_path):
+        assert b'LOCK' in self._record(tmp_path).read_bytes()
+
+    def test_audio_is_unaffected_by_tagging(self, tmp_path):
+        samples = load_wav(self._record(tmp_path))[0]
+        assert len(samples) == 4 * CHUNK                  # 2 s lead-in + 2 s trailer
+
+    def test_a_failed_tagging_does_not_lose_the_recording(self, tmp_path):
+        with patch('buzz.recorder.wavmeta.append_metadata', side_effect=OSError('nope')):
+            path = self._record(tmp_path)
+        assert len(load_wav(path)[0]) == 4 * CHUNK
+
+    def test_a_failed_tagging_is_logged(self, tmp_path, caplog):
+        with patch('buzz.recorder.wavmeta.append_metadata', side_effect=OSError('nope')):
+            with caplog.at_level('ERROR'):
+                self._record(tmp_path)
+        assert 'Could not tag' in caplog.text
 
 
 class TestEventBudget:

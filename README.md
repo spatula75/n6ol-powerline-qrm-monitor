@@ -301,17 +301,19 @@ fade is a raised cosine and costs less than one pulse out of the 120 per second.
 
 ### Settings
 
-| Setting | Meaning |
-|---|---|
-| `enabled` | Arm recording at startup.  `--enable-recording` does the same for one run. |
-| `directory` | Where files are written.  Defaults to `recordings/` under the station path. |
-| `max_events` | How many of the next events to record before disarming.  `0` records every event. |
-| `max_seconds` | Cap on a single recording, timed from lock; lead-in and trailer are extra.  `0` is uncapped. |
-| `stop_after_seconds` | Silence before a recording is closed — and therefore how long the trailer is. |
+| Setting | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Arm recording at startup.  `--enable-recording` does the same for one run. |
+| `directory` | `recordings/` under the station path | Where files are written, and where `--playback` looks for a bare filename. |
+| `max_events` | `10` | How many of the next events to record before disarming.  `0` records every event. |
+| `max_seconds` | `120` | Cap on a single recording, timed from lock; lead-in and trailer are extra.  `0` is uncapped. |
+| `stop_after_seconds` | `10` | Silence before a recording is closed — and therefore how long the trailer is. |
 
 Recording disarms itself once `max_events` events have been captured, so the
-default of `1` catches the next event and then leaves the disk alone.  Pressing
-**Record** again starts a fresh count.
+defaults take the next ten events, at up to two minutes each, and then leave the
+disk alone.  Pressing **Record** again starts a fresh count.  A recording stopped
+by the length cap is not continued in a second file: the rest of that event is
+skipped, and the next event starts the next recording.
 
 Files are named for the moment of lock, in station local time with the UTC offset
 attached:
@@ -319,6 +321,28 @@ attached:
 ```
 event-20260729-143307-0700.wav
 ```
+
+### What the file remembers
+
+Recordings carry standard RIFF metadata, which any audio editor or tagger can
+read.  Tags name the station, the software version, and the moment of lock; a
+comment records the settings needed to interpret the audio; and a cue marker sits
+at the exact sample where the analyzer locked, so opening the file in an editor
+*shows* you where the lead-in ends and the event begins.
+
+```
+INAM  N6OL powerline QRM event 2026-07-29T14:33:07-07:00
+IART  N6OL
+ICRD  2026-07-29T14:33:07-07:00
+ISFT  n6ol-powerline-qrm-monitor 1.1.0
+ICMT  sample_rate=16000 pulse_rate=120 audio_rf_conversion_db=-32.0
+      lead_in_seconds=9.6 ended=timeout
+cue   sample 153600 → "LOCK"
+```
+
+`ended` is the one thing the audio itself cannot tell you: whether the recording
+stopped because the event finished (`timeout`), because the length cap cut it
+short (`capped`), or because you stopped it (`operator`, `shutdown`).
 
 ### Replaying a recording
 
@@ -329,6 +353,13 @@ python -m buzz.main --playback event-20260729-143307-0700.wav
 A bare filename is looked up in the recording directory; anything with a path in
 it is used as given.  Playback runs at the file's own sample rate, so the
 displays move at the speed the event actually happened.
+
+It also takes the pulse rate and level calibration from the file's metadata, so a
+recording measures the same wherever it is replayed — the sample rate is in the
+`.wav` header, but nothing else about how to read the audio is, and a 100 pps
+recording analysed as 120 pps simply never locks.  Any mismatch with your own
+config is logged.  A `.wav` from anywhere else still plays; it just warns that it
+is being analysed with your settings, which may not be the ones it was made with.
 
 Replay is analysis only.  No CSV rows, no plots, no uploads, and no recording —
 looking at an old event again must not add minutes to a day it did not happen on.

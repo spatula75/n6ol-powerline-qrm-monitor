@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 import buzz.main as main_module
 import numpy as np
 import pytest
+from buzz import wavmeta
 from buzz.config import BuzzConfig
 from buzz.main import (
     _start_collector, _wait_until_interrupted, configure_logging, make_weather_client,
@@ -290,7 +291,7 @@ class TestOpenPlaybackPipeline:
         with caplog.at_level(logging.WARNING, logger='buzz'):
             with open_playback_pipeline(cfg, 'event.wav'):
                 pass
-        assert 'not the configured 16000 Hz' in caplog.text
+        assert 'sample rate 8000' in caplog.text
 
     def test_missing_file_exits_with_a_message(self, tmp_path):
         cfg = BuzzConfig()
@@ -324,4 +325,91 @@ class TestOpenPlaybackPipeline:
         with caplog.at_level(logging.WARNING, logger='buzz'):
             with open_playback_pipeline(cfg, 'event.wav'):
                 pass
+        # This untagged file does warn about its missing metadata; the sample rate,
+        # which comes from the format header and matches, is not what it warns about.
+        assert 'sample rate' not in caplog.text
+
+
+class TestPlaybackAdoptsRecordedSettings:
+    """A recording measures the same wherever it is replayed: the settings that
+    decide what the numbers mean travel with the file, not with the machine."""
+
+    def _write_tagged(self, tmp_path, **settings):
+        path = tmp_path / 'event.wav'
+        with wave.open(str(path), 'wb') as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(16000)
+            wav.writeframes(np.zeros(1024, dtype='<i2').tobytes())
+        if settings:
+            wavmeta.append_metadata(path, {'ICMT': wavmeta.format_settings(settings)})
+        return path
+
+    def _play(self, tmp_path, cfg, **settings):
+        self._write_tagged(tmp_path, **settings)
+        cfg.recording.directory = str(tmp_path)
+        with open_playback_pipeline(cfg, 'event.wav'):
+            pass
+        return cfg
+
+    def test_pulse_rate_comes_from_the_file(self, tmp_path):
+        cfg = BuzzConfig()
+        cfg.audio.pulse_rate = 120
+        assert self._play(tmp_path, cfg, pulse_rate=100).audio.pulse_rate == 100
+
+    def test_level_calibration_comes_from_the_file(self, tmp_path):
+        cfg = BuzzConfig()
+        cfg.station.audio_rf_conversion_db = -32.0
+        cfg = self._play(tmp_path, cfg, audio_rf_conversion_db=-18.5)
+        assert cfg.station.audio_rf_conversion_db == pytest.approx(-18.5)
+
+    def test_mismatched_pulse_rate_warns(self, tmp_path, caplog):
+        cfg = BuzzConfig()
+        cfg.audio.pulse_rate = 120
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            self._play(tmp_path, cfg, pulse_rate=100)
+        assert 'pulse rate 100' in caplog.text
+
+    def test_matching_settings_do_not_warn(self, tmp_path, caplog):
+        cfg = BuzzConfig()
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            self._play(tmp_path, cfg,
+                       pulse_rate=cfg.audio.pulse_rate,
+                       audio_rf_conversion_db=cfg.station.audio_rf_conversion_db)
         assert caplog.text == ''
+
+    def test_untagged_file_keeps_the_local_config(self, tmp_path):
+        cfg = BuzzConfig()
+        cfg.audio.pulse_rate = 120
+        assert self._play(tmp_path, cfg).audio.pulse_rate == 120
+
+    def test_unparsable_setting_keeps_the_local_config(self, tmp_path):
+        cfg = BuzzConfig()
+        cfg.audio.pulse_rate = 120
+        assert self._play(tmp_path, cfg, pulse_rate='ninety').audio.pulse_rate == 120
+
+    def test_untagged_file_warns(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            self._play(tmp_path, BuzzConfig())
+        assert 'does not record its pulse rate or level calibration' in caplog.text
+
+    def test_warning_states_what_is_being_assumed(self, tmp_path, caplog):
+        cfg = BuzzConfig()
+        cfg.audio.pulse_rate = 100
+        cfg.station.audio_rf_conversion_db = -25.0
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            self._play(tmp_path, cfg)
+        assert '100 Hz' in caplog.text and '-25.0 dB' in caplog.text
+
+    def test_partially_tagged_file_warns_about_the_missing_setting(self, tmp_path, caplog):
+        cfg = BuzzConfig()
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            self._play(tmp_path, cfg, pulse_rate=cfg.audio.pulse_rate)
+        assert 'does not record its level calibration' in caplog.text
+
+    def test_unreadable_file_still_plays(self, tmp_path, caplog):
+        """A .wav from anywhere else is playable; it just cannot be trusted."""
+        cfg = BuzzConfig()
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            played = self._play(tmp_path, cfg, pulse_rate='ninety')
+        assert played.audio.pulse_rate == BuzzConfig().audio.pulse_rate

@@ -37,6 +37,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a click across the whole audio band rather than removing it. The recorder holds
   back a fade's worth of the newest audio so the fade-out can be applied to
   whichever samples turn out to be last, which is only known after the fact.
+- Recordings carry RIFF metadata (`buzz.wavmeta`): LIST/INFO tags naming the
+  station, software version and moment of lock, a comment holding the settings a
+  replay needs, and a labelled cue marker at the exact sample where the analyzer
+  locked, so an editor shows where the lead-in ends. The stdlib `wave` module has
+  no metadata API at all — `Wave_write.setmark()` raises — so the chunks are
+  appended after it closes the file, which is safe because a `.wav` is a chain of
+  independent chunks and the stdlib reader stops at `data`. Tagging can never fail
+  a recording: the audio is closed and safe before it is attempted.
+- `--playback` now adopts the pulse rate and level calibration recorded in the
+  file, as it already did the sample rate. These are the settings that decide what
+  a replay measures and none can be recovered from the audio: a 100 pps recording
+  analysed as 120 pps never locks, and a mismatched calibration reports the whole
+  event at the wrong absolute level. A file without them still plays, warning that
+  it is being analysed with the local configuration instead.
 - `--playback FILE` replays a recorded `.wav` through the whole live pipeline
   (`buzz.playback`), at the file's own sample rate, so an event can be analysed
   again at real speed for a screen recording. A bare filename resolves against the

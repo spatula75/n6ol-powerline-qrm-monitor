@@ -51,6 +51,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
+from buzz import __version__, wavmeta
 from buzz.analyzer import AnalyzerState, ContinuousAnalyzer
 from buzz.config import BuzzConfig
 from buzz.sampler import RingBufferPipeline
@@ -60,6 +61,14 @@ logger = logging.getLogger(__name__)
 _BYTES_PER_SAMPLE = 2   # 16-bit PCM, matching the int16 capture format end to end
 
 _EMPTY = np.empty(0, dtype=np.int16)
+
+# How each `ended` token written into a file's metadata reads in the log.  The two
+# tokens produced by a limit are described with that limit's value instead, by
+# _end_description.
+_END_DESCRIPTIONS = {
+    'operator': 'stopped by operator',
+    'shutdown': 'monitor shutting down',
+}
 
 
 @dataclass(frozen=True)
@@ -158,6 +167,12 @@ class EventRecorder:
         self._zone        = ZoneInfo(config.station.timezone)
         self._sample_rate = config.audio.sample_rate
         self._max_events  = recording.max_events
+        # Kept for the file's metadata.  The pulse rate and the dB calibration are
+        # the two settings a replay cannot recover from the audio itself, and getting
+        # either wrong changes what the replay measures — see wavmeta.
+        self._callsign         = config.station.callsign
+        self._pulse_rate       = config.audio.pulse_rate
+        self._rf_conversion_db = config.station.audio_rf_conversion_db
         # Both limits in samples, on the audio clock.  0 means uncapped length.
         self._max_samples     = round(recording.max_seconds * self._sample_rate)
         self._timeout_samples = round(recording.stop_after_seconds * self._sample_rate)
@@ -179,6 +194,8 @@ class EventRecorder:
         self._writer: wave.Wave_write | None = None
         self._path: Path | None = None
         self._frames_accepted = 0       # audio taken into the recording, tail included
+        self._lead_in = 0               # samples captured before the lock, i.e. the cue point
+        self._started_at: datetime | None = None    # wall-clock time of the lock
         # The most recent samples, held back from the file so the fade-out can be
         # applied to whichever ones turn out to be last.  See _write().
         self._tail = _EMPTY
@@ -214,7 +231,7 @@ class EventRecorder:
             self._thread.join(timeout=2.0)
         with self._lock:
             if self._writer is not None:
-                self._finish('monitor shutting down')
+                self._finish('shutdown')
 
     def arm(self) -> None:
         """Enable recording and refill the event budget."""
@@ -231,7 +248,7 @@ class EventRecorder:
         with self._lock:
             self._armed = False
             if self._writer is not None:
-                self._finish('stopped by operator')
+                self._finish('operator')
         logger.info('Recording disarmed')
 
     def toggle(self) -> bool:
@@ -312,9 +329,9 @@ class EventRecorder:
         if locked:
             self._last_lock = self._position
         if self._max_samples and self._position - self._event_start >= self._max_samples:
-            self._finish(f'reached the {self._max_samples / self._sample_rate:g} s limit')
+            self._finish('capped')
         elif self._position - self._last_lock >= self._timeout_samples:
-            self._finish(f'no lock for {self._timeout_samples / self._sample_rate:g} s')
+            self._finish('timeout')
 
         if self._writer is None:
             # A recording that just ended with the signal still present is a capped
@@ -342,10 +359,11 @@ class EventRecorder:
         # before the lock that the ring buffer has not yet discarded.
         span = self._pipeline.read_from(0)
         self._frames_accepted, self._tail = 0, _EMPTY
+        self._lead_in, self._started_at = len(span.samples), now
         self._event_start = self._last_lock = self._position = span.end
         self._write(span.samples)
         logger.info('Recording %s (%.1f s lead-in)',
-                    self._path.name, len(span.samples) / self._sample_rate)
+                    self._path.name, self._lead_in / self._sample_rate)
 
     def _capture(self) -> None:
         """Write every sample captured since the previous poll, up to any length cap."""
@@ -413,13 +431,61 @@ class EventRecorder:
     def _emit(self, samples: np.ndarray) -> None:
         self._writer.writeframes(samples.astype('<i2', copy=False).tobytes())
 
-    def _finish(self, reason: str) -> None:
-        """Close the current file, count the event, and disarm if the budget is spent."""
+    def _end_description(self, ended: str) -> str:
+        """The log's version of an `ended` token, with the limit that produced it."""
+        if ended == 'timeout':
+            return f'no lock for {self._timeout_samples / self._sample_rate:g} s'
+        if ended == 'capped':
+            return f'reached the {self._max_samples / self._sample_rate:g} s limit'
+        return _END_DESCRIPTIONS.get(ended, ended)
+
+    def _write_metadata(self, ended: str) -> None:
+        """Tag the finished file with what it is and how to read it back.
+
+        Never allowed to fail the recording.  The audio is closed and safe by this
+        point, and an untagged recording is still a perfectly good one — losing it
+        over a metadata write would be a poor trade.
+        """
+        settings = wavmeta.format_settings({
+            'sample_rate': self._sample_rate,
+            'pulse_rate': self._pulse_rate,
+            'audio_rf_conversion_db': self._rf_conversion_db,
+            'lead_in_seconds': round(self._lead_in / self._sample_rate, 2),
+            'ended': ended,
+        })
+        started = self._started_at.replace(microsecond=0).isoformat()
+        try:
+            wavmeta.append_metadata(
+                self._path,
+                {
+                    'INAM': f'{self._callsign} powerline QRM event {started}',
+                    'IART': self._callsign,
+                    # Nominally a date; the full timestamp is more use and is widely
+                    # accepted, and it carries the offset the filename also records.
+                    'ICRD': started,
+                    'ISFT': f'n6ol-powerline-qrm-monitor {__version__}',
+                    'ICMT': settings,
+                },
+                {self._lead_in: 'LOCK'},
+            )
+        except OSError:
+            logger.exception('Could not tag %s — the audio itself is unaffected.',
+                             self._path.name)
+
+    def _finish(self, ended: str) -> None:
+        """Close the current file, tag it, count the event, and disarm if spent.
+
+        `ended` is a short token naming why the recording stopped; it is written into
+        the file's metadata, where it is the only way to tell a recording that ran its
+        course from one the length cap cut short.
+        """
         self._flush_tail()
         self._writer.close()
+        self._writer = None
+        self._write_metadata(ended)
         logger.info('Recorded %s — %.1f s (%s)', self._path.name,
-                    self._frames_accepted / self._sample_rate, reason)
-        self._writer, self._path, self._frames_accepted = None, None, 0
+                    self._frames_accepted / self._sample_rate, self._end_description(ended))
+        self._path, self._frames_accepted = None, 0
         self._await_relock = True
 
         if self._events_remaining is None:

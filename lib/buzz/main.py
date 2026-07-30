@@ -31,7 +31,9 @@ import signal
 import sys
 import threading
 import wave
+from typing import TypeVar
 
+from buzz import wavmeta
 from buzz.analyzer import ContinuousAnalyzer
 from buzz.collector import Collector
 from buzz.config import CONFIG_PATH, BuzzConfig
@@ -52,6 +54,8 @@ faulthandler.enable()
 
 ROOT_PACKAGE = 'buzz'
 logger = logging.getLogger(__name__)
+
+_T = TypeVar('_T')
 
 
 def configure_logging() -> None:
@@ -111,13 +115,34 @@ def make_weather_client(config: BuzzConfig) -> WeatherClient:
     return NullWeatherClient()
 
 
-def open_playback_pipeline(config: BuzzConfig, name: str) -> FilePlaybackPipeline:
-    """Open a .wav as the audio source, reconciling the sample rate with the config.
+def _adopt(name: str, filename: str, configured: _T, recorded: _T | None) -> _T:
+    """Prefer a value the recording carries over the configured one, saying so.
 
-    A recording carries its own sample rate, and the analyzer derives its pulse
-    spacing from the configured one.  Trusting the file is the only correct choice:
-    the alternative resamples nothing and merely mislabels the audio, putting the
-    pulse grid at the wrong spacing and quietly costing several dB of measured level.
+    Silence would be the dangerous option: every one of these changes what the replay
+    measures, and a difference the operator never sees is a difference they will
+    read straight off the display as a real one.
+    """
+    if recorded is None or recorded == configured:
+        return configured
+    logger.warning('%s was recorded with %s %s rather than the configured %s — '
+                   'using the value from the file.', filename, name, recorded, configured)
+    return recorded
+
+
+def open_playback_pipeline(config: BuzzConfig, name: str) -> FilePlaybackPipeline:
+    """Open a .wav as the audio source, taking its recorded settings over the config.
+
+    Three settings decide what the analysis of a replayed file means, and none can be
+    recovered from the audio: the sample rate (from the format header), the grid's
+    pulse rate, and the dB calibration between audio amplitude and level at the
+    receiver (both from the file's metadata — see buzz.wavmeta).
+
+    Trusting the file is the only correct choice for all three.  A mismatched sample
+    rate resamples nothing and merely mislabels the audio, putting the pulse grid at
+    the wrong spacing and quietly costing several dB; a mismatched pulse rate looks
+    for a 120 pps train in a 100 pps recording and finds nothing; a mismatched
+    calibration reports the whole event at the wrong absolute level.  A recording
+    should measure the same wherever it is replayed.
 
     A file that cannot be played exits with a one-line message rather than a
     traceback: a mistyped filename is an ordinary thing to do from a command line,
@@ -128,11 +153,30 @@ def open_playback_pipeline(config: BuzzConfig, name: str) -> FilePlaybackPipelin
         pipeline = FilePlaybackPipeline(path)
     except (OSError, wave.Error, ValueError) as exc:
         raise SystemExit(f'Cannot play back {path}: {exc}') from exc
-    if pipeline.sample_rate != config.audio.sample_rate:
-        logger.warning('%s was recorded at %d Hz, not the configured %d Hz — '
-                       'analysing at the rate in the file.',
-                       path.name, pipeline.sample_rate, config.audio.sample_rate)
-        config.audio.sample_rate = pipeline.sample_rate
+
+    settings = wavmeta.read_settings(path)
+    pulse_rate = wavmeta.setting(settings, 'pulse_rate', int)
+    calibration = wavmeta.setting(settings, 'audio_rf_conversion_db', float)
+
+    audio, station = config.audio, config.station
+    audio.sample_rate = _adopt(
+        'sample rate', path.name, audio.sample_rate, pipeline.sample_rate)
+    audio.pulse_rate = _adopt('pulse rate', path.name, audio.pulse_rate, pulse_rate)
+    station.audio_rf_conversion_db = _adopt(
+        'level calibration', path.name, station.audio_rf_conversion_db, calibration)
+
+    # Any .wav plays, including one this monitor never made.  It just cannot be
+    # analysed with any authority, and the operator is the only one who can judge
+    # whether that matters — so say what is being assumed rather than fall back
+    # silently and let a plausible-looking dBm reading speak for itself.
+    missing = [name for name, value in (('pulse rate', pulse_rate),
+                                        ('level calibration', calibration)) if value is None]
+    if missing:
+        logger.warning('%s does not record its %s — analysing with the configured '
+                       'pulse rate of %d Hz and calibration of %.1f dB, which may not '
+                       'be what it was recorded with.',
+                       path.name, ' or '.join(missing),
+                       audio.pulse_rate, station.audio_rf_conversion_db)
     return pipeline
 
 
