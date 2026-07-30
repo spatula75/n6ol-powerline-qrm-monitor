@@ -51,6 +51,7 @@ import logging
 import threading
 import time
 import wave
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -206,7 +207,7 @@ class EventRecorder:
         # configuration mistake, and the moment to find out about one is while the
         # operator is still watching the console — not at the end of an unattended
         # day, from an empty folder that explains nothing about why it is empty.
-        self._armed = recording.enabled and self._ensure_directory()
+        self._armed = recording.enabled and self._can_record()
         self._events_remaining = self._initial_budget()
         # Monotonic deadline for the next budget reset, or None when no cycle is
         # running.  Set whenever the budget is filled, which is what makes the cycle
@@ -272,7 +273,7 @@ class EventRecorder:
         Re-checks the directory, so this is also how an operator retries after fixing
         a bad path: arming is refused, loudly, while there is nowhere to record to.
         """
-        if not self._ensure_directory():
+        if not self._can_record():
             return
         with self._lock:
             self._fill_budget()
@@ -329,6 +330,20 @@ class EventRecorder:
             self._tick()
 
     # ----------------------------------------------------------------- internal
+
+    def _can_record(self) -> bool:
+        """Whether recording is possible at all, before anything is armed.
+
+        The sample rate is checked because every duration here is derived by dividing
+        by it, and because wave refuses to write a file without a valid one — a check
+        at the point of arming turns what would otherwise be a failure per poll, plus
+        a stray file for each, into one message and a recorder that stays off.
+        """
+        if self._sample_rate <= 0:
+            logger.error('Cannot record at a sample rate of %s — check sample_rate in '
+                         'the [audio] section of the config.', self._sample_rate)
+            return False
+        return self._ensure_directory()
 
     def _ensure_directory(self) -> bool:
         """Create the recording directory if needed; report whether it is usable.
@@ -446,17 +461,29 @@ class EventRecorder:
         """Open a file for a newly locked event and write everything buffered so far."""
         now = datetime.now(self._zone)
         path = self._directory / event_filename(now)
+        writer = None
         try:
             self._directory.mkdir(parents=True, exist_ok=True)
             self._path = unique_path(path)
-            self._writer = wave.open(str(self._path), 'wb')
-            self._writer.setnchannels(1)
-            self._writer.setsampwidth(_BYTES_PER_SAMPLE)
-            self._writer.setframerate(self._sample_rate)
-        except OSError:
+            writer = wave.open(str(self._path), 'wb')
+            writer.setnchannels(1)
+            writer.setsampwidth(_BYTES_PER_SAMPLE)
+            writer.setframerate(self._sample_rate)
+        except Exception:
+            # Any failure, not just OSError: wave rejects a bad frame rate with its
+            # own exception, and an escape from here would leave a half-configured
+            # writer in place for the next tick to trip over — and drop a stray file
+            # per poll for as long as the signal lasts.  Built into a local and only
+            # published on success, so a failure cannot leave one half-installed.
             logger.exception('Cannot start recording in %s — disarming.', self._directory)
+            if writer is not None:
+                # Closing a writer that never got its header settings raises in turn,
+                # and the reason we are here is already logged.
+                with suppress(Exception):
+                    writer.close()
             self._writer, self._path, self._armed = None, None, False
             return
+        self._writer = writer
 
         # Position 0 reads the whole buffer, which is the lead-in: audio captured
         # before the lock that the ring buffer has not yet discarded.
@@ -480,7 +507,11 @@ class EventRecorder:
             # than however far past the cap this poll happened to land.
             limit = self._event_start + self._max_samples
             if end > limit:
-                samples, end = samples[:len(samples) - (end - limit)], limit
+                # max(0) because the span can begin past the cap outright: a thread
+                # stalled longer than the ring buffer holds — a suspend and resume —
+                # comes back to find the oldest surviving sample already beyond it.
+                # A bare negative index would silently trim from the wrong end.
+                samples, end = samples[:max(0, len(samples) - (end - limit))], limit
         self._write(samples)
         self._position = end
 

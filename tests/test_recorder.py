@@ -196,6 +196,49 @@ class TestRecordingDirectory:
             tmp_path, directory=str(self._blocked(tmp_path)), rearm_reset_minutes=1440)
         assert recorder.status().rearm_in_seconds is None
 
+    def test_an_impossible_sample_rate_starts_disarmed(self, tmp_path):
+        """Every duration here is derived by dividing by the sample rate, and wave
+        will not write a file without a valid one."""
+        recorder, _, _ = _make_recorder(tmp_path, sample_rate=0)
+        assert recorder.status().armed is False
+
+    def test_an_impossible_sample_rate_refuses_to_arm(self, tmp_path):
+        recorder, _, _ = _make_recorder(tmp_path, sample_rate=0)
+        recorder.arm()
+        assert recorder.status().armed is False
+
+    def test_an_impossible_sample_rate_is_reported(self, tmp_path, caplog):
+        with caplog.at_level('ERROR'):
+            _make_recorder(tmp_path, sample_rate=0)
+        assert 'sample rate' in caplog.text
+
+    def test_an_impossible_sample_rate_records_nothing(self, tmp_path):
+        """Rather than failing once per poll and leaving a stray file behind each time."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, sample_rate=0)
+        _feed(pipeline, 2)
+        analyzer.lock()
+        for _ in range(3):
+            recorder.tick()
+        assert _wav_files(tmp_path) == []
+
+    def test_a_writer_that_cannot_be_configured_leaves_nothing_open(self, tmp_path):
+        """A failure part-way through opening must not publish a half-built writer
+        for the next tick to trip over."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        with patch('buzz.recorder.wave.open', side_effect=RuntimeError('bad frame rate')):
+            recorder.tick()
+        assert recorder.status().recording is False
+
+    def test_a_writer_that_cannot_be_configured_disarms(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        with patch('buzz.recorder.wave.open', side_effect=RuntimeError('bad frame rate')):
+            recorder.tick()
+        assert recorder.status().armed is False
+
     def test_arming_succeeds_once_the_path_is_fixed(self, tmp_path):
         blocked = self._blocked(tmp_path)
         recorder, _, _ = _make_recorder(tmp_path, directory=str(blocked))

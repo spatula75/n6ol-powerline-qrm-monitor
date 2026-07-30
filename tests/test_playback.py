@@ -1,5 +1,6 @@
 """Tests for .wav loading, path resolution, and the file-backed playback pipeline."""
 
+import threading
 import time
 import wave
 from pathlib import Path
@@ -275,7 +276,13 @@ class TestTransport:
     def test_pausing_does_not_spin(self, tmp_path):
         """The feeder blocks on its condition rather than polling.  Measured as CPU
         time, because a spin loop looks identical to a blocked thread from outside
-        until you ask how much of a core it is eating."""
+        until you ask how much of a core it is eating.
+
+        process_time() counts every thread in the process, so this reads as near zero
+        only because nothing else here is working while it sleeps.  Running the suite
+        in parallel — pytest-xdist and friends — would make it measure the machine
+        rather than the feeder.
+        """
         with self._slow(tmp_path) as pipeline:
             pipeline.pause()
             time.sleep(0.05)
@@ -478,6 +485,22 @@ class TestAudioOutput:
                 pipeline.restart()
                 time.sleep(0.05)
         stream.assert_not_called()
+
+    def test_a_stuck_feeder_keeps_its_stream(self, tmp_path):
+        """close() joins with a timeout, so a feeder blocked in write() on a device
+        that stopped draining outlives it.  Closing the stream from under that write
+        is undefined behaviour; leaking it on a misbehaving device is the lesser
+        evil, and the process is on its way out regardless."""
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            stuck = threading.Event()
+            stream.return_value.write.side_effect = lambda _: stuck.wait()
+            pipeline = self._pipeline(tmp_path, muted=False)
+            time.sleep(0.15)
+            pipeline.close()
+            still_running = pipeline._thread.is_alive()
+            stuck.set()                     # let the feeder go before the test ends
+        assert still_running is True
+        stream.return_value.close.assert_not_called()
 
     def test_close_releases_the_stream(self, tmp_path):
         with patch('buzz.playback.sd.OutputStream') as stream:

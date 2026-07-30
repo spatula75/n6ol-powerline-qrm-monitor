@@ -382,6 +382,14 @@ class FilePlaybackPipeline(RingBufferPipeline):
             self._state.notify_all()
         if self._started:
             self._thread.join(timeout=1.0)
-        # After the join, so the feeder is no longer writing to it.
-        if self._output is not None:
+        # Only once the feeder has actually stopped.  The join above has a timeout,
+        # and a feeder still blocked inside write() on a device that stopped draining
+        # — one unplugged mid-replay — would outlive it; closing the stream from
+        # under that write is the undefined behaviour the rest of this class takes
+        # care to avoid.  Leaking a stream on a device that is already misbehaving is
+        # the better of the two outcomes, and the process is on its way out anyway.
+        if self._output is not None and not self._thread.is_alive():
             self._close_output()
+        elif self._output is not None:
+            logger.warning('Playback feeder did not stop; leaving the audio output '
+                           'open rather than closing it mid-write.')
