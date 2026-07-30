@@ -46,6 +46,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rather than the day's data. Arming re-checks, so fixing the path and pressing
   Record retries. Opening a file still copes with a directory that disappears
   mid-run, which no startup check can cover.
+- Each recording's length is now accounted for in the log when it closes — total,
+  lead-in, and seconds from the lock — because the total is not a number any
+  setting names: `max_seconds` measures the event and the lead-in and trailer sit
+  outside it, so a file is always somewhat longer than the cap. A lead-in cut short
+  because the monitor had not yet filled its buffer says so too, rather than
+  looking like a setting nobody chose. The documentation now states plainly that
+  `max_seconds` buys that many seconds of actual 120 pps noise rather than that
+  many seconds of file.
 - `min_lock_seconds` holds a recording off until the interference has been present
   that long, so a night of two-second blips no longer fills the directory with
   files too short to be worth replaying — or spends the event budget on them. A

@@ -116,8 +116,13 @@ max_events = 10
 # it back on.  Switching it off by hand always cancels the cycle too.
 rearm_reset_minutes = 0
 
-# Longest single recording in seconds, timed from the moment of lock — the
-# lead-in and trailer are extra.  0 records the whole event however long it runs.
+# How much of the interference to record, in seconds, timed from the moment of
+# lock.  This measures the event, not the file: you get this many seconds of actual
+# 120 pps noise, and the lead-in before it and the trailer after it are extra, so
+# the .wav on disk is always somewhat longer than the number set here.  Set it by
+# how much of the noise is worth studying rather than by how big the files should
+# be.  0 records the whole event however long it runs.
+#
 # A capped recording does not roll over into a second file: the rest of that
 # event is skipped, and the next event starts the next file.
 #

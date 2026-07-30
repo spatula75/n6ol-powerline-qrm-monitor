@@ -312,7 +312,7 @@ fade is a raised cosine and costs less than one pulse out of the 120 per second.
 | `directory` | `recordings/` under the station path | Where files are written, and where `--playback` looks for a bare filename.  Created at startup if missing. |
 | `max_events` | `10` | How many of the next events to record before disarming.  `0` records every event. |
 | `rearm_reset_minutes` | `0` | Minutes between resets of that budget.  `0` never re-arms. |
-| `max_seconds` | `120` | Cap on a single recording, timed from lock; lead-in and trailer are extra.  `0` is uncapped. |
+| `max_seconds` | `120` | How much 120 pps noise to record, timed from the lock.  The file is always longer — lead-in and trailer sit outside it.  `0` is uncapped. |
 | `stop_after_seconds` | `10` | Silence before a recording is closed — and therefore how long the trailer is. |
 | `min_lock_seconds` | `0` | How long the signal must hold before a recording starts.  Keep it to 5 s or less. |
 
@@ -408,6 +408,33 @@ cue   sample 153600 → "LOCK"
 `ended` is the one thing the audio itself cannot tell you: whether the recording
 stopped because the event finished (`timeout`), because the length cap cut it
 short (`capped`), or because you stopped it (`operator`, `shutdown`).
+
+### How long a file ends up
+
+**Always somewhat longer than `max_seconds`.**  That setting measures the event,
+not the file: it is how much actual 120 pps noise you get, timed from the lock.
+The lead-in and the trailer sit outside it.
+
+```
+file length  =  lead-in  +  event (up to max_seconds)  +  trailer
+```
+
+So `max_seconds = 10` with a full buffer and no wait gives 10 s of pulse train
+inside a 9.6 + 10 = 19.6 s file, plus whatever trailer the timeout adds.  Set it by
+how much of the noise you want to study, not by how big you want the files.
+
+The log spells the sum out when each recording closes, because the total is not a
+number any setting names:
+
+```
+Recorded event-20260730-080714-0700.wav — 12.6 s: 2.6 s lead-in + 10.0 s from the
+lock (reached the 10 s limit)
+```
+
+A lead-in shorter than expected usually means the monitor had not been running
+long enough to fill its buffer — an arc already buzzing at startup is locked onto
+within a second or two, well before there is a full run-up to keep.  The log says
+so when that is the reason.
 
 ### Replaying a recording
 

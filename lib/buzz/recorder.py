@@ -578,8 +578,13 @@ class EventRecorder:
         samples, end = self._clamp_to_cap(span.samples, span.end)
         self._last_lock = self._position = end
         self._write(samples)
-        logger.info('Recording %s (%.1f s lead-in)',
-                    self._path.name, self._lead_in / self._sample_rate)
+        # Say when a short lead-in is short because there was no more audio yet,
+        # rather than because of any setting.  A monitor that has just started has not
+        # filled its buffer, so an arc already buzzing when it did gets a shorter
+        # run-up than the same arc would an hour later — which reads as a bug.
+        note = ' — all the audio captured so far' if span.start == 0 else ''
+        logger.info('Recording %s (%.1f s lead-in%s)',
+                    self._path.name, self._lead_in / self._sample_rate, note)
 
     def _capture(self) -> None:
         """Write every sample captured since the previous poll, up to any length cap."""
@@ -711,8 +716,16 @@ class EventRecorder:
         self._writer.close()
         self._writer = None
         self._write_metadata(ended)
-        logger.info('Recorded %s — %.1f s (%s)', self._path.name,
-                    self._frames_accepted / self._sample_rate, self._end_description(ended))
+        # Broken down, because the total is not the number any setting names and
+        # working out why takes knowing that max_seconds runs from the lock while the
+        # lead-in sits outside it — which is a lot to ask of somebody reading a log at
+        # the end of a night.
+        logger.info('Recorded %s — %.1f s: %.1f s lead-in + %.1f s from the lock (%s)',
+                    self._path.name,
+                    self._frames_accepted / self._sample_rate,
+                    self._lead_in / self._sample_rate,
+                    (self._frames_accepted - self._lead_in) / self._sample_rate,
+                    self._end_description(ended))
         self._path, self._frames_accepted = None, 0
         self._await_relock = True
 
