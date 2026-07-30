@@ -1,6 +1,7 @@
 """Tests for buzz.main: configure_logging(), weather client factory, playback wiring,
 and headless wait."""
 import logging
+import time
 import wave
 from unittest.mock import MagicMock, patch
 
@@ -10,8 +11,8 @@ import pytest
 from buzz import wavmeta
 from buzz.config import BuzzConfig
 from buzz.main import (
-    _start_collector, _wait_until_interrupted, configure_logging, make_weather_client,
-    open_playback_pipeline,
+    _start_collector, _start_playback, _wait_until_interrupted, configure_logging,
+    make_weather_client, open_playback_pipeline,
 )
 from buzz.weather import CumulusMXWeatherClient, NullWeatherClient, OpenMeteoWeatherClient
 
@@ -219,6 +220,36 @@ class TestPlaybackWritesNothing:
     def test_live_run_reads_no_playback_file(self, tmp_path):
         playback, _, _, _ = self._run_main([], tmp_path)
         playback.assert_not_called()
+
+
+class TestPlaybackStartsWithTheDisplay:
+    def _write_wav(self, path, sample_rate=16000, n=1024):
+        with wave.open(str(path), 'wb') as wav:
+            wav.setnchannels(1)
+            wav.setsampwidth(2)
+            wav.setframerate(sample_rate)
+            wav.writeframes(np.zeros(n, dtype='<i2').tobytes())
+        return path
+
+    def test_opening_a_file_does_not_start_it(self, tmp_path):
+        """Audio started at open time plays before the window exists, and breaks up
+        while widget construction holds the GIL away from the feeder."""
+        self._write_wav(tmp_path / 'event.wav')
+        cfg = BuzzConfig()
+        cfg.recording.directory = str(tmp_path)
+        with open_playback_pipeline(cfg, 'event.wav') as pipeline:
+            time.sleep(0.05)
+            assert pipeline.total_samples == 0
+
+    def test_headless_starts_playback(self, tmp_path):
+        pipeline = MagicMock()
+        _start_playback(pipeline, 'event.wav')
+        pipeline.start.assert_called_once()
+
+    def test_live_audio_has_nothing_to_start(self, tmp_path):
+        pipeline = MagicMock()
+        _start_playback(pipeline, None)
+        pipeline.start.assert_not_called()
 
 
 class TestStartCollector:

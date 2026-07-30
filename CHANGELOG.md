@@ -70,6 +70,36 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   analysed as 120 pps never locks, and a mismatched calibration reports the whole
   event at the wrong absolute level. A file without them still plays, warning that
   it is being analysed with the local configuration instead.
+- Playback starts with the window rather than with the process. Opening a file no
+  longer starts it playing; `main` does that from the first pass of the Qt event
+  loop, once the window is up. Audio started at construction was heard before there
+  was anything to see it in, and then broke up — the feeder was competing for the
+  GIL with widget construction, so the sound card ran dry and the replay opened
+  with a stutter that was not in the recording.
+- `--playback-gain DB` turns a quiet replay up for the speakers and for nothing
+  else. Powerline noise is typically recorded around −24 to −34 dBFS, which is hard
+  to hear on a laptop; the gain is applied to the copy on its way to the sound card,
+  so it cannot move a dB of what the analyzer measures or the meters read. Asking
+  for more than the headroom allows clips at the int16 rails and distorts, which is
+  what turning something up too far should do — the clamp is there because int16
+  *wraps* on overflow, and without it a passage a few dB too loud would come back as
+  noise rather than as a loud passage.
+- Playback can be heard: unmuting sends the audio to the default output device, so
+  an event can be listened to while it is watched. `--mute` starts silent, `M` and
+  a toolbar button toggle it, and the button greys out with a reason on a machine
+  with no usable output. Muting is the absence of an output stream rather than a
+  volume of zero, so silent replay runs exactly the code that ran before playback
+  could be heard — no device is opened, and the monotonic deadline paces it as
+  before. Whichever exists is the clock: with a stream open the sound card decides
+  when the next chunk is wanted, which is what keeps audio and display together
+  without a second clock to drift against. Both transitions re-base the schedule,
+  since an origin left over from before a stream opened is minutes in the past and
+  would send the loop racing through the rest of the file to catch up. Restart
+  discards audio already queued to the card, which would otherwise play out the
+  abandoned pass after the click and leave every later chunk trailing the display
+  by an output buffer. The stream is opened, flushed and closed on the feeder
+  thread, never from the Qt thread, since closing one mid-write is undefined
+  behaviour in PortAudio.
 - Restarting playback resets the analyzer, so the second pass is a cold start
   rather than one that opens already locked at a drift rate learned from the pass
   before — watching the monitor acquire a signal is usually the point of replaying

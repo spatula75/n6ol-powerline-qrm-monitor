@@ -277,6 +277,20 @@ def format_playback_button(paused: bool, finished: bool) -> tuple[str, str, bool
     return 'Pause', 'Pause playback (Space)', True
 
 
+def format_mute_button(muted: bool, available: bool) -> tuple[str, str, bool]:
+    """(label, tooltip, enabled) for the playback mute button.
+
+    Named for the action, like the rest of the transport.  Disabled with a reason
+    when the machine has nothing to play through, rather than offered as a control
+    that quietly does nothing when clicked.
+    """
+    if not available:
+        return 'Unmute', 'No audio output device available for this recording', False
+    if muted:
+        return 'Unmute', 'Play the audio through the speakers (M)', True
+    return 'Mute', 'Silence the audio; playback continues (M)', True
+
+
 def format_record_button(status: RecorderStatus | None) -> tuple[str, str]:
     """The record button's (label, tooltip) for the recorder's current state.
 
@@ -690,9 +704,11 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
         layout.setContentsMargins(6, 2, 6, 2)
         layout.setSpacing(10)
         self._record = self._play = self._restart = None
+        self._mute = None
         if playback is not None:
             self._play = self._add_button(layout, 'Pause', self.toggle_play)
             self._restart = self._add_button(layout, 'Restart', self.restart)
+            self._mute = self._add_button(layout, 'Unmute', self.toggle_mute)
         else:
             self._record = self._add_button(layout, 'Record', self.toggle, checkable=True)
             self._record.setEnabled(recorder is not None)
@@ -724,6 +740,12 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
         """Pause or resume playback (button click, or the space bar)."""
         if self._playback is not None:
             self._playback.toggle_pause()
+            self._tick()
+
+    def toggle_mute(self) -> None:
+        """Switch the playback audio on or off (button click, or the M key)."""
+        if self._playback is not None and self._playback.output_available:
+            self._playback.toggle_mute()
             self._tick()
 
     def restart(self) -> None:
@@ -760,6 +782,11 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
         self._play.setText(label)
         self._play.setToolTip(tooltip)
         self._play.setEnabled(enabled)
+        label, tooltip, enabled = format_mute_button(
+            self._playback.muted, self._playback.output_available)
+        self._mute.setText(label)
+        self._mute.setToolTip(tooltip)
+        self._mute.setEnabled(enabled)
 
     def _tick_recorder(self) -> None:
         status = self._recorder.status() if self._recorder is not None else None
@@ -842,7 +869,7 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
                           _BAR_H + _PANEL_GAP + _WINDOW_H)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        """A toggles the scope's display mode; R records; Space pauses playback.
+        """A toggles the scope's display mode; R records; Space and M drive playback.
 
         Space matters more than it looks during a screen recording: pausing on an
         interesting moment without the mouse travelling across the captured window
@@ -854,6 +881,8 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
             self._bar.toggle()
         elif event.key() == Qt.Key.Key_Space:
             self._bar.toggle_play()
+        elif event.key() == Qt.Key.Key_M:
+            self._bar.toggle_mute()
         else:
             super().keyPressEvent(event)
 

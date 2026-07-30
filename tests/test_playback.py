@@ -3,11 +3,14 @@
 import time
 import wave
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
 
-from buzz.playback import FilePlaybackPipeline, load_wav, resolve_playback_path
+from buzz.playback import (
+    FilePlaybackPipeline, apply_gain, load_wav, resolve_playback_path,
+)
 from buzz.sampler import RingBufferPipeline
 
 CHUNK = RingBufferPipeline.CHUNK_SIZE
@@ -31,6 +34,17 @@ def _write_wav(path: Path, samples: np.ndarray, sample_rate: int = FAST_RATE,
 def _ramp(n_chunks: int) -> np.ndarray:
     """n_chunks worth of samples whose values are their own index."""
     return np.arange(n_chunks * CHUNK, dtype=np.int16)
+
+
+def _playing(path, **kwargs) -> FilePlaybackPipeline:
+    """A pipeline that has been told to play, which is the only way one is used.
+
+    Opening a file no longer starts it: the display has to exist first.  Tests want
+    the started state almost everywhere, so they say so once, here.
+    """
+    pipeline = FilePlaybackPipeline(path, **kwargs)
+    pipeline.start()
+    return pipeline
 
 
 def _wait_for_finish(pipeline: FilePlaybackPipeline, timeout: float = 5.0) -> bool:
@@ -92,42 +106,42 @@ class TestResolvePlaybackPath:
 class TestFilePlaybackPipeline:
     def test_exposes_the_files_sample_rate(self, tmp_path):
         path = _write_wav(tmp_path / 'a.wav', _ramp(2), sample_rate=16000)
-        with FilePlaybackPipeline(path) as pipeline:
+        with _playing(path) as pipeline:
             assert pipeline.sample_rate == 16000
 
     def test_exposes_the_files_duration(self, tmp_path):
         path = _write_wav(tmp_path / 'a.wav', np.zeros(8000, dtype=np.int16),
                           sample_rate=16000)
-        with FilePlaybackPipeline(path) as pipeline:
+        with _playing(path) as pipeline:
             assert pipeline.duration == pytest.approx(0.5)
 
     def test_feeds_the_whole_file(self, tmp_path):
         path = _write_wav(tmp_path / 'a.wav', _ramp(4))
-        with FilePlaybackPipeline(path) as pipeline:
+        with _playing(path) as pipeline:
             assert _wait_for_finish(pipeline)
             assert pipeline.total_samples == 4 * CHUNK
 
     def test_audio_arrives_in_order(self, tmp_path):
         path = _write_wav(tmp_path / 'a.wav', _ramp(3))
-        with FilePlaybackPipeline(path) as pipeline:
+        with _playing(path) as pipeline:
             _wait_for_finish(pipeline)
             snapshot = pipeline.get_snapshot(3 * CHUNK)
         assert np.array_equal(snapshot, _ramp(3))
 
     def test_partial_trailing_chunk_is_dropped(self, tmp_path):
         path = _write_wav(tmp_path / 'a.wav', np.zeros(2 * CHUNK + 17, dtype=np.int16))
-        with FilePlaybackPipeline(path) as pipeline:
+        with _playing(path) as pipeline:
             assert _wait_for_finish(pipeline)
             assert pipeline.total_samples == 2 * CHUNK
 
     def test_not_finished_before_the_file_runs_out(self, tmp_path):
         path = _write_wav(tmp_path / 'a.wav', _ramp(4), sample_rate=CHUNK * 4)
-        with FilePlaybackPipeline(path) as pipeline:   # 4 s of audio: still playing
+        with _playing(path) as pipeline:   # 4 s of audio: still playing
             assert pipeline.finished is False
 
     def test_close_stops_the_feeder(self, tmp_path):
         path = _write_wav(tmp_path / 'a.wav', _ramp(40), sample_rate=CHUNK * 4)
-        pipeline = FilePlaybackPipeline(path)
+        pipeline = _playing(path)
         pipeline.close()
         assert pipeline._thread.is_alive() is False
 
@@ -135,12 +149,12 @@ class TestFilePlaybackPipeline:
         """Not exactly zero: the first chunk is due immediately, and the position is
         quantised to whole chunks, so it has already moved by the time anyone looks."""
         path = _write_wav(tmp_path / 'a.wav', _ramp(20), sample_rate=CHUNK * 4)
-        with FilePlaybackPipeline(path) as pipeline:
+        with _playing(path) as pipeline:
             assert pipeline.position <= pipeline.duration / 10
 
     def test_position_advances_with_playback(self, tmp_path):
         path = _write_wav(tmp_path / 'a.wav', _ramp(8))
-        with FilePlaybackPipeline(path) as pipeline:
+        with _playing(path) as pipeline:
             _wait_for_finish(pipeline)
             assert pipeline.position == pytest.approx(pipeline.duration)
 
@@ -151,7 +165,7 @@ class TestTransport:
     def _slow(self, tmp_path, chunks=40):
         """A file long enough to still be playing while a test pokes at it."""
         path = _write_wav(tmp_path / 'a.wav', _ramp(chunks), sample_rate=CHUNK * 10)
-        return FilePlaybackPipeline(path)
+        return _playing(path)
 
     def test_starts_playing(self, tmp_path):
         with self._slow(tmp_path) as pipeline:
@@ -246,14 +260,14 @@ class TestTransport:
 
     def test_restart_clears_the_finished_flag(self, tmp_path):
         path = _write_wav(tmp_path / 'a.wav', _ramp(3))
-        with FilePlaybackPipeline(path) as pipeline:
+        with _playing(path) as pipeline:
             _wait_for_finish(pipeline)
             pipeline.restart()
             assert pipeline.finished is False
 
     def test_resume_at_the_end_does_nothing(self, tmp_path):
         path = _write_wav(tmp_path / 'a.wav', _ramp(3))
-        with FilePlaybackPipeline(path) as pipeline:
+        with _playing(path) as pipeline:
             _wait_for_finish(pipeline)
             pipeline.resume()
             assert pipeline.finished is True
@@ -271,7 +285,7 @@ class TestTransport:
 
     def test_sitting_at_the_end_does_not_spin(self, tmp_path):
         path = _write_wav(tmp_path / 'a.wav', _ramp(3))
-        with FilePlaybackPipeline(path) as pipeline:
+        with _playing(path) as pipeline:
             _wait_for_finish(pipeline)
             start = time.process_time()
             time.sleep(0.5)
@@ -283,11 +297,308 @@ class TestTransport:
         pipeline.close()
         assert pipeline._thread.is_alive() is False
 
+    def test_no_output_device_is_opened_by_default(self, tmp_path):
+        """Muted is the default so that building a pipeline — in a test, on a
+        headless box — never reaches for a sound card nobody asked for."""
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            with self._slow(tmp_path):
+                time.sleep(0.15)
+        stream.assert_not_called()
+
+
+class TestAudioOutput:
+    """Muting is the absence of an output stream, not a flag that zeroes samples.
+
+    That keeps muted playback on exactly the code path that existed before playback
+    could be heard: paced by a monotonic deadline, touching no audio device at all.
+    """
+
+    # A mute is picked up once per chunk, so these run at 100 chunks/second: fast
+    # enough that a tenth of a second covers several passes of the feeder, long
+    # enough overall that the file does not run out mid-test.
+    def _pipeline(self, tmp_path, muted=True, chunks=200):
+        path = _write_wav(tmp_path / 'a.wav', _ramp(chunks), sample_rate=CHUNK * 100)
+        return _playing(path, muted=muted)
+
+    def test_muted_by_default(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream'):
+            with self._pipeline(tmp_path) as pipeline:
+                assert pipeline.muted is True
+
+    def test_unmuting_opens_a_stream(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.set_muted(False)
+                time.sleep(0.15)
+        stream.assert_called_once()
+
+    def test_the_stream_matches_the_file(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.set_muted(False)
+                time.sleep(0.15)
+        assert stream.call_args.kwargs['samplerate'] == CHUNK * 100
+        assert stream.call_args.kwargs['dtype'] == 'int16'
+
+    def test_audio_is_written_to_the_stream(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.set_muted(False)
+                time.sleep(0.15)
+        assert stream.return_value.write.called
+
+    def test_muting_again_closes_the_stream(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.set_muted(False)
+                time.sleep(0.1)
+                pipeline.set_muted(True)
+                time.sleep(0.1)
+        stream.return_value.close.assert_called()
+
+    def test_muting_aborts_rather_than_draining(self, tmp_path):
+        """stop() plays out what is queued; a mute button with a fifth of a second
+        of lag in it is a broken one."""
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.set_muted(False)
+                time.sleep(0.1)
+                pipeline.set_muted(True)
+                time.sleep(0.1)
+        stream.return_value.abort.assert_called()
+
+    def test_muting_does_not_lose_our_place(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream'):
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.set_muted(False)
+                time.sleep(0.1)
+                pipeline.pause()
+                time.sleep(0.05)
+                before = pipeline.position
+                pipeline.set_muted(True)
+                time.sleep(0.1)
+                assert pipeline.position == before
+
+    def test_switching_clocks_keeps_the_audio_contiguous(self, tmp_path):
+        """The point of the exercise: muting must not drop a chunk or repeat one, or
+        the analyzer loses phase over a discontinuity nobody asked for."""
+        path = _write_wav(tmp_path / 'a.wav', _ramp(30), sample_rate=CHUNK * 200)
+        with patch('buzz.playback.sd.OutputStream'):
+            with _playing(path, muted=True) as pipeline:
+                time.sleep(0.05)
+                pipeline.set_muted(False)
+                time.sleep(0.05)
+                pipeline.set_muted(True)
+                _wait_for_finish(pipeline)
+                span = pipeline.read_from(0)
+        assert np.array_equal(span.samples, _ramp(30)[span.start:span.end])
+
+    def test_muting_rebases_the_schedule(self, tmp_path):
+        """Without this the origin is left where it was before the stream opened,
+        and the loop races through the rest of the file catching up to it."""
+        with patch('buzz.playback.sd.OutputStream'):
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.set_muted(False)
+                time.sleep(0.1)
+                switched = time.monotonic()
+                pipeline.set_muted(True)
+                time.sleep(0.1)
+                assert pipeline._origin >= switched
+
+    def test_a_device_that_will_not_open_leaves_playback_silent(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream', side_effect=OSError('no device')):
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.set_muted(False)
+                time.sleep(0.15)
+                assert pipeline._output is None
+
+    def test_a_device_that_will_not_open_does_not_stop_playback(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream', side_effect=OSError('no device')):
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.set_muted(False)
+                time.sleep(0.15)
+                assert pipeline.position > 0
+
+    def test_a_failed_device_is_not_retried_every_chunk(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream', side_effect=OSError('no')) as stream:
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.set_muted(False)
+                time.sleep(0.2)
+        assert stream.call_count == 1
+
+    def test_asking_again_retries_the_device(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream', side_effect=OSError('no')) as stream:
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.set_muted(False)
+                time.sleep(0.1)
+                pipeline.set_muted(True)
+                pipeline.set_muted(False)
+                time.sleep(0.1)
+        assert stream.call_count == 2
+
+    def test_availability_follows_the_device_check(self, tmp_path):
+        with patch('buzz.playback.sd.check_output_settings', side_effect=OSError('nope')):
+            with self._pipeline(tmp_path) as pipeline:
+                assert pipeline.output_available is False
+
+    def test_toggle_flips_the_mute_state(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream'):
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.toggle_mute()
+                assert pipeline.muted is False
+
+    def test_restart_discards_queued_audio(self, tmp_path):
+        """Otherwise the abandoned pass plays out after the click, and every chunk
+        after it trails the display by an output buffer."""
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.set_muted(False)
+                time.sleep(0.1)
+                stream.return_value.abort.reset_mock()
+                pipeline.restart()
+                time.sleep(0.1)
+        stream.return_value.abort.assert_called()
+
+    def test_restart_keeps_playing_the_audio(self, tmp_path):
+        """Discarded, not switched off: the stream is started again, not closed."""
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            with self._pipeline(tmp_path) as pipeline:
+                pipeline.set_muted(False)
+                time.sleep(0.1)
+                opened = stream.call_count
+                pipeline.restart()
+                time.sleep(0.1)
+                assert pipeline._output is not None
+        assert stream.call_count == opened      # the same device, not a new one
+
+    def test_restart_while_muted_touches_no_stream(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            with self._pipeline(tmp_path) as pipeline:
+                time.sleep(0.05)
+                pipeline.restart()
+                time.sleep(0.05)
+        stream.assert_not_called()
+
+    def test_close_releases_the_stream(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            pipeline = self._pipeline(tmp_path)
+            pipeline.set_muted(False)
+            time.sleep(0.1)
+            pipeline.close()
+        stream.return_value.close.assert_called()
+
+
+class TestDeferredStart:
+    """Nothing plays until the caller says so, so a replay cannot start before the
+    window that is supposed to be showing it."""
+
+    def _pipeline(self, tmp_path, **kwargs):
+        path = _write_wav(tmp_path / 'a.wav', _ramp(20), sample_rate=CHUNK * 100)
+        return FilePlaybackPipeline(path, **kwargs)
+
+    def test_nothing_is_fed_before_start(self, tmp_path):
+        with self._pipeline(tmp_path) as pipeline:
+            time.sleep(0.1)
+            assert pipeline.total_samples == 0
+
+    def test_the_position_stays_at_the_beginning(self, tmp_path):
+        with self._pipeline(tmp_path) as pipeline:
+            time.sleep(0.1)
+            assert pipeline.position == 0.0
+
+    def test_no_audio_device_is_opened_before_start(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            with self._pipeline(tmp_path, muted=False):
+                time.sleep(0.1)
+        stream.assert_not_called()
+
+    def test_start_begins_playback(self, tmp_path):
+        with self._pipeline(tmp_path) as pipeline:
+            pipeline.start()
+            time.sleep(0.1)
+            assert pipeline.total_samples > 0
+
+    def test_start_is_idempotent(self, tmp_path):
+        with self._pipeline(tmp_path) as pipeline:
+            pipeline.start()
+            pipeline.start()            # a second call must not raise
+            time.sleep(0.05)
+            assert pipeline.total_samples > 0
+
+    def test_closing_without_starting_is_safe(self, tmp_path):
+        pipeline = self._pipeline(tmp_path)
+        pipeline.close()
+        assert pipeline.total_samples == 0
+
+
+class TestApplyGain:
+    def test_unity_returns_the_audio_untouched(self):
+        samples = np.array([1, -2, 3], dtype=np.int16)
+        assert apply_gain(samples, 1.0) is samples
+
+    def test_six_db_roughly_doubles_amplitude(self):
+        samples = np.array([1000, -1000], dtype=np.int16)
+        assert list(apply_gain(samples, 10 ** (6 / 20))) == [1995, -1995]
+
+    def test_negative_gain_attenuates(self):
+        samples = np.array([1000], dtype=np.int16)
+        assert apply_gain(samples, 10 ** (-6 / 20))[0] == 501
+
+    def test_output_is_still_int16(self):
+        samples = np.array([1000], dtype=np.int16)
+        assert apply_gain(samples, 2.0).dtype == np.int16
+
+    def test_too_much_gain_clips_rather_than_wrapping(self):
+        """The reason this goes through float32: in int16 the multiply would wrap,
+        and a passage a few dB too loud would come back as noise, not as loud."""
+        samples = np.array([20000, -20000], dtype=np.int16)
+        assert list(apply_gain(samples, 10 ** (10 / 20))) == [32767, -32768]
+
+    def test_clipping_holds_at_the_rail(self):
+        samples = np.array([30000], dtype=np.int16)
+        assert apply_gain(samples, 100.0)[0] == 32767
+
+
+class TestPlaybackGain:
+    def _pipeline(self, tmp_path, gain_db, chunks=200):
+        path = _write_wav(tmp_path / 'a.wav', _ramp(chunks), sample_rate=CHUNK * 100)
+        return _playing(path, muted=False, gain_db=gain_db)
+
+    def test_gain_reaches_the_sound_card(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            with self._pipeline(tmp_path, gain_db=6.0):
+                time.sleep(0.1)
+        written = stream.return_value.write.call_args_list[0].args[0]
+        assert np.array_equal(written, apply_gain(_ramp(1)[:CHUNK], 10 ** (6 / 20)))
+
+    def test_gain_does_not_reach_the_analyzer(self, tmp_path):
+        """The whole point: the monitor must report the level that was recorded, not
+        the level someone chose in order to hear it on laptop speakers."""
+        with patch('buzz.playback.sd.OutputStream'):
+            with self._pipeline(tmp_path, gain_db=20.0) as pipeline:
+                time.sleep(0.1)
+                span = pipeline.read_from(0)
+        assert np.array_equal(span.samples, _ramp(200)[span.start:span.end])
+
+    def test_no_gain_writes_the_file_untouched(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream') as stream:
+            with self._pipeline(tmp_path, gain_db=0.0):
+                time.sleep(0.1)
+        written = stream.return_value.write.call_args_list[0].args[0]
+        assert np.array_equal(written, _ramp(1)[:CHUNK])
+
+    def test_gain_is_reported_in_db(self, tmp_path):
+        with patch('buzz.playback.sd.OutputStream'):
+            with self._pipeline(tmp_path, gain_db=10.0) as pipeline:
+                assert pipeline.gain_db == 10.0
+
+
+class TestPacing:
     def test_playback_runs_at_the_files_rate(self, tmp_path):
         # 20 chunks at 20 chunks/second should take about a second, not zero: the
         # point of playback is that a screen recording of it runs at real speed.
         path = _write_wav(tmp_path / 'a.wav', _ramp(20), sample_rate=CHUNK * 20)
         start = time.monotonic()
-        with FilePlaybackPipeline(path) as pipeline:
+        with _playing(path) as pipeline:
             assert _wait_for_finish(pipeline, timeout=5.0)
         assert time.monotonic() - start == pytest.approx(1.0, abs=0.3)

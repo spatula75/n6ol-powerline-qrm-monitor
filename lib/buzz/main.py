@@ -129,7 +129,8 @@ def _adopt(name: str, filename: str, configured: _T, recorded: _T | None) -> _T:
     return recorded
 
 
-def open_playback_pipeline(config: BuzzConfig, name: str) -> FilePlaybackPipeline:
+def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
+                           gain_db: float = 0.0) -> FilePlaybackPipeline:
     """Open a .wav as the audio source, taking its recorded settings over the config.
 
     Three settings decide what the analysis of a replayed file means, and none can be
@@ -147,10 +148,13 @@ def open_playback_pipeline(config: BuzzConfig, name: str) -> FilePlaybackPipelin
     A file that cannot be played exits with a one-line message rather than a
     traceback: a mistyped filename is an ordinary thing to do from a command line,
     not a bug in the monitor.
+
+    Returns a pipeline that is not yet playing.  The caller starts it once there is
+    somewhere to watch it — see FilePlaybackPipeline.start().
     """
     path = resolve_playback_path(name, config.recording.directory_path(config.station))
     try:
-        pipeline = FilePlaybackPipeline(path)
+        pipeline = FilePlaybackPipeline(path, muted=muted, gain_db=gain_db)
     except (OSError, wave.Error, ValueError) as exc:
         raise SystemExit(f'Cannot play back {path}: {exc}') from exc
 
@@ -178,6 +182,12 @@ def open_playback_pipeline(config: BuzzConfig, name: str) -> FilePlaybackPipelin
                        path.name, ' or '.join(missing),
                        audio.pulse_rate, station.audio_rf_conversion_db)
     return pipeline
+
+
+def _start_playback(pipeline: RingBufferPipeline, playing_back: str | None) -> None:
+    """Let a replayed file begin, now that there is something to watch it with."""
+    if playing_back:
+        pipeline.start()
 
 
 def _start_collector(config: BuzzConfig, analyzer: ContinuousAnalyzer) -> None:
@@ -229,6 +239,12 @@ def main() -> None:  # pragma: no cover
                         help='Replay a recorded .wav instead of listening to the audio '
                              'device. A bare filename is looked up in the recording '
                              'directory. Suppresses CSV, plots, uploads and recording.')
+    parser.add_argument('--mute', action='store_true',
+                        help='Start playback silent, opening no audio output device')
+    parser.add_argument('--playback-gain', type=float, default=0.0, metavar='DB',
+                        help='dB of gain for the playback audio only, to make a quiet '
+                             'recording audible on small speakers. Does not affect '
+                             'the analysis or anything it reports.')
     args = parser.parse_args()
 
     configure_logging()
@@ -239,10 +255,14 @@ def main() -> None:  # pragma: no cover
     if args.playback:
         if args.enable_recording:
             logger.warning('--enable-recording is ignored during playback.')
-        pipeline = open_playback_pipeline(config, args.playback)
+        pipeline = open_playback_pipeline(config, args.playback, muted=args.mute,
+                                          gain_db=args.playback_gain)
         analyzer = ContinuousAnalyzer(pipeline, config)
         analyzer.start()
     else:
+        if args.mute or args.playback_gain:
+            logger.warning('--mute and --playback-gain are ignored outside playback; '
+                           'the monitor never sends live audio to an output device.')
         pipeline = AudioSampler(config).pipeline
         analyzer = ContinuousAnalyzer(pipeline, config)
         # Built whether or not recording is enabled: `enabled` only decides whether it
@@ -256,6 +276,7 @@ def main() -> None:  # pragma: no cover
         _start_collector(config, analyzer)
 
     if args.headless:
+        _start_playback(pipeline, args.playback)
         _wait_until_interrupted(pipeline, analyzer, recorder)
         return
 
@@ -268,6 +289,7 @@ def main() -> None:  # pragma: no cover
             'PySide6 not installed — falling back to headless mode. '
             'Install PySide6 or run with --headless to suppress this warning.'
         )
+        _start_playback(pipeline, args.playback)
         _wait_until_interrupted(pipeline, analyzer, recorder)
         return
 
@@ -276,6 +298,13 @@ def main() -> None:  # pragma: no cover
                         recorder=recorder,
                         playback=pipeline if args.playback else None)
     window.show()
+    # Not before now, and not merely after show() either: show() returns before Qt
+    # has finished creating and laying out the window, and audio started in that gap
+    # plays to a screen that is not there yet — then breaks up as widget construction
+    # holds the GIL away from the feeder.  A zero-delay timer fires on the first pass
+    # of the event loop, by which time the window is up and the interpreter is idle.
+    if args.playback:
+        QTimer.singleShot(0, pipeline.start)
 
     # Allow Ctrl+C to close the window cleanly from the console
     signal.signal(signal.SIGINT, lambda *_: window.close())

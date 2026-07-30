@@ -8,8 +8,12 @@ cannot tell the difference, which is the point: an event captured by the recorde
 can be replayed later and analysed exactly as it was live, with the display
 running at real speed for a screen recording.
 
-Playback deliberately opens no audio device, so a recording can be reviewed on a
-machine with no receiver attached.
+No input device is opened, so a recording can be reviewed on a machine with no
+receiver attached.  An output device is opened only while the audio is actually
+being listened to: muted playback — which is the default, and what --mute asks
+for — runs exactly the code that ran before playback could be heard at all,
+paced by a monotonic deadline rather than by a sound card that nobody is
+listening to and that some machines do not have.
 
 At the end of the file the feeder simply stops.  The buffer keeps its last few
 seconds, so the display holds its final frame rather than going blank, and the
@@ -23,12 +27,14 @@ import wave
 from pathlib import Path
 
 import numpy as np
+import sounddevice as sd
 
 from buzz.sampler import RingBufferPipeline
 
 logger = logging.getLogger(__name__)
 
 _BYTES_PER_SAMPLE = 2   # 16-bit PCM, matching what the recorder writes
+_INT16_MIN, _INT16_MAX = -32768, 32767
 
 
 def load_wav(path: Path | str) -> tuple[np.ndarray, int]:
@@ -53,6 +59,22 @@ def load_wav(path: Path | str) -> tuple[np.ndarray, int]:
     # astype() rather than the frombuffer view: that view is read-only and borrows
     # the file's byte order, and consumers expect a plain writable native int16 array.
     return samples.astype(np.int16), sample_rate
+
+
+def apply_gain(samples: np.ndarray, factor: float) -> np.ndarray:
+    """Scale samples by `factor`, stopping at the int16 rails.
+
+    Too much gain therefore distorts, which is what anyone turning something up too
+    far expects.  It is worth the clamp to get that: int16 *wraps* on overflow, so
+    without one an overflowed sample changes sign, and a passage a few dB too loud
+    comes back as noise rather than as a loud passage.  Scaling through float32 keeps
+    the multiply out of int16 entirely, where that wrap would happen before anything
+    could be clamped.
+    """
+    if factor == 1.0:
+        return samples
+    scaled = samples.astype(np.float32) * factor
+    return np.clip(scaled, _INT16_MIN, _INT16_MAX).astype(np.int16)
 
 
 def resolve_playback_path(name: Path | str, directory: Path) -> Path:
@@ -83,7 +105,8 @@ class FilePlaybackPipeline(RingBufferPipeline):
     the only place the two nest, and always in that order.
     """
 
-    def __init__(self, path: Path | str) -> None:
+    def __init__(self, path: Path | str, muted: bool = True,
+                 gain_db: float = 0.0) -> None:
         super().__init__()
         self._samples, self.sample_rate = load_wav(path)
         self.path = Path(path)
@@ -102,9 +125,39 @@ class FilePlaybackPipeline(RingBufferPipeline):
         self._finished = threading.Event()
         self._rebase()
 
+        # Silent unless asked otherwise, so that building a pipeline never opens an
+        # audio device the caller did not ask for — tests and headless replays have
+        # no use for one, and some machines have none to open.
+        self._muted = muted
+        self._output: sd.OutputStream | None = None
+        self._output_failed = False
+        self._flush_requested = False
+        # Gain is for the speakers alone.  Recordings sit at -24 to -34 dBFS, which
+        # is quiet on the sort of speakers a laptop has, but the analyzer's whole job
+        # is to report the level that was actually there — so this is applied to the
+        # copy on its way to the sound card and to nothing else.
+        self.gain_db = gain_db
+        self._gain = 10 ** (gain_db / 20)
+        self.output_available = self._can_open_output()
+
+        self._started = False
         self._thread = threading.Thread(
             target=self._feed, daemon=True, name='playback')
-        self._thread.start()
+
+    def start(self) -> None:
+        """Begin feeding audio.  Idempotent.
+
+        Constructing a pipeline does not start one.  The caller has a display to
+        build first, and starting in the constructor means the opening moments of
+        the event are heard before there is a window to see them in — and, worse,
+        are fed while widget construction still holds the GIL, so the sound card
+        runs dry and the replay opens with a stutter that is not in the recording.
+        Opening the file and playing it are separate acts, and only the caller knows
+        when the second one should happen.
+        """
+        if not self._started:
+            self._started = True
+            self._thread.start()
 
     # ------------------------------------------------------------------ public
 
@@ -123,6 +176,31 @@ class FilePlaybackPipeline(RingBufferPipeline):
         """How far into the file playback has reached, in seconds."""
         with self._state:
             return self._index * self._chunk_period
+
+    @property
+    def muted(self) -> bool:
+        with self._state:
+            return self._muted
+
+    def set_muted(self, muted: bool) -> None:
+        """Ask for playback audio to be switched off or on.
+
+        Only records the wish.  The feeder thread is the one that opens and closes
+        the stream, because it is also the one writing to it, and closing a stream
+        from another thread while a write is in flight is undefined behaviour in
+        PortAudio.  Takes effect within one chunk.
+
+        Unmuting clears a previous failure to open the device, so asking again after
+        plugging something in is worth a retry; muting never fails.
+        """
+        with self._state:
+            self._muted = muted
+            if not muted:
+                self._output_failed = False
+            self._state.notify_all()
+
+    def toggle_mute(self) -> None:
+        self.set_muted(not self.muted)
 
     def pause(self) -> None:
         with self._state:
@@ -153,11 +231,15 @@ class FilePlaybackPipeline(RingBufferPipeline):
         producing a second pass that opens already locked, which is precisely what
         restarting is meant to avoid.  The cost is a few seconds of empty display
         while the new pass refills it, the same as at startup.
+
+        Audio queued to the sound card is thrown away for the same reason, on the
+        feeder thread — see _flush_output.
         """
         with self._state:
             self._index = 0
             self._paused = False
             self._finished.clear()
+            self._flush_requested = True
             self._rebase()
             self.clear()
             self._state.notify_all()
@@ -168,12 +250,97 @@ class FilePlaybackPipeline(RingBufferPipeline):
         """Start the deadline schedule again from now (caller holds _state)."""
         self._origin, self._origin_index = time.monotonic(), self._index
 
-    def _wait_until_playable(self) -> bool:
-        """Block while paused or sitting at the end; False once stopping."""
+    def _can_open_output(self) -> bool:
+        """Whether this machine could play the file, asked once at startup.
+
+        Only so the toolbar can grey its mute button out with a reason, rather than
+        offering a control that silently does nothing.
+        """
+        try:
+            sd.check_output_settings(
+                samplerate=self.sample_rate, channels=1, dtype='int16')
+            return True
+        except Exception as exc:
+            logger.info('No usable audio output for %d Hz mono playback (%s); '
+                        'replay will be silent.', self.sample_rate, exc)
+            return False
+
+    def _sync_output(self) -> None:
+        """Open or close the output stream to match the requested mute state.
+
+        Feeder thread only — see set_muted.  Both transitions re-base the deadline
+        schedule, which matters most in the direction nobody thinks about: on muting,
+        an origin left over from before the stream opened is minutes in the past, and
+        the loop would race through the rest of the file trying to catch up to it.
+        """
         with self._state:
-            while not self._stop.is_set() and (self._paused or self._index >= self._chunks):
+            wanted = not self._muted and not self._output_failed
+            flush, self._flush_requested = self._flush_requested, False
+        if self._output is not None and not wanted:
+            self._close_output()
+        elif self._output is not None and flush:
+            self._flush_output()
+        if wanted and self._output is None:
+            self._open_output()
+
+    def _flush_output(self) -> None:
+        """Discard audio already queued to the card, and start it playing again.
+
+        A restart rewinds the file, but an output buffer's worth of the pass being
+        abandoned is already sitting in the card's queue.  Left there it plays out
+        after the click — the old position, heard over the new one — and every later
+        chunk trails the display by that same buffer for the rest of the run.
+
+        Aborting and restarting the same stream rather than reopening the device:
+        it is faster, and it cannot fail with the device busy and leave the replay
+        silent for the sake of a button press.
+        """
+        self._output.abort()
+        self._output.start()
+
+    def _open_output(self) -> None:
+        try:
+            stream = sd.OutputStream(samplerate=self.sample_rate, channels=1,
+                                     dtype='int16', latency='low')
+            stream.start()
+        except Exception:
+            logger.warning('Could not open the audio output — replay stays silent.',
+                           exc_info=True)
+            with self._state:
+                self._output_failed = True
+            return
+        self._output = stream
+        with self._state:
+            self._rebase()
+        logger.info('Playback audio on.')
+
+    def _close_output(self) -> None:
+        # abort() rather than stop(): stop() plays out whatever is still queued, and
+        # a mute button that takes a fifth of a second to go quiet is a broken one.
+        # The queued audio was already fed to the ring buffer, so nothing is lost
+        # from the replay itself — only from the speaker.
+        self._output.abort()
+        self._output.close()
+        self._output = None
+        with self._state:
+            self._rebase()
+        logger.info('Playback audio off.')
+
+    def _wait_until_playable(self) -> bool:
+        """Block while paused or sitting at the end; False once stopping.
+
+        Reconciles the output stream on every pass, including each time it wakes.
+        The feeder is parked here whenever playback is paused or finished, which is
+        exactly when a mute would otherwise go unnoticed — leaving a device open with
+        nothing being written to it, and a button claiming the opposite.
+        """
+        while not self._stop.is_set():
+            self._sync_output()
+            with self._state:
+                if not (self._paused or self._index >= self._chunks):
+                    return True
                 self._state.wait()
-            return not self._stop.is_set()
+        return False
 
     def _feed(self) -> None:
         logger.info('Playing back %s — %.1f s at %d Hz',
@@ -182,16 +349,28 @@ class FilePlaybackPipeline(RingBufferPipeline):
             with self._state:
                 index = self._index
                 due = self._origin + (index - self._origin_index) * self._chunk_period
-            delay = due - time.monotonic()
-            if delay > 0 and self._stop.wait(delay):
-                return
+            chunk = self._samples[index * self.CHUNK_SIZE:(index + 1) * self.CHUNK_SIZE]
+
+            # Whichever clock is available paces the loop.  With a stream open the
+            # sound card is it — write() returns once the card has room, which is by
+            # definition real time — and without one the deadline schedule is, exactly
+            # as it was before playback could be heard at all.
+            if self._output is not None:
+                # The only place gain is applied.  What goes into the ring buffer
+                # below is the untouched chunk, so turning a quiet recording up to
+                # hear it cannot move a single dB of what the monitor reports.
+                self._output.write(apply_gain(chunk, self._gain))
+            else:
+                delay = due - time.monotonic()
+                if delay > 0 and self._stop.wait(delay):
+                    return
+
             with self._state:
                 # A pause or a restart while this chunk was waiting its turn makes
                 # it the wrong chunk to play; go back and read the new position.
                 if self._paused or self._index != index:
                     continue
-                self._append(
-                    self._samples[index * self.CHUNK_SIZE:(index + 1) * self.CHUNK_SIZE])
+                self._append(chunk)
                 self._index += 1
                 if self._index >= self._chunks:
                     self._finished.set()
@@ -201,4 +380,8 @@ class FilePlaybackPipeline(RingBufferPipeline):
         self._stop.set()
         with self._state:
             self._state.notify_all()
-        self._thread.join(timeout=1.0)
+        if self._started:
+            self._thread.join(timeout=1.0)
+        # After the join, so the feeder is no longer writing to it.
+        if self._output is not None:
+            self._close_output()

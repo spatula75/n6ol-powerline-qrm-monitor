@@ -6,8 +6,9 @@ from buzz.analyzer import AnalysisResult
 from buzz.dsp import SILENCE_DBFS
 from buzz.recorder import RecorderStatus
 from buzz.waterfall import (
-    build_colormap, format_clock, format_countdown, format_playback_button,
-    format_playback_status, format_record_button, format_recorder_status,
+    build_colormap, format_clock, format_countdown, format_mute_button,
+    format_playback_button, format_playback_status, format_record_button,
+    format_recorder_status,
     _aggregate_meter_history, _color_scale_range, _correction_offset, _mean_spectrum_db,
     _spectrum_percentiles,
     _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE, _DB_FFT_NOISE_CORR, _FFT_ADVANCE_SAMPLES,
@@ -121,6 +122,30 @@ class TestFormatPlaybackButton:
 
     def test_tooltip_gives_the_shortcut(self):
         assert 'Space' in format_playback_button(paused=False, finished=False)[1]
+
+
+class TestFormatMuteButton:
+    def test_audible_offers_mute(self):
+        assert format_mute_button(muted=False, available=True)[0] == 'Mute'
+
+    def test_muted_offers_unmute(self):
+        assert format_mute_button(muted=True, available=True)[0] == 'Unmute'
+
+    def test_enabled_when_a_device_exists(self):
+        assert format_mute_button(muted=True, available=True)[2] is True
+
+    def test_disabled_without_a_device(self):
+        assert format_mute_button(muted=True, available=False)[2] is False
+
+    def test_missing_device_says_why(self):
+        assert 'No audio output device' in format_mute_button(muted=True, available=False)[1]
+
+    def test_muting_promises_playback_carries_on(self):
+        """Mute is not a stop button; the replay keeps running, just silently."""
+        assert 'continues' in format_mute_button(muted=False, available=True)[1]
+
+    def test_tooltip_gives_the_shortcut(self):
+        assert 'M' in format_mute_button(muted=False, available=True)[1]
 
 
 class TestFormatClock:

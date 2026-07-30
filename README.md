@@ -401,7 +401,7 @@ The toolbar carries a transport instead of the record button, since there is
 nothing to record and every reason to want to stop on an interesting moment:
 
 ```
-Pause  Restart    ▶ 00:12 / 00:39 — event-20260729-184450-0700.wav
+Pause  Restart  Unmute    ▶ 00:12 / 00:39 — event-20260729-184450-0700.wav
 ```
 
 The first button is named for what clicking it does, so it reads **Pause** while
@@ -410,6 +410,44 @@ the mouse across the window you are recording.  **Restart** plays the file again
 from the beginning, from wherever you are and whether or not it has finished.  At
 the end of the file the time index turns to ■ and Play greys out, since Restart is
 the only thing left to do.
+
+### Hearing the replay
+
+**Unmute** (or **M**) sends the audio to your default output device, so you can
+hear the buzz while you watch it.  Playback starts silent, and `--mute` is only
+needed to say so explicitly:
+
+```
+python -m buzz.main --playback event-20260729-184450-0700.wav --mute
+```
+
+Muting is the absence of an output stream rather than a volume of zero, which is
+what makes it safe on a machine that has no sound card at all: muted replay runs
+exactly the code that ran before playback could be heard, paced by the monitor's
+own clock.  Unmuted, the sound card becomes the clock instead — it is the one
+that decides when the next chunk is actually wanted.
+
+Powerline noise is usually recorded well below full scale — around −24 to −34 dBFS
+is typical — which is quiet on laptop speakers.  `--playback-gain` turns it up:
+
+```
+python -m buzz.main --playback event-20260729-184450-0700.wav --playback-gain 10
+```
+
+The gain is applied to the audio on its way to the sound card and to nothing else,
+so it cannot move a single dB of what the analyzer measures, what the meters read,
+or what any of it would have written to a CSV.  It is there to make the buzz
+audible, not to change it.
+
+Ask for more than the headroom allows and the loud parts will simply hit the rails
+and **distort** — 10 dB on a −24 dBFS recording is comfortable, 30 dB will not be.
+Turn it back down if it sounds crunchy; nothing about the analysis is affected
+either way.
+
+Switching between the two never loses your place in the file, and neither does
+**Restart**, which throws away the fraction of a second already queued to the card
+so the audio jumps back to the top with the display instead of trailing it.  If no
+output device is available the button greys out and says so.
 
 Restart resets the analyzer too, so the second pass is a genuine cold start:
 lock indicator to FREE, meters to silence, drift rate and phase forgotten, and the
@@ -451,9 +489,9 @@ with three panels and a toolbar:
 - **Waterfall** — below it, a scrolling spectrogram.
 - **S-meters** — the right-hand column, running the full height of the displays.
 
-Three keys work anywhere in the window: **A** switches the scope between its raw
-and averaged views, **R** arms or disarms recording, and **Space** pauses or
-resumes playback.
+Four keys work anywhere in the window: **A** switches the scope between its raw
+and averaged views, **R** arms or disarms recording, **Space** pauses or resumes
+playback, and **M** mutes or unmutes it.
 
 ![Display window](docs/sample_waterfall_display.png)
 
