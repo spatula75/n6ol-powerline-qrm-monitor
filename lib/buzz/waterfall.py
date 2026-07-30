@@ -37,14 +37,14 @@ from buzz.config import BuzzConfig
 from buzz.dsp import SILENCE_DBFS
 from buzz.playback import FilePlaybackPipeline
 from buzz.recorder import EventRecorder, RecorderStatus
-from buzz.sampler import AudioPipeline
+from buzz.sampler import RingBufferPipeline
 from buzz.scope import SCOPE_H, ScopeWidget
 
 # ---------------------------------------------------------------------------
 # Waterfall constants
 # ---------------------------------------------------------------------------
 
-_CHUNK = AudioPipeline.CHUNK_SIZE           # 512 samples
+_CHUNK = RingBufferPipeline.CHUNK_SIZE      # 512 samples
 _MAX_HZ = 4000                              # top of the displayed band
 _FREQ_LABEL_HZ = 500                        # frequency-axis tick spacing
 _PIXELS_PER_BIN = 5                         # horizontal scale (128 bins → 640 px at 16 kHz)
@@ -452,7 +452,7 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
     frame, so the display covers the full timeline rather than sampling it.
     """
 
-    def __init__(self, pipeline: AudioPipeline, config: BuzzConfig,
+    def __init__(self, pipeline: RingBufferPipeline, config: BuzzConfig,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pipeline = pipeline
@@ -730,23 +730,33 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
         layout.addWidget(button)
         return button
 
-    def toggle(self) -> None:
+    # Each of these reports whether it had a subject to act on, so the main window can
+    # pass a key this run has no use for — R during playback, Space during live audio —
+    # on to Qt instead of swallowing it.
+
+    def toggle(self) -> bool:
         """Arm or disarm recording (button click, or the R key on the main window)."""
-        if self._recorder is not None:
-            self._recorder.toggle()
-            self._tick()
+        if self._recorder is None:
+            return False
+        self._recorder.toggle()
+        self._tick()
+        return True
 
-    def toggle_play(self) -> None:
+    def toggle_play(self) -> bool:
         """Pause or resume playback (button click, or the space bar)."""
-        if self._playback is not None:
-            self._playback.toggle_pause()
-            self._tick()
+        if self._playback is None:
+            return False
+        self._playback.toggle_pause()
+        self._tick()
+        return True
 
-    def toggle_mute(self) -> None:
+    def toggle_mute(self) -> bool:
         """Switch the playback audio on or off (button click, or the M key)."""
-        if self._playback is not None and self._playback.output_available:
-            self._playback.toggle_mute()
-            self._tick()
+        if self._playback is None or not self._playback.output_available:
+            return False
+        self._playback.toggle_mute()
+        self._tick()
+        return True
 
     def restart(self) -> None:
         """Play the file again from the beginning, as though it had never been seen.
@@ -824,7 +834,7 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
     (see the _WINDOW_H comment).
     """
 
-    def __init__(self, pipeline: AudioPipeline, analyzer: ContinuousAnalyzer,
+    def __init__(self, pipeline: RingBufferPipeline, analyzer: ContinuousAnalyzer,
                  config: BuzzConfig, always_on_top: bool = False,
                  recorder: EventRecorder | None = None,
                  playback: FilePlaybackPipeline | None = None) -> None:
@@ -874,16 +884,19 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         Space matters more than it looks during a screen recording: pausing on an
         interesting moment without the mouse travelling across the captured window
         keeps the recording about the signal rather than about the cursor.
+
+        A key whose subject this run does not have reaches Qt rather than stopping
+        here: only one of the record button and the transport exists at a time, and a
+        window that quietly ate the other one's key would also be eating whatever Qt
+        would otherwise have done with it.
         """
-        if event.key() == Qt.Key.Key_A:
+        key = event.key()
+        if key == Qt.Key.Key_A:
             self._scope.toggle_mode()
-        elif event.key() == Qt.Key.Key_R:
-            self._bar.toggle()
-        elif event.key() == Qt.Key.Key_Space:
-            self._bar.toggle_play()
-        elif event.key() == Qt.Key.Key_M:
-            self._bar.toggle_mute()
-        else:
+            return
+        if not ((key == Qt.Key.Key_R and self._bar.toggle())
+                or (key == Qt.Key.Key_Space and self._bar.toggle_play())
+                or (key == Qt.Key.Key_M and self._bar.toggle_mute())):
             super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:  # noqa: N802

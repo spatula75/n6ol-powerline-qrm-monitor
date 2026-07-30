@@ -37,8 +37,9 @@ later by however long each day's events took to arrive.
 
 Lock is not polled.  The analyzer publishes each state change to a listener (see
 ContinuousAnalyzer.add_state_listener) and the recorder's thread does the writing,
-so the two never wait on each other: analysis is never behind disk I/O, and a lock
-that comes and goes between two polls still starts a recording.
+so a lock that comes and goes between two polls still starts a recording and
+analysis never ends up behind disk I/O — the listener sets two flags under a lock
+held for nothing longer than that, and does no work of its own.
 
 Everything is measured in absolute sample positions rather than wall-clock time —
 the same audio clock the analyzer's drift tracker uses.  A recording's length is
@@ -222,6 +223,11 @@ class EventRecorder:
         # poll interval still starts a recording instead of vanishing between polls.
         self._locked = analyzer.state == AnalyzerState.LOCKED
         self._lock_acquired = self._locked
+        # Guards those two flags and nothing else, deliberately separate from the
+        # _lock below: the analyzer thread has to take this one on every transition,
+        # and the whole point of the push is that analysis never waits on the
+        # recorder's disk I/O.  Only ever taken innermost, so the two cannot deadlock.
+        self._state_lock = threading.Lock()
         analyzer.add_state_listener(self._on_analyzer_state)
 
         # Current recording, all None/0 while idle.
@@ -242,9 +248,12 @@ class EventRecorder:
         # and a long event would come back as a pile of max_seconds fragments.
         self._await_relock = False
 
-        # One lock for all of the above: tick() runs on the recorder thread while
-        # arm(), disarm() and status() are called from the Qt thread, and a toggle
-        # arriving mid-write must not tear the file's bookkeeping.
+        # One lock for the recording state above, and for the budget and the re-arm
+        # cycle: tick() runs on the recorder thread while arm(), disarm() and status()
+        # are called from the Qt thread, and a toggle arriving mid-write must not tear
+        # the file's bookkeeping.  The two lock flags are the exception, on
+        # _state_lock, because the analyzer thread touches those and must not end up
+        # behind a disk write.
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, daemon=True, name='recorder')
@@ -418,14 +427,27 @@ class EventRecorder:
         opening a file, writing audio — would run analysis-critical work behind disk
         I/O.  The recorder's own thread picks this up on its next tick.
 
-        No lock is taken, for the same reason.  Both fields are plain flags, and a
-        rebinding is atomic; the worst a race can do is have the tick that consumes
-        _lock_acquired clear a lock the analyzer set microseconds earlier, in which
-        case _locked is True anyway and the tick sees the lock regardless.
+        The lock it does take is _state_lock, which guards these two flags alone and
+        is never held across anything slower than an assignment, so the analyzer is
+        not waiting on the recorder in any sense that matters.
         """
-        self._locked = state == AnalyzerState.LOCKED
-        if self._locked:
-            self._lock_acquired = True
+        with self._state_lock:
+            self._locked = state == AnalyzerState.LOCKED
+            if self._locked:
+                self._lock_acquired = True
+
+    def _consume_lock_state(self) -> bool:
+        """Whether the analyzer has been locked at any point since the previous tick.
+
+        Reading the live flag and clearing the sticky one are one operation because
+        they have to be.  Done separately, a lock and a loss arriving in the gap
+        between them would clear the flag that recorded the lock while leaving the
+        level saying there is none — and a brief lock vanishing between two polls is
+        precisely the failure the push exists to prevent.
+        """
+        with self._state_lock:
+            locked, self._lock_acquired = self._locked or self._lock_acquired, False
+        return locked
 
     def _tick(self) -> None:
         # Before anything else, so a budget coming back round can record an event
@@ -434,8 +456,7 @@ class EventRecorder:
             self._reset_budget()
 
         # Either a lock right now, or one that came and went since the last tick.
-        locked = self._locked or self._lock_acquired
-        self._lock_acquired = False
+        locked = self._consume_lock_state()
         if self._writer is None:
             if not locked:
                 self._await_relock = False

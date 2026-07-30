@@ -401,7 +401,7 @@ The toolbar carries a transport instead of the record button, since there is
 nothing to record and every reason to want to stop on an interesting moment:
 
 ```
-Pause  Restart  Unmute    ▶ 00:12 / 00:39 — event-20260729-184450-0700.wav
+Pause  Restart  Mute    ▶ 00:12 / 00:39 — event-20260729-184450-0700.wav
 ```
 
 The first button is named for what clicking it does, so it reads **Pause** while
@@ -413,9 +413,10 @@ the only thing left to do.
 
 ### Hearing the replay
 
-**Unmute** (or **M**) sends the audio to your default output device, so you can
-hear the buzz while you watch it.  Playback starts silent, and `--mute` is only
-needed to say so explicitly:
+Playback sends the audio to your default output device, so you can hear the buzz
+while you watch it; **Mute** (or **M**) silences it without stopping the replay.
+To start silent instead — on a machine with no sound card, or when you only want
+the displays — use `--mute`:
 
 ```
 python -m buzz.main --playback event-20260729-184450-0700.wav --mute

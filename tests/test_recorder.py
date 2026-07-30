@@ -2,6 +2,8 @@
 
 import re
 import struct
+import threading
+import time
 import wave
 from datetime import datetime
 from pathlib import Path
@@ -84,6 +86,16 @@ def _feed(pipeline: RingBufferPipeline, seconds: int, value: int = 1000) -> None
 
 def _wav_files(tmp_path: Path) -> list[Path]:
     return sorted(tmp_path.glob('*.wav'))
+
+
+def _eventually(predicate, timeout: float = 1.0) -> bool:
+    """Wait for something a background thread is expected to get round to."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.005)
+    return False
 
 
 def _durations(tmp_path: Path) -> list[float]:
@@ -999,6 +1011,48 @@ class TestStatusAndToggle:
         _feed(pipeline, 1)
         recorder.tick()
         assert len(_wav_files(tmp_path)) == 1
+
+
+class TestLockStateHandoff:
+    """The analyzer pushes lock state and the tick consumes it.
+
+    Reading the live level and clearing the sticky flag are one operation because they
+    have to be: a lock and a loss both arriving between two separate steps would clear
+    the flag that recorded the lock while leaving the level saying there was none, and
+    the brief lock this monitor exists to catch would vanish between two polls.
+    """
+
+    def test_reports_a_lock_that_came_and_went(self, tmp_path):
+        recorder, _, analyzer = _make_recorder(tmp_path)
+        analyzer.lock()
+        analyzer.unlock()
+        assert recorder._consume_lock_state() is True
+
+    def test_consuming_clears_the_sticky_flag(self, tmp_path):
+        recorder, _, analyzer = _make_recorder(tmp_path)
+        analyzer.lock()
+        analyzer.unlock()
+        recorder._consume_lock_state()
+        assert recorder._consume_lock_state() is False
+
+    def test_a_standing_lock_survives_being_consumed(self, tmp_path):
+        """Only the sticky flag is consumed; a signal still present is still present."""
+        recorder, _, analyzer = _make_recorder(tmp_path)
+        analyzer.lock()
+        recorder._consume_lock_state()
+        assert recorder._consume_lock_state() is True
+
+    def test_the_listener_waits_for_a_consume_in_progress(self, tmp_path):
+        """The mutual exclusion the flags' own lock exists for.  It is held only across
+        two assignments, which is why it is a separate lock from the one tick() holds
+        while writing: the analyzer must never end up behind the recorder's disk I/O.
+        """
+        recorder, _, analyzer = _make_recorder(tmp_path)
+        with recorder._state_lock:
+            threading.Thread(target=analyzer.lock, daemon=True).start()
+            time.sleep(0.05)    # ample time for an unsynchronised listener to land
+            assert recorder._locked is False
+        assert _eventually(lambda: recorder._locked is True)
 
 
 class TestFallingBehind:

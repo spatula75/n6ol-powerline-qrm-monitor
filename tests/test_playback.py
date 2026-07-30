@@ -273,6 +273,24 @@ class TestTransport:
             pipeline.resume()
             assert pipeline.finished is True
 
+    def test_toggle_at_the_end_does_not_pause(self, tmp_path):
+        """The space bar reaches this even though the Play button is greyed out at the
+        end of the file.  Pausing there would leave the transport paused at a position
+        resume() rightly refuses to continue from, and disagreeing with the button."""
+        path = _write_wav(tmp_path / 'a.wav', _ramp(3))
+        with _playing(path) as pipeline:
+            _wait_for_finish(pipeline)
+            pipeline.toggle_pause()
+            assert pipeline.paused is False
+
+    def test_restart_after_a_toggle_at_the_end_plays_again(self, tmp_path):
+        path = _write_wav(tmp_path / 'a.wav', _ramp(3))
+        with _playing(path) as pipeline:
+            _wait_for_finish(pipeline)
+            pipeline.toggle_pause()
+            pipeline.restart()
+            assert (pipeline.finished, pipeline.paused) == (False, False)
+
     def test_pausing_does_not_spin(self, tmp_path):
         """The feeder blocks on its condition rather than polling.  Measured as CPU
         time, because a spin loop looks identical to a blocked thread from outside

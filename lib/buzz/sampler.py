@@ -133,7 +133,23 @@ class RingBufferPipeline:
         start = max(position, oldest)
         if start >= end:
             return AudioSpan(np.empty(0, dtype=np.int16), end, end)
-        return AudioSpan(np.concatenate(chunks)[start - oldest:], start, end)
+
+        # Only the chunks the span actually touches are joined.  A caller reading
+        # sequentially asks for the fraction of a second that arrived since its last
+        # call, so joining the whole ~10 second buffer and then slicing would copy
+        # several hundred kilobytes to keep a few, five times a second, for as long
+        # as a recording lasts.  Taken from the newest end, which is the one the span
+        # always reaches, and without assuming every chunk is the same length.
+        wanted = end - start
+        kept, taken = [], 0
+        for chunk in reversed(chunks):
+            kept.append(chunk)
+            taken += len(chunk)
+            if taken >= wanted:
+                break
+        # taken overshoots wanted by however far into its oldest chunk `start` falls:
+        # the run of chunks begins on a chunk boundary and a position rarely does.
+        return AudioSpan(np.concatenate(kept[::-1])[taken - wanted:], start, end)
 
     @property
     def total_samples(self) -> int:
@@ -158,6 +174,15 @@ class RingBufferPipeline:
                 lambda: len(self._buffer) >= n_chunks,
                 timeout=timeout,
             )
+
+    def start(self) -> None:
+        """Begin producing audio, for a source that does not start on construction.
+
+        Live capture has no use for this — its device is running by the time the
+        constructor returns — but a file-backed replay must not begin before the
+        caller has somewhere to show it (see FilePlaybackPipeline.start), and a
+        consumer holding a pipeline should not have to know which kind it has.
+        """
 
     def close(self) -> None:
         """Stop producing audio.  Subclasses shut down whatever fills the buffer."""

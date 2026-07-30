@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from buzz.config import BuzzConfig
-from buzz.sampler import AudioPipeline, RingBufferPipeline
+from buzz.sampler import _BUFFER_CHUNKS, AudioPipeline, RingBufferPipeline
 
 SAMPLE_RATE = 16000
 CHUNK = AudioPipeline.CHUNK_SIZE
@@ -305,6 +305,56 @@ class TestReadFrom:
         pipeline = self._pipeline(400)
         span = pipeline.read_from(0)
         assert len(span.samples) == span.end - span.start
+
+    def test_a_read_starting_mid_chunk_begins_at_that_sample(self):
+        """Only whole chunks are joined, so a position part-way into one has to be
+        trimmed off the front of the join rather than assumed to land on a seam."""
+        pipeline = RingBufferPipeline()
+        pipeline._append(np.arange(CHUNK, dtype=np.int16))
+        span = pipeline.read_from(10)
+        assert (span.samples[0], span.start) == (10, 10)
+
+    def test_a_read_starting_mid_chunk_has_the_right_length(self):
+        pipeline = RingBufferPipeline()
+        pipeline._append(np.arange(CHUNK, dtype=np.int16))
+        assert len(pipeline.read_from(10).samples) == CHUNK - 10
+
+    def _uneven(self):
+        """Nothing promises every chunk is CHUNK_SIZE — only the live capture callback
+        is fixed-size — so a span is assembled by length, never by chunk count."""
+        pipeline = RingBufferPipeline()
+        for value, length in ((1, 100), (2, 7), (3, 300)):
+            pipeline._append(np.full(length, value, dtype=np.int16))
+        return pipeline
+
+    def test_uneven_chunks_read_back_in_order(self):
+        span = self._uneven().read_from(0)
+        assert list(span.samples) == [1] * 100 + [2] * 7 + [3] * 300
+
+    def test_uneven_chunks_trim_from_the_right_place(self):
+        # Positions 0-99 hold 1, 100-106 hold 2, 107 on hold 3; so a read from 105
+        # starts two samples into the middle chunk.
+        span = self._uneven().read_from(105)
+        assert list(span.samples) == [2] * 2 + [3] * 300
+
+    def test_a_small_read_does_not_join_the_whole_buffer(self, monkeypatch):
+        """A sequential reader asks for the fraction of a second that arrived since it
+        last called, five times a second for as long as a recording lasts.  Joining the
+        whole ~10 second buffer to keep the newest 512 samples of it is several hundred
+        kilobytes copied to throw away, so the span takes only the chunks it touches."""
+        pipeline = self._pipeline(_BUFFER_CHUNKS)
+        end = pipeline.read_from(0).end
+        pipeline._append(np.zeros(CHUNK, dtype=np.int16))
+
+        joined, real = [], np.concatenate
+
+        def spy(arrays, *args, **kwargs):
+            joined.append(sum(len(a) for a in arrays))
+            return real(arrays, *args, **kwargs)
+
+        monkeypatch.setattr(np, 'concatenate', spy)
+        pipeline.read_from(end)
+        assert joined == [CHUNK]
 
 
 class TestClear:

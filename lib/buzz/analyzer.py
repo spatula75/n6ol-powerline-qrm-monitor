@@ -98,7 +98,7 @@ from buzz.dsp import (
     calculate_pps_fit_array,
     pulse_phase_period,
 )
-from buzz.sampler import AudioPipeline
+from buzz.sampler import RingBufferPipeline
 
 logger = logging.getLogger(__name__)
 
@@ -293,7 +293,7 @@ class ContinuousAnalyzer:
     # a runaway prediction.
     MAX_PHASE_DRIFT_RATE = 60.0       # samples/s
 
-    def __init__(self, pipeline: AudioPipeline, config: BuzzConfig) -> None:
+    def __init__(self, pipeline: RingBufferPipeline, config: BuzzConfig) -> None:
         self._pipeline          = pipeline
         audio                   = config.audio
         self._sample_rate       = audio.sample_rate

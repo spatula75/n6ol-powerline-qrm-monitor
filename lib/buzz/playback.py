@@ -10,10 +10,14 @@ running at real speed for a screen recording.
 
 No input device is opened, so a recording can be reviewed on a machine with no
 receiver attached.  An output device is opened only while the audio is actually
-being listened to: muted playback — which is the default, and what --mute asks
-for — runs exactly the code that ran before playback could be heard at all,
-paced by a monotonic deadline rather than by a sound card that nobody is
-listening to and that some machines do not have.
+being listened to, so muted playback — what --mute asks for, and what this class
+does unless told otherwise — runs exactly the code that ran before playback could
+be heard at all, paced by a monotonic deadline rather than by a sound card that
+nobody is listening to and that some machines do not have.
+
+Note that the class defaults to muted and the command line does not: building a
+pipeline must never open a device the caller did not ask for, but somebody who
+typed --playback wants to hear it (see buzz.main).
 
 At the end of the file the feeder simply stops.  The buffer keeps its last few
 seconds, so the display holds its final frame rather than going blank, and the
@@ -217,6 +221,15 @@ class FilePlaybackPipeline(RingBufferPipeline):
             self._state.notify_all()
 
     def toggle_pause(self) -> None:
+        """Pause, or carry on.  Does nothing once the file has finished.
+
+        Without that guard the space bar can pause a replay that has already ended —
+        leaving the transport paused at a position it cannot be resumed from, since
+        resume() rightly refuses there, and disagreeing with a Play button that is
+        greyed out for exactly this reason.  Restart is the way back from the end.
+        """
+        if self.finished:
+            return
         self.pause() if not self.paused else self.resume()
 
     def restart(self) -> None:

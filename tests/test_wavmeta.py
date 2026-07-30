@@ -1,6 +1,7 @@
 """Tests for RIFF metadata: INFO tags, cue markers, and the settings comment."""
 
 import struct
+import tracemalloc
 import wave
 from pathlib import Path
 
@@ -34,6 +35,19 @@ def _chunk_names(path: Path) -> list[str]:
         names.append(data[pos:pos + 4].decode('latin-1'))
         pos += 8 + size + (size % 2)
     return names
+
+
+def _corrupt_list_size(path: Path) -> Path:
+    """Overwrite the LIST chunk's declared length with the largest a 32-bit field holds.
+
+    The LIST chunk specifically, because that is the one read_info reads the payload of
+    — a bogus length on a chunk it only seeks past costs nothing.
+    """
+    data = bytearray(path.read_bytes())
+    at = data.index(b'LIST')
+    data[at + 4:at + 8] = struct.pack('<I', 0xFFFFFFFF)
+    path.write_bytes(bytes(data))
+    return path
 
 
 def _tagged(tmp_path: Path, samples=None, cues=None, tags=None) -> Path:
@@ -100,6 +114,30 @@ class TestReadInfo:
         data = path.read_bytes()
         path.write_bytes(data[:len(data) // 2])
         assert isinstance(wavmeta.read_info(path), dict)
+
+    def test_an_absurd_chunk_length_is_not_allocated(self, tmp_path):
+        """A chunk declares its own length in 32 bits, so a truncated transfer or one
+        corrupt byte can claim four gigabytes.  read(size) on that really does try to
+        allocate all four before finding out the file is two kilobytes — measured here
+        rather than assumed — and MemoryError is not the "no metadata" this module
+        promises to degrade to.  Sizes are clamped to what is left in the file.
+        """
+        path = _corrupt_list_size(_tagged(tmp_path))
+        tracemalloc.start()
+        try:
+            wavmeta.read_info(path)
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert peak < 10 * 1024 * 1024
+
+    def test_an_absurd_chunk_length_still_reads_as_metadata(self, tmp_path):
+        assert isinstance(wavmeta.read_info(_corrupt_list_size(_tagged(tmp_path))), dict)
+
+    def test_an_absurd_chunk_length_still_reads_as_settings(self, tmp_path):
+        """read_settings walks the same chunks, so it needs the same protection."""
+        assert isinstance(
+            wavmeta.read_settings(_corrupt_list_size(_tagged(tmp_path))), dict)
 
     def test_odd_length_values_round_trip(self, tmp_path):
         tags = {'ICMT': 'odd'}          # 3 chars + NUL: the pad byte must not leak

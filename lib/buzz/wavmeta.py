@@ -101,14 +101,24 @@ def _iter_chunks(f: Any) -> Any:
 
     Seeks rather than reading, so inspecting the tags on a long recording does not
     pull its audio into memory.
+
+    Sizes are clamped to what is actually left in the file.  A chunk header declares
+    its own length in 32 bits, so a truncated download or a corrupt byte can claim
+    four gigabytes; read(size) on that allocates the four gigabytes before finding out
+    there is nothing to put in them, and MemoryError is not the "no metadata" this
+    module promises to degrade to.  The walk itself was always safe — an overshooting
+    seek lands past EOF and the next read comes back short — but a caller holding a
+    size it trusts is not.
     """
+    f.seek(0, 2)
+    file_size = f.tell()
     f.seek(_HEADER_SIZE)
     while True:
         header = f.read(8)
         if len(header) < 8:
             return
-        size = struct.unpack('<I', header[4:8])[0]
         offset = f.tell()
+        size = min(struct.unpack('<I', header[4:8])[0], file_size - offset)
         yield header[:4], size, offset
         f.seek(offset + size + (size % 2))
 
