@@ -135,6 +135,62 @@ class TestDisarmed:
         assert recorder.status().armed is True
 
 
+class TestRecordingDirectory:
+    """Created at startup, so a bad path is found while the operator is still there
+    rather than at the end of an unattended day that recorded nothing."""
+
+    def _blocked(self, tmp_path: Path) -> Path:
+        blocked = tmp_path / 'not-a-directory'
+        blocked.touch()                 # a file cannot be turned into a directory
+        return blocked
+
+    def test_created_when_armed_at_startup(self, tmp_path):
+        target = tmp_path / 'deep' / 'recordings'
+        _make_recorder(tmp_path, directory=str(target))
+        assert target.is_dir()
+
+    def test_not_created_when_recording_is_off(self, tmp_path):
+        target = tmp_path / 'recordings'
+        _make_recorder(tmp_path, directory=str(target), enabled=False)
+        assert not target.exists()
+
+    def test_created_when_armed_by_hand(self, tmp_path):
+        target = tmp_path / 'recordings'
+        recorder, _, _ = _make_recorder(tmp_path, directory=str(target), enabled=False)
+        recorder.arm()
+        assert target.is_dir()
+
+    def test_unusable_directory_does_not_raise_at_startup(self, tmp_path):
+        recorder, _, _ = _make_recorder(tmp_path, directory=str(self._blocked(tmp_path)))
+        assert recorder.status().recording is False
+
+    def test_unusable_directory_starts_disarmed(self, tmp_path):
+        recorder, _, _ = _make_recorder(tmp_path, directory=str(self._blocked(tmp_path)))
+        assert recorder.status().armed is False
+
+    def test_unusable_directory_is_reported_at_startup(self, tmp_path, caplog):
+        with caplog.at_level('ERROR'):
+            _make_recorder(tmp_path, directory=str(self._blocked(tmp_path)))
+        assert 'Cannot create the recording directory' in caplog.text
+
+    def test_unusable_directory_refuses_to_arm(self, tmp_path):
+        recorder, _, _ = _make_recorder(tmp_path, directory=str(self._blocked(tmp_path)))
+        recorder.arm()
+        assert recorder.status().armed is False
+
+    def test_unusable_directory_starts_no_rearm_cycle(self, tmp_path):
+        recorder, _, _ = _make_recorder(
+            tmp_path, directory=str(self._blocked(tmp_path)), rearm_reset_minutes=1440)
+        assert recorder.status().rearm_in_seconds is None
+
+    def test_arming_succeeds_once_the_path_is_fixed(self, tmp_path):
+        blocked = self._blocked(tmp_path)
+        recorder, _, _ = _make_recorder(tmp_path, directory=str(blocked))
+        blocked.unlink()                # operator clears whatever was in the way
+        recorder.arm()
+        assert recorder.status().armed is True
+
+
 class TestStartingARecording:
     def test_lock_creates_one_file(self, tmp_path):
         recorder, pipeline, analyzer = _make_recorder(tmp_path)
@@ -200,10 +256,13 @@ class TestStartingARecording:
         recorder.tick()
         assert len(_wav_files(tmp_path)) == 1
 
-    def test_unwritable_directory_disarms_rather_than_raising(self, tmp_path):
-        blocked = tmp_path / 'not-a-directory'
-        blocked.touch()
-        recorder, pipeline, analyzer = _make_recorder(tmp_path, directory=str(blocked))
+    def test_directory_lost_mid_run_disarms_rather_than_raising(self, tmp_path):
+        """The startup check cannot cover a directory that goes away later — a
+        removable drive, or a tidy-up script — so opening a file still has to cope."""
+        target = tmp_path / 'recordings'
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, directory=str(target))
+        target.rmdir()
+        target.touch()                  # a file where the directory used to be
         _feed(pipeline, 1)
         analyzer.lock()
         recorder.tick()

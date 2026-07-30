@@ -304,7 +304,7 @@ fade is a raised cosine and costs less than one pulse out of the 120 per second.
 | Setting | Default | Meaning |
 |---|---|---|
 | `enabled` | `false` | Arm recording at startup.  `--enable-recording` does the same for one run. |
-| `directory` | `recordings/` under the station path | Where files are written, and where `--playback` looks for a bare filename. |
+| `directory` | `recordings/` under the station path | Where files are written, and where `--playback` looks for a bare filename.  Created at startup if missing. |
 | `max_events` | `10` | How many of the next events to record before disarming.  `0` records every event. |
 | `rearm_reset_minutes` | `0` | Minutes between resets of that budget.  `0` never re-arms. |
 | `max_seconds` | `120` | Cap on a single recording, timed from lock; lead-in and trailer are extra.  `0` is uncapped. |
@@ -338,6 +338,20 @@ Recording off — re-arms in 23h 47m
 Switching recording off with the **Record** button cancels the cycle as well.  Off
 means off: a monitor that re-armed itself overnight because it happened to be
 turned off mid-cycle would be a nasty surprise to come back to.
+
+The recording directory is created when the monitor starts, not when the first
+event arrives, so a mistyped path or a permissions problem is reported straight
+away:
+
+```
+ERROR  buzz.recorder: Cannot create the recording directory D:\captures — recording
+is off.  Check the directory setting in the [recording] section of the config, and
+permissions on that path.
+```
+
+Recording is switched off in that case, but the monitor carries on measuring and
+logging as usual — a directory nobody can write to should cost you your
+recordings, not the day's data.  Fix the path and press **Record** to retry.
 
 Files are named for the moment of lock, in station local time with the UTC offset
 attached:

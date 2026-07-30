@@ -37,6 +37,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a click across the whole audio band rather than removing it. The recorder holds
   back a fade's worth of the newest audio so the fade-out can be applied to
   whichever samples turn out to be last, which is only known after the fact.
+- The recording directory is created when the recorder is built rather than at the
+  first event, so a mistyped path or a permissions problem is reported while the
+  operator is still watching the console — not discovered at the end of an
+  unattended day, from an empty folder that explains nothing. A directory that
+  cannot be created switches recording off and is logged as an error; the monitor
+  carries on measuring and logging, since the failure should cost recordings
+  rather than the day's data. Arming re-checks, so fixing the path and pressing
+  Record retries. Opening a file still copes with a directory that disappears
+  mid-run, which no startup check can cover.
 - `rearm_reset_minutes` turns the event budget into a rate rather than a one-off:
   `max_events = 10` with `rearm_reset_minutes = 1440` records up to ten events a
   day, every day, unattended, without being able to fill a disk. The cycle runs

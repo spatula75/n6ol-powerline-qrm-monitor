@@ -189,7 +189,11 @@ class EventRecorder:
         self._fade_in = fade_ramp(round(self.FADE_SECONDS * self._sample_rate))
 
         self._rearm_period = recording.rearm_reset_minutes * 60
-        self._armed = recording.enabled
+        # Create the directory now rather than at the first event.  A bad path is a
+        # configuration mistake, and the moment to find out about one is while the
+        # operator is still watching the console — not at the end of an unattended
+        # day, from an empty folder that explains nothing about why it is empty.
+        self._armed = recording.enabled and self._ensure_directory()
         self._events_remaining = self._initial_budget()
         # Monotonic deadline for the next budget reset, or None when no cycle is
         # running.  Set whenever the budget is filled, which is what makes the cycle
@@ -250,7 +254,13 @@ class EventRecorder:
                 self._finish('shutdown')
 
     def arm(self) -> None:
-        """Enable recording and refill the event budget, restarting the reset cycle."""
+        """Enable recording and refill the event budget, restarting the reset cycle.
+
+        Re-checks the directory, so this is also how an operator retries after fixing
+        a bad path: arming is refused, loudly, while there is nowhere to record to.
+        """
+        if not self._ensure_directory():
+            return
         with self._lock:
             self._fill_budget()
             # An explicit re-arm means "record now", even part-way through the event
@@ -302,6 +312,23 @@ class EventRecorder:
             self._tick()
 
     # ----------------------------------------------------------------- internal
+
+    def _ensure_directory(self) -> bool:
+        """Create the recording directory if needed; report whether it is usable.
+
+        Deliberately not fatal.  Measuring and logging the interference is the
+        monitor's job and recording is an extra, so a directory nobody can write to
+        costs the operator their recordings, not their day's data.
+        """
+        try:
+            self._directory.mkdir(parents=True, exist_ok=True)
+            return True
+        except OSError as exc:
+            logger.error('Cannot create the recording directory %s (%s) — recording '
+                         'is off.  Check the directory setting in the [recording] '
+                         'section of the config, and permissions on that path.',
+                         self._directory, exc)
+            return False
 
     def _initial_budget(self) -> int | None:
         return self._max_events if self._max_events > 0 else None
