@@ -486,6 +486,13 @@ can run to minutes would spend the whole allowance before the file was opened.
 Set it by how much of the noise you want to study, not by how big you want the
 files.
 
+**Expect an overrun of up to 200 ms.**  The recorder works on a poll rather than
+watching continuously, so a `min_lock_seconds` wait is noticed up to one poll after
+it has actually elapsed, and only the configured value is charged against the
+allowance — the remainder lands on top.  A 10 s setting can therefore produce
+10.1 s of event.  The audio itself is trimmed to the sample; it is the moment the
+allowance starts from that is quantised.
+
 The log spells the sum out when each recording closes, because the total is not a
 number any setting names:
 

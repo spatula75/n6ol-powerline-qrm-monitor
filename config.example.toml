@@ -127,6 +127,12 @@ rearm_reset_minutes = 0
 # wait that can run to minutes would spend the whole allowance before the file was
 # even opened.
 #
+# Expect a recording to overrun this by up to 200 ms.  The recorder works on a poll
+# rather than watching continuously, so a min_lock_seconds wait is noticed up to one
+# poll after it has actually elapsed, and only the configured value is charged
+# against this — the remainder lands on top.  A 10 second setting can therefore
+# produce 10.1 seconds of event.
+#
 # Set it by how much of the noise is worth studying rather than by how big the files
 # should be.  0 records the whole event however long it runs.
 #

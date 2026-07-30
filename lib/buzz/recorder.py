@@ -688,6 +688,11 @@ class EventRecorder:
         # it would spend the whole cap before the file was opened — which is how a
         # real event once came to be saved as a nought-second recording.  What the
         # buffer holds beyond the deliberate wait is lead-in, and lead-in is free.
+        #
+        # The charge is the configured wait rather than the observed one, so a
+        # recording overruns max_seconds by however late the poll was in noticing it —
+        # up to POLL_INTERVAL.  Charging what was observed would be exact here and
+        # unbounded for min_lock_snr, so the overrun is documented rather than chased.
         self._event_start = span.end - self._min_lock_samples
         # Capped here too, not only in _capture: with min_lock_seconds this opening
         # write already contains audio from after the lock, so a cap shorter than the
