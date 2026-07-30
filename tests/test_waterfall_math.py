@@ -6,7 +6,8 @@ from buzz.analyzer import AnalysisResult
 from buzz.dsp import SILENCE_DBFS
 from buzz.recorder import RecorderStatus
 from buzz.waterfall import (
-    build_colormap, format_countdown, format_record_button, format_recorder_status,
+    build_colormap, format_clock, format_countdown, format_playback_button,
+    format_playback_status, format_record_button, format_recorder_status,
     _aggregate_meter_history, _color_scale_range, _correction_offset, _mean_spectrum_db,
     _spectrum_percentiles,
     _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE, _DB_FFT_NOISE_CORR, _FFT_ADVANCE_SAMPLES,
@@ -41,13 +42,6 @@ class TestFormatRecorderStatus:
         status = _status(armed=True, recording=True, elapsed_seconds=9.9,
                          filename='event.wav')
         assert format_recorder_status(status) == '● REC 00:09 — event.wav'
-
-    def test_playback_replaces_the_recorder_status(self):
-        assert format_recorder_status(None, 'event.wav') == 'Playback — event.wav'
-
-    def test_playback_wins_over_a_live_recorder(self):
-        status = _status(armed=True, recording=True, filename='other.wav')
-        assert format_recorder_status(status, 'event.wav') == 'Playback — event.wav'
 
     def test_no_recorder_at_all(self):
         assert format_recorder_status(None) == 'Recording unavailable'
@@ -86,6 +80,61 @@ class TestFormatRecordButton:
     def test_playback_has_no_recorder_to_arm(self):
         assert format_record_button(None) == ('Record',
                                               'Recording is not available during playback')
+
+
+class TestFormatPlaybackStatus:
+    def test_playing(self):
+        assert (format_playback_status('event.wav', 12.0, 39.6, False, False)
+                == '▶ 00:12 / 00:39 — event.wav')
+
+    def test_paused(self):
+        assert format_playback_status('event.wav', 12.0, 39.6, True, False).startswith('▮▮')
+
+    def test_finished(self):
+        assert format_playback_status('event.wav', 39.6, 39.6, False, True).startswith('■')
+
+    def test_finished_wins_over_paused(self):
+        assert format_playback_status('event.wav', 39.6, 39.6, True, True).startswith('■')
+
+    def test_names_the_file_being_replayed(self):
+        assert 'event.wav' in format_playback_status('event.wav', 0.0, 1.0, False, False)
+
+    def test_minutes_roll_over(self):
+        assert '01:05' in format_playback_status('e.wav', 65.0, 130.0, False, False)
+
+
+class TestFormatPlaybackButton:
+    def test_playing_offers_pause(self):
+        assert format_playback_button(paused=False, finished=False)[0] == 'Pause'
+
+    def test_paused_offers_play(self):
+        assert format_playback_button(paused=True, finished=False)[0] == 'Play'
+
+    def test_enabled_while_there_is_something_to_play(self):
+        assert format_playback_button(paused=True, finished=False)[2] is True
+
+    def test_disabled_at_the_end_of_the_file(self):
+        assert format_playback_button(paused=False, finished=True)[2] is False
+
+    def test_the_end_points_at_restart(self):
+        assert 'Restart' in format_playback_button(paused=False, finished=True)[1]
+
+    def test_tooltip_gives_the_shortcut(self):
+        assert 'Space' in format_playback_button(paused=False, finished=False)[1]
+
+
+class TestFormatClock:
+    def test_seconds(self):
+        assert format_clock(9) == '00:09'
+
+    def test_minutes_and_seconds(self):
+        assert format_clock(125) == '02:05'
+
+    def test_truncates_rather_than_rounding(self):
+        assert format_clock(9.9) == '00:09'
+
+    def test_zero(self):
+        assert format_clock(0) == '00:00'
 
 
 class TestFormatCountdown:

@@ -307,6 +307,37 @@ class TestReadFrom:
         assert len(span.samples) == span.end - span.start
 
 
+class TestClear:
+    def _pipeline(self, n_chunks: int):
+        pipeline = RingBufferPipeline()
+        for _ in range(n_chunks):
+            pipeline._append(np.full(CHUNK, 1000, dtype=np.int16))
+        return pipeline
+
+    def test_discards_buffered_audio(self):
+        pipeline = self._pipeline(3)
+        pipeline.clear()
+        assert pipeline.read_from(0).samples.size == 0
+
+    def test_sample_counter_keeps_going(self):
+        """It is the analyzer's audio clock and every phase's origin; winding it back
+        would read as time running backwards rather than as a fresh start."""
+        pipeline = self._pipeline(3)
+        pipeline.clear()
+        assert pipeline.total_samples == 3 * CHUNK
+
+    def test_new_audio_is_buffered_again(self):
+        pipeline = self._pipeline(3)
+        pipeline.clear()
+        pipeline._append(np.full(CHUNK, 7, dtype=np.int16))
+        assert np.all(pipeline.get_snapshot(CHUNK) == 7)
+
+    def test_snapshot_of_an_emptied_buffer_is_silence(self):
+        pipeline = self._pipeline(3)
+        pipeline.clear()
+        assert np.all(pipeline.get_snapshot(CHUNK) == 0)
+
+
 class TestAudioPipelineClose:
     def test_close_stops_stream(self):
         config = _make_config()

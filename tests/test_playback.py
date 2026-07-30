@@ -131,6 +131,158 @@ class TestFilePlaybackPipeline:
         pipeline.close()
         assert pipeline._thread.is_alive() is False
 
+    def test_position_starts_at_the_beginning(self, tmp_path):
+        """Not exactly zero: the first chunk is due immediately, and the position is
+        quantised to whole chunks, so it has already moved by the time anyone looks."""
+        path = _write_wav(tmp_path / 'a.wav', _ramp(20), sample_rate=CHUNK * 4)
+        with FilePlaybackPipeline(path) as pipeline:
+            assert pipeline.position <= pipeline.duration / 10
+
+    def test_position_advances_with_playback(self, tmp_path):
+        path = _write_wav(tmp_path / 'a.wav', _ramp(8))
+        with FilePlaybackPipeline(path) as pipeline:
+            _wait_for_finish(pipeline)
+            assert pipeline.position == pytest.approx(pipeline.duration)
+
+
+class TestTransport:
+    """Pause, resume and restart, driven the way the toolbar drives them."""
+
+    def _slow(self, tmp_path, chunks=40):
+        """A file long enough to still be playing while a test pokes at it."""
+        path = _write_wav(tmp_path / 'a.wav', _ramp(chunks), sample_rate=CHUNK * 10)
+        return FilePlaybackPipeline(path)
+
+    def test_starts_playing(self, tmp_path):
+        with self._slow(tmp_path) as pipeline:
+            assert pipeline.paused is False
+
+    def test_pause_stops_the_audio(self, tmp_path):
+        with self._slow(tmp_path) as pipeline:
+            time.sleep(0.15)
+            pipeline.pause()
+            time.sleep(0.05)                 # let any in-flight chunk land
+            settled = pipeline.total_samples
+            time.sleep(0.3)
+            assert pipeline.total_samples == settled
+
+    def test_pause_holds_the_position(self, tmp_path):
+        with self._slow(tmp_path) as pipeline:
+            time.sleep(0.15)
+            pipeline.pause()
+            time.sleep(0.05)
+            settled = pipeline.position
+            time.sleep(0.3)
+            assert pipeline.position == settled
+
+    def test_resume_continues_from_where_it_stopped(self, tmp_path):
+        with self._slow(tmp_path) as pipeline:
+            time.sleep(0.15)
+            pipeline.pause()
+            time.sleep(0.05)
+            settled = pipeline.position
+            pipeline.resume()
+            time.sleep(0.2)
+            assert pipeline.position > settled
+
+    def test_resume_does_not_replay_what_was_already_fed(self, tmp_path):
+        """Audio is a stream to everything downstream, so a resume that re-fed the
+        chunk it paused on would show up as the same instant happening twice."""
+        with self._slow(tmp_path) as pipeline:
+            time.sleep(0.15)
+            pipeline.pause()
+            time.sleep(0.05)
+            before = pipeline.total_samples
+            pipeline.resume()
+            time.sleep(0.2)
+            after = pipeline.total_samples
+        assert (after - before) % CHUNK == 0 and after > before
+
+    def test_toggle_pauses_then_resumes(self, tmp_path):
+        with self._slow(tmp_path) as pipeline:
+            pipeline.toggle_pause()
+            paused = pipeline.paused
+            pipeline.toggle_pause()
+            assert (paused, pipeline.paused) == (True, False)
+
+    def test_restart_returns_to_the_beginning(self, tmp_path):
+        with self._slow(tmp_path) as pipeline:
+            time.sleep(0.25)
+            pipeline.restart()
+            assert pipeline.position < 0.1
+
+    def test_restart_resumes_a_paused_file(self, tmp_path):
+        with self._slow(tmp_path) as pipeline:
+            pipeline.pause()
+            pipeline.restart()
+            assert pipeline.paused is False
+
+    def test_restart_plays_the_file_again(self, tmp_path):
+        with self._slow(tmp_path) as pipeline:
+            time.sleep(0.2)
+            before = pipeline.total_samples
+            pipeline.restart()
+            time.sleep(0.2)
+            assert pipeline.total_samples > before
+
+    def test_restart_empties_the_ring_buffer(self, tmp_path):
+        """Otherwise an analyzer reset alongside the restart is handed the tail of
+        the pass just abandoned, and locks onto it before the new pass arrives."""
+        with self._slow(tmp_path) as pipeline:
+            time.sleep(0.25)
+            pipeline.pause()
+            time.sleep(0.05)
+            pipeline.restart()
+            assert pipeline.read_from(0).samples.size == 0
+
+    def test_restart_keeps_the_sample_counter_monotonic(self, tmp_path):
+        with self._slow(tmp_path) as pipeline:
+            time.sleep(0.25)
+            pipeline.pause()
+            time.sleep(0.05)
+            before = pipeline.total_samples
+            pipeline.restart()
+            assert pipeline.total_samples >= before
+
+    def test_restart_clears_the_finished_flag(self, tmp_path):
+        path = _write_wav(tmp_path / 'a.wav', _ramp(3))
+        with FilePlaybackPipeline(path) as pipeline:
+            _wait_for_finish(pipeline)
+            pipeline.restart()
+            assert pipeline.finished is False
+
+    def test_resume_at_the_end_does_nothing(self, tmp_path):
+        path = _write_wav(tmp_path / 'a.wav', _ramp(3))
+        with FilePlaybackPipeline(path) as pipeline:
+            _wait_for_finish(pipeline)
+            pipeline.resume()
+            assert pipeline.finished is True
+
+    def test_pausing_does_not_spin(self, tmp_path):
+        """The feeder blocks on its condition rather than polling.  Measured as CPU
+        time, because a spin loop looks identical to a blocked thread from outside
+        until you ask how much of a core it is eating."""
+        with self._slow(tmp_path) as pipeline:
+            pipeline.pause()
+            time.sleep(0.05)
+            start = time.process_time()
+            time.sleep(0.5)
+            assert time.process_time() - start < 0.05
+
+    def test_sitting_at_the_end_does_not_spin(self, tmp_path):
+        path = _write_wav(tmp_path / 'a.wav', _ramp(3))
+        with FilePlaybackPipeline(path) as pipeline:
+            _wait_for_finish(pipeline)
+            start = time.process_time()
+            time.sleep(0.5)
+            assert time.process_time() - start < 0.05
+
+    def test_close_wakes_a_paused_feeder(self, tmp_path):
+        pipeline = self._slow(tmp_path)
+        pipeline.pause()
+        pipeline.close()
+        assert pipeline._thread.is_alive() is False
+
     def test_playback_runs_at_the_files_rate(self, tmp_path):
         # 20 chunks at 20 chunks/second should take about a second, not zero: the
         # point of playback is that a screen recording of it runs at real speed.

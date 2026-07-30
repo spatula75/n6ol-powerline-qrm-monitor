@@ -162,6 +162,112 @@ class TestTransition:
         assert az._state == 'SIGNAL_LOST'
 
 
+class TestReset:
+    """Replaying a file from the top must not start with what the last pass learned."""
+
+    def _locked_analyzer(self):
+        """An analyzer carrying everything a pass over a real event leaves behind."""
+        az = _make_analyzer()
+        az._transition(AnalyzerState.LOCKED)
+        az._peak_phase, az._noise_phase = 41.0, 97.0
+        az._phase_drift_rate = 0.35
+        az._phases_measured_at = 12.0
+        az._unwrapped_phase = 806.0
+        az._previous_measured_phase = 41
+        az._phase_history.extend([(1.0, 40.0), (2.0, 40.5)])
+        az._dc = 3.5
+        az._consecutive_low_snr = 2
+        az._last_refine = az._last_full_fft = time.monotonic()
+        az._publish(AnalysisResult(signal_dbm=-70.0, noise_dbm=-95.0, snr=25.0, locked=True))
+        return az
+
+    def test_returns_to_searching(self):
+        az = self._locked_analyzer()
+        az._apply_reset()
+        assert az.state == AnalyzerState.SEARCHING
+
+    def test_forgets_the_phase_pair(self):
+        az = self._locked_analyzer()
+        az._apply_reset()
+        assert (az._peak_phase, az._noise_phase, az._phases_valid) == (0.0, 0.0, False)
+
+    def test_forgets_the_drift_rate(self):
+        """Unlike a signal outage, which keeps the rate as a good starting guess:
+        after a reset there is nothing to be right about yet."""
+        az = self._locked_analyzer()
+        az._apply_reset()
+        assert az._phase_drift_rate == 0.0
+
+    def test_forgets_the_fitted_history(self):
+        az = self._locked_analyzer()
+        az._apply_reset()
+        assert len(az._phase_history) == 0 and az._previous_measured_phase is None
+
+    def test_forgets_the_dc_estimate(self):
+        az = self._locked_analyzer()
+        az._apply_reset()
+        assert az._dc is None
+
+    def test_drops_published_results(self):
+        az = self._locked_analyzer()
+        az._apply_reset()
+        assert az.latest_result() is None and az.drain_results() == []
+
+    def test_clears_the_tier_timers(self):
+        az = self._locked_analyzer()
+        az._apply_reset()
+        assert (az._last_refine, az._last_full_fft) == (0.0, 0.0)
+
+    def test_tells_listeners_the_lock_is_gone(self):
+        az = self._locked_analyzer()
+        seen = []
+        az.add_state_listener(seen.append)
+        az._apply_reset()
+        assert seen == [AnalyzerState.SEARCHING]
+
+    def test_says_nothing_when_already_searching(self):
+        az = _make_analyzer()
+        seen = []
+        az.add_state_listener(seen.append)
+        az._apply_reset()
+        assert seen == []
+
+    def test_request_is_deferred_to_the_analysis_thread(self):
+        """reset() is called from the Qt thread, so it must not touch anything."""
+        az = self._locked_analyzer()
+        az.reset()
+        assert az.state == AnalyzerState.LOCKED
+
+    def test_request_is_recorded(self):
+        az = self._locked_analyzer()
+        az.reset()
+        assert az._reset_requested.is_set()
+
+    def test_the_scope_stops_trusting_the_phase_immediately(self):
+        """Not on the next tick: a tick can sit in wait_for_data for a second, which
+        is long enough for replayed audio to re-lock and for the operator to conclude
+        the restart did nothing at all."""
+        az = self._locked_analyzer()
+        az.reset()
+        assert az.trigger_phase()[1] == TriggerSync.FREE
+
+    def test_the_last_result_is_dropped_immediately(self):
+        az = self._locked_analyzer()
+        az.reset()
+        assert az.latest_result() is None
+
+    def test_buffered_results_are_dropped_immediately(self):
+        az = self._locked_analyzer()
+        az.reset()
+        assert az.drain_results() == []
+
+    def test_applying_clears_the_request(self):
+        az = self._locked_analyzer()
+        az.reset()
+        az._apply_reset()
+        assert not az._reset_requested.is_set()
+
+
 class TestStateListeners:
     def test_listener_is_called_on_a_transition(self):
         az = _make_analyzer()

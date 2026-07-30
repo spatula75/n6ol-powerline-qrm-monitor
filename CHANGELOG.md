@@ -70,6 +70,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   analysed as 120 pps never locks, and a mismatched calibration reports the whole
   event at the wrong absolute level. A file without them still plays, warning that
   it is being analysed with the local configuration instead.
+- Restarting playback resets the analyzer, so the second pass is a cold start
+  rather than one that opens already locked at a drift rate learned from the pass
+  before — watching the monitor acquire a signal is usually the point of replaying
+  an event. The ring buffer is emptied with it, since several seconds of the
+  abandoned pass would otherwise be sitting there for a freshly-reset analyzer to
+  lock onto immediately. `ContinuousAnalyzer.reset()` splits the work by deadline:
+  tracker state (drift, fitted history, DC estimate, tier timers) is left for the
+  analysis thread, which owns it, while the fields the displays read are cleared
+  synchronously under the lock `trigger_phase()` uses — a tick can sit in
+  `wait_for_data` for a second, and a second is long enough for the replayed audio
+  to re-lock and make the restart look like it did nothing.
+- Playback has a transport: play/pause and restart, with a running time index
+  (`▶ 00:12 / 00:39 — event-....wav`). The toolbar carries it instead of the record
+  button, which means nothing when there is no live audio to record. `Space` pauses
+  and resumes without moving the mouse across a window being screen-recorded, and
+  restart replays the file from wherever it has got to, finished or not. Pausing
+  and restarting re-base the feeder's deadline schedule, since it is only
+  meaningful across a stretch of uninterrupted play; the feeder blocks on a
+  condition while paused or sitting at the end rather than polling for work.
 - `--playback FILE` replays a recorded `.wav` through the whole live pipeline
   (`buzz.playback`), at the file's own sample rate, so an event can be analysed
   again at real speed for a screen recording. A bare filename resolves against the

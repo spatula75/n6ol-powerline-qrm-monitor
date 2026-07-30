@@ -365,6 +365,7 @@ class ContinuousAnalyzer:
         self._latest_noise_correction: int = 0
         self._result_lock = threading.Lock()
         self._stop        = threading.Event()
+        self._reset_requested = threading.Event()
         self._state_listeners: list[Callable[[AnalyzerState], None]] = []
 
         self._thread = threading.Thread(target=self._run, daemon=True, name='analyzer')
@@ -390,6 +391,37 @@ class ContinuousAnalyzer:
         never a torn value.
         """
         return self._state
+
+    def reset(self) -> None:
+        """Forget everything learned about the signal and start acquiring again.
+
+        For replaying a recording from the top: the analyzer that has just watched
+        the event through knows where the pulse train is and how fast it is drifting,
+        so without this the second pass opens already locked.  That is not what
+        happened live, and watching the acquisition is usually the point of replaying
+        an event at all.
+
+        Split in two, because the two halves have different deadlines.  The tracker
+        state — drift rate, fitted history, DC estimate, tier timers — belongs to the
+        analysis thread and cannot be swapped out from under a tick already using it,
+        so it is left for _apply_reset() to do when that thread next comes round.
+
+        What the displays read cannot wait that long.  A tick can sit in
+        wait_for_data for a second at a time, and a second is long enough for the
+        replayed audio to refill the buffer and re-lock, so the operator would see
+        the lock indicator never drop and conclude the restart did nothing.  The
+        display-visible fields are therefore cleared here and now, under the lock
+        trigger_phase() reads them through: the scope drops to FREE and the meters to
+        silence the instant the button is pressed.
+        """
+        self._reset_requested.set()
+        with self._result_lock:
+            # A single store of an immutable value, like every other write to this
+            # field; the analyzer thread setting it back to True would only mean it
+            # had genuinely re-locked, and _apply_reset clears it again regardless.
+            self._phases_valid = False
+            self._latest_result = None
+            self._result_buffer.clear()
 
     def add_state_listener(self, listener: Callable[[AnalyzerState], None]) -> None:
         """Call `listener(new_state)` whenever the state machine changes state.
@@ -486,6 +518,36 @@ class ContinuousAnalyzer:
             except Exception:
                 logger.exception('Analyzer state listener failed — continuing.')
 
+    def _apply_reset(self) -> None:
+        """Return to the state a freshly-built analyzer is in (analysis thread only).
+
+        Everything measured from the audio goes; everything derived from the config
+        stays, since the kernels and geometry describe the signal being looked for
+        rather than anything learned about it.
+        """
+        self._reset_requested.clear()
+        self._peak_phase = self._noise_phase = 0.0
+        self._phase_drift_rate = 0.0
+        self._phases_measured_at = 0.0
+        self._unwrapped_phase = 0.0
+        self._reset_phase_history()
+        self._dc = None
+        self._phases_valid = False
+        self._consecutive_low_snr = 0
+        self._last_refine = self._last_narrow_scan = 0.0
+        self._last_full_fft = self._last_fast_scan = 0.0
+        with self._result_lock:
+            self._latest_result = None
+            self._result_buffer.clear()
+            self._latest_signal_correction = self._latest_noise_correction = 0
+        # Straight to SEARCHING, telling listeners only if that is a change: the reset
+        # clears what the machine knows either way, but a machine that was already
+        # searching has not changed state and has nothing to announce.
+        previous, self._state = self._state, AnalyzerState.SEARCHING
+        if previous != AnalyzerState.SEARCHING:
+            self._publish_state(AnalyzerState.SEARCHING)
+        logger.info('Analyzer reset — acquiring from scratch.')
+
     def _run(self) -> None:  # pragma: no cover
         # Guards against a transient failure (a numerical edge case, a hiccup from
         # the audio device) silently killing this daemon thread.  Without this, an
@@ -496,6 +558,8 @@ class ContinuousAnalyzer:
         # catch-log-retry approach to the same class of failure.
         while not self._stop.is_set():
             try:
+                if self._reset_requested.is_set():
+                    self._apply_reset()
                 if self._state == AnalyzerState.LOCKED:
                     interval = self._locked_tick()
                 elif self._state == AnalyzerState.SIGNAL_LOST:

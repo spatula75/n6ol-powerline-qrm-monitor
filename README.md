@@ -397,6 +397,26 @@ A bare filename is looked up in the recording directory; anything with a path in
 it is used as given.  Playback runs at the file's own sample rate, so the
 displays move at the speed the event actually happened.
 
+The toolbar carries a transport instead of the record button, since there is
+nothing to record and every reason to want to stop on an interesting moment:
+
+```
+Pause  Restart    ▶ 00:12 / 00:39 — event-20260729-184450-0700.wav
+```
+
+The first button is named for what clicking it does, so it reads **Pause** while
+playing and **Play** while paused; **Space** does the same thing without moving
+the mouse across the window you are recording.  **Restart** plays the file again
+from the beginning, from wherever you are and whether or not it has finished.  At
+the end of the file the time index turns to ■ and Play greys out, since Restart is
+the only thing left to do.
+
+Restart resets the analyzer too, so the second pass is a genuine cold start:
+lock indicator to FREE, meters to silence, drift rate and phase forgotten, and the
+pulse train found again from nothing.  Watching the monitor acquire a signal is
+usually the point of replaying an event, and an analyzer that still remembered
+finding it the first time would open the second pass already locked.
+
 It also takes the pulse rate and level calibration from the file's metadata, so a
 recording measures the same wherever it is replayed — the sample rate is in the
 `.wav` header, but nothing else about how to read the audio is, and a 100 pps
@@ -431,8 +451,9 @@ with three panels and a toolbar:
 - **Waterfall** — below it, a scrolling spectrogram.
 - **S-meters** — the right-hand column, running the full height of the displays.
 
-Two keys work anywhere in the window: **A** switches the scope between its raw
-and averaged views, and **R** arms or disarms recording.
+Three keys work anywhere in the window: **A** switches the scope between its raw
+and averaged views, **R** arms or disarms recording, and **Space** pauses or
+resumes playback.
 
 ![Display window](docs/sample_waterfall_display.png)
 

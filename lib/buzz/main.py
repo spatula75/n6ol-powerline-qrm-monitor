@@ -274,7 +274,7 @@ def main() -> None:  # pragma: no cover
     app = QApplication(sys.argv)
     window = MainWindow(pipeline, analyzer, config, always_on_top=args.top,
                         recorder=recorder,
-                        playback_name=pipeline.path.name if args.playback else None)
+                        playback=pipeline if args.playback else None)
     window.show()
 
     # Allow Ctrl+C to close the window cleanly from the console

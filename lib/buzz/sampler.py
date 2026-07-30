@@ -77,6 +77,16 @@ class RingBufferPipeline:
             self._total_samples += len(chunk)
             self._condition.notify_all()
 
+    def clear(self) -> None:
+        """Discard buffered audio, as if capture had only just started.
+
+        The sample counter keeps going.  It is the audio clock the analyzer measures
+        drift against and the origin every phase is expressed in, so winding it back
+        would not read as "no audio yet" but as time running backwards.
+        """
+        with self._condition:
+            self._buffer.clear()
+
     def get_snapshot(self, n_samples: int, align: int = 1) -> np.ndarray:
         """Return the most recent n_samples of audio, optionally phase-aligned.
 
