@@ -260,7 +260,7 @@ def main() -> None:  # pragma: no cover
         analyzer = ContinuousAnalyzer(pipeline, config)
         analyzer.start()
     else:
-        if args.mute or args.playback_gain:
+        if args.mute or args.playback_gain != 0.0:
             logger.warning('--mute and --playback-gain are ignored outside playback; '
                            'the monitor never sends live audio to an output device.')
         pipeline = AudioSampler(config).pipeline

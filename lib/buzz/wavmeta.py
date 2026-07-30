@@ -143,7 +143,13 @@ def read_info(path: Path | str) -> dict[str, str]:
 
 
 def _parse_info(body: bytes) -> dict[str, str]:
-    """Split an INFO chunk body into {tag: text}, stopping at the first bad entry."""
+    """Split an INFO chunk body into {tag: text}, keeping whatever parses.
+
+    A corrupt or truncated length is not treated as an error, in keeping with the
+    rest of this module: the value is whatever bytes are actually there, and the
+    next position lands past the end of the body, which ends the walk.  Tags read
+    before that point are kept.
+    """
     tags, pos = {}, 0
     while pos + 8 <= len(body):
         tag = body[pos:pos + 4].decode('ascii', 'replace')

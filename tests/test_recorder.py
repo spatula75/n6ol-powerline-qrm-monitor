@@ -7,14 +7,14 @@ import time
 import wave
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
 import numpy as np
 import pytest
 
 from buzz import __version__, wavmeta
-from buzz.analyzer import AnalyzerState
+from buzz.analyzer import AnalysisResult, AnalyzerState
 from buzz.config import BuzzConfig
 from buzz.playback import load_wav
 from buzz.recorder import EventRecorder, event_filename, fade_ramp, unique_path
@@ -33,6 +33,15 @@ class FakeAnalyzer:
     def __init__(self, state: AnalyzerState = AnalyzerState.SEARCHING) -> None:
         self.state = state
         self._listeners = []
+        self._result: AnalysisResult | None = None
+
+    def latest_result(self) -> AnalysisResult | None:
+        return self._result
+
+    def publish(self, snr: float, locked: bool = True) -> None:
+        """Publish a measurement, the way the analyzer does on every tick."""
+        self._result = AnalysisResult(signal_dbm=-98.0 + snr, noise_dbm=-98.0,
+                                      snr=snr, locked=locked)
 
     def add_state_listener(self, listener) -> None:
         self._listeners.append(listener)
@@ -161,8 +170,12 @@ class TestDisarmed:
 
 
 class TestRecordingDirectory:
-    """Created at startup, so a bad path is found while the operator is still there
-    rather than at the end of an unattended day that recorded nothing."""
+    """Created by arming, so a bad path is found while the operator is still there
+    rather than at the end of an unattended day that recorded nothing.
+
+    Recording that is off reaches for nothing at all — no stray directory, and no
+    complaint about a path it was never going to use — so the check lands at startup
+    when armed there, and otherwise when the Record button is pressed."""
 
     def _blocked(self, tmp_path: Path) -> Path:
         blocked = tmp_path / 'not-a-directory'
@@ -242,6 +255,20 @@ class TestRecordingDirectory:
         with patch('buzz.recorder.wave.open', side_effect=RuntimeError('bad frame rate')):
             recorder.tick()
         assert recorder.status().recording is False
+
+    def test_a_writer_that_fails_after_opening_is_closed(self, tmp_path):
+        """The file is open by the time the header settings are applied, so a failure
+        there has something to clean up — and closing it raises in turn, since it
+        never got the settings it needs to write a header."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        writer = MagicMock()
+        writer.setframerate.side_effect = RuntimeError('bad frame rate')
+        writer.close.side_effect = RuntimeError('sampling rate not specified')
+        with patch('buzz.recorder.wave.open', return_value=writer):
+            recorder.tick()
+        writer.close.assert_called_once()
 
     def test_a_writer_that_cannot_be_configured_disarms(self, tmp_path):
         recorder, pipeline, analyzer = _make_recorder(tmp_path)
@@ -753,6 +780,152 @@ class TestMinimumLock:
         assert _durations(tmp_path) == [5.0]        # 1 s lead-in + 4 s from the lock
 
 
+class TestMinimumSnr:
+    """A signal the analyzer can hear but a person cannot is not worth a file.
+
+    Recording only: the analyzer locks at LOCK_ACQUIRE_SNR regardless, so this
+    decides what is kept, never what is heard.
+    """
+
+    def _locked_at(self, tmp_path, snr, **recording):
+        """A recorder watching a lock of the given SNR, with its window filled.
+
+        Ticked SNR_WINDOW times because that is what the recorder waits for before
+        judging anything — one reading decides nothing, by design.
+        """
+        recorder, pipeline, analyzer = _make_recorder(
+            tmp_path, min_lock_snr=10.0, **recording)
+        _feed(pipeline, 2)
+        analyzer.publish(snr)
+        analyzer.lock()
+        for _ in range(EventRecorder.SNR_WINDOW):
+            recorder.tick()
+        return recorder, pipeline, analyzer
+
+    def test_a_weak_signal_is_not_recorded(self, tmp_path):
+        recorder, pipeline, analyzer = self._locked_at(tmp_path, snr=7.0)
+        for _ in range(5):
+            _feed(pipeline, 1)
+            recorder.tick()
+        assert _wav_files(tmp_path) == []
+
+    def test_a_strong_signal_is_recorded(self, tmp_path):
+        recorder, _, _ = self._locked_at(tmp_path, snr=20.0)
+        assert len(_wav_files(tmp_path)) == 1
+
+    def test_a_signal_that_builds_is_recorded_when_it_crosses(self, tmp_path):
+        """The common shape of a real arc: quiet at first, then loud.  Watched
+        rather than abandoned, so the event is caught even though its start is not."""
+        recorder, pipeline, analyzer = self._locked_at(tmp_path, snr=7.0)
+        for _ in range(4):
+            _feed(pipeline, 1)
+            recorder.tick()
+        assert _wav_files(tmp_path) == []
+        analyzer.publish(25.0)
+        for _ in range(5):
+            _feed(pipeline, 1)
+            recorder.tick()
+        assert len(_wav_files(tmp_path)) == 1
+
+    def test_starting_late_costs_lead_in(self, tmp_path):
+        """The trade this setting makes, and the reason to keep it modest.
+
+        Only visible against a full buffer: until it is discarding, waiting costs
+        nothing because nothing has fallen off the far end yet.
+        """
+        def lead_in(name, weak_seconds):
+            directory = tmp_path / name
+            recorder, pipeline, analyzer = _make_recorder(
+                tmp_path, directory=str(directory), min_lock_snr=10.0)
+            _feed(pipeline, 400)                        # buffer full and discarding
+            analyzer.publish(2.0)
+            analyzer.lock()
+            for _ in range(weak_seconds):               # too quiet to record yet
+                _feed(pipeline, 1)
+                recorder.tick()
+            analyzer.publish(30.0)
+            for _ in range(EventRecorder.SNR_WINDOW):
+                _feed(pipeline, 1)
+                recorder.tick()
+            recorder.stop()
+            return float(wavmeta.read_settings(
+                _wav_files(directory)[0])['lead_in_seconds'])
+
+        assert lead_in('late', 20) < lead_in('prompt', 0)
+
+    def test_one_loud_reading_does_not_let_a_weak_event_through(self, tmp_path):
+        """Judged over a window, so a single tick cannot carry the decision."""
+        recorder, pipeline, analyzer = self._locked_at(tmp_path, snr=2.0)
+        analyzer.publish(30.0)
+        _feed(pipeline, 1)
+        recorder.tick()
+        assert _wav_files(tmp_path) == []
+
+    def test_unlocked_readings_are_not_counted(self, tmp_path):
+        """An unlocked result reports zero SNR by convention rather than a measured
+        one, and averaging those in would hold off a loud event over nothing."""
+        recorder, pipeline, analyzer = self._locked_at(tmp_path, snr=20.0)
+        analyzer.publish(0.0, locked=False)
+        assert len(_wav_files(tmp_path)) == 1
+
+    def test_losing_the_lock_forgets_the_readings(self, tmp_path):
+        recorder, pipeline, analyzer = self._locked_at(tmp_path, snr=20.0,
+                                                       min_lock_seconds=3)
+        analyzer.unlock()
+        recorder.tick()
+        analyzer.publish(2.0)
+        analyzer.lock()
+        for _ in range(5):
+            _feed(pipeline, 1)
+            recorder.tick()
+        assert _wav_files(tmp_path) == []
+
+    def _waited_past_the_buffer(self, tmp_path, max_seconds):
+        """Watch a signal below the threshold until the lock falls out of the buffer."""
+        recorder, pipeline, analyzer = _make_recorder(
+            tmp_path, min_lock_snr=10.0, max_seconds=max_seconds)
+        analyzer.publish(2.0)
+        analyzer.lock()
+        for _ in range(400):                # more than the buffer holds
+            _feed(pipeline, 1)
+            recorder.tick()
+        analyzer.publish(30.0)
+        for _ in range(max_seconds + 5):
+            _feed(pipeline, 1)
+            recorder.tick()
+        recorder.stop()
+        return recorder
+
+    def test_a_wait_that_outlives_the_buffer_still_records(self, tmp_path):
+        """The lock can fall out of the buffer entirely while the level is watched.
+        Timing the cap from it then spends the whole cap before the file is even
+        opened, and the event this setting exists to catch is saved as silence."""
+        self._waited_past_the_buffer(tmp_path, max_seconds=5)
+        assert _durations(tmp_path) == [5.0]
+
+    def test_a_wait_that_outlives_the_buffer_does_not_look_like_falling_behind(
+            self, tmp_path, caplog):
+        """The write position landing behind itself is what raised that warning, and
+        the recorder had not fallen behind anything."""
+        with caplog.at_level('WARNING'):
+            self._waited_past_the_buffer(tmp_path, max_seconds=5)
+        assert 'fell behind' not in caplog.text
+
+    def test_zero_records_whatever_locks(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_snr=0.0)
+        analyzer.publish(1.0)
+        analyzer.lock()
+        recorder.tick()
+        assert len(_wav_files(tmp_path)) == 1
+
+    def test_it_waits_for_both_the_level_and_the_time(self, tmp_path):
+        recorder, pipeline, analyzer = self._locked_at(tmp_path, snr=20.0,
+                                                       min_lock_seconds=4)
+        _feed(pipeline, 2)
+        recorder.tick()
+        assert _wav_files(tmp_path) == []       # loud enough, not yet long enough
+
+
 class TestOddSettings:
     """Settings that contradict each other, or that nobody meant to type.
 
@@ -858,6 +1031,32 @@ class TestEventBudget:
         recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=1)
         self._record_one_event(recorder, pipeline, analyzer)
         assert recorder.status().armed is False
+
+    def test_the_budget_running_out_says_so(self, tmp_path, caplog):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=1)
+        with caplog.at_level('INFO'):
+            self._record_one_event(recorder, pipeline, analyzer)
+        assert 'budget spent' in caplog.text
+
+    def test_stopping_by_hand_does_not_blame_the_budget(self, tmp_path, caplog):
+        """The last event's recording is still spent, but the operator is why
+        recording is now off — and saying "budget spent" alongside "disarmed" reads
+        as the monitor giving two different reasons for the same thing."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=1)
+        analyzer.lock()
+        recorder.tick()
+        with caplog.at_level('INFO'):
+            recorder.disarm()
+        assert 'Recording disarmed' in caplog.text
+        assert 'budget spent' not in caplog.text
+
+    def test_shutting_down_does_not_blame_the_budget(self, tmp_path, caplog):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=1)
+        analyzer.lock()
+        recorder.tick()
+        with caplog.at_level('INFO'):
+            recorder.stop()
+        assert 'budget spent' not in caplog.text
 
     def test_stays_armed_while_the_budget_remains(self, tmp_path):
         recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=2)

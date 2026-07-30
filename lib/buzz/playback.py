@@ -9,11 +9,12 @@ can be replayed later and analysed exactly as it was live, with the display
 running at real speed for a screen recording.
 
 No input device is opened, so a recording can be reviewed on a machine with no
-receiver attached.  An output device is opened only while the audio is actually
-being listened to, so muted playback — what --mute asks for, and what this class
-does unless told otherwise — runs exactly the code that ran before playback could
-be heard at all, paced by a monotonic deadline rather than by a sound card that
-nobody is listening to and that some machines do not have.
+receiver attached.  An output device is opened only while audio is actually being
+written to it — not while muted, paused, or stopped at the end of the file — so
+muted playback, which is what --mute asks for and what this class does unless told
+otherwise, runs exactly the code that ran before playback could be heard at all,
+paced by a monotonic deadline rather than by a sound card that nobody is listening
+to and that some machines do not have.
 
 Note that the class defaults to muted and the command line does not: building a
 pipeline must never open a device the caller did not ask for, but somebody who
@@ -114,11 +115,15 @@ class FilePlaybackPipeline(RingBufferPipeline):
         super().__init__()
         self._samples, self.sample_rate = load_wav(path)
         self.path = Path(path)
-        self.duration = len(self._samples) / self.sample_rate
         # Partial trailing chunks are dropped: consumers read whole chunks, and up
         # to 32 ms of audio at the very end of a file is not worth a special case.
         self._chunks = len(self._samples) // self.CHUNK_SIZE
         self._chunk_period = self.CHUNK_SIZE / self.sample_rate
+        # What will actually be played, rather than what the file holds, so that the
+        # transport's time index can reach its own total.  position is quantised to
+        # whole chunks, so measuring it against the file's full length would leave a
+        # finished replay reading 00:39 / 00:40 for the sake of the dropped fraction.
+        self.duration = self._chunks * self._chunk_period
 
         self._state = threading.Condition()
         self._index = 0             # next chunk to feed
@@ -196,17 +201,28 @@ class FilePlaybackPipeline(RingBufferPipeline):
 
         Unmuting clears a previous failure to open the device, so asking again after
         plugging something in is worth a retry; muting never fails.
+
+        Logged here rather than where the stream is actually opened and closed: the
+        stream now comes and goes with pausing too, so its lifecycle no longer tracks
+        anything the operator asked for.  This is the request, which is the part worth
+        a line — and a device that then refuses to open says so itself.
         """
         with self._state:
             self._muted = muted
             if not muted:
                 self._output_failed = False
             self._state.notify_all()
+        logger.info('Playback audio %s.', 'off' if muted else 'on')
 
     def toggle_mute(self) -> None:
         self.set_muted(not self.muted)
 
     def pause(self) -> None:
+        """Stop feeding, and release the sound card until playback resumes.
+
+        The stream closes rather than idling — see _sync_output — so a pause left
+        running over lunch is not an open device underrunning the whole time.
+        """
         with self._state:
             self._paused = True
             self._state.notify_all()
@@ -279,18 +295,26 @@ class FilePlaybackPipeline(RingBufferPipeline):
             return False
 
     def _sync_output(self) -> None:
-        """Open or close the output stream to match the requested mute state.
+        """Open or close the output stream to match what the transport is doing.
 
-        Feeder thread only — see set_muted.  Both transitions re-base the deadline
-        schedule, which matters most in the direction nobody thinks about: on muting,
-        an origin left over from before the stream opened is minutes in the past, and
-        the loop would race through the rest of the file trying to catch up to it.
+        Feeder thread only — see set_muted.  A stream is wanted only while audio is
+        actually being written to it, which muting, pausing and reaching the end of
+        the file each stop being true of.  A stream nobody writes to underruns for as
+        long as it is left open, so all three close it: mute already meant the absence
+        of a stream rather than a volume of zero, and pausing reaches the device by
+        exactly the same route rather than by a second mechanism of its own.
+
+        Both transitions re-base the deadline schedule, which matters most in the
+        direction nobody thinks about: on closing, an origin left over from before the
+        stream opened is minutes in the past, and the loop would race through the rest
+        of the file trying to catch up to it.
         """
         with self._state:
-            wanted = not self._muted and not self._output_failed
+            at_end = self._index >= self._chunks
+            wanted = not (self._muted or self._output_failed or self._paused or at_end)
             flush, self._flush_requested = self._flush_requested, False
         if self._output is not None and not wanted:
-            self._close_output()
+            self._close_output(drain=at_end)
         elif self._output is not None and flush:
             self._flush_output()
         if wanted and self._output is None:
@@ -325,27 +349,36 @@ class FilePlaybackPipeline(RingBufferPipeline):
         self._output = stream
         with self._state:
             self._rebase()
-        logger.info('Playback audio on.')
+        logger.debug('Playback output stream opened.')
 
-    def _close_output(self) -> None:
-        # abort() rather than stop(): stop() plays out whatever is still queued, and
-        # a mute button that takes a fifth of a second to go quiet is a broken one.
-        # The queued audio was already fed to the ring buffer, so nothing is lost
-        # from the replay itself — only from the speaker.
-        self._output.abort()
+    def _close_output(self, drain: bool = False) -> None:
+        """Close the output stream, by default throwing away what is still queued.
+
+        abort() rather than stop() wherever somebody asked for silence *now*: stop()
+        plays the queue out first, and a mute or pause button that takes a fifth of a
+        second to go quiet is a broken one.  The queued audio was already fed to the
+        ring buffer, so nothing is lost from the replay itself — only from the speaker.
+
+        The end of the file is the one place that reverses.  Nobody asked for silence
+        there, the queue holds the last of the recording, and cutting it off mid-sample
+        would end the replay on exactly the step the recorder's fade-out exists to
+        prevent.  So that one drains.
+        """
+        self._output.stop() if drain else self._output.abort()
         self._output.close()
         self._output = None
         with self._state:
             self._rebase()
-        logger.info('Playback audio off.')
+        logger.debug('Playback output stream closed.')
 
     def _wait_until_playable(self) -> bool:
         """Block while paused or sitting at the end; False once stopping.
 
         Reconciles the output stream on every pass, including each time it wakes.
-        The feeder is parked here whenever playback is paused or finished, which is
-        exactly when a mute would otherwise go unnoticed — leaving a device open with
-        nothing being written to it, and a button claiming the opposite.
+        Being parked here is itself a reason to have no stream — nothing is being
+        written while the feeder waits — and it is also the only moment a mute
+        arriving during a pause could otherwise be noticed.  Either way the device
+        does not sit open and starving while the transport is stopped.
         """
         while not self._stop.is_set():
             self._sync_output()

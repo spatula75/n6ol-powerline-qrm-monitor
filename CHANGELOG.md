@@ -37,10 +37,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a click across the whole audio band rather than removing it. The recorder holds
   back a fade's worth of the newest audio so the fade-out can be applied to
   whichever samples turn out to be last, which is only known after the fact.
-- The recording directory is created when the recorder is built rather than at the
-  first event, so a mistyped path or a permissions problem is reported while the
-  operator is still watching the console — not discovered at the end of an
-  unattended day, from an empty folder that explains nothing. A directory that
+- The recording directory is created when recording is armed rather than at the
+  first event — at startup when it is armed there, and otherwise when the Record
+  button is pressed — so a mistyped path or a permissions problem is reported while
+  the operator is still watching, not discovered at the end of an unattended day
+  from an empty folder that explains nothing. Recording that is off reaches for
+  nothing at all, so a run without it leaves no stray directory behind and raises
+  no complaint about a path it was never going to use. A directory that
   cannot be created switches recording off and is logged as an error; the monitor
   carries on measuring and logging, since the failure should cost recordings
   rather than the day's data. Arming re-checks, so fixing the path and pressing
@@ -54,6 +57,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   looking like a setting nobody chose. The documentation now states plainly that
   `max_seconds` buys that many seconds of actual 120 pps noise rather than that
   many seconds of file.
+- `min_lock_snr` keeps events too faint to hear off the disk, without making the
+  monitor any less sensitive: it gates recording alone, never locking, measurement,
+  logging or the display. The analyzer locks at 6 dB SNR — a constant in the code,
+  not a setting — so anything at or below that is a no-op, and the documentation
+  says so. A signal that starts quiet and builds is not skipped but watched:
+  recording begins the moment it crosses, which catches the event at the cost of
+  its opening seconds, since the wait comes out of the lead-in. Judged over about a
+  second of readings rather than one, both so a single loud tick cannot carry a weak
+  event through and because levels read several dB low until the drift tracker
+  converges — thresholding on the first reading after a lock would reject events
+  that actually qualify. Time spent below the threshold is paid for out of the
+  lead-in and the lead-in runs out, so a signal that loiters near the bar for longer
+  than the buffer holds loses its onset entirely; that is documented, and is the one
+  way this is sharper-edged than `min_lock_seconds`, whose wait is capped at the
+  buffer and so can never cost the beginning of an event. When a wait outlives the
+  buffer, `max_seconds` measures from the start of the file rather than from a lock
+  that is no longer in it — timing it from the lock spent the whole cap before the
+  file opened, saving the event as an empty recording and reporting, wrongly, that
+  the recorder had fallen behind the ring buffer.
 - `min_lock_seconds` holds a recording off until the interference has been present
   that long, so a night of two-second blips no longer fills the directory with
   files too short to be worth replaying — or spends the event budget on them. A
@@ -109,7 +131,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   with no usable output. Muting is the absence of an output stream rather than a
   volume of zero, so silent replay runs exactly the code that ran before playback
   could be heard — no device is opened, and the monotonic deadline paces it as
-  before. Whichever exists is the clock: with a stream open the sound card decides
+  before. Pausing and reaching the end of the file release the device by the same
+  route, since nothing is being written to it then either and a stream nobody
+  writes to underruns for as long as it is left open. The end of the file drains
+  what is queued rather than discarding it: nobody asked for silence there, and
+  cutting the last of the recording off mid-sample would end the replay on exactly
+  the step the recorder's fade-out exists to prevent. Whichever exists is the clock: with a stream open the sound card decides
   when the next chunk is wanted, which is what keeps audio and display together
   without a second clock to drift against. Both transitions re-base the schedule,
   since an origin left over from before a stream opened is minutes in the past and

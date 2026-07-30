@@ -315,6 +315,7 @@ fade is a raised cosine and costs less than one pulse out of the 120 per second.
 | `max_seconds` | `120` | How much 120 pps noise to record, timed from the lock.  The file is always longer — lead-in and trailer sit outside it.  `0` is uncapped. |
 | `stop_after_seconds` | `10` | Silence before a recording is closed — and therefore how long the trailer is. |
 | `min_lock_seconds` | `0` | How long the signal must hold before a recording starts.  Keep it to 5 s or less. |
+| `min_lock_snr` | `0` | How strong the signal must be before a recording starts, in dB SNR.  Recording only. |
 
 Recording disarms itself once `max_events` events have been captured, so the
 defaults take the next ten events, at up to two minutes each, and then leave the
@@ -343,6 +344,52 @@ does not.  Ask for longer than the buffer holds and the file would begin *after*
 the event started, missing the onset that makes an arc worth looking at; the value
 is capped there, and setting more logs a warning telling you what it used instead.
 
+### Ignoring events too faint to be worth keeping
+
+The analyzer is sensitive enough to lock onto interference you can barely hear.
+`min_lock_snr` keeps those off the disk:
+
+```toml
+min_lock_snr = 12
+```
+
+**This affects recording only.**  It does not change when a signal is locked,
+measured, logged to the CSV, or drawn on the display — the monitor stays exactly
+as sensitive as it was.  Locking happens at **6 dB SNR**, which is a constant in
+the analyzer rather than a setting here, so any value at or below 6 does nothing
+at all.
+
+A signal that starts quiet and builds — which is how many arcs behave — is **not
+skipped**.  Recording begins the moment it crosses the threshold, so the event is
+caught even when its opening seconds are not.
+
+**Time spent below the threshold is paid for out of the buffer, and the buffer runs
+out.**  Only the last few seconds of audio are ever held, so:
+
+```
+lead-in kept  =  buffer length  −  time spent below the threshold
+```
+
+Sit at 6 dB for 3 seconds before crossing a threshold of 10 and you keep 6.6 of the
+usual 9.6 seconds of run-up.  Sit there for 30 seconds and the run-up is gone
+entirely — the file opens roughly 20 seconds *into* the event, having lost its
+onset along with everything before it.
+
+You still get a whole recording when that happens.  Once the lock has fallen out
+of the buffer, `max_seconds` measures from the start of the file rather than from a
+lock that is no longer in it, so the promise holds either way: that many seconds of
+actual pulse train.
+
+This is the one way `min_lock_snr` is sharper-edged than `min_lock_seconds`.  That
+setting is capped at the buffer's length, so it can never cost you the beginning of
+an event; this one's wait depends on the signal, so it cannot be capped.  Set it
+only as high as it needs to be to reject what you do not want.
+
+The level is judged over about a second of readings rather than a single one, both
+so one loud moment cannot carry a weak event through and because the first readings
+after a lock are the least trustworthy — the analyzer's drift tracker has not
+converged yet, and levels read several dB low until it does.
+
 ### Recording to a schedule
 
 `rearm_reset_minutes` turns `max_events` into a rate rather than a one-off, which
@@ -366,9 +413,11 @@ Switching recording off with the **Record** button cancels the cycle as well.  O
 means off: a monitor that re-armed itself overnight because it happened to be
 turned off mid-cycle would be a nasty surprise to come back to.
 
-The recording directory is created when the monitor starts, not when the first
-event arrives, so a mistyped path or a permissions problem is reported straight
-away:
+The recording directory is created when recording is armed, not when the first
+event arrives — at startup with `enabled = true` or `--enable-recording`, and
+otherwise the moment you press **Record**.  Either way a mistyped path or a
+permissions problem is reported there and then, rather than at the end of an
+unattended night from an empty folder:
 
 ```
 ERROR  buzz.recorder: Cannot create the recording directory D:\captures — recording
@@ -477,6 +526,9 @@ exactly the code that ran before playback could be heard, paced by the monitor's
 own clock.  Unmuted, the sound card becomes the clock instead — it is the one
 that decides when the next chunk is actually wanted.
 
+Pausing and reaching the end of the file release the device the same way, so a
+replay left paused is not holding a sound card open with nothing to send it.
+
 Powerline noise is usually recorded well below full scale — around −24 to −34 dBFS
 is typical — which is quiet on laptop speakers.  `--playback-gain` turns it up:
 
@@ -512,10 +564,37 @@ recording analysed as 120 pps simply never locks.  Any mismatch with your own
 config is logged.  A `.wav` from anywhere else still plays; it just warns that it
 is being analysed with your settings, which may not be the ones it was made with.
 
+### Short or weak recordings may not lock on replay
+
+A replay is analysed exactly as live audio is, so it is subject to the same
+acquisition behaviour — and a short file gives that behaviour very few chances.
+
+While searching, the analyzer examines one second of audio at a time, once a
+second.  Since the window and the interval are the same length, that is very nearly
+continuous: measured across a replay, about 98% of the timeline is examined.  Two
+things still work against a short, weak recording.
+
+**The opening seconds are barely examined.**  The first search is made before a
+full second has even been buffered, and the next lands about two seconds in.  A
+three-second file therefore gets one or two real attempts at it, not thirty.
+
+**The window averages.**  A burst shorter than a second is measured across the
+whole second, so half a second of pulse train reads about 6 dB weaker than it
+actually is — and the threshold for locking is 6 dB SNR.
+
+Together these mean a brief, marginal event that locked when it was captured may
+not lock when replayed.  Nothing is wrong with the recording; there is simply less
+of it to work with.  **Restart** resets the analyzer and refills the buffer, which
+gives it an independent second go — noise differs from pass to pass, and a
+borderline signal can fail one attempt and pass the next.  Capturing more of an
+event in the first place (`max_seconds`, or a longer `stop_after_seconds`) is the
+better fix.
+
 Replay is analysis only.  No CSV rows, no plots, no uploads, and no recording —
 looking at an old event again must not add minutes to a day it did not happen on.
-The audio device is not opened at all, so recordings can be reviewed anywhere.
-When the file runs out, playback stops and the displays hold their last frame.
+No audio *input* device is opened at all, so recordings can be reviewed on a
+machine with no receiver attached to it.  When the file runs out, playback stops
+and the displays hold their last frame.
 
 ---
 

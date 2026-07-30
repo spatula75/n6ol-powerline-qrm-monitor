@@ -52,6 +52,7 @@ import logging
 import threading
 import time
 import wave
+from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
@@ -71,9 +72,11 @@ _BYTES_PER_SAMPLE = 2   # 16-bit PCM, matching the int16 capture format end to e
 
 _EMPTY = np.empty(0, dtype=np.int16)
 
-# How each `ended` token written into a file's metadata reads in the log.  The two
-# tokens produced by a limit are described with that limit's value instead, by
-# _end_description.
+# How each `ended` token written into a file's metadata reads in the log.  These are
+# also exactly the two ends that are not the recorder's own doing — each is asked for
+# from outside and announced by whoever asked — which is why the budget stays quiet
+# about them in _finish().  The two tokens produced by a limit are described with
+# that limit's value instead, by _end_description.
 _END_DESCRIPTIONS = {
     'operator': 'stopped by operator',
     'shutdown': 'monitor shutting down',
@@ -176,6 +179,11 @@ class EventRecorder:
     # fade gives up well under one pulse out of the 120 in that second.
     FADE_SECONDS = 0.005
 
+    # How many published results min_lock_snr is judged over.  Five at the analyzer's
+    # publishing cadence is about a second: long enough that one loud tick cannot let
+    # a weak event through, short enough to follow a signal that is still building.
+    SNR_WINDOW = 5
+
     def __init__(self, pipeline: RingBufferPipeline, analyzer: ContinuousAnalyzer,
                  config: BuzzConfig) -> None:
         self._pipeline = pipeline
@@ -202,13 +210,30 @@ class EventRecorder:
         self._min_lock_samples = self._qualifying_lock_samples(recording.min_lock_seconds)
         self._fade_in = fade_ramp(round(self.FADE_SECONDS * self._sample_rate))
 
+        # The analyzer, kept for its published levels rather than its state — the
+        # state arrives by push because lock is an edge, but SNR is a level, and a
+        # level is exactly the thing it is right to read when you happen to want it.
+        self._analyzer = analyzer
+        self._min_lock_snr = recording.min_lock_snr
+        # Recent SNR readings taken while a lock is being judged.  A rolling window
+        # rather than an average over the whole wait: an event that starts quiet and
+        # builds should be recorded from the moment it is loud enough, and an average
+        # dragged down by how it began would hold it off long after that.
+        self._recent_snr: deque[float] = deque(maxlen=self.SNR_WINDOW)
+
         # Negative would leave the deadline permanently in the past, re-arming on
         # every tick and burying the log five lines a second; it means "never", as 0 does.
         self._rearm_period = max(0.0, recording.rearm_reset_minutes * 60)
-        # Create the directory now rather than at the first event.  A bad path is a
-        # configuration mistake, and the moment to find out about one is while the
-        # operator is still watching the console — not at the end of an unattended
-        # day, from an empty folder that explains nothing about why it is empty.
+        # Arming is what creates the directory — here, and in arm() the same way —
+        # rather than the first event doing it.  A bad path is a configuration
+        # mistake, and the moment to find out about one is while somebody is still
+        # watching, not at the end of an unattended day from an empty folder that
+        # explains nothing about why it is empty.
+        #
+        # The short-circuit is load-bearing.  Recording that is off reaches for
+        # nothing at all, so a monitor run without it leaves no stray directory
+        # behind and cannot complain about a path it was never going to use; the
+        # check happens instead when the operator presses Record.
         self._armed = recording.enabled and self._can_record()
         self._events_remaining = self._initial_budget()
         # Monotonic deadline for the next budget reset, or None when no cycle is
@@ -478,6 +503,40 @@ class EventRecorder:
         held = self._pipeline.total_samples - self._locked_since
         return held >= self._min_lock_samples
 
+    def _sample_snr(self) -> None:
+        """Note the analyzer's latest SNR, while a lock is waiting to be judged.
+
+        Only locked results carry a level — an unlocked one reports zero by
+        convention (see AnalysisResult.unlocked), and averaging those in would hold
+        off a perfectly loud event for the sake of a reading that measured nothing.
+        """
+        if not self._min_lock_snr:
+            return
+        result = self._analyzer.latest_result()
+        if result is not None and result.locked:
+            self._recent_snr.append(result.snr)
+
+    def _is_loud_enough(self) -> bool:
+        """Whether the signal has reached min_lock_snr, judged over recent readings.
+
+        An event below the bar is watched, not abandoned: powerline arcs commonly
+        start quiet and build, and one that crosses ten seconds in is still worth
+        recording from the moment it does — at the cost of that much lead-in, which
+        is the trade this setting makes and the reason to keep it modest.
+
+        The window must be full before it decides anything.  Judged on one or two
+        readings, a single loud tick averages away a weak event and lets it through —
+        and the first readings after a cold lock are the ones least worth trusting
+        anyway, since the analyzer's drift estimate has not converged and levels read
+        several dB low until it does.  Waiting for a full window costs about a second
+        and buys a measurement worth thresholding on.
+        """
+        if not self._min_lock_snr:
+            return True
+        if len(self._recent_snr) < self.SNR_WINDOW:
+            return False
+        return sum(self._recent_snr) / self.SNR_WINDOW >= self._min_lock_snr
+
     def _consume_lock_state(self) -> tuple[bool, bool]:
         """(locked since the previous tick, lost since the previous tick).
 
@@ -510,11 +569,15 @@ class EventRecorder:
         if self._writer is None:
             if not locked:
                 self._locked_since = None
+                self._recent_snr.clear()
                 self._await_relock = False
             else:
                 if lost or self._locked_since is None:
                     self._locked_since = self._pipeline.total_samples
-                if self._armed and not self._await_relock and self._lock_has_held():
+                    self._recent_snr.clear()
+                self._sample_snr()
+                if (self._armed and not self._await_relock
+                        and self._lock_has_held() and self._is_loud_enough()):
                     self._begin()
             return
 
@@ -571,7 +634,15 @@ class EventRecorder:
         # three would be wrong by exactly that much if this used either end instead.
         locked_at = span.end if self._locked_since is None else self._locked_since
         self._lead_in, self._started_at = max(0, locked_at - span.start), now
-        self._event_start = locked_at
+        # The cap measures from the lock, or from the first sample in the file when
+        # the lock is no longer in it.  A wait long enough to empty the buffer —
+        # min_lock_snr sitting below the bar for minutes — leaves the lock further
+        # back than max_seconds allows, and measuring from there means the cap is
+        # spent before the file opens: the opening write clamps to nothing, the write
+        # position lands behind itself, and the event this was meant to catch is
+        # saved as an empty recording that reports having fallen behind the buffer.
+        # Either way the promise holds — that many seconds of actual pulse train.
+        self._event_start = max(locked_at, span.start)
         # Capped here too, not only in _capture: with min_lock_seconds this opening
         # write already contains audio from after the lock, so a cap shorter than the
         # wait would otherwise be overrun before the first poll ever looked at it.
@@ -732,6 +803,12 @@ class EventRecorder:
         if self._events_remaining is None:
             return
         self._events_remaining -= 1
-        if self._events_remaining <= 0:
-            self._armed = False
+        if self._events_remaining > 0:
+            return
+        self._armed = False
+        # Announced only when the budget is why recording is now off.  A recording
+        # stopped by hand or at shutdown spends its event too, but whatever asked for
+        # that has already disarmed and said so, and a second line naming a different
+        # cause reads as the monitor contradicting itself.
+        if ended not in _END_DESCRIPTIONS:
             logger.info('Recording disarmed — event budget spent.')

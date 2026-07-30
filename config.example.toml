@@ -149,6 +149,34 @@ stop_after_seconds = 10
 # warning is logged if you set more.
 min_lock_seconds = 0
 
+# Minimum signal-to-noise ratio, in dB, before a recording starts.  The analyzer is
+# sensitive enough to lock onto interference you can barely hear; this keeps those
+# events off the disk without making the monitor any less sensitive.
+#
+# Recording only.  It does not change when a signal is locked, measured, logged to
+# the CSV, or drawn on the display — the analyzer locks at 6 dB SNR, which is a
+# constant in the code rather than a setting here, so any value at or below 6 does
+# nothing at all.
+#
+# A signal that starts quiet and grows louder — which is how many arcs behave — is
+# not skipped.  Recording begins at the moment it crosses the threshold, so the
+# event is caught even if its opening seconds are not.
+#
+# Time spent below the threshold is paid for out of the lead-in, and the lead-in
+# runs out: only the last few seconds of audio are ever held, so the run-up you keep
+# is roughly the buffer's length minus the time spent waiting.  Sitting at 6 dB for
+# three seconds before crossing a threshold of 10 costs about three seconds of
+# run-up; sitting there for thirty loses the run-up altogether and opens the file
+# some twenty seconds into the event, onset and all.
+#
+# That is the one way this is sharper-edged than min_lock_seconds above, which is
+# capped at the buffer and so can never cost you the beginning of an event.  This
+# one's wait depends on the signal, so it cannot be capped — set it only as high as
+# it needs to be.  Something in the low teens is a reasonable place to start;
+# noise_min_snr in the [station] section is set to 12 for a related purpose and is a
+# fair guide.
+min_lock_snr = 0
+
 
 [server]
 # Set enabled = true to upload output files to a web server via SCP after each

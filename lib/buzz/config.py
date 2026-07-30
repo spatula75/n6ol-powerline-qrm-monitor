@@ -112,6 +112,12 @@ class RecordingConfig:
     # is a second of lead-in lost, since the buffer it comes from is a sliding
     # window, so this is capped at what that buffer holds.  0 records every lock.
     min_lock_seconds: float = 0.0
+    # Minimum SNR in dB before a recording starts, for keeping barely-audible events
+    # off the disk.  Recording only: it does not change when the analyzer locks, which
+    # happens at ContinuousAnalyzer.LOCK_ACQUIRE_SNR and is not configurable, so
+    # anything at or below that is the same as 0.  A signal that starts weak and grows
+    # is recorded from the moment it crosses, not skipped.
+    min_lock_snr: float = 0.0
 
     def directory_path(self, station: StationConfig) -> Path:
         """Resolve `directory` against the station's output path when it is unset."""
