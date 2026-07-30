@@ -229,6 +229,8 @@ _BAR_H       = 28
 _BAR_BG      = '#141414'                  # slightly darker than the panels below it
 _BAR_TEXT    = '#c8c8c8'
 _REC_TEXT    = '#ff6464'                  # status line while audio is being written
+_BAR_DIM        = '#5a5a5a'               # a control with nothing left to offer
+_BAR_BORDER_DIM = '#2a2a2a'
 
 
 def format_countdown(seconds: float) -> str:
@@ -239,6 +241,20 @@ def format_countdown(seconds: float) -> str:
     if minutes < 60:
         return f'{minutes}m'
     return f'{minutes // 60}h {minutes % 60:02d}m'
+
+
+def format_record_button(status: RecorderStatus | None) -> tuple[str, str]:
+    """The record button's (label, tooltip) for the recorder's current state.
+
+    The label names the state the recorder is in, not the action the button takes.
+    "Record" on a button that is already recording is the one reading that cannot be
+    right, and the action is discoverable from the tooltip either way.
+    """
+    if status is None:
+        return 'Record', 'Recording is not available during playback'
+    if status.armed:
+        return 'Armed', 'Recording is armed — click, or press R, to switch it off'
+    return 'Record', 'Arm recording (R)'
 
 
 def format_recorder_status(status: RecorderStatus | None,
@@ -625,8 +641,13 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
             f'QLabel {{ color: {_BAR_TEXT}; font-size: 11px; }}'
             f'QPushButton {{ color: {_BAR_TEXT}; background: #2a2a2a; border: 1px solid #3c3c3c;'
             '               border-radius: 3px; padding: 2px 10px; font-size: 11px; }'
-            'QPushButton:checked { color: #ffffff; background: #8c2020; border-color: #b04040; }'
-            'QPushButton:disabled { color: #5a5a5a; border-color: #2a2a2a; }'
+            # Armed and recording both read as spent rather than inviting: the action
+            # this button offers has already been taken, and a lit button suggests
+            # otherwise.  It stays clickable — dimmed is not disabled — because it is
+            # also the only way to switch recording off with the mouse.
+            f'QPushButton:checked {{ color: {_BAR_DIM}; background: {_BAR_BG};'
+            f'                       border-color: {_BAR_BORDER_DIM}; }}'
+            f'QPushButton:disabled {{ color: {_BAR_DIM}; border-color: {_BAR_BORDER_DIM}; }}'
         )
 
         layout = QHBoxLayout(self)
@@ -658,6 +679,9 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
         self._label.setText(format_recorder_status(status, self._playback_name))
         self._label.setStyleSheet(
             f'color: {_REC_TEXT};' if status is not None and status.recording else '')
+        label, tooltip = format_record_button(status)
+        self._button.setText(label)
+        self._button.setToolTip(tooltip)
         self._button.setChecked(status is not None and status.armed)
 
     def stop(self) -> None:

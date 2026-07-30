@@ -83,9 +83,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   intermittent signals this monitor exists to catch. Listeners run on the analyzer
   thread and are isolated from each other, so a failing one cannot abort a
   transition or stop analysis.
-- Toolbar strip across the top of the display window, with the recording control
-  and a status line (armed and events remaining, elapsed time and filename while
-  recording, or the file being replayed during playback). It spans the full window
+- Toolbar strip across the top of the display window, with a recording control that
+  names the state rather than the action — `Record` when off, `Armed` once on, dimmed
+  to match, since a lit button reading "Record" during a recording invites an action
+  already taken. It stays clickable, being also the only way to switch recording off
+  with the mouse. Beside it a status line (armed and events remaining, elapsed time
+  and filename while recording, or the file being replayed during playback). The bar
+  spans the full window
   width rather than sitting in the left-hand stack, which keeps the meter panel
   aligned with the displays — its segment geometry is derived from the window
   height and does not survive being stretched.

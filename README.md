@@ -269,8 +269,13 @@ then replay it as often as you like, at real speed, with a screen recorder
 running — no receiver required on the machine doing the replaying.
 
 Recording is configured in the `[recording]` section of the config file, armed at
-startup with `--enable-recording`, and toggled while running with the **Record**
-button in the toolbar or the **R** key.  Everything about it is off by default.
+startup with `--enable-recording`, and toggled while running with the toolbar
+button or the **R** key.  Everything about it is off by default.
+
+The button names the state rather than the action, so it reads **Record** when
+recording is off and **Armed** once it is on, dimming at the same time — there is
+nothing left to ask it for.  It stays clickable either way: dimmed is not
+disabled, and it is also how you switch recording back off.
 
 ### What ends up in the file
 
@@ -413,7 +418,7 @@ with three panels and a toolbar:
 
 ```
 +--------------------------------------+
-|  Record    Armed - 1 event(s)        |
+|  Record    Recording off             |
 +-----------------------------+--------+
 |  Oscilloscope               |        |
 +-----------------------------+ NF SIG |

@@ -6,8 +6,9 @@ from buzz.analyzer import AnalysisResult
 from buzz.dsp import SILENCE_DBFS
 from buzz.recorder import RecorderStatus
 from buzz.waterfall import (
-    build_colormap, format_countdown, format_recorder_status, _aggregate_meter_history,
-    _color_scale_range, _correction_offset, _mean_spectrum_db, _spectrum_percentiles,
+    build_colormap, format_countdown, format_record_button, format_recorder_status,
+    _aggregate_meter_history, _color_scale_range, _correction_offset, _mean_spectrum_db,
+    _spectrum_percentiles,
     _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE, _DB_FFT_NOISE_CORR, _FFT_ADVANCE_SAMPLES,
     _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE, _COLOR_HEADROOM, _MIN_DYNAMIC_RANGE_DB,
 )
@@ -61,6 +62,30 @@ class TestFormatRecorderStatus:
     def test_armed_does_not_show_the_countdown(self):
         status = _status(armed=True, events_remaining=3, rearm_in_seconds=3600)
         assert format_recorder_status(status) == 'Armed — 3 event(s) to record'
+
+
+class TestFormatRecordButton:
+    def test_off_invites_recording(self):
+        assert format_record_button(_status())[0] == 'Record'
+
+    def test_armed_names_the_state_not_the_action(self):
+        assert format_record_button(_status(armed=True))[0] == 'Armed'
+
+    def test_recording_reads_the_same_as_armed(self):
+        """A button reading "Record" while a recording is in progress is the one
+        label that cannot be right."""
+        status = _status(armed=True, recording=True, filename='event.wav')
+        assert format_record_button(status)[0] == 'Armed'
+
+    def test_armed_tooltip_says_how_to_switch_it_off(self):
+        assert 'off' in format_record_button(_status(armed=True))[1]
+
+    def test_off_tooltip_gives_the_shortcut(self):
+        assert 'R' in format_record_button(_status())[1]
+
+    def test_playback_has_no_recorder_to_arm(self):
+        assert format_record_button(None) == ('Record',
+                                              'Recording is not available during playback')
 
 
 class TestFormatCountdown:

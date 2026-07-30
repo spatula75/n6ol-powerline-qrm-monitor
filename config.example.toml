@@ -120,6 +120,9 @@ rearm_reset_minutes = 0
 # lead-in and trailer are extra.  0 records the whole event however long it runs.
 # A capped recording does not roll over into a second file: the rest of that
 # event is skipped, and the next event starts the next file.
+#
+# The cap always wins over stop_after_seconds below, so setting it shorter than
+# that leaves room for less trailer than the other setting asks for.
 max_seconds = 120
 
 # Seconds without a lock before a recording is closed.  This audio is kept, so

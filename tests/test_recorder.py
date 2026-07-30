@@ -90,6 +90,19 @@ def _durations(tmp_path: Path) -> list[float]:
     return [len(load_wav(p)[0]) / SAMPLE_RATE for p in _wav_files(tmp_path)]
 
 
+class FakeClock:
+    """Stands in for time.monotonic() so a 24-hour cycle takes no time to test."""
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, minutes: float) -> None:
+        self.now += minutes * 60
+
+
 class TestEventFilename:
     def test_matches_expected_shape(self):
         when = datetime(2026, 7, 29, 14, 33, 7, tzinfo=ZoneInfo('America/Los_Angeles'))
@@ -564,6 +577,99 @@ class TestMetadata:
         assert 'Could not tag' in caplog.text
 
 
+class TestOddSettings:
+    """Settings that contradict each other, or that nobody meant to type.
+
+    None of these should misbehave: a limit that cannot be honoured degrades to the
+    nearest thing that can be, and the recorder never ends up in a state that
+    duplicates audio or writes to the log five times a second.
+    """
+
+    def test_zero_timeout_does_not_end_a_locked_recording(self, tmp_path):
+        """A zero timeout used to end the recording on the tick after it began, even
+        with the signal still present, because no time at all had passed without lock."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, stop_after_seconds=0)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 3)
+        recorder.tick()
+        assert recorder.status().recording is True
+
+    def test_zero_timeout_ends_as_soon_as_the_lock_is_lost(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, stop_after_seconds=0)
+        analyzer.lock()
+        recorder.tick()
+        analyzer.unlock()
+        _feed(pipeline, 1)
+        recorder.tick()
+        assert recorder.status().recording is False
+
+    def test_negative_cap_means_uncapped(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, max_seconds=-10)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 5)
+        recorder.tick()
+        assert recorder.status().recording is True
+
+    def test_negative_cap_does_not_rewind_and_duplicate_audio(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, max_seconds=-10)
+        _feed(pipeline, 2)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 3)
+        recorder.tick()
+        recorder.stop()
+        assert _durations(tmp_path) == [5.0]
+
+    def test_negative_rearm_period_never_rearms(self, tmp_path):
+        recorder, _, _ = _make_recorder(tmp_path, rearm_reset_minutes=-5)
+        assert recorder.status().rearm_in_seconds is None
+
+    def test_negative_rearm_period_does_not_flood_the_log(self, tmp_path, caplog):
+        recorder, _, _ = _make_recorder(tmp_path, max_events=1, rearm_reset_minutes=-5)
+        with caplog.at_level('INFO'):
+            for _ in range(10):
+                recorder.tick()
+        assert 're-armed' not in caplog.text
+
+    def test_timeout_longer_than_the_cap_still_ends_the_recording(self, tmp_path):
+        """The cap wins, so the recording ends before the silence timeout can — which
+        also means the trailer is only as long as the cap leaves room for."""
+        recorder, pipeline, analyzer = _make_recorder(
+            tmp_path, max_seconds=2.0, stop_after_seconds=30.0)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 5)
+        recorder.tick()
+        assert recorder.status().recording is False
+
+    def test_timeout_longer_than_the_cap_records_why_it_ended(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(
+            tmp_path, max_seconds=2.0, stop_after_seconds=30.0)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 5)
+        recorder.tick()
+        assert wavmeta.read_settings(_wav_files(tmp_path)[0])['ended'] == 'capped'
+
+    def test_rearm_shorter_than_the_cap_does_not_disturb_a_recording(self, tmp_path):
+        """The budget can come back round mid-recording; the file in progress is
+        none of its business."""
+        clock = FakeClock()
+        with patch('buzz.recorder.time.monotonic', clock):
+            recorder, pipeline, analyzer = _make_recorder(
+                tmp_path, max_events=1, max_seconds=0.0, rearm_reset_minutes=1)
+            analyzer.lock()
+            recorder.tick()
+            clock.advance(2)                    # two reset cycles pass mid-recording
+            _feed(pipeline, 3)
+            recorder.tick()
+            recording = recorder.status().recording
+            recorder.stop()
+        assert recording is True and _durations(tmp_path) == [3.0]
+
+
 class TestEventBudget:
     def _record_one_event(self, recorder, pipeline, analyzer):
         analyzer.lock()
@@ -624,19 +730,6 @@ class TestEventBudget:
         recorder.arm()                            # still locked, no fresh lock needed
         recorder.tick()
         assert recorder.status().recording is True
-
-
-class FakeClock:
-    """Stands in for time.monotonic() so a 24-hour cycle takes no time to test."""
-
-    def __init__(self, now: float = 1000.0) -> None:
-        self.now = now
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, minutes: float) -> None:
-        self.now += minutes * 60
 
 
 class TestRearmCycle:
@@ -811,15 +904,49 @@ class TestStatusAndToggle:
         recorder.tick()
         assert recorder.status().filename == _wav_files(tmp_path)[0].name
 
-    def test_elapsed_counts_the_audio_written(self, tmp_path):
+    def test_elapsed_starts_at_zero_however_long_the_lead_in_was(self, tmp_path):
+        """A stopwatch that starts at nine because the ring buffer was full is not
+        telling the operator anything they asked about."""
         recorder, pipeline, analyzer = _make_recorder(tmp_path)
-        _feed(pipeline, 3)
+        _feed(pipeline, 9)
         analyzer.lock()
         recorder.tick()
-        assert recorder.status().elapsed_seconds == pytest.approx(3.0)
+        assert recorder.status().elapsed_seconds == 0.0
+
+    def test_elapsed_counts_from_the_lock(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path)
+        _feed(pipeline, 9)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 4)
+        recorder.tick()
+        assert recorder.status().elapsed_seconds == pytest.approx(4.0)
+
+    def test_elapsed_agrees_with_the_length_cap(self, tmp_path):
+        """Both are timed from the lock, so the reading at which a capped recording
+        stops is the cap itself rather than the cap plus a lead-in."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, max_seconds=3.0)
+        _feed(pipeline, 9)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 2)
+        recorder.tick()
+        assert recorder.status().elapsed_seconds == pytest.approx(2.0)
 
     def test_elapsed_is_zero_when_idle(self, tmp_path):
         recorder, _, _ = _make_recorder(tmp_path)
+        assert recorder.status().elapsed_seconds == 0.0
+
+    def test_elapsed_returns_to_zero_after_a_recording(self, tmp_path):
+        """The sample positions it is derived from stay where the recording left
+        them, so this is only zero if something says so."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=0)
+        analyzer.lock()
+        recorder.tick()
+        _feed(pipeline, 4)
+        analyzer.unlock()
+        _feed(pipeline, 2)
+        recorder.tick()
         assert recorder.status().elapsed_seconds == 0.0
 
     def test_seeds_lock_state_from_an_already_locked_analyzer(self, tmp_path):

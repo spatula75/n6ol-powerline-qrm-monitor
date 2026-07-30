@@ -86,7 +86,12 @@ class RecorderStatus:
     recording: bool
     # None when max_events is 0 — record every event until switched off by hand.
     events_remaining: int | None
-    # Audio written to the current file so far, lead-in included; 0 when idle.
+    # Seconds of audio since the lock that started the recording; 0 when idle.
+    #
+    # Timed from the lock rather than from the first sample in the file, for the same
+    # reason max_seconds is: the lead-in is audio the monitor already had, so counting
+    # it would start the display at whatever the ring buffer happened to hold, and
+    # would disagree with the limit the recording is actually measured against.
     elapsed_seconds: float
     filename: str | None
     # Seconds until the event budget is refilled, or None when no cycle is running
@@ -183,12 +188,20 @@ class EventRecorder:
         self._callsign         = config.station.callsign
         self._pulse_rate       = config.audio.pulse_rate
         self._rf_conversion_db = config.station.audio_rf_conversion_db
-        # Both limits in samples, on the audio clock.  0 means uncapped length.
-        self._max_samples     = round(recording.max_seconds * self._sample_rate)
-        self._timeout_samples = round(recording.stop_after_seconds * self._sample_rate)
+        # Both limits in samples, on the audio clock, and both clamped: a nonsensical
+        # setting should degrade to the nearest sensible behaviour rather than into
+        # something surprising.  A negative cap would drive the write position back
+        # behind itself and re-read audio already written, so anything at or below
+        # zero means uncapped.  A zero timeout would end every recording on the tick
+        # after it began, signal or no signal, so it floors at a single sample —
+        # which reads as "stop as soon as the lock is lost".
+        self._max_samples     = max(0, round(recording.max_seconds * self._sample_rate))
+        self._timeout_samples = max(1, round(recording.stop_after_seconds * self._sample_rate))
         self._fade_in = fade_ramp(round(self.FADE_SECONDS * self._sample_rate))
 
-        self._rearm_period = recording.rearm_reset_minutes * 60
+        # Negative would leave the deadline permanently in the past, re-arming on
+        # every tick and burying the log five lines a second; it means "never", as 0 does.
+        self._rearm_period = max(0.0, recording.rearm_reset_minutes * 60)
         # Create the directory now rather than at the first event.  A bad path is a
         # configuration mistake, and the moment to find out about one is while the
         # operator is still watching the console — not at the end of an unattended
@@ -296,7 +309,11 @@ class EventRecorder:
                 armed=self._armed,
                 recording=self._writer is not None,
                 events_remaining=self._events_remaining,
-                elapsed_seconds=self._frames_accepted / self._sample_rate,
+                # Explicitly zero when idle: the positions below are left where the
+                # last recording ended, so the subtraction would otherwise keep
+                # reporting that recording's length long after it closed.
+                elapsed_seconds=(0.0 if self._writer is None else
+                                 (self._position - self._event_start) / self._sample_rate),
                 filename=self._path.name if self._path is not None else None,
                 rearm_in_seconds=(None if self._next_reset is None
                                   else max(0.0, self._next_reset - time.monotonic())),
