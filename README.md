@@ -337,12 +337,18 @@ min_lock_seconds = 3
 A signal that never lasts that long is never recorded at all, and a lock that
 drops and returns starts the count again rather than adding up.
 
-**Keep this short — 5 seconds or less.**  The wait is paid for out of the lead-in.
-That audio comes from a sliding buffer only a few seconds long, so a recording
-that waits two seconds opens two seconds later relative to the event than one that
-does not.  Ask for longer than the buffer holds and the file would begin *after*
-the event started, missing the onset that makes an arc worth looking at; the value
-is capped there, and setting more logs a warning telling you what it used instead.
+**The wait counts against `max_seconds`.**  Those seconds are part of the event —
+the monitor has them buffered and keeps them — so `min_lock_seconds = 3` with
+`max_seconds = 10` gives ten seconds of event, three of which you waited through
+and seven recorded after.  Not thirteen.
+
+**Keep it short — 5 seconds or less.**  It is also paid for out of the lead-in,
+which comes from a sliding buffer only a few seconds long, so a recording that
+waits two seconds opens two seconds later relative to the event than one that does
+not.  Two ceilings apply, and the value is clamped to the lower with a warning
+saying what was used instead: the buffer's length, beyond which the file would
+begin *after* the event started and miss the onset entirely; and `max_seconds`,
+which the wait cannot exceed without spending an allowance it is counted against.
 
 ### Ignoring events too faint to be worth keeping
 
@@ -469,10 +475,16 @@ file length  =  whatever the buffer held  +  up to max_seconds  +  trailer
 ```
 
 So `max_seconds = 10` with a full buffer gives a 9.6 + 10 = 19.6 s file, plus
-whatever trailer the timeout adds.  That holds however long the start was delayed
-by `min_lock_seconds` or `min_lock_snr`: the wait is spent out of the lead-in, and
-the ten seconds are counted from the moment recording actually begins.  Set it by
-how much of the noise you want to study, not by how big you want the files.
+whatever trailer the timeout adds.
+
+Waiting changes which seconds those are, not how many.  `min_lock_seconds` is
+counted against the allowance — you waited through that part of the event, and it
+is kept — so three seconds of waiting means seven more recorded, not ten.  A
+`min_lock_snr` wait is not counted, because it is open-ended: charging a wait that
+can run to minutes would spend the whole allowance before the file was opened.
+
+Set it by how much of the noise you want to study, not by how big you want the
+files.
 
 The log spells the sum out when each recording closes, because the total is not a
 number any setting names:

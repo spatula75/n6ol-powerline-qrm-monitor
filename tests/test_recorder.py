@@ -767,20 +767,37 @@ class TestMinimumLock:
         settings = wavmeta.read_settings(_wav_files(tmp_path)[0])
         assert float(settings['lead_in_seconds']) == pytest.approx(3.0)
 
-    def test_the_cap_measures_from_where_recording_starts(self, tmp_path):
-        """Whatever the buffer holds when the wait ends is lead-in and is free; the
-        cap buys that much again on top, however long the wait was."""
+    def test_the_wait_counts_against_the_recording_length(self, tmp_path):
+        """Ask for a 2 s wait and a 6 s recording and you get six seconds of event,
+        not eight: the seconds spent proving the signal are part of it."""
         recorder, pipeline, analyzer = _make_recorder(
-            tmp_path, min_lock_seconds=2, max_seconds=4)
+            tmp_path, min_lock_seconds=2, max_seconds=6)
         _feed(pipeline, 1)
         analyzer.lock()
         recorder.tick()                             # waiting out min_lock_seconds
-        _feed(pipeline, 3)
-        recorder.tick()                             # begins, with 4 s buffered
-        _feed(pipeline, 10)
-        recorder.tick()                             # the cap trims this to 4 s
+        _feed(pipeline, 2)
+        recorder.tick()                             # begins, with 3 s buffered
+        _feed(pipeline, 20)
+        recorder.tick()                             # the cap trims this
         recorder.stop()
-        assert _durations(tmp_path) == [8.0]        # 4 s of lead-in + 4 s of cap
+        # 1 s of lead-in before the lock, then 6 s of event: the 2 s already waited
+        # through and 4 s more.
+        assert _durations(tmp_path) == [7.0]
+
+    def test_the_wait_cannot_be_longer_than_the_recording_length(self, tmp_path):
+        """Left alone it would reach back past the start of the file and throw away
+        its newest seconds to stay inside an allowance already spent."""
+        recorder, _, _ = _make_recorder(tmp_path, min_lock_seconds=8, max_seconds=3)
+        assert recorder._min_lock_samples == recorder._max_samples
+
+    def test_a_wait_longer_than_the_recording_length_is_reported(self, tmp_path, caplog):
+        with caplog.at_level('WARNING'):
+            _make_recorder(tmp_path, min_lock_seconds=8, max_seconds=3)
+        assert 'longer than max_seconds' in caplog.text
+
+    def test_an_uncapped_recording_does_not_clamp_the_wait(self, tmp_path):
+        recorder, _, _ = _make_recorder(tmp_path, min_lock_seconds=8, max_seconds=0)
+        assert recorder._min_lock_samples == 8 * SAMPLE_RATE
 
 
 class TestMinimumSnr:

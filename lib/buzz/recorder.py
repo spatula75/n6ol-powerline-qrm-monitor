@@ -373,12 +373,21 @@ class EventRecorder:
     def _qualifying_lock_samples(self, seconds: float) -> int:
         """How long a lock must hold before it is worth a file, in samples.
 
-        Capped at what the ring buffer holds, because waiting is not free: the buffer
-        is a sliding window, so every second spent deciding is a second of run-up
-        that has fallen off the far end by the time the file opens.  Wait longer than
-        the buffer and the recording would begin *after* the lock — missing the onset
-        of the very event it exists to capture — which is a worse outcome than any
-        setting should be able to ask for.
+        Two ceilings, and the wait is clamped to whichever is lower.
+
+        The ring buffer, because waiting is not free: the buffer is a sliding window,
+        so every second spent deciding is a second of run-up that has fallen off the
+        far end by the time the file opens.  Wait longer than the buffer and the
+        recording would begin *after* the lock, missing the onset of the very event
+        it exists to capture.
+
+        And max_seconds, because the wait is counted against it — those seconds are
+        part of the event, so asking for three of them and ten of recording buys ten
+        and not thirteen.  A wait longer than the whole allowance is a contradiction:
+        left alone it would reach back past the audio the file opens with and throw
+        away its newest seconds to stay inside a limit already spent.  Clamped, the
+        two settings meet at the sensible end of it — the recording is exactly the
+        allowance, all of it from what the buffer was already holding.
         """
         capacity = self._pipeline.capacity_samples
         wanted = max(0, round(seconds * self._sample_rate))
@@ -388,7 +397,16 @@ class EventRecorder:
                 'holds; using %.1f s, beyond which a recording would start after the '
                 'event it is recording.',
                 seconds, capacity / self._sample_rate, capacity / self._sample_rate)
-        return min(wanted, capacity)
+            wanted = capacity
+        if self._max_samples and wanted > self._max_samples:
+            logger.warning(
+                'min_lock_seconds of %g is longer than max_seconds of %g; using %g, '
+                'since the wait counts against the recording length and cannot be '
+                'longer than the whole of it.',
+                seconds, self._max_samples / self._sample_rate,
+                self._max_samples / self._sample_rate)
+            wanted = self._max_samples
+        return wanted
 
     def _can_record(self) -> bool:
         """Whether recording is possible at all, before anything is armed.
@@ -634,15 +652,17 @@ class EventRecorder:
         # three would be wrong by exactly that much if this used either end instead.
         locked_at = span.end if self._locked_since is None else self._locked_since
         self._lead_in, self._started_at = max(0, locked_at - span.start), now
-        # The cap runs from here — the moment recording begins — and never from the
-        # lock.  Whatever the buffer is holding is lead-in and is free, however long
-        # the wait for min_lock_seconds or min_lock_snr made it; max_seconds then buys
-        # that much more on top.  Measuring from the lock instead breaks down as soon
-        # as anything delays the start: a wait longer than the cap spends it before
-        # the file is opened, and a wait that merely empties the buffer leaves the
-        # whole cap consumed by lead-in that was already free.  Both of those were
-        # live bugs, one of which saved a real event as a nought-second recording.
-        self._event_start = span.end
+        # The cap runs from the moment recording begins, less whatever was spent
+        # waiting out min_lock_seconds — those seconds are the event too, and asking
+        # for three of them and ten of recording should not quietly buy thirteen.
+        # (_lock_has_held guarantees at least that much has passed, so the
+        # subtraction never reaches back further than the wait actually was.)
+        #
+        # Only that wait is charged.  A min_lock_snr wait is open-ended, and charging
+        # it would spend the whole cap before the file was opened — which is how a
+        # real event once came to be saved as a nought-second recording.  What the
+        # buffer holds beyond the deliberate wait is lead-in, and lead-in is free.
+        self._event_start = span.end - self._min_lock_samples
         # Capped here too, not only in _capture: with min_lock_seconds this opening
         # write already contains audio from after the lock, so a cap shorter than the
         # wait would otherwise be overrun before the first poll ever looked at it.

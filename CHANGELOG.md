@@ -72,9 +72,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   than the buffer holds loses its onset entirely; that is documented, and is the one
   way this is sharper-edged than `min_lock_seconds`, whose wait is capped at the
   buffer and so can never cost the beginning of an event.
-- `max_seconds` is counted from the moment recording starts rather than from the
-  lock, so whatever the ring buffer was holding is lead-in and comes free on top
-  however long the start was delayed. Measuring it from the lock broke down as soon
+- `max_seconds` is counted from the moment recording starts, less any
+  `min_lock_seconds` spent waiting: those seconds are part of the event and are
+  kept, so asking for a 3 s wait and a 10 s recording buys ten seconds of event
+  rather than thirteen. `min_lock_seconds` is therefore clamped to `max_seconds` as
+  well as to the buffer, since a wait longer than the whole allowance would reach
+  back past the start of the file and discard its newest seconds to stay inside a
+  limit already spent. A `min_lock_snr` wait is not counted, being open-ended:
+  charging one that can run to minutes would spend the allowance before the file was
+  opened. Whatever the buffer holds beyond the deliberate wait is lead-in and comes
+  free on top. Measuring it from the lock broke down as soon
   as anything delayed that start: a wait longer than the cap spent it before the
   file was opened, saving a real event as a nought-second recording that reported,
   wrongly, having fallen behind the ring buffer. Measuring instead from the first

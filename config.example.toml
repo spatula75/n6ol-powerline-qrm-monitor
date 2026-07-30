@@ -116,12 +116,17 @@ max_events = 10
 # it back on.  Switching it off by hand always cancels the cycle too.
 rearm_reset_minutes = 0
 
-# How much of the interference to record, in seconds, counted from the moment
-# recording starts.  This measures the event, not the file: whatever the ring buffer
-# was holding at that moment is lead-in and comes free on top, as does the trailer
-# afterwards, so the .wav on disk is always somewhat longer than the number set
-# here.  That holds however long the start was delayed by min_lock_seconds or
-# min_lock_snr above — the waiting is paid for out of the lead-in, never out of this.
+# How much of the interference to record, in seconds.  This measures the event, not
+# the file: the run-up the ring buffer was already holding comes free on top, as does
+# the trailer afterwards, so the .wav on disk is always somewhat longer than the
+# number set here.
+#
+# Any min_lock_seconds spent waiting is counted against this, since those seconds are
+# part of the event and are kept — 3 there and 10 here gives ten seconds of event,
+# not thirteen.  A min_lock_snr wait is not counted: it is open-ended, and charging a
+# wait that can run to minutes would spend the whole allowance before the file was
+# even opened.
+#
 # Set it by how much of the noise is worth studying rather than by how big the files
 # should be.  0 records the whole event however long it runs.
 #
@@ -143,12 +148,18 @@ stop_after_seconds = 10
 # replaying; raise this until only the events you would actually sit and watch get
 # through.  0 records every lock, however brief.
 #
-# Keep it short — 5 seconds or less.  The wait is paid for out of the lead-in,
-# because the audio it comes from is a sliding window a few seconds long: wait two
-# seconds and every recording opens two seconds later relative to the event.  Ask
-# for longer than that window holds and the recording would start after the event
-# began, having missed the onset entirely, so the value is capped there and a
-# warning is logged if you set more.
+# The waiting counts against max_seconds below.  Those seconds are part of the
+# event and the monitor keeps them, so 3 here with max_seconds = 10 gives ten
+# seconds of event — three waited through, seven recorded after — and not thirteen.
+#
+# Keep it short — 5 seconds or less.  It is also paid for out of the lead-in,
+# because the audio that comes from is a sliding window a few seconds long: wait two
+# seconds and every recording opens two seconds later relative to the event.  Two
+# ceilings apply and the value is clamped to the lower of them, with a warning
+# saying what was used instead: the length of that window, beyond which a recording
+# would start after the event began and miss the onset entirely; and max_seconds,
+# which the wait cannot exceed without spending the whole allowance it counts
+# against.
 min_lock_seconds = 0
 
 # Minimum signal-to-noise ratio, in dB, before a recording starts.  The analyzer is
