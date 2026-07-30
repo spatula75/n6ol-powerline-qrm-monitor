@@ -105,6 +105,17 @@ enabled = false
 # record every event until you switch recording off by hand.
 max_events = 10
 
+# Minutes between resets of that budget, which turns max_events into a rate rather
+# than a one-off: 1440 with the max_events above records up to ten events a day,
+# every day, unattended.  The cycle is measured from when the budget was last
+# reset, not from when it ran out, so it keeps its time of day instead of sliding
+# later by however long each day's events took to arrive.  A quiet period does not
+# carry its unused events forward — the budget tops back up either way.
+#
+# 0 never re-arms: once the budget is spent, recording stays off until you switch
+# it back on.  Switching it off by hand always cancels the cycle too.
+rearm_reset_minutes = 0
+
 # Longest single recording in seconds, timed from the moment of lock — the
 # lead-in and trailer are extra.  0 records the whole event however long it runs.
 # A capped recording does not roll over into a second file: the rest of that

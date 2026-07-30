@@ -567,6 +567,171 @@ class TestEventBudget:
         assert recorder.status().recording is True
 
 
+class FakeClock:
+    """Stands in for time.monotonic() so a 24-hour cycle takes no time to test."""
+
+    def __init__(self, now: float = 1000.0) -> None:
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, minutes: float) -> None:
+        self.now += minutes * 60
+
+
+class TestRearmCycle:
+    """max_events as a rate: the budget refills on a fixed cycle, unattended."""
+
+    def _recorder(self, tmp_path, clock, **recording):
+        with patch('buzz.recorder.time.monotonic', clock):
+            return _make_recorder(tmp_path, **recording)
+
+    def _spend_budget(self, recorder, pipeline, analyzer, clock, events=1):
+        with patch('buzz.recorder.time.monotonic', clock):
+            for _ in range(events):
+                analyzer.lock()
+                recorder.tick()
+                analyzer.unlock()
+                _feed(pipeline, 2)
+                recorder.tick()
+
+    def _tick(self, recorder, clock):
+        with patch('buzz.recorder.time.monotonic', clock):
+            recorder.tick()
+
+    def _status(self, recorder, clock):
+        with patch('buzz.recorder.time.monotonic', clock):
+            return recorder.status()
+
+    def test_never_rearms_when_the_period_is_zero(self, tmp_path):
+        clock = FakeClock()
+        recorder, pipeline, analyzer = self._recorder(
+            tmp_path, clock, max_events=1, rearm_reset_minutes=0)
+        self._spend_budget(recorder, pipeline, analyzer, clock)
+        clock.advance(60 * 24 * 7)
+        self._tick(recorder, clock)
+        assert self._status(recorder, clock).armed is False
+
+    def test_rearms_once_the_period_elapses(self, tmp_path):
+        clock = FakeClock()
+        recorder, pipeline, analyzer = self._recorder(
+            tmp_path, clock, max_events=1, rearm_reset_minutes=1440)
+        self._spend_budget(recorder, pipeline, analyzer, clock)
+        clock.advance(1440)
+        self._tick(recorder, clock)
+        assert self._status(recorder, clock).armed is True
+
+    def test_stays_disarmed_until_the_period_elapses(self, tmp_path):
+        clock = FakeClock()
+        recorder, pipeline, analyzer = self._recorder(
+            tmp_path, clock, max_events=1, rearm_reset_minutes=1440)
+        self._spend_budget(recorder, pipeline, analyzer, clock)
+        clock.advance(1439)
+        self._tick(recorder, clock)
+        assert self._status(recorder, clock).armed is False
+
+    def test_budget_is_refilled(self, tmp_path):
+        clock = FakeClock()
+        recorder, pipeline, analyzer = self._recorder(
+            tmp_path, clock, max_events=3, rearm_reset_minutes=1440)
+        self._spend_budget(recorder, pipeline, analyzer, clock, events=3)
+        clock.advance(1440)
+        self._tick(recorder, clock)
+        assert self._status(recorder, clock).events_remaining == 3
+
+    def test_records_again_after_rearming(self, tmp_path):
+        clock = FakeClock()
+        recorder, pipeline, analyzer = self._recorder(
+            tmp_path, clock, max_events=1, rearm_reset_minutes=1440)
+        self._spend_budget(recorder, pipeline, analyzer, clock)
+        clock.advance(1440)
+        self._spend_budget(recorder, pipeline, analyzer, clock)
+        assert len(_wav_files(tmp_path)) == 2
+
+    def test_the_cycle_does_not_drift(self, tmp_path):
+        """The point of resetting on a cycle rather than after a delay: a day's
+        events taking two hours must not push tomorrow's window two hours later."""
+        clock = FakeClock()
+        recorder, pipeline, analyzer = self._recorder(
+            tmp_path, clock, max_events=1, rearm_reset_minutes=1440)
+        clock.advance(120)                       # the event arrives two hours in
+        self._spend_budget(recorder, pipeline, analyzer, clock)
+        clock.advance(1440 - 120)                # exactly one period after arming
+        self._tick(recorder, clock)
+        assert self._status(recorder, clock).armed is True
+
+    def test_a_quiet_period_still_refills(self, tmp_path):
+        """A cycle that spent only part of its budget tops back up rather than
+        carrying the remainder forward, so the rate is a ceiling, not a quota."""
+        clock = FakeClock()
+        recorder, pipeline, analyzer = self._recorder(
+            tmp_path, clock, max_events=3, rearm_reset_minutes=1440)
+        self._spend_budget(recorder, pipeline, analyzer, clock, events=1)
+        clock.advance(1440)
+        self._tick(recorder, clock)
+        assert self._status(recorder, clock).events_remaining == 3
+
+    def test_a_missed_cycle_does_not_fire_repeatedly(self, tmp_path):
+        """After a suspend, the cycle restarts from now rather than catching up on
+        windows during which nothing could have been recorded anyway."""
+        clock = FakeClock()
+        recorder, _, _ = self._recorder(
+            tmp_path, clock, max_events=1, rearm_reset_minutes=1440)
+        clock.advance(1440 * 10)
+        self._tick(recorder, clock)
+        remaining = self._status(recorder, clock).rearm_in_seconds
+        assert remaining == pytest.approx(1440 * 60)
+
+    def test_manual_disarm_cancels_the_cycle(self, tmp_path):
+        clock = FakeClock()
+        recorder, _, _ = self._recorder(
+            tmp_path, clock, max_events=1, rearm_reset_minutes=1440)
+        recorder.disarm()
+        clock.advance(1440 * 2)
+        self._tick(recorder, clock)
+        assert self._status(recorder, clock).armed is False
+
+    def test_manual_arm_restarts_the_cycle(self, tmp_path):
+        clock = FakeClock()
+        recorder, _, _ = self._recorder(
+            tmp_path, clock, max_events=1, rearm_reset_minutes=1440)
+        recorder.disarm()
+        clock.advance(600)
+        with patch('buzz.recorder.time.monotonic', clock):
+            recorder.arm()
+        assert self._status(recorder, clock).rearm_in_seconds == pytest.approx(1440 * 60)
+
+    def test_status_counts_down_to_the_reset(self, tmp_path):
+        clock = FakeClock()
+        recorder, pipeline, analyzer = self._recorder(
+            tmp_path, clock, max_events=1, rearm_reset_minutes=1440)
+        self._spend_budget(recorder, pipeline, analyzer, clock)
+        clock.advance(1080)
+        assert self._status(recorder, clock).rearm_in_seconds == pytest.approx(360 * 60)
+
+    def test_no_countdown_without_a_cycle(self, tmp_path):
+        clock = FakeClock()
+        recorder, _, _ = self._recorder(tmp_path, clock, rearm_reset_minutes=0)
+        assert self._status(recorder, clock).rearm_in_seconds is None
+
+    def test_a_reset_does_not_restart_a_capped_event(self, tmp_path):
+        """Automatic, so unlike arming by hand it is not an instruction to record
+        the event already in progress; one event still means one file."""
+        clock = FakeClock()
+        recorder, pipeline, analyzer = self._recorder(
+            tmp_path, clock, max_events=1, max_seconds=2.0, rearm_reset_minutes=1440)
+        with patch('buzz.recorder.time.monotonic', clock):
+            analyzer.lock()
+            recorder.tick()
+            _feed(pipeline, 5)
+            recorder.tick()                      # capped, signal still present
+            clock.advance(1440)
+            _feed(pipeline, 5)
+            recorder.tick()                      # budget resets mid-event
+        assert len(_wav_files(tmp_path)) == 1
+
+
 class TestStatusAndToggle:
     def test_toggle_arms_when_off(self, tmp_path):
         recorder, _, _ = _make_recorder(tmp_path, enabled=False)

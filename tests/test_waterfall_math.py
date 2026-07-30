@@ -6,8 +6,8 @@ from buzz.analyzer import AnalysisResult
 from buzz.dsp import SILENCE_DBFS
 from buzz.recorder import RecorderStatus
 from buzz.waterfall import (
-    build_colormap, format_recorder_status, _aggregate_meter_history, _color_scale_range,
-    _correction_offset, _mean_spectrum_db, _spectrum_percentiles,
+    build_colormap, format_countdown, format_recorder_status, _aggregate_meter_history,
+    _color_scale_range, _correction_offset, _mean_spectrum_db, _spectrum_percentiles,
     _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE, _DB_FFT_NOISE_CORR, _FFT_ADVANCE_SAMPLES,
     _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE, _COLOR_HEADROOM, _MIN_DYNAMIC_RANGE_DB,
 )
@@ -15,7 +15,7 @@ from buzz.waterfall import (
 
 def _status(**kwargs) -> RecorderStatus:
     fields = dict(armed=False, recording=False, events_remaining=None,
-                  elapsed_seconds=0.0, filename=None)
+                  elapsed_seconds=0.0, filename=None, rearm_in_seconds=None)
     return RecorderStatus(**(fields | kwargs))
 
 
@@ -50,6 +50,31 @@ class TestFormatRecorderStatus:
 
     def test_no_recorder_at_all(self):
         assert format_recorder_status(None) == 'Recording unavailable'
+
+    def test_off_with_a_pending_rearm_says_when(self):
+        status = _status(rearm_in_seconds=3600 * 23 + 60 * 47)
+        assert format_recorder_status(status) == 'Recording off — re-arms in 23h 47m'
+
+    def test_off_for_good_says_nothing_about_rearming(self):
+        assert format_recorder_status(_status()) == 'Recording off'
+
+    def test_armed_does_not_show_the_countdown(self):
+        status = _status(armed=True, events_remaining=3, rearm_in_seconds=3600)
+        assert format_recorder_status(status) == 'Armed — 3 event(s) to record'
+
+
+class TestFormatCountdown:
+    def test_hours_and_minutes(self):
+        assert format_countdown(3600 * 5 + 60 * 8) == '5h 08m'
+
+    def test_minutes_only_below_an_hour(self):
+        assert format_countdown(60 * 47) == '47m'
+
+    def test_sub_minute_waits_are_not_reported_as_zero(self):
+        assert format_countdown(12) == 'under a minute'
+
+    def test_zero(self):
+        assert format_countdown(0) == 'under a minute'
 
 
 class TestBuildColormap:

@@ -231,12 +231,26 @@ _BAR_TEXT    = '#c8c8c8'
 _REC_TEXT    = '#ff6464'                  # status line while audio is being written
 
 
+def format_countdown(seconds: float) -> str:
+    """A rough hours-and-minutes countdown, for a wait measured in hours not seconds."""
+    minutes = int(seconds // 60)
+    if minutes < 1:
+        return 'under a minute'
+    if minutes < 60:
+        return f'{minutes}m'
+    return f'{minutes // 60}h {minutes % 60:02d}m'
+
+
 def format_recorder_status(status: RecorderStatus | None,
                            playback_name: str | None = None) -> str:
     """One line describing what the recorder is doing, for the toolbar.
 
     Playback wins over everything: there is no recorder in that mode, and what the
     operator needs to see on a screen recording is which capture is on screen.
+
+    A disarmed recorder says when its budget comes back, if it is going to.  That is
+    the difference between a monitor that has finished for good and one that is
+    running to a schedule, and the two look identical otherwise.
     """
     if playback_name is not None:
         return f'Playback — {playback_name}'
@@ -246,7 +260,9 @@ def format_recorder_status(status: RecorderStatus | None,
         minutes, seconds = divmod(int(status.elapsed_seconds), 60)
         return f'● REC {minutes:02d}:{seconds:02d} — {status.filename}'
     if not status.armed:
-        return 'Recording off'
+        if status.rearm_in_seconds is None:
+            return 'Recording off'
+        return f'Recording off — re-arms in {format_countdown(status.rearm_in_seconds)}'
     if status.events_remaining is None:
         return 'Armed — recording every event'
     return f'Armed — {status.events_remaining} event(s) to record'

@@ -29,6 +29,12 @@ Both ends are faded so the file starts and finishes at exactly zero and cannot
 click — see fade_ramp for the shape, FADE_SECONDS for the length, and _write for
 how the fade-out reaches audio whose lastness is only known afterwards.
 
+The event budget can be a rate rather than a one-off.  With rearm_reset_minutes
+set, max_events refills on that cycle — 10 and 1440 give ten events a day, every
+day, unattended.  The cycle is measured from when the budget was last filled
+rather than from when it ran out, so it keeps its time of day instead of sliding
+later by however long each day's events took to arrive.
+
 Lock is not polled.  The analyzer publishes each state change to a listener (see
 ContinuousAnalyzer.add_state_listener) and the recorder's thread does the writing,
 so the two never wait on each other: analysis is never behind disk I/O, and a lock
@@ -43,6 +49,7 @@ has not actually gone quiet.
 
 import logging
 import threading
+import time
 import wave
 from dataclasses import dataclass
 from datetime import datetime
@@ -82,6 +89,9 @@ class RecorderStatus:
     # Audio written to the current file so far, lead-in included; 0 when idle.
     elapsed_seconds: float
     filename: str | None
+    # Seconds until the event budget is refilled, or None when no cycle is running
+    # (rearm_reset_minutes is 0, or recording was switched off by hand).
+    rearm_in_seconds: float | None = None
 
 
 def fade_ramp(n: int) -> np.ndarray:
@@ -178,8 +188,14 @@ class EventRecorder:
         self._timeout_samples = round(recording.stop_after_seconds * self._sample_rate)
         self._fade_in = fade_ramp(round(self.FADE_SECONDS * self._sample_rate))
 
+        self._rearm_period = recording.rearm_reset_minutes * 60
         self._armed = recording.enabled
         self._events_remaining = self._initial_budget()
+        # Monotonic deadline for the next budget reset, or None when no cycle is
+        # running.  Set whenever the budget is filled, which is what makes the cycle
+        # a fixed one: ten events per day means ten per day, not ten per day plus
+        # however long the tenth event took to arrive.
+        self._next_reset = self._reset_deadline() if self._armed else None
 
         # Lock state is pushed from the analyzer rather than read back from it (see
         # ContinuousAnalyzer.add_state_listener), seeded here with the state the
@@ -234,19 +250,24 @@ class EventRecorder:
                 self._finish('shutdown')
 
     def arm(self) -> None:
-        """Enable recording and refill the event budget."""
+        """Enable recording and refill the event budget, restarting the reset cycle."""
         with self._lock:
-            self._armed = True
-            self._events_remaining = self._initial_budget()
+            self._fill_budget()
             # An explicit re-arm means "record now", even part-way through the event
             # whose recording was just capped or stopped by hand.
             self._await_relock = False
         logger.info('Recording armed — %s', self._budget_description())
 
     def disarm(self) -> None:
-        """Disable recording, closing any recording in progress at its current length."""
+        """Disable recording, closing any recording in progress at its current length.
+
+        Cancels the reset cycle as well.  Switching recording off by hand has to mean
+        off: coming back to a monitor that re-armed itself overnight, because it was
+        turned off during a cycle rather than between two, would be a nasty surprise.
+        """
         with self._lock:
             self._armed = False
+            self._next_reset = None
             if self._writer is not None:
                 self._finish('operator')
         logger.info('Recording disarmed')
@@ -267,6 +288,8 @@ class EventRecorder:
                 events_remaining=self._events_remaining,
                 elapsed_seconds=self._frames_accepted / self._sample_rate,
                 filename=self._path.name if self._path is not None else None,
+                rearm_in_seconds=(None if self._next_reset is None
+                                  else max(0.0, self._next_reset - time.monotonic())),
             )
 
     def tick(self) -> None:
@@ -282,6 +305,37 @@ class EventRecorder:
 
     def _initial_budget(self) -> int | None:
         return self._max_events if self._max_events > 0 else None
+
+    def _reset_deadline(self) -> float | None:
+        """When the budget should next be refilled, or None if it never should."""
+        return time.monotonic() + self._rearm_period if self._rearm_period else None
+
+    def _fill_budget(self) -> None:
+        """Arm with a full budget and start the cycle again (caller holds the lock)."""
+        self._armed = True
+        self._events_remaining = self._initial_budget()
+        self._next_reset = self._reset_deadline()
+
+    def _reset_budget(self) -> None:
+        """Refill the budget because the cycle came round (caller holds the lock).
+
+        Deliberately not a call to _fill_budget: the next deadline advances by exactly
+        one period from the last one rather than from now, so a cycle cannot drift by
+        the poll interval each time round.  A cycle missed entirely — a suspended
+        machine, a very long stall — restarts from now rather than firing repeatedly
+        to catch up on events that could not have happened anyway.
+
+        _await_relock is left alone.  Unlike arming by hand, this is not somebody
+        asking to record right now, so an event already in progress stays finished as
+        far as the recorder is concerned and the next one starts the next file.
+        """
+        now = time.monotonic()
+        self._armed = True
+        self._events_remaining = self._initial_budget()
+        self._next_reset += self._rearm_period
+        if self._next_reset <= now:
+            self._next_reset = now + self._rearm_period
+        logger.info('Recording re-armed — %s', self._budget_description())
 
     def _budget_description(self) -> str:
         remaining = self._events_remaining
@@ -315,6 +369,11 @@ class EventRecorder:
             self._lock_acquired = True
 
     def _tick(self) -> None:
+        # Before anything else, so a budget coming back round can record an event
+        # that is already under way rather than waiting for the next poll.
+        if self._next_reset is not None and time.monotonic() >= self._next_reset:
+            self._reset_budget()
+
         # Either a lock right now, or one that came and went since the last tick.
         locked = self._locked or self._lock_acquired
         self._lock_acquired = False

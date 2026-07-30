@@ -37,6 +37,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   a click across the whole audio band rather than removing it. The recorder holds
   back a fade's worth of the newest audio so the fade-out can be applied to
   whichever samples turn out to be last, which is only known after the fact.
+- `rearm_reset_minutes` turns the event budget into a rate rather than a one-off:
+  `max_events = 10` with `rearm_reset_minutes = 1440` records up to ten events a
+  day, every day, unattended, without being able to fill a disk. The cycle runs
+  from when the budget was last reset rather than from when it ran out, so it
+  keeps its time of day instead of sliding later by however long each day's events
+  took to arrive; a missed cycle (a suspended machine) restarts from now rather
+  than firing repeatedly to catch up on windows nothing could have been recorded
+  in. Unused events are not carried forward. `0` never re-arms, and switching
+  recording off by hand cancels the cycle — off has to mean off. The toolbar shows
+  the countdown while the budget is spent.
 - Recordings carry RIFF metadata (`buzz.wavmeta`): LIST/INFO tags naming the
   station, software version and moment of lock, a comment holding the settings a
   replay needs, and a labelled cue marker at the exact sample where the analyzer

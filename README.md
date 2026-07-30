@@ -306,6 +306,7 @@ fade is a raised cosine and costs less than one pulse out of the 120 per second.
 | `enabled` | `false` | Arm recording at startup.  `--enable-recording` does the same for one run. |
 | `directory` | `recordings/` under the station path | Where files are written, and where `--playback` looks for a bare filename. |
 | `max_events` | `10` | How many of the next events to record before disarming.  `0` records every event. |
+| `rearm_reset_minutes` | `0` | Minutes between resets of that budget.  `0` never re-arms. |
 | `max_seconds` | `120` | Cap on a single recording, timed from lock; lead-in and trailer are extra.  `0` is uncapped. |
 | `stop_after_seconds` | `10` | Silence before a recording is closed — and therefore how long the trailer is. |
 
@@ -314,6 +315,29 @@ defaults take the next ten events, at up to two minutes each, and then leave the
 disk alone.  Pressing **Record** again starts a fresh count.  A recording stopped
 by the length cap is not continued in a second file: the rest of that event is
 skipped, and the next event starts the next recording.
+
+### Recording to a schedule
+
+`rearm_reset_minutes` turns `max_events` into a rate rather than a one-off, which
+is what makes unattended running practical.  With `max_events = 10` and
+`rearm_reset_minutes = 1440`, the monitor records up to ten events a day, every
+day, and cannot fill the disk while you are away.
+
+The cycle is measured from when the budget was last reset rather than from when it
+ran out, so it keeps its time of day.  A day whose ten events all arrive before
+noon still gets its next ten at the same hour tomorrow, instead of sliding later
+and later.  Unused events are not carried forward — a quiet day does not earn you
+twenty events the next.
+
+While the budget is spent, the toolbar shows when it comes back:
+
+```
+Recording off — re-arms in 23h 47m
+```
+
+Switching recording off with the **Record** button cancels the cycle as well.  Off
+means off: a monitor that re-armed itself overnight because it happened to be
+turned off mid-cycle would be a nasty surprise to come back to.
 
 Files are named for the moment of lock, in station local time with the UTC offset
 attached:

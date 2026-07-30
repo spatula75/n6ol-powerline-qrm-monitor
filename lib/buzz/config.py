@@ -96,6 +96,11 @@ class RecordingConfig:
     # How many of the next events to record before disarming.  0 records every
     # event until recording is switched off by hand.
     max_events: int = 10
+    # Minutes between resets of that budget, making max_events a rate rather than a
+    # one-off: 1440 gives max_events per day, indefinitely.  The cycle runs from when
+    # the budget was last reset, not from when it ran out, so it does not drift.
+    # 0 never re-arms: once the budget is spent, recording stays off until armed by hand.
+    rearm_reset_minutes: float = 0.0
     # Longest single recording in seconds, measured from the moment of lock; the
     # lead-in and trailer are extra.  0 records the event however long it runs.
     max_seconds: float = 120.0
