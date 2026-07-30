@@ -116,12 +116,14 @@ max_events = 10
 # it back on.  Switching it off by hand always cancels the cycle too.
 rearm_reset_minutes = 0
 
-# How much of the interference to record, in seconds, timed from the moment of
-# lock.  This measures the event, not the file: you get this many seconds of actual
-# 120 pps noise, and the lead-in before it and the trailer after it are extra, so
-# the .wav on disk is always somewhat longer than the number set here.  Set it by
-# how much of the noise is worth studying rather than by how big the files should
-# be.  0 records the whole event however long it runs.
+# How much of the interference to record, in seconds, counted from the moment
+# recording starts.  This measures the event, not the file: whatever the ring buffer
+# was holding at that moment is lead-in and comes free on top, as does the trailer
+# afterwards, so the .wav on disk is always somewhat longer than the number set
+# here.  That holds however long the start was delayed by min_lock_seconds or
+# min_lock_snr above — the waiting is paid for out of the lead-in, never out of this.
+# Set it by how much of the noise is worth studying rather than by how big the files
+# should be.  0 records the whole event however long it runs.
 #
 # A capped recording does not roll over into a second file: the rest of that
 # event is skipped, and the next event starts the next file.

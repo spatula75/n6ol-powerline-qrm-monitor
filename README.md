@@ -312,7 +312,7 @@ fade is a raised cosine and costs less than one pulse out of the 120 per second.
 | `directory` | `recordings/` under the station path | Where files are written, and where `--playback` looks for a bare filename.  Created at startup if missing. |
 | `max_events` | `10` | How many of the next events to record before disarming.  `0` records every event. |
 | `rearm_reset_minutes` | `0` | Minutes between resets of that budget.  `0` never re-arms. |
-| `max_seconds` | `120` | How much 120 pps noise to record, timed from the lock.  The file is always longer — lead-in and trailer sit outside it.  `0` is uncapped. |
+| `max_seconds` | `120` | How much to record once a recording starts.  The file is always longer — the lead-in already in the buffer, and the trailer, sit outside it.  `0` is uncapped. |
 | `stop_after_seconds` | `10` | Silence before a recording is closed — and therefore how long the trailer is. |
 | `min_lock_seconds` | `0` | How long the signal must hold before a recording starts.  Keep it to 5 s or less. |
 | `min_lock_snr` | `0` | How strong the signal must be before a recording starts, in dB SNR.  Recording only. |
@@ -375,10 +375,10 @@ usual 9.6 seconds of run-up.  Sit there for 30 seconds and the run-up is gone
 entirely — the file opens roughly 20 seconds *into* the event, having lost its
 onset along with everything before it.
 
-You still get a whole recording when that happens.  Once the lock has fallen out
-of the buffer, `max_seconds` measures from the start of the file rather than from a
-lock that is no longer in it, so the promise holds either way: that many seconds of
-actual pulse train.
+You still get a whole recording when that happens, and a full-length one.  Whatever
+the buffer holds when the level crosses is lead-in and is free, however long the
+wait made it; `max_seconds` then buys that much again on top.  So a long wait costs
+you the run-up, never the recording.
 
 This is the one way `min_lock_snr` is sharper-edged than `min_lock_seconds`.  That
 setting is capped at the buffer's length, so it can never cost you the beginning of
@@ -461,15 +461,17 @@ short (`capped`), or because you stopped it (`operator`, `shutdown`).
 ### How long a file ends up
 
 **Always somewhat longer than `max_seconds`.**  That setting measures the event,
-not the file: it is how much actual 120 pps noise you get, timed from the lock.
+not the file: it is how much is recorded from the moment recording starts.
 The lead-in and the trailer sit outside it.
 
 ```
-file length  =  lead-in  +  event (up to max_seconds)  +  trailer
+file length  =  whatever the buffer held  +  up to max_seconds  +  trailer
 ```
 
-So `max_seconds = 10` with a full buffer and no wait gives 10 s of pulse train
-inside a 9.6 + 10 = 19.6 s file, plus whatever trailer the timeout adds.  Set it by
+So `max_seconds = 10` with a full buffer gives a 9.6 + 10 = 19.6 s file, plus
+whatever trailer the timeout adds.  That holds however long the start was delayed
+by `min_lock_seconds` or `min_lock_snr`: the wait is spent out of the lead-in, and
+the ten seconds are counted from the moment recording actually begins.  Set it by
 how much of the noise you want to study, not by how big you want the files.
 
 The log spells the sum out when each recording closes, because the total is not a

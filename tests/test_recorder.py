@@ -767,17 +767,20 @@ class TestMinimumLock:
         settings = wavmeta.read_settings(_wav_files(tmp_path)[0])
         assert float(settings['lead_in_seconds']) == pytest.approx(3.0)
 
-    def test_the_length_cap_still_measures_from_the_lock(self, tmp_path):
-        """A cap of N seconds gives N seconds of event however long the wait was."""
+    def test_the_cap_measures_from_where_recording_starts(self, tmp_path):
+        """Whatever the buffer holds when the wait ends is lead-in and is free; the
+        cap buys that much again on top, however long the wait was."""
         recorder, pipeline, analyzer = _make_recorder(
             tmp_path, min_lock_seconds=2, max_seconds=4)
         _feed(pipeline, 1)
         analyzer.lock()
-        recorder.tick()
+        recorder.tick()                             # waiting out min_lock_seconds
+        _feed(pipeline, 3)
+        recorder.tick()                             # begins, with 4 s buffered
         _feed(pipeline, 10)
-        recorder.tick()
+        recorder.tick()                             # the cap trims this to 4 s
         recorder.stop()
-        assert _durations(tmp_path) == [5.0]        # 1 s lead-in + 4 s from the lock
+        assert _durations(tmp_path) == [8.0]        # 4 s of lead-in + 4 s of cap
 
 
 class TestMinimumSnr:
@@ -898,10 +901,16 @@ class TestMinimumSnr:
 
     def test_a_wait_that_outlives_the_buffer_still_records(self, tmp_path):
         """The lock can fall out of the buffer entirely while the level is watched.
-        Timing the cap from it then spends the whole cap before the file is even
-        opened, and the event this setting exists to catch is saved as silence."""
+
+        Timing the cap from the lock then spends it before the file is even opened,
+        and the event this setting exists to catch is saved as silence.  Timing it
+        from the first buffered sample is no better: the buffer is lead-in that was
+        already free, and letting it eat the cap leaves a fraction of a second of the
+        loud part everybody was waiting for.
+        """
         self._waited_past_the_buffer(tmp_path, max_seconds=5)
-        assert _durations(tmp_path) == [5.0]
+        buffered = RingBufferPipeline().capacity_samples / SAMPLE_RATE
+        assert _durations(tmp_path) == [buffered + 5.0]
 
     def test_a_wait_that_outlives_the_buffer_does_not_look_like_falling_behind(
             self, tmp_path, caplog):

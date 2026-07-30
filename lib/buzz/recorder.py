@@ -270,7 +270,7 @@ class EventRecorder:
         # is no lock to be timing.  See _lock_has_held.
         self._locked_since: int | None = None
         self._position = 0              # next unread sample position in the pipeline
-        self._event_start = 0           # position at the moment of lock (max_seconds origin)
+        self._event_start = 0           # position where recording began (max_seconds origin)
         self._last_lock = 0             # position as of the most recent LOCKED tick
         # Set when a recording ends, cleared by the first tick that sees no lock.  A
         # capped recording ends with the signal still present, and one event should
@@ -634,15 +634,15 @@ class EventRecorder:
         # three would be wrong by exactly that much if this used either end instead.
         locked_at = span.end if self._locked_since is None else self._locked_since
         self._lead_in, self._started_at = max(0, locked_at - span.start), now
-        # The cap measures from the lock, or from the first sample in the file when
-        # the lock is no longer in it.  A wait long enough to empty the buffer —
-        # min_lock_snr sitting below the bar for minutes — leaves the lock further
-        # back than max_seconds allows, and measuring from there means the cap is
-        # spent before the file opens: the opening write clamps to nothing, the write
-        # position lands behind itself, and the event this was meant to catch is
-        # saved as an empty recording that reports having fallen behind the buffer.
-        # Either way the promise holds — that many seconds of actual pulse train.
-        self._event_start = max(locked_at, span.start)
+        # The cap runs from here — the moment recording begins — and never from the
+        # lock.  Whatever the buffer is holding is lead-in and is free, however long
+        # the wait for min_lock_seconds or min_lock_snr made it; max_seconds then buys
+        # that much more on top.  Measuring from the lock instead breaks down as soon
+        # as anything delays the start: a wait longer than the cap spends it before
+        # the file is opened, and a wait that merely empties the buffer leaves the
+        # whole cap consumed by lead-in that was already free.  Both of those were
+        # live bugs, one of which saved a real event as a nought-second recording.
+        self._event_start = span.end
         # Capped here too, not only in _capture: with min_lock_seconds this opening
         # write already contains audio from after the lock, so a cap shorter than the
         # wait would otherwise be overrun before the first poll ever looked at it.

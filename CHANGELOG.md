@@ -71,11 +71,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   lead-in and the lead-in runs out, so a signal that loiters near the bar for longer
   than the buffer holds loses its onset entirely; that is documented, and is the one
   way this is sharper-edged than `min_lock_seconds`, whose wait is capped at the
-  buffer and so can never cost the beginning of an event. When a wait outlives the
-  buffer, `max_seconds` measures from the start of the file rather than from a lock
-  that is no longer in it — timing it from the lock spent the whole cap before the
-  file opened, saving the event as an empty recording and reporting, wrongly, that
-  the recorder had fallen behind the ring buffer.
+  buffer and so can never cost the beginning of an event.
+- `max_seconds` is counted from the moment recording starts rather than from the
+  lock, so whatever the ring buffer was holding is lead-in and comes free on top
+  however long the start was delayed. Measuring it from the lock broke down as soon
+  as anything delayed that start: a wait longer than the cap spent it before the
+  file was opened, saving a real event as a nought-second recording that reported,
+  wrongly, having fallen behind the ring buffer. Measuring instead from the first
+  buffered sample fixed that but traded it for a subtler fault — free lead-in ate
+  the cap, so a threshold crossing produced a file of exactly `max_seconds` that was
+  almost entirely the quiet approach and barely any of the loud part it had been
+  waiting for.
 - `min_lock_seconds` holds a recording off until the interference has been present
   that long, so a night of two-second blips no longer fills the directory with
   files too short to be worth replaying — or spends the event budget on them. A
