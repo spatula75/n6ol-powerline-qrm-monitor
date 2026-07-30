@@ -23,11 +23,19 @@ from math import ceil
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QImage, QPainter
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from buzz.analyzer import AnalysisResult, ContinuousAnalyzer
 from buzz.config import BuzzConfig
 from buzz.dsp import SILENCE_DBFS
+from buzz.recorder import EventRecorder, RecorderStatus
 from buzz.sampler import AudioPipeline
 from buzz.scope import SCOPE_H, ScopeWidget
 
@@ -213,6 +221,35 @@ _SEGS_H      = _SEGS_BOTTOM - _SEGS_TOP   # ≈ 190 px for 13 segments
 
 _METER_UPDATE_MS = 200                    # meter poll cadence (matches analyzer LOCKED tick)
 _SMOOTH_N        = 5                      # recent results averaged for meter display
+
+# Recording toolbar: one row of controls across the top of the window, tall enough
+# for a standard push button and no taller — the displays are the point of the
+# window, and the bar is deliberately the least interesting thing in it.
+_BAR_H       = 28
+_BAR_BG      = '#141414'                  # slightly darker than the panels below it
+_BAR_TEXT    = '#c8c8c8'
+_REC_TEXT    = '#ff6464'                  # status line while audio is being written
+
+
+def format_recorder_status(status: RecorderStatus | None,
+                           playback_name: str | None = None) -> str:
+    """One line describing what the recorder is doing, for the toolbar.
+
+    Playback wins over everything: there is no recorder in that mode, and what the
+    operator needs to see on a screen recording is which capture is on screen.
+    """
+    if playback_name is not None:
+        return f'Playback — {playback_name}'
+    if status is None:
+        return 'Recording unavailable'
+    if status.recording:
+        minutes, seconds = divmod(int(status.elapsed_seconds), 60)
+        return f'● REC {minutes:02d}:{seconds:02d} — {status.filename}'
+    if not status.armed:
+        return 'Recording off'
+    if status.events_remaining is None:
+        return 'Armed — recording every event'
+    return f'Armed — {status.events_remaining} event(s) to record'
 
 
 def _n_segments_lit(dbm: float) -> int:
@@ -546,12 +583,79 @@ class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt displ
         self._timer.stop()
 
 
+class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt display
+    """Toolbar strip: arm/disarm recording, and show what it is doing.
+
+    Polls the recorder rather than being driven by it, at the same cadence as the
+    meters.  The recorder disarms itself when its event budget runs out, so the
+    button's state has to follow the recorder and not the other way round.
+
+    The button takes no focus, so the window keeps receiving key presses (A for
+    scope mode, R for recording) instead of the space bar re-triggering the button.
+    """
+
+    def __init__(self, recorder: EventRecorder | None, playback_name: str | None = None,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._recorder = recorder
+        self._playback_name = playback_name
+        self.setFixedHeight(_BAR_H)
+        # A plain QWidget draws its palette background and ignores the stylesheet's,
+        # which would leave the strip in the desktop's default grey with only the
+        # button and label dark.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f'QWidget {{ background: {_BAR_BG}; }}'
+            f'QLabel {{ color: {_BAR_TEXT}; font-size: 11px; }}'
+            f'QPushButton {{ color: {_BAR_TEXT}; background: #2a2a2a; border: 1px solid #3c3c3c;'
+            '               border-radius: 3px; padding: 2px 10px; font-size: 11px; }'
+            'QPushButton:checked { color: #ffffff; background: #8c2020; border-color: #b04040; }'
+            'QPushButton:disabled { color: #5a5a5a; border-color: #2a2a2a; }'
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 2, 6, 2)
+        layout.setSpacing(10)
+        self._button = QPushButton('Record')
+        self._button.setCheckable(True)
+        self._button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._button.setEnabled(recorder is not None)
+        self._button.clicked.connect(self.toggle)
+        self._label = QLabel()
+        layout.addWidget(self._button)
+        layout.addWidget(self._label)
+        layout.addStretch(1)
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(_METER_UPDATE_MS)
+        self._tick()
+
+    def toggle(self) -> None:
+        """Arm or disarm recording (button click, or the R key on the main window)."""
+        if self._recorder is not None:
+            self._recorder.toggle()
+            self._tick()
+
+    def _tick(self) -> None:
+        status = self._recorder.status() if self._recorder is not None else None
+        self._label.setText(format_recorder_status(status, self._playback_name))
+        self._label.setStyleSheet(
+            f'color: {_REC_TEXT};' if status is not None and status.recording else '')
+        self._button.setChecked(status is not None and status.armed)
+
+    def stop(self) -> None:
+        self._timer.stop()
+
+
 class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
     """Top-level window; closing it shuts down the audio pipeline and analyzer.
 
-    Layout is a scope over a waterfall on the left, with the S-meter panel running
-    the full height on the right:
+    A recording toolbar runs across the top, with a scope over a waterfall on the
+    left and the S-meter panel running the full height of both on the right:
 
+        +----------------------------------+
+        |  RecordingBarWidget (_BAR_H)     |
         +-------------------------+--------+
         |  ScopeWidget            |        |
         |  (SCOPE_H)              |        |
@@ -559,21 +663,33 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         |  WaterfallWidget        |        |
         |  (_WATERFALL_H)         |        |
         +-------------------------+--------+
+
+    The bar spans the whole width rather than sitting inside the left-hand stack,
+    which keeps the meter panel aligned with the displays it belongs to — its
+    segment geometry is derived from _WINDOW_H and does not survive being stretched
+    (see the _WINDOW_H comment).
     """
 
     def __init__(self, pipeline: AudioPipeline, analyzer: ContinuousAnalyzer,
-                 config: BuzzConfig, always_on_top: bool = False) -> None:
+                 config: BuzzConfig, always_on_top: bool = False,
+                 recorder: EventRecorder | None = None,
+                 playback_name: str | None = None) -> None:
         super().__init__()
         self.setWindowTitle('N6OL Powerline QRM Monitor')
         if always_on_top:
             self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self._pipeline = pipeline
         self._analyzer = analyzer
+        self._recorder = recorder
 
         container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(_PANEL_GAP)   # horizontal pad before the meter column
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(_PANEL_GAP)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(_PANEL_GAP)      # horizontal pad before the meter column
 
         self._waterfall = WaterfallWidget(pipeline, config)
         # The scope takes its width from the waterfall rather than recomputing the
@@ -581,6 +697,7 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         # sample rate or displayed bandwidth ever changes.
         self._scope  = ScopeWidget(pipeline, analyzer, config, self._waterfall.width())
         self._meters = MeterPanelWidget(analyzer)
+        self._bar    = RecordingBarWidget(recorder, playback_name)
 
         stack = QVBoxLayout()
         stack.setContentsMargins(0, 0, 0, 0)
@@ -588,24 +705,33 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         stack.addWidget(self._scope)
         stack.addWidget(self._waterfall)
 
-        layout.addLayout(stack)
-        layout.addWidget(self._meters)
+        row.addLayout(stack)
+        row.addWidget(self._meters)
+        outer.addWidget(self._bar)
+        outer.addLayout(row)
 
         self.setCentralWidget(container)
-        self.setFixedSize(
-            self._waterfall.width() + _PANEL_GAP + self._meters.width(), _WINDOW_H)
+        self.setFixedSize(self._waterfall.width() + _PANEL_GAP + self._meters.width(),
+                          _BAR_H + _PANEL_GAP + _WINDOW_H)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        """A toggles the scope between raw-persistence and averaged-envelope modes."""
+        """A toggles the scope's display mode; R arms and disarms recording."""
         if event.key() == Qt.Key.Key_A:
             self._scope.toggle_mode()
+        elif event.key() == Qt.Key.Key_R:
+            self._bar.toggle()
         else:
             super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self._bar.stop()
         self._scope.stop()
         self._waterfall.stop()
         self._meters.stop()
         self._analyzer.stop()
+        # Before the pipeline: a recording in progress is closed while its audio
+        # source is still running, mirroring _wait_until_interrupted().
+        if self._recorder is not None:
+            self._recorder.stop()
         self._pipeline.close()
         event.accept()

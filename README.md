@@ -252,14 +252,99 @@ To keep the display window pinned on top of other windows:
 python -m buzz.main --top
 ```
 
+To arm event recording for this run, without editing the config file:
+
+```
+python -m buzz.main --enable-recording
+```
+
+---
+
+## Recording Events
+
+The monitor can save interference events to `.wav` files as they happen, and
+replay them later through the same displays.  This is what to reach for when you
+want to show somebody the noise rather than describe it: catch the event once,
+then replay it as often as you like, at real speed, with a screen recorder
+running — no receiver required on the machine doing the replaying.
+
+Recording is configured in the `[recording]` section of the config file, armed at
+startup with `--enable-recording`, and toggled while running with the **Record**
+button in the toolbar or the **R** key.  Everything about it is off by default.
+
+### What ends up in the file
+
+```
+|<-- lead-in -->|<---------- event ---------->|<-- trailer -->|
+ already buffered   locked onto the pulse train  stop_after_seconds
+ when lock happened                              with no lock
+```
+
+A recording begins when the analyzer locks onto the pulse train, but it does not
+begin *at* that moment: the monitor is always holding the last several seconds of
+audio in memory, and all of it goes into the file.  So the recording opens with
+the run-up to the event instead of dropping you into the middle of it.  The end
+works the same way — the audio recorded while waiting out `stop_after_seconds` is
+kept, so every file ends with the noise floor the event faded into.
+
+A signal that flickers stays one recording, as long as it comes back inside
+`stop_after_seconds`.  Files are 16-bit mono PCM at the configured sample rate —
+the same format the analysis runs on, with no conversion anywhere.
+
+Each file is faded in and out over 5 ms, so it begins and ends at exactly zero
+and never clicks — playing several back to back gives no pop at the seams.  A
+file can genuinely begin or end on full-scale audio: if the arc is already
+buzzing when the monitor starts, the lead-in is a live pulse train from its first
+sample, and `max_seconds` ends a recording mid-event the same way.  Sound cards
+also carry a small DC offset, which would step at both ends even in silence.  The
+fade is a raised cosine and costs less than one pulse out of the 120 per second.
+
+### Settings
+
+| Setting | Meaning |
+|---|---|
+| `enabled` | Arm recording at startup.  `--enable-recording` does the same for one run. |
+| `directory` | Where files are written.  Defaults to `recordings/` under the station path. |
+| `max_events` | How many of the next events to record before disarming.  `0` records every event. |
+| `max_seconds` | Cap on a single recording, timed from lock; lead-in and trailer are extra.  `0` is uncapped. |
+| `stop_after_seconds` | Silence before a recording is closed — and therefore how long the trailer is. |
+
+Recording disarms itself once `max_events` events have been captured, so the
+default of `1` catches the next event and then leaves the disk alone.  Pressing
+**Record** again starts a fresh count.
+
+Files are named for the moment of lock, in station local time with the UTC offset
+attached:
+
+```
+event-20260729-143307-0700.wav
+```
+
+### Replaying a recording
+
+```
+python -m buzz.main --playback event-20260729-143307-0700.wav
+```
+
+A bare filename is looked up in the recording directory; anything with a path in
+it is used as given.  Playback runs at the file's own sample rate, so the
+displays move at the speed the event actually happened.
+
+Replay is analysis only.  No CSV rows, no plots, no uploads, and no recording —
+looking at an old event again must not add minutes to a day it did not happen on.
+The audio device is not opened at all, so recordings can be reviewed anywhere.
+When the file runs out, playback stops and the displays hold their last frame.
+
 ---
 
 ## Display Window
 
 When started without `--headless`, the monitor opens a live display window
-with three panels:
+with three panels and a toolbar:
 
 ```
++--------------------------------------+
+|  Record    Armed - 1 event(s)        |
 +-----------------------------+--------+
 |  Oscilloscope               |        |
 +-----------------------------+ NF SIG |
@@ -267,9 +352,13 @@ with three panels:
 +-----------------------------+--------+
 ```
 
+- **Toolbar** — across the top: arms recording, and shows what it is doing.
 - **Oscilloscope** — top left, a synchronized view of the raw audio waveform.
 - **Waterfall** — below it, a scrolling spectrogram.
-- **S-meters** — the right-hand column, running the full height of the window.
+- **S-meters** — the right-hand column, running the full height of the displays.
+
+Two keys work anywhere in the window: **A** switches the scope between its raw
+and averaged views, and **R** arms or disarms recording.
 
 ![Display window](docs/sample_waterfall_display.png)
 

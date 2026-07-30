@@ -69,6 +69,43 @@ url = "http://cumulusmx.local:8998/api/tags/process.json?temp&hum&SolarRad&wspee
 # longitude = -118.25
 
 
+[recording]
+# Automatically save interference events as .wav files, which can be replayed
+# later with:  python -m buzz.main --playback event-20260729-143307-0700.wav
+#
+# A recording starts when the analyzer locks onto the pulse train and ends once
+# the signal has been gone for stop_after_seconds.  It opens with the several
+# seconds of audio the monitor had already buffered when the lock happened, and
+# ends with the silence it waited through, so the event is never clipped at
+# either end.
+
+# Set enabled = true to arm recording at startup.  --enable-recording arms it for
+# one run without editing this file, and the Record button (or the R key) in the
+# main window toggles it while the monitor is running.
+enabled = false
+
+# Where .wav files are written, and where --playback looks when it is given a
+# bare filename.  Defaults to a "recordings" folder under [station] path.
+# directory = "C:\\Users\\yourname\\recordings"
+
+# How many of the next events to record.  Recording disarms itself once this many
+# have been captured; pressing Record again starts a fresh count.  Set to 0 to
+# record every event until you switch recording off by hand.
+max_events = 1
+
+# Longest single recording in seconds, timed from the moment of lock — the
+# lead-in and trailer are extra.  0 records the whole event however long it runs.
+# A capped recording does not roll over into a second file: the rest of that
+# event is skipped, and the next event starts the next file.
+max_seconds = 0
+
+# Seconds without a lock before a recording is closed.  This audio is kept, so
+# this also decides how much trailer every recording ends with.  Raise it if a
+# flickering signal is being split across several files; lower it to trim dead
+# air off the end.
+stop_after_seconds = 10
+
+
 [server]
 # Set enabled = true to upload output files to a web server via SCP after each
 # collection cycle.  When false (the default) the monitor runs in local-only mode

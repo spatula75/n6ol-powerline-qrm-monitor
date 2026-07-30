@@ -82,7 +82,7 @@ import logging
 import threading
 import time
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
 from math import log10
@@ -365,6 +365,7 @@ class ContinuousAnalyzer:
         self._latest_noise_correction: int = 0
         self._result_lock = threading.Lock()
         self._stop        = threading.Event()
+        self._state_listeners: list[Callable[[AnalyzerState], None]] = []
 
         self._thread = threading.Thread(target=self._run, daemon=True, name='analyzer')
 
@@ -375,6 +376,39 @@ class ContinuousAnalyzer:
 
     def stop(self) -> None:
         self._stop.set()
+
+    @property
+    def state(self) -> AnalyzerState:
+        """The state machine's current state.
+
+        Mostly of interest as the starting point for a listener registered before
+        start() — add_state_listener() reports every change after that, but not the
+        state the machine is already in.
+
+        Not lock-protected: _state is only ever assigned on the analyzer thread, and
+        rebinding an attribute is atomic, so a reader gets one state or the other and
+        never a torn value.
+        """
+        return self._state
+
+    def add_state_listener(self, listener: Callable[[AnalyzerState], None]) -> None:
+        """Call `listener(new_state)` whenever the state machine changes state.
+
+        Lock is an event, not a level.  A consumer that polls this class instead has
+        to infer the event by watching for the level to differ from last time, at
+        whatever rate it happens to poll — which means a brief lock that comes and
+        goes between two polls is invisible to it, and the intermittent signals this
+        monitor exists to catch are exactly the ones that behave that way.
+
+        Listeners run on the analyzer thread, inside the transition, so they must
+        return promptly and must not call back into the analyzer.  Recording audio to
+        disk from one would stall analysis; the event recorder's listener therefore
+        only sets a flag, and its own thread does the work.
+
+        Register before start().  The list is not synchronised, and everything is
+        wired up before the analyzer thread exists.
+        """
+        self._state_listeners.append(listener)
 
     def latest_result(self) -> AnalysisResult | None:
         with self._result_lock:
@@ -421,6 +455,10 @@ class ContinuousAnalyzer:
         consequences: a cold FFT search, a drift estimate reset on the next lock (see
         _full_analysis), and trigger_phase() reporting FREE rather than a HOLD it can
         no longer justify.
+
+        Being the one place state changes happen, this is also where they are
+        published to listeners (see add_state_listener) — after the bookkeeping, so a
+        listener that reads the analyzer sees a consistent view.
         """
         if new_state == self._state:
             return
@@ -433,6 +471,20 @@ class ContinuousAnalyzer:
             if new_state == AnalyzerState.SEARCHING:
                 self._phases_valid = False
         self._state = new_state
+        self._publish_state(new_state)
+
+    def _publish_state(self, state: AnalyzerState) -> None:
+        """Notify listeners of a state change, isolating each from the others.
+
+        A listener raising must not abort the transition or kill the analyzer
+        thread: analysis is the primary job, and something as peripheral as a
+        recorder or a display losing one notification is not worth stopping it for.
+        """
+        for listener in self._state_listeners:
+            try:
+                listener(state)
+            except Exception:
+                logger.exception('Analyzer state listener failed — continuing.')
 
     def _run(self) -> None:  # pragma: no cover
         # Guards against a transient failure (a numerical edge case, a hiccup from

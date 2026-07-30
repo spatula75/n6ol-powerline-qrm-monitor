@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from buzz.config import BuzzConfig
-from buzz.sampler import AudioPipeline
+from buzz.sampler import AudioPipeline, RingBufferPipeline
 
 SAMPLE_RATE = 16000
 CHUNK = AudioPipeline.CHUNK_SIZE
@@ -245,6 +245,66 @@ class TestAudioPipelineWaitForData:
         assert pipeline.wait_for_data(CHUNK + 1, timeout=0.05) is False
         _fire(callback)  # now two chunks cover it
         assert pipeline.wait_for_data(CHUNK + 1, timeout=0.05) is True
+
+
+class TestReadFrom:
+    """Sequential reads: every sample exactly once, in order, gaps visible."""
+
+    def _pipeline(self, n_chunks: int):
+        pipeline = RingBufferPipeline()
+        for i in range(n_chunks):
+            pipeline._append(np.full(CHUNK, i + 1, dtype=np.int16))
+        return pipeline
+
+    def test_empty_buffer_returns_nothing(self):
+        span = RingBufferPipeline().read_from(0)
+        assert span.samples.size == 0
+
+    def test_reads_everything_buffered_from_zero(self):
+        span = self._pipeline(3).read_from(0)
+        assert len(span.samples) == 3 * CHUNK
+
+    def test_span_is_tagged_with_absolute_positions(self):
+        span = self._pipeline(3).read_from(0)
+        assert (span.start, span.end) == (0, 3 * CHUNK)
+
+    def test_reads_only_what_is_new(self):
+        pipeline = self._pipeline(2)
+        first = pipeline.read_from(0)
+        pipeline._append(np.full(CHUNK, 99, dtype=np.int16))
+        second = pipeline.read_from(first.end)
+        assert np.all(second.samples == 99)
+
+    def test_consecutive_reads_do_not_overlap(self):
+        pipeline = self._pipeline(2)
+        first = pipeline.read_from(0)
+        pipeline._append(np.zeros(CHUNK, dtype=np.int16))
+        assert pipeline.read_from(first.end).start == first.end
+
+    def test_nothing_new_returns_an_empty_span(self):
+        pipeline = self._pipeline(2)
+        end = pipeline.read_from(0).end
+        assert pipeline.read_from(end).samples.size == 0
+
+    def test_nothing_new_still_reports_the_current_position(self):
+        pipeline = self._pipeline(2)
+        end = pipeline.read_from(0).end
+        assert pipeline.read_from(end).start == end
+
+    def test_a_reader_that_falls_behind_gets_what_survived(self):
+        pipeline = self._pipeline(400)          # past the ring buffer's capacity
+        span = pipeline.read_from(0)
+        assert span.start > 0
+
+    def test_a_reader_that_falls_behind_still_reads_to_the_tail(self):
+        pipeline = self._pipeline(400)
+        span = pipeline.read_from(0)
+        assert span.end == 400 * CHUNK
+
+    def test_dropped_audio_is_the_difference_between_request_and_start(self):
+        pipeline = self._pipeline(400)
+        span = pipeline.read_from(0)
+        assert len(span.samples) == span.end - span.start
 
 
 class TestAudioPipelineClose:

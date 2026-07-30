@@ -8,6 +8,54 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- Automatic event recording (`buzz.recorder`). While armed, the recorder writes
+  each locked event to its own 16-bit mono `.wav` in the configured directory,
+  named for the moment of lock in station local time with the UTC offset attached
+  (`event-20260729-143307-0700.wav`; ISO 8601's colons are illegal in Windows
+  filenames). Configured under `[recording]`: how many of the next events to
+  record before disarming, an optional cap on a single recording, and how long a
+  signal may be gone before the file is closed. Armed at startup with
+  `--enable-recording`, and toggled while running from the toolbar or the `R` key.
+- Recordings carry a lead-in and a trailer. The ring buffer is already holding the
+  last several seconds of audio when lock happens, so the recorder starts from its
+  oldest surviving sample rather than the live tail and the file opens with the
+  run-up to the event; the audio captured while waiting out `stop_after_seconds`
+  is written as it arrives, so the trailer is already in the file by the time the
+  timeout expires. A signal returning inside that window continues the same
+  recording rather than starting a second one.
+- Recordings are faded in and out over 5 ms, so every file starts and ends at
+  exactly zero and cannot click — including at the seams when files are played
+  back to back. Both ends can genuinely be a cut through full-scale audio: an arc
+  already buzzing when the monitor starts is locked onto within a second or two,
+  making the lead-in a live pulse train from its first sample, and `max_seconds`
+  ends a file mid-event the same way. A sound card's DC offset would step at both
+  ends even in silence. The ramp is a raised cosine rather than an exponential
+  (which approaches zero without reaching it, so truncating it reinstates the step
+  the fade exists to remove) and meets both ends with zero slope, worth 6 dB/octave
+  of splatter rolloff over a linear ramp's corner. 5 ms because a fade of duration
+  T spreads the transition over roughly 1/T of bandwidth: a few samples would smear
+  a click across the whole audio band rather than removing it. The recorder holds
+  back a fade's worth of the newest audio so the fade-out can be applied to
+  whichever samples turn out to be last, which is only known after the fact.
+- `--playback FILE` replays a recorded `.wav` through the whole live pipeline
+  (`buzz.playback`), at the file's own sample rate, so an event can be analysed
+  again at real speed for a screen recording. A bare filename resolves against the
+  recording directory. No audio device is opened, and the collector is not started
+  at all — no CSV rows, plots, uploads or recording, since reviewing an old event
+  must not add minutes to a day it did not happen on.
+- `ContinuousAnalyzer.add_state_listener()` publishes state changes to registered
+  listeners from inside `_transition()`. Lock is an event, not a level: a consumer
+  polling for it can only infer the event by watching for the level to differ from
+  last time, which makes a brief lock between two polls invisible — precisely the
+  intermittent signals this monitor exists to catch. Listeners run on the analyzer
+  thread and are isolated from each other, so a failing one cannot abort a
+  transition or stop analysis.
+- Toolbar strip across the top of the display window, with the recording control
+  and a status line (armed and events remaining, elapsed time and filename while
+  recording, or the file being replayed during playback). It spans the full window
+  width rather than sitting in the left-hand stack, which keeps the meter panel
+  aligned with the displays — its segment geometry is derived from the window
+  height and does not survive being stretched.
 - Phase-synchronised oscilloscope panel above the waterfall (`buzz.scope`). The
   sweep is triggered from the analyzer's tracked pulse phase rather than an
   amplitude threshold, so a 120 pps arc renders as a standing wave instead of
@@ -20,6 +68,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   predicted pulse phase plus a `TriggerSync` confidence level, for display sync.
 
 ### Changed
+- The ring buffer moved out of `AudioPipeline` into a `RingBufferPipeline` base
+  class, so live capture and `.wav` playback are two ways of filling the same
+  buffer and every consumer downstream is unchanged. Added `read_from(position)`
+  alongside `get_snapshot()`: displays want the most recent N samples and do not
+  care what they skipped, while a recorder needs each sample exactly once, in
+  order, with any loss visible rather than silent.
 - `scope.accumulate_trace()` is now JIT-compiled. It runs once per sweep, about
   fifty times a second, and the vectorised difference-and-cumsum formulation it
   replaced allocated a quarter-megabyte temporary every call and integrated all of

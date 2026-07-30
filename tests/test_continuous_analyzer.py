@@ -162,6 +162,64 @@ class TestTransition:
         assert az._state == 'SIGNAL_LOST'
 
 
+class TestStateListeners:
+    def test_listener_is_called_on_a_transition(self):
+        az = _make_analyzer()
+        seen = []
+        az.add_state_listener(seen.append)
+        az._transition(AnalyzerState.LOCKED)
+        assert seen == [AnalyzerState.LOCKED]
+
+    def test_listener_is_not_called_when_the_state_is_unchanged(self):
+        az = _make_analyzer()
+        seen = []
+        az.add_state_listener(seen.append)
+        az._transition(AnalyzerState.SEARCHING)   # already SEARCHING
+        assert seen == []
+
+    def test_every_listener_is_called(self):
+        az = _make_analyzer()
+        first, second = [], []
+        az.add_state_listener(first.append)
+        az.add_state_listener(second.append)
+        az._transition(AnalyzerState.LOCKED)
+        assert (first, second) == ([AnalyzerState.LOCKED], [AnalyzerState.LOCKED])
+
+    def test_listener_sees_the_bookkeeping_already_applied(self):
+        az = _make_analyzer()
+        az.add_state_listener(lambda _: seen.append(az._phases_valid))
+        seen = []
+        az._transition(AnalyzerState.LOCKED)
+        assert seen == [True]
+
+    def test_a_raising_listener_does_not_break_the_transition(self):
+        az = _make_analyzer()
+
+        def explode(_):
+            raise RuntimeError('boom')
+
+        az.add_state_listener(explode)
+        az._transition(AnalyzerState.LOCKED)
+        assert az.state == AnalyzerState.LOCKED
+
+    def test_a_raising_listener_does_not_stop_the_others(self):
+        az = _make_analyzer()
+        seen = []
+
+        def explode(_):
+            raise RuntimeError('boom')
+
+        az.add_state_listener(explode)
+        az.add_state_listener(seen.append)
+        az._transition(AnalyzerState.LOCKED)
+        assert seen == [AnalyzerState.LOCKED]
+
+    def test_state_property_reports_the_current_state(self):
+        az = _make_analyzer()
+        az._transition(AnalyzerState.SIGNAL_LOST)
+        assert az.state == AnalyzerState.SIGNAL_LOST
+
+
 # ---------------------------------------------------------------------------
 # Tick methods — per-state scheduling (tier cadence and transition wiring)
 # ---------------------------------------------------------------------------

@@ -1,9 +1,12 @@
 """Tests for configuration dataclasses, TOML loader, and derived properties."""
 
+from pathlib import Path
+
 import pytest
 
 from buzz.config import (
-    AudioConfig, BuzzConfig, ServerConfig, StationConfig, WeatherConfig, _load_section,
+    AudioConfig, BuzzConfig, RecordingConfig, ServerConfig, StationConfig, WeatherConfig,
+    _load_section,
 )
 
 
@@ -124,3 +127,43 @@ host = "example.com"
         toml.write_bytes(b'[audio]\nextra_unknown_field = "surprise"\n')
         cfg = BuzzConfig.from_toml(toml)
         assert cfg.audio.sample_rate == 16000
+
+
+class TestRecordingConfigDefaults:
+    def test_disabled_by_default(self):
+        assert RecordingConfig().enabled is False
+
+    def test_records_one_event_by_default(self):
+        assert RecordingConfig().max_events == 1
+
+    def test_uncapped_length_by_default(self):
+        assert RecordingConfig().max_seconds == 0.0
+
+    def test_has_a_silence_timeout(self):
+        assert RecordingConfig().stop_after_seconds > 0
+
+
+class TestRecordingDirectory:
+    def test_defaults_under_the_station_path(self):
+        station = StationConfig(path='/data')
+        assert RecordingConfig().directory_path(station) == Path('/data/recordings')
+
+    def test_explicit_directory_wins(self):
+        station = StationConfig(path='/data')
+        cfg = RecordingConfig(directory='/elsewhere/wavs')
+        assert cfg.directory_path(station) == Path('/elsewhere/wavs')
+
+
+class TestRecordingSectionLoading:
+    def _load(self, tmp_path, body: bytes) -> BuzzConfig:
+        toml = tmp_path / 'config.toml'
+        toml.write_bytes(body)
+        return BuzzConfig.from_toml(toml)
+
+    def test_section_is_read(self, tmp_path):
+        cfg = self._load(tmp_path, b'[recording]\nenabled = true\nmax_events = 5\n')
+        assert (cfg.recording.enabled, cfg.recording.max_events) == (True, 5)
+
+    def test_missing_section_uses_defaults(self, tmp_path):
+        cfg = self._load(tmp_path, b'[audio]\nsample_rate = 8000\n')
+        assert cfg.recording.enabled is False

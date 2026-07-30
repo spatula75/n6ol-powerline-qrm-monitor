@@ -1,11 +1,11 @@
 """
 Configuration dataclasses and TOML loader for the powerline QRM monitor.
 
-BuzzConfig is the top-level config object, composed of four section dataclasses:
-AudioConfig, StationConfig, WeatherConfig, and ServerConfig.  Each maps directly
-to a [section] in ~/.buzz/config.toml.  BuzzConfig.from_toml() reads the file and
-populates the dataclasses; unknown keys are silently ignored so old config files
-don't break when new fields are added.
+BuzzConfig is the top-level config object, composed of five section dataclasses:
+AudioConfig, StationConfig, WeatherConfig, ServerConfig, and RecordingConfig.  Each
+maps directly to a [section] in ~/.buzz/config.toml.  BuzzConfig.from_toml() reads
+the file and populates the dataclasses; unknown keys are silently ignored so old
+config files don't break when new fields are added.
 """
 
 import tomllib
@@ -86,11 +86,35 @@ class ServerConfig:
 
 
 @dataclass
+class RecordingConfig:
+    # Set to true to arm event recording at startup; --enable-recording arms it for
+    # one run without editing the config, and the toolbar button toggles it live.
+    enabled: bool = False
+    # Directory for recorded .wav files.  Empty means <station.path>/recordings.
+    # Also where --playback looks when given a bare filename rather than a path.
+    directory: str = ''
+    # How many of the next events to record before disarming.  0 records every
+    # event until recording is switched off by hand.
+    max_events: int = 1
+    # Longest single recording in seconds, measured from the moment of lock; the
+    # lead-in and trailer are extra.  0 records the event however long it runs.
+    max_seconds: float = 0.0
+    # Seconds without a lock before a recording is closed.  This audio is kept, so
+    # the value also sets how much trailer every recording ends with.
+    stop_after_seconds: float = 10.0
+
+    def directory_path(self, station: StationConfig) -> Path:
+        """Resolve `directory` against the station's output path when it is unset."""
+        return Path(self.directory) if self.directory else Path(station.path) / 'recordings'
+
+
+@dataclass
 class BuzzConfig:
     audio: AudioConfig = field(default_factory=AudioConfig)
     station: StationConfig = field(default_factory=StationConfig)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
+    recording: RecordingConfig = field(default_factory=RecordingConfig)
 
     @classmethod
     def from_toml(cls, path: Path | str = CONFIG_PATH) -> 'BuzzConfig':
@@ -101,6 +125,7 @@ class BuzzConfig:
             station=_load_section(data, 'station', StationConfig),
             weather=_load_section(data, 'weather', WeatherConfig),
             server=_load_section(data, 'server', ServerConfig),
+            recording=_load_section(data, 'recording', RecordingConfig),
         )
 
 
