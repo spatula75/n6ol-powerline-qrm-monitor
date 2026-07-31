@@ -7,6 +7,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- An integration suite under `tests/integration/`, run with `pytest -m integration
+  --no-cov` and deselected from a plain `pytest` so the fast feedback loop stays
+  fast. It drives real components over real threads at real speed — the combination
+  every costly bug in this project has lived in, and the one thing the unit suite
+  cannot exercise by construction. Three groups: recording an event whose level
+  crosses `min_lock_snr` mid-arc; replaying one, including that Restart really does
+  make the analyzer acquire from scratch rather than opening already locked; and a
+  Qt offscreen render that asserts on pixels, covering the two display bugs that
+  reached a running program unnoticed (a toolbar drawn in the desktop's grey, and a
+  Record button that stayed lit once armed). CI runs it as its own job, alongside
+  the unit suite rather than after it.
+- A release workflow. Pushing a version tag runs everything CI runs plus the
+  integration suite, checks that `lib/buzz/__init__.py`, `pyproject.toml` and the
+  tag all agree on the version and that the changelog has a section for it, then
+  builds `.tar.gz` and `.zip` archives of the tagged tree with `git archive`,
+  attaches a `SHA256SUMS` beside them, and publishes the GitHub release with that
+  version's changelog section as its notes. GitHub's own "Source code" archives are
+  generated on demand and their checksums have changed before now; these are built
+  once and stay true.
+
+### Fixed
+- `pip install .` no longer produces a monitor that silently falls back to headless:
+  PySide6 was listed in `requirements.txt` but missing from the dependencies in
+  `pyproject.toml`.
+
 ## [1.2.0] — 2026-07-28
 
 A phase-synchronised oscilloscope display joins the waterfall, backed by a

@@ -1,0 +1,38 @@
+name: Set up the test environment
+description: >
+  Python, the system libraries the wheels link against, and the project's
+  dependencies.  Shared by CI and by the release workflow so that the environment a
+  release is verified in cannot drift away from the one every PR is tested in --
+  which is the whole point of gating a release on the tests at all.
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Python 3.12
+      uses: actions/setup-python@v7
+      with:
+        python-version: "3.12"
+
+    - name: Install PortAudio (required by sounddevice)
+      shell: bash
+      run: sudo apt-get install -y libportaudio2
+
+    - name: Install Qt runtime libraries (required by PySide6)
+      # PySide6's compiled QtGui extension dynamically links against these at
+      # import time -- not just when a window is actually shown -- so even the
+      # pure-function tests in test_waterfall_math.py need them, despite never
+      # creating a QApplication or a display.  The bare ubuntu-latest runner
+      # doesn't ship any of them.  libegl1/libgl1/libxkbcommon0 are the
+      # well-known minimum for QtGui to import cleanly on headless Linux; if a
+      # future PySide6 bump needs more, the ImportError will name the next
+      # missing .so and it can be added here.
+      #
+      # The offscreen integration tier paints through the same stack: the
+      # offscreen platform plugin is a real raster paint device, so it needs the
+      # libraries even though it never opens a window.
+      shell: bash
+      run: sudo apt-get install -y libegl1 libgl1 libxkbcommon0
+
+    - name: Install dependencies
+      shell: bash
+      run: pip install -r requirements.txt

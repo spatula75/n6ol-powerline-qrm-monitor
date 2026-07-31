@@ -12,76 +12,12 @@ nothing, a recording that came out empty because a limit was measured from the
 wrong end — none of which a stubbed analyzer would have shown.
 """
 
-import time
-from pathlib import Path
-
 import numpy as np
 import pytest
+from harness import BUFFERED_SECONDS, LOUD_PULSES, QUIET_PULSES, RATE, Monitor
 
 from buzz import wavmeta
-from buzz.analyzer import AnalyzerState, ContinuousAnalyzer
-from buzz.config import BuzzConfig
 from buzz.playback import load_wav
-from buzz.recorder import EventRecorder
-from buzz.sampler import RingBufferPipeline
-
-RATE = 16000
-PULSE_RATE = 120
-CHUNK = RingBufferPipeline.CHUNK_SIZE
-BUFFERED_SECONDS = RingBufferPipeline().capacity_samples / RATE
-
-# Amplitudes chosen from what the analyzer actually reports for them: roughly 18 dB
-# SNR and 52 dB.  Straddling a 30 dB threshold by twelve either way keeps the test
-# about the recorder rather than about the last decibel of the DSP.
-QUIET_PULSES = 400
-LOUD_PULSES = 20_000
-
-
-def _audio(seconds: float, amplitude: int | None, seed: int = 1) -> np.ndarray:
-    """Noise, optionally carrying a 120 pps pulse train of the given amplitude."""
-    n = int(seconds * RATE)
-    data = np.random.default_rng(seed).integers(-100, 101, size=n, dtype=np.int16)
-    if amplitude is None:
-        return data
-    spacing = RATE / PULSE_RATE
-    for i in range(int(n / spacing)):
-        at = round(i * spacing)
-        if at + 3 < n:
-            data[at:at + 3] = amplitude
-    return data
-
-
-class Monitor:
-    """A real pipeline, analyzer and recorder, fed audio at the speed of the clock."""
-
-    def __init__(self, directory: Path, **recording) -> None:
-        config = BuzzConfig()
-        config.audio.sample_rate, config.audio.pulse_rate = RATE, PULSE_RATE
-        config.recording.directory = str(directory)
-        config.recording.enabled = True
-        config.recording.max_events = 1
-        for key, value in recording.items():
-            setattr(config.recording, key, value)
-        self.directory = directory
-        self.pipeline = RingBufferPipeline()
-        self.analyzer = ContinuousAnalyzer(self.pipeline, config)
-        self.recorder = EventRecorder(self.pipeline, self.analyzer, config)
-        self.analyzer.start()
-        self.recorder.start()
-
-    def play(self, seconds: float, amplitude: int | None) -> None:
-        """Feed audio in real time, so every timer under test runs as it would live."""
-        audio = _audio(seconds, amplitude)
-        for i in range(len(audio) // CHUNK):
-            self.pipeline._append(audio[i * CHUNK:(i + 1) * CHUNK])
-            time.sleep(CHUNK / RATE)
-
-    def stop(self) -> None:
-        self.recorder.stop()
-        self.analyzer.stop()
-
-    def recordings(self) -> list[Path]:
-        return sorted(self.directory.glob('*.wav'))
 
 
 @pytest.mark.integration
@@ -97,7 +33,8 @@ class TestThresholdCrossing:
     """
 
     @pytest.fixture(scope='class')
-    def crossed(self, tmp_path_factory):
+    @staticmethod
+    def crossed(tmp_path_factory):
         monitor = Monitor(tmp_path_factory.mktemp('crossing'),
                           min_lock_snr=30.0, max_seconds=5.0, stop_after_seconds=3.0)
         try:
@@ -139,34 +76,3 @@ class TestThresholdCrossing:
         the event as a nought-second recording."""
         settings = wavmeta.read_settings(crossed.recordings()[0])
         assert float(settings['lead_in_seconds']) == 0.0
-
-
-@pytest.mark.integration
-class TestPlaybackRelocksARecording:
-    """A recording this monitor made must be analysable by the same monitor."""
-
-    def test_a_recorded_event_locks_again_on_replay(self, tmp_path):
-        from buzz.playback import FilePlaybackPipeline
-
-        monitor = Monitor(tmp_path, max_seconds=6.0, stop_after_seconds=2.0)
-        try:
-            monitor.play(2, None)
-            monitor.play(10, LOUD_PULSES)
-            monitor.play(3, None)
-        finally:
-            monitor.stop()
-        recording = monitor.recordings()[0]
-
-        config = BuzzConfig()
-        config.audio.sample_rate, config.audio.pulse_rate = RATE, PULSE_RATE
-        with FilePlaybackPipeline(recording) as playback:
-            analyzer = ContinuousAnalyzer(playback, config)
-            playback.start()
-            analyzer.start()
-            deadline = time.monotonic() + playback.duration + 2.0
-            locked = False
-            while time.monotonic() < deadline and not locked:
-                locked = analyzer.state == AnalyzerState.LOCKED
-                time.sleep(0.05)
-            analyzer.stop()
-        assert locked
