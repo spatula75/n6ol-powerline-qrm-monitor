@@ -27,8 +27,30 @@ To also check coverage:
 python -m pytest tests/ --cov
 ```
 
-Coverage must stay at or above 90 %.  The report will tell you which lines are
+Coverage must stay at or above 97 %.  The report will tell you which lines are
 not yet exercised.
+
+### Integration tests
+
+The suite above is the fast one, and it is what a plain `pytest` runs.  A second
+suite under `tests/integration/` drives the real components — a real analyzer, a
+real recorder, a real playback feeder — over real threads at real speed, and is
+deselected by default because it costs about a minute:
+
+```
+python -m pytest -m integration --no-cov
+```
+
+`--no-cov` because the coverage gate is calibrated against what the unit suite
+reaches; this run touches a different subset of the code and measuring it against
+that number fails for no reason worth acting on.
+
+They are slow *by construction* — playback is real-time because pacing is part of
+what is under test — and so their assertions are properties ("locked within N
+seconds", "the position advanced"), never exact timings.  Keep it that way: a test
+that goes red on a loaded runner is a test everyone learns to ignore.  Some need
+Qt, and render to its offscreen platform rather than a window, so they run on a
+machine with no display and no sound card.
 
 ### Golden files
 
@@ -61,6 +83,29 @@ functions and methods.
 - Add or update tests for any changed behavior.
 - Update `CHANGELOG.md` under `[Unreleased]` with a brief description of what changed.
 - Keep commit messages concise but informative — describe *why*, not just *what*.
+
+## Releasing
+
+Deciding what to release is still done by hand; publishing it is not.
+
+1. Bump the version in **both** `lib/buzz/__init__.py` and `pyproject.toml`.
+2. Move the `[Unreleased]` entries in `CHANGELOG.md` under a new `## [x.y.z] — date`
+   heading.  This section becomes the release notes verbatim, so write it for the
+   person reading the release page.
+3. Merge that as a PR, then tag the merge commit and push the tag:
+
+   ```
+   git tag 1.3.0 && git push origin 1.3.0
+   ```
+
+Pushing the tag runs `.github/workflows/release.yml`, which checks that the two
+version strings and the tag agree and that the changelog has a section for it, runs
+ruff, the unit suite under both the interpreted and compiled Numba paths, and the
+integration suite — and only then builds the `.tar.gz` and `.zip` archives, a
+`SHA256SUMS` beside them, and publishes the GitHub release.
+
+If the verification fails, the tag exists but nothing has been published.  Delete
+it (`git push --delete origin 1.3.0`), fix the problem, and tag again.
 
 ## Reporting bugs
 

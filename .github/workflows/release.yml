@@ -1,0 +1,143 @@
+name: Release
+
+# Pushing a version tag is what makes a release.  Nothing here decides *what* to
+# release: the version is bumped, the changelog written and the tag pushed by hand,
+# exactly as before -- this workflow only refuses to publish one that does not pass,
+# and saves the archives being built by hand afterwards.
+#
+# The tag is pushed before the tests run, so a failure here leaves a tag with no
+# release attached to it.  That is the intended failure: nothing has been published,
+# nobody can have downloaded it, and the fix is to delete the tag, correct the
+# problem and tag again.  Gating the tag itself would mean a workflow that writes
+# tags, which is a good deal more machinery for a release every few weeks.
+on:
+  push:
+    tags:
+      # Plain semver, matching the tags already in the repo -- 1.2.0, no leading v.
+      - '[0-9]+.[0-9]+.[0-9]+'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: An existing version tag to build a release from
+        required: true
+
+permissions:
+  contents: write        # to create the release and upload its assets
+
+jobs:
+  verify:
+    # The release gate.  Everything CI runs on a pull request, plus the integration
+    # suite -- which is the point of the exercise: the bugs that reached a release
+    # were all wiring-and-timing bugs, and this is the only suite that looks for them.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - uses: ./.github/actions/setup
+
+      - name: Check the version in the tree matches the tag
+        # A tag that disagrees with the version the program reports is the mistake
+        # this catches: the released archive would identify itself as the previous
+        # release, and the first person to report a bug against it would give the
+        # wrong version.  Cheap to check, and impossible to notice by eye.
+        env:
+          VERSION: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          declared=$(python -c "import sys; sys.path.insert(0, 'lib'); import buzz; print(buzz.__version__)")
+          packaged=$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml','rb'))['project']['version'])")
+          echo "tag=$VERSION  buzz.__version__=$declared  pyproject=$packaged"
+          test "$declared" = "$VERSION" || { echo "::error::lib/buzz/__init__.py says $declared, tag says $VERSION"; exit 1; }
+          test "$packaged" = "$VERSION" || { echo "::error::pyproject.toml says $packaged, tag says $VERSION"; exit 1; }
+
+      - name: Check the changelog has an entry for this version
+        env:
+          VERSION: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          grep -q "^## \[$VERSION\]" CHANGELOG.md || {
+            echo "::error::CHANGELOG.md has no '## [$VERSION]' section"; exit 1; }
+
+      - name: Lint with ruff
+        run: ruff check .
+
+      - name: Run tests with coverage
+        run: pytest tests/ --cov
+
+      - name: Run tests against the compiled Numba path
+        env:
+          NUMBA_DISABLE_JIT: "0"
+        run: pytest tests/
+
+      - name: Run the integration suite
+        run: pytest -m integration --no-cov
+
+  publish:
+    needs: verify           # no archives exist until the suite above has passed
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref_name }}
+
+      - name: Build the source archives
+        # GitHub attaches its own "Source code" archives to every release, so these
+        # are not the only way to get the source.  They are the way to get a *stable*
+        # one: GitHub generates its archives on demand and has changed how it
+        # compresses them before now, silently changing every published checksum.
+        # These are built once, uploaded once, and their checksums stay true.
+        #
+        # git archive takes the tree straight from the tag, so what ships is exactly
+        # what is committed -- no build artefacts, no stray working-copy files, and
+        # .gitignore'd paths cannot leak in.  The version-stamped prefix means
+        # unpacking two releases side by side gives two directories rather than one
+        # quietly overwriting the other.
+        env:
+          VERSION: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          prefix="n6ol-powerline-qrm-monitor-$VERSION"
+          mkdir -p dist
+          git archive --format=tar.gz --prefix="$prefix/" -o "dist/$prefix.tar.gz" HEAD
+          git archive --format=zip    --prefix="$prefix/" -o "dist/$prefix.zip"    HEAD
+          cd dist && sha256sum ./*.tar.gz ./*.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Take the release notes from the changelog
+        # The changelog is already the record of what changed and is written by hand
+        # with some care; re-typing it into the release body is duplicated effort that
+        # goes stale.  This lifts the section belonging to this version, stopping at
+        # the next '## [' heading.
+        env:
+          VERSION: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # index() rather than a regex: the version is full of dots, which a regex
+          # would treat as wildcards, and a bracket in a dynamic regex has to be
+          # escaped differently under gawk and mawk -- the runner has mawk and this
+          # was written on gawk.  A literal prefix match sidesteps both.
+          awk -v ver="$VERSION" '
+            index($0, "## [" ver "]") == 1  { found = 1; next }
+            found && index($0, "## [") == 1 { exit }
+            found                           { print }
+          ' CHANGELOG.md > NOTES.md
+          test -s NOTES.md || { echo "::error::no changelog body for $VERSION"; exit 1; }
+          cat NOTES.md
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$VERSION" \
+            --title "Release $VERSION" \
+            --notes-file NOTES.md \
+            --verify-tag \
+            dist/"n6ol-powerline-qrm-monitor-$VERSION.tar.gz" \
+            dist/"n6ol-powerline-qrm-monitor-$VERSION.zip" \
+            dist/SHA256SUMS
