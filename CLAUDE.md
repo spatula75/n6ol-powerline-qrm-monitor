@@ -179,6 +179,23 @@ the interpreted one.
 - The coverage gate lives in `[tool.coverage.report] fail_under`. Don't pass
   `--cov-fail-under` on the command line — it silently overrides the file.
 
+## Wrapping up a unit of work
+
+When finishing a piece of work, if you did something **noteworthy** (a non-obvious
+architectural pattern, a load-bearing convention, a footgun future contributors will
+hit) **or** established a **general principle** (a "we should always do X" rule that
+applies beyond the immediate task), ask whether the lesson should be committed to this
+file. If yes, persist it here — prefer extending an existing section over creating a
+new top-level one, and match the existing tone: terse, concrete, with code precedents
+where useful.
+
+The bar is "noteworthy or principle-establishing", not "everything we did". Routine
+bug fixes, narrow refactors, and pure implementation details don't trigger this.
+Architectural conventions, recurring patterns, footguns, performance considerations,
+and cross-cutting style decisions do. Ask once per noteworthy item, in the wrap-up
+moment of that piece of work — not retroactively at the end of a long session for
+everything.
+
 ---
 
 ## First principle: express the intention
@@ -356,6 +373,17 @@ leave an equivalence test behind.
 - Run them with `pytest -m integration --no-cov`. The `--no-cov` matters: the 97% gate is
   calibrated against the unit suite, and measuring a different subset against it fails
   spuriously.
+- **An integration test isn't finished until you have seen it fail.** Delete the thing
+  it is meant to catch and check that it goes red, with the message it was written to
+  print. The restart test only earned its keep once removing `analyzer.reset()` from
+  the restart path failed it. Tests over real threads pass for the wrong reason more
+  easily than most — a wait that returns early and an assertion that never runs both
+  look identical to a pass.
+- **Assert on transitions, not on polled state.** Register a listener
+  (`ContinuousAnalyzer.add_state_listener`) and assert on the sequence it records; see
+  `StateLog` in `tests/integration/harness.py`. Polling `analyzer.state` cannot see a
+  lock that dropped and came back between two polls, and that is exactly what restart
+  has to prove. Push, don't poll applies to tests too.
 - Integration tests complement running the program by hand; they don't replace it.
   A lit button or a timer starting at the wrong number needs a person looking.
 
