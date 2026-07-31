@@ -1,10 +1,17 @@
 """Tests for configuration dataclasses, TOML loader, and derived properties."""
 
+import re
+from dataclasses import fields
+from pathlib import Path
+
 import pytest
 
 from buzz.config import (
-    AudioConfig, BuzzConfig, ServerConfig, StationConfig, WeatherConfig, _load_section,
+    AudioConfig, BuzzConfig, RecordingConfig, ServerConfig, StationConfig, WeatherConfig,
+    _load_section,
 )
+
+_EXAMPLE = Path(__file__).resolve().parent.parent / 'config.example.toml'
 
 
 class TestAudioConfigDefaults:
@@ -124,3 +131,101 @@ host = "example.com"
         toml.write_bytes(b'[audio]\nextra_unknown_field = "surprise"\n')
         cfg = BuzzConfig.from_toml(toml)
         assert cfg.audio.sample_rate == 16000
+
+
+class TestExampleConfigMatchesTheDataclasses:
+    """config.example.toml documents every option, in the right section, and no others.
+
+    The example file is the only documentation of what may go in a config, and an
+    option that never reaches it is one nobody can find.  Checking it against the
+    dataclasses here means adding a field without documenting it fails the suite
+    rather than going unnoticed until somebody asks why the option does nothing.
+    """
+
+    def _documented(self) -> dict[str, set[str]]:
+        """Keys the example file documents, by section, commented-out ones included."""
+        keys: dict[str, set[str]] = {}
+        section = None
+        for line in _EXAMPLE.read_text(encoding='utf-8').splitlines():
+            text = line.strip().lstrip('#').strip()
+            header = re.fullmatch(r'\[(\w+)\]', text)
+            if header:
+                section = header.group(1)
+                keys.setdefault(section, set())
+            elif section and (match := re.match(r'([a-z_]+)\s*=', text)):
+                keys[section].add(match.group(1))
+        return keys
+
+    def _defined(self) -> dict[str, set[str]]:
+        return {f.name: set(getattr(BuzzConfig(), f.name).__dataclass_fields__)
+                for f in fields(BuzzConfig())}
+
+    def test_every_section_is_documented(self):
+        assert set(self._documented()) == set(self._defined())
+
+    def test_every_option_is_documented(self):
+        assert self._documented() == self._defined()
+
+    def test_the_example_loads(self):
+        assert isinstance(BuzzConfig.from_toml(_EXAMPLE), BuzzConfig)
+
+    def test_uncommented_values_are_the_defaults(self):
+        """The example file says the values it shows are the defaults, so they must be.
+
+        Only the settings that are genuinely site-specific are exempt — a hostname or
+        a home directory cannot have a meaningful default, and the example gives a
+        plausible one to edit.  Everything else drifts silently otherwise: a default
+        changed in code leaves the example quietly documenting the old value.
+        """
+        placeholders = {('station', 'path'), ('weather', 'url'), ('server', 'host'),
+                        ('server', 'username'), ('server', 'remote_path'),
+                        ('server', 'key_path')}
+        example, defaults = BuzzConfig.from_toml(_EXAMPLE), BuzzConfig()
+        differing = {
+            (section.name, option)
+            for section in fields(BuzzConfig())
+            for option in getattr(defaults, section.name).__dataclass_fields__
+            if getattr(getattr(example, section.name), option)
+            != getattr(getattr(defaults, section.name), option)
+        }
+        assert differing == placeholders
+
+
+class TestRecordingConfigDefaults:
+    def test_disabled_by_default(self):
+        assert RecordingConfig().enabled is False
+
+    def test_records_a_batch_of_events_by_default(self):
+        assert RecordingConfig().max_events == 10
+
+    def test_caps_recording_length_by_default(self):
+        assert RecordingConfig().max_seconds == 120.0
+
+    def test_has_a_silence_timeout(self):
+        assert RecordingConfig().stop_after_seconds > 0
+
+
+class TestRecordingDirectory:
+    def test_defaults_under_the_station_path(self):
+        station = StationConfig(path='/data')
+        assert RecordingConfig().directory_path(station) == Path('/data/recordings')
+
+    def test_explicit_directory_wins(self):
+        station = StationConfig(path='/data')
+        cfg = RecordingConfig(directory='/elsewhere/wavs')
+        assert cfg.directory_path(station) == Path('/elsewhere/wavs')
+
+
+class TestRecordingSectionLoading:
+    def _load(self, tmp_path, body: bytes) -> BuzzConfig:
+        toml = tmp_path / 'config.toml'
+        toml.write_bytes(body)
+        return BuzzConfig.from_toml(toml)
+
+    def test_section_is_read(self, tmp_path):
+        cfg = self._load(tmp_path, b'[recording]\nenabled = true\nmax_events = 5\n')
+        assert (cfg.recording.enabled, cfg.recording.max_events) == (True, 5)
+
+    def test_missing_section_uses_defaults(self, tmp_path):
+        cfg = self._load(tmp_path, b'[audio]\nsample_rate = 8000\n')
+        assert cfg.recording.enabled is False

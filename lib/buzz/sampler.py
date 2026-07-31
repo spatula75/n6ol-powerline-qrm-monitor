@@ -2,17 +2,21 @@
 Audio input for the powerline QRM monitor.
 
 Pure audio I/O — the pulse-train analysis lives in buzz.dsp and buzz.analyzer.
-AudioPipeline continuously fills a ring buffer from a PortAudio callback so
-multiple consumers (continuous analyzer, waterfall display) can read
-overlapping snapshots.  AudioSampler resolves the configured device by name
-and owns the pipeline.  LevelStream provides real-time broadband level
-readings for the calibration/level-meter tool.
+RingBufferPipeline holds the buffering all audio sources share; AudioPipeline
+adds a PortAudio callback that fills it live, and buzz.playback adds a
+file-backed source that replays a recorded .wav through the same interface.
+Multiple consumers (continuous analyzer, waterfall display, event recorder) read
+overlapping snapshots without removing data.  AudioSampler resolves the
+configured device by name and owns the live pipeline.  LevelStream provides
+real-time broadband level readings for the calibration/level-meter tool.
 """
 
 import logging
 import threading
 from collections import deque
+from dataclasses import dataclass
 from math import ceil
+from typing import Self
 
 import numpy as np
 import sounddevice as sd
@@ -24,18 +28,33 @@ logger = logging.getLogger(__name__)
 
 # Ring buffer capacity in chunks.  300 × 512 samples at 16 kHz ≈ 9.6 seconds — ample
 # headroom for the continuous analyzer's 1 s aligned windows and the waterfall's
-# per-frame reads.
+# per-frame reads, and it doubles as the lead-in an event recording opens with.
 _BUFFER_CHUNKS = 300
 
 
-class AudioPipeline:
-    """Continuously-running audio input that fills a ring buffer of fixed-size chunks.
+@dataclass(frozen=True)
+class AudioSpan:
+    """A contiguous run of samples, tagged with its absolute position in the stream.
 
-    A PortAudio callback appends each chunk to a deque and notifies a Condition so
-    consumers can block-wait for new data.  Multiple independent consumers (analysis
-    thread, waterfall display, etc.) read from the buffer via get_snapshot() without
-    removing data; the deque's maxlen acts as a sliding window that discards audio
-    older than ~10 seconds.
+    `start` and `end` are counted in samples since the stream began, on the same
+    monotonic clock as total_samples, so a sequential reader can tell the difference
+    between "nothing new yet" (start == end) and "I fell behind and the buffer
+    discarded audio I never read" (start > the position it asked for).
+    """
+
+    samples: np.ndarray
+    start: int
+    end: int
+
+
+class RingBufferPipeline:
+    """Ring buffer of fixed-size chunks, shared by every audio source.
+
+    Whatever produces the audio appends each chunk with _append(), which notifies a
+    Condition so consumers can block-wait for new data.  Multiple independent
+    consumers (analysis thread, waterfall display, event recorder) read from the
+    buffer via get_snapshot() or read_from() without removing data; the deque's
+    maxlen acts as a sliding window that discards audio older than ~10 seconds.
 
     CHUNK_SIZE is a power of two so FFT-based consumers get clean window boundaries
     without padding or resampling.
@@ -43,7 +62,7 @@ class AudioPipeline:
 
     CHUNK_SIZE = 512  # samples per callback block; 32 ms at 16 kHz
 
-    def __init__(self, config: BuzzConfig, device_index: int) -> None:
+    def __init__(self) -> None:
         self._buffer: deque[np.ndarray] = deque(maxlen=_BUFFER_CHUNKS)
         self._condition = threading.Condition()
         # Monotonic count of samples ever captured; keeps growing after the deque
@@ -51,25 +70,22 @@ class AudioPipeline:
         # are what make phase-aligned snapshots possible.
         self._total_samples = 0
 
-        def _callback(indata: np.ndarray, frames: int,
-                      time: object, status: sd.CallbackFlags) -> None:
-            if status:
-                logger.warning('PortAudio callback status: %s', status)
-            chunk = indata[:, 0].copy()
-            with self._condition:
-                self._buffer.append(chunk)
-                self._total_samples += len(chunk)
-                self._condition.notify_all()
+    def _append(self, chunk: np.ndarray) -> None:
+        """Add one chunk of captured audio and wake anything waiting on it."""
+        with self._condition:
+            self._buffer.append(chunk)
+            self._total_samples += len(chunk)
+            self._condition.notify_all()
 
-        self._stream = sd.InputStream(
-            device=device_index,
-            channels=1,
-            samplerate=config.audio.sample_rate,
-            dtype='int16',
-            blocksize=self.CHUNK_SIZE,
-            callback=_callback,
-        )
-        self._stream.start()
+    def clear(self) -> None:
+        """Discard buffered audio, as if capture had only just started.
+
+        The sample counter keeps going.  It is the audio clock the analyzer measures
+        drift against and the origin every phase is expressed in, so winding it back
+        would not read as "no audio yet" but as time running backwards.
+        """
+        with self._condition:
+            self._buffer.clear()
 
     def get_snapshot(self, n_samples: int, align: int = 1) -> np.ndarray:
         """Return the most recent n_samples of audio, optionally phase-aligned.
@@ -96,6 +112,55 @@ class AudioPipeline:
             return np.zeros(n_samples, dtype=np.int16)
         return arr[max(0, end - n_samples):end]
 
+    def read_from(self, position: int) -> AudioSpan:
+        """Return every buffered sample from absolute `position` to the live tail.
+
+        This is the sequential counterpart to get_snapshot(): where a display wants
+        the most recent N samples and does not care what it skipped, a recorder needs
+        each sample exactly once, in order, with nothing dropped or repeated.  Passing
+        back the previous span's `end` on each call gives that.
+
+        A reader slower than the buffer's ~10 second window gets what survives rather
+        than an error, with the loss visible as span.start > the requested position.
+        Passing 0 therefore reads everything still buffered, which is how a recording
+        picks up its lead-in: the audio leading to the moment of lock is already here.
+        """
+        with self._condition:
+            chunks = list(self._buffer)
+            end = self._total_samples
+        buffered = sum(len(c) for c in chunks)
+        oldest = end - buffered
+        start = max(position, oldest)
+        if start >= end:
+            return AudioSpan(np.empty(0, dtype=np.int16), end, end)
+
+        # Only the chunks the span actually touches are joined.  A caller reading
+        # sequentially asks for the fraction of a second that arrived since its last
+        # call, so joining the whole ~10 second buffer and then slicing would copy
+        # several hundred kilobytes to keep a few, five times a second, for as long
+        # as a recording lasts.  Taken from the newest end, which is the one the span
+        # always reaches, and without assuming every chunk is the same length.
+        wanted = end - start
+        kept, taken = [], 0
+        for chunk in reversed(chunks):
+            kept.append(chunk)
+            taken += len(chunk)
+            if taken >= wanted:
+                break
+        # taken overshoots wanted by however far into its oldest chunk `start` falls:
+        # the run of chunks begins on a chunk boundary and a position rarely does.
+        return AudioSpan(np.concatenate(kept[::-1])[taken - wanted:], start, end)
+
+    @property
+    def capacity_samples(self) -> int:
+        """The most audio the buffer ever holds, and so the longest lead-in possible.
+
+        Anything that waits before starting a recording is spending this: the window
+        slides, so a second spent waiting is a second of run-up that has fallen off
+        the far end by the time the file opens.
+        """
+        return _BUFFER_CHUNKS * self.CHUNK_SIZE
+
     @property
     def total_samples(self) -> int:
         """Monotonic count of samples captured since the stream started.
@@ -120,15 +185,50 @@ class AudioPipeline:
                 timeout=timeout,
             )
 
-    def close(self) -> None:
-        self._stream.stop()
-        self._stream.close()
+    def start(self) -> None:
+        """Begin producing audio, for a source that does not start on construction.
 
-    def __enter__(self) -> 'AudioPipeline':
+        Live capture has no use for this — its device is running by the time the
+        constructor returns — but a file-backed replay must not begin before the
+        caller has somewhere to show it (see FilePlaybackPipeline.start), and a
+        consumer holding a pipeline should not have to know which kind it has.
+        """
+
+    def close(self) -> None:
+        """Stop producing audio.  Subclasses shut down whatever fills the buffer."""
+
+    def __enter__(self) -> Self:
         return self
 
     def __exit__(self, *_: object) -> None:
         self.close()
+
+
+class AudioPipeline(RingBufferPipeline):
+    """Live audio input: a PortAudio callback filling the shared ring buffer."""
+
+    def __init__(self, config: BuzzConfig, device_index: int) -> None:
+        super().__init__()
+
+        def _callback(indata: np.ndarray, frames: int,
+                      time: object, status: sd.CallbackFlags) -> None:
+            if status:
+                logger.warning('PortAudio callback status: %s', status)
+            self._append(indata[:, 0].copy())
+
+        self._stream = sd.InputStream(
+            device=device_index,
+            channels=1,
+            samplerate=config.audio.sample_rate,
+            dtype='int16',
+            blocksize=self.CHUNK_SIZE,
+            callback=_callback,
+        )
+        self._stream.start()
+
+    def close(self) -> None:
+        self._stream.stop()
+        self._stream.close()
 
 
 class AudioSampler:

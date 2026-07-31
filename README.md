@@ -252,14 +252,381 @@ To keep the display window pinned on top of other windows:
 python -m buzz.main --top
 ```
 
+To arm event recording for this run, without editing the config file:
+
+```
+python -m buzz.main --enable-recording
+```
+
+---
+
+## Recording Events
+
+The monitor can save interference events to `.wav` files as they happen, and
+replay them later through the same displays.  This is what to reach for when you
+want to show somebody the noise rather than describe it: catch the event once,
+then replay it as often as you like, at real speed, with a screen recorder
+running — no receiver required on the machine doing the replaying.
+
+Recording is configured in the `[recording]` section of the config file, armed at
+startup with `--enable-recording`, and toggled while running with the toolbar
+button or the **R** key.  Everything about it is off by default.
+
+The button names the state rather than the action, so it reads **Record** when
+recording is off and **Armed** once it is on, dimming at the same time — there is
+nothing left to ask it for.  It stays clickable either way: dimmed is not
+disabled, and it is also how you switch recording back off.
+
+### What ends up in the file
+
+```
+|<-- lead-in -->|<---------- event ---------->|<-- trailer -->|
+ already buffered   locked onto the pulse train  stop_after_seconds
+ when lock happened                              with no lock
+```
+
+A recording begins when the analyzer locks onto the pulse train, but it does not
+begin *at* that moment: the monitor is always holding the last several seconds of
+audio in memory, and all of it goes into the file.  So the recording opens with
+the run-up to the event instead of dropping you into the middle of it.  The end
+works the same way — the audio recorded while waiting out `stop_after_seconds` is
+kept, so every file ends with the noise floor the event faded into.
+
+A signal that flickers stays one recording, as long as it comes back inside
+`stop_after_seconds`.  Files are 16-bit mono PCM at the configured sample rate —
+the same format the analysis runs on, with no conversion anywhere.
+
+Each file is faded in and out over 5 ms, so it begins and ends at exactly zero
+and never clicks — playing several back to back gives no pop at the seams.  A
+file can genuinely begin or end on full-scale audio: if the arc is already
+buzzing when the monitor starts, the lead-in is a live pulse train from its first
+sample, and `max_seconds` ends a recording mid-event the same way.  Sound cards
+also carry a small DC offset, which would step at both ends even in silence.  The
+fade is a raised cosine and costs less than one pulse out of the 120 per second.
+
+### Settings
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Arm recording at startup.  `--enable-recording` does the same for one run. |
+| `directory` | `recordings/` under the station path | Where files are written, and where `--playback` looks for a bare filename.  Created at startup if missing. |
+| `max_events` | `10` | How many of the next events to record before disarming.  `0` records every event. |
+| `rearm_reset_minutes` | `0` | Minutes between resets of that budget.  `0` never re-arms. |
+| `max_seconds` | `120` | How much to record once a recording starts.  The file is always longer — the lead-in already in the buffer, and the trailer, sit outside it.  `0` is uncapped. |
+| `stop_after_seconds` | `10` | Silence before a recording is closed — and therefore how long the trailer is. |
+| `min_lock_seconds` | `0` | How long the signal must hold before a recording starts.  Keep it to 5 s or less. |
+| `min_lock_snr` | `0` | How strong the signal must be before a recording starts, in dB SNR.  Recording only. |
+
+Recording disarms itself once `max_events` events have been captured, so the
+defaults take the next ten events, at up to two minutes each, and then leave the
+disk alone.  Pressing **Record** again starts a fresh count.  A recording stopped
+by the length cap is not continued in a second file: the rest of that event is
+skipped, and the next event starts the next recording.
+
+### Ignoring events too short to be worth keeping
+
+Not every lock is worth a file.  A night of two-second blips leaves a directory
+full of recordings too short to sit and watch, and they count against
+`max_events` just as a real event would.  `min_lock_seconds` holds off until the
+interference has been present that long:
+
+```toml
+min_lock_seconds = 3
+```
+
+A signal that never lasts that long is never recorded at all, and a lock that
+drops and returns starts the count again rather than adding up.
+
+**The wait counts against `max_seconds`.**  Those seconds are part of the event —
+the monitor has them buffered and keeps them — so `min_lock_seconds = 3` with
+`max_seconds = 10` gives ten seconds of event, three of which you waited through
+and seven recorded after.  Not thirteen.
+
+**Keep it short — 5 seconds or less.**  It is also paid for out of the lead-in,
+which comes from a sliding buffer only a few seconds long, so a recording that
+waits two seconds opens two seconds later relative to the event than one that does
+not.  Two ceilings apply, and the value is clamped to the lower with a warning
+saying what was used instead: the buffer's length, beyond which the file would
+begin *after* the event started and miss the onset entirely; and `max_seconds`,
+which the wait cannot exceed without spending an allowance it is counted against.
+
+### Ignoring events too faint to be worth keeping
+
+The analyzer is sensitive enough to lock onto interference you can barely hear.
+`min_lock_snr` keeps those off the disk:
+
+```toml
+min_lock_snr = 12
+```
+
+**This affects recording only.**  It does not change when a signal is locked,
+measured, logged to the CSV, or drawn on the display — the monitor stays exactly
+as sensitive as it was.  Locking happens at **6 dB SNR**, which is a constant in
+the analyzer rather than a setting here, so any value at or below 6 does nothing
+at all.
+
+A signal that starts quiet and builds — which is how many arcs behave — is **not
+skipped**.  Recording begins the moment it crosses the threshold, so the event is
+caught even when its opening seconds are not.
+
+**Time spent below the threshold is paid for out of the buffer, and the buffer runs
+out.**  Only the last few seconds of audio are ever held, so:
+
+```
+lead-in kept  =  buffer length  −  time spent below the threshold
+```
+
+Sit at 6 dB for 3 seconds before crossing a threshold of 10 and you keep 6.6 of the
+usual 9.6 seconds of run-up.  Sit there for 30 seconds and the run-up is gone
+entirely — the file opens roughly 20 seconds *into* the event, having lost its
+onset along with everything before it.
+
+You still get a whole recording when that happens, and a full-length one.  Whatever
+the buffer holds when the level crosses is lead-in and is free, however long the
+wait made it; `max_seconds` then buys that much again on top.  So a long wait costs
+you the run-up, never the recording.
+
+This is the one way `min_lock_snr` is sharper-edged than `min_lock_seconds`.  That
+setting is capped at the buffer's length, so it can never cost you the beginning of
+an event; this one's wait depends on the signal, so it cannot be capped.  Set it
+only as high as it needs to be to reject what you do not want.
+
+The level is judged over about a second of readings rather than a single one, both
+so one loud moment cannot carry a weak event through and because the first readings
+after a lock are the least trustworthy — the analyzer's drift tracker has not
+converged yet, and levels read several dB low until it does.
+
+### Recording to a schedule
+
+`rearm_reset_minutes` turns `max_events` into a rate rather than a one-off, which
+is what makes unattended running practical.  With `max_events = 10` and
+`rearm_reset_minutes = 1440`, the monitor records up to ten events a day, every
+day, and cannot fill the disk while you are away.
+
+The cycle is measured from when the budget was last reset rather than from when it
+ran out, so it keeps its time of day.  A day whose ten events all arrive before
+noon still gets its next ten at the same hour tomorrow, instead of sliding later
+and later.  Unused events are not carried forward — a quiet day does not earn you
+twenty events the next.
+
+While the budget is spent, the toolbar shows when it comes back:
+
+```
+Recording off — re-arms in 23h 47m
+```
+
+Switching recording off with the **Record** button cancels the cycle as well.  Off
+means off: a monitor that re-armed itself overnight because it happened to be
+turned off mid-cycle would be a nasty surprise to come back to.
+
+The recording directory is created when recording is armed, not when the first
+event arrives — at startup with `enabled = true` or `--enable-recording`, and
+otherwise the moment you press **Record**.  Either way a mistyped path or a
+permissions problem is reported there and then, rather than at the end of an
+unattended night from an empty folder:
+
+```
+ERROR  buzz.recorder: Cannot create the recording directory D:\captures — recording
+is off.  Check the directory setting in the [recording] section of the config, and
+permissions on that path.
+```
+
+Recording is switched off in that case, but the monitor carries on measuring and
+logging as usual — a directory nobody can write to should cost you your
+recordings, not the day's data.  Fix the path and press **Record** to retry.
+
+Files are named for the moment of lock, in station local time with the UTC offset
+attached:
+
+```
+event-20260729-143307-0700.wav
+```
+
+### What the file remembers
+
+Recordings carry standard RIFF metadata, which any audio editor or tagger can
+read.  Tags name the station, the software version, and the moment of lock; a
+comment records the settings needed to interpret the audio; and a cue marker sits
+at the exact sample where the analyzer locked, so opening the file in an editor
+*shows* you where the lead-in ends and the event begins.
+
+```
+INAM  N6OL powerline QRM event 2026-07-29T14:33:07-07:00
+IART  N6OL
+ICRD  2026-07-29T14:33:07-07:00
+ISFT  n6ol-powerline-qrm-monitor 1.1.0
+ICMT  sample_rate=16000 pulse_rate=120 audio_rf_conversion_db=-32.0
+      lead_in_seconds=9.6 ended=timeout
+cue   sample 153600 → "LOCK"
+```
+
+`ended` is the one thing the audio itself cannot tell you: whether the recording
+stopped because the event finished (`timeout`), because the length cap cut it
+short (`capped`), or because you stopped it (`operator`, `shutdown`).
+
+### How long a file ends up
+
+**Always somewhat longer than `max_seconds`.**  That setting measures the event,
+not the file: it is how much is recorded from the moment recording starts.
+The lead-in and the trailer sit outside it.
+
+```
+file length  =  whatever the buffer held  +  up to max_seconds  +  trailer
+```
+
+So `max_seconds = 10` with a full buffer gives a 9.6 + 10 = 19.6 s file, plus
+whatever trailer the timeout adds.
+
+Waiting changes which seconds those are, not how many.  `min_lock_seconds` is
+counted against the allowance — you waited through that part of the event, and it
+is kept — so three seconds of waiting means seven more recorded, not ten.  A
+`min_lock_snr` wait is not counted, because it is open-ended: charging a wait that
+can run to minutes would spend the whole allowance before the file was opened.
+
+Set it by how much of the noise you want to study, not by how big you want the
+files.
+
+**Expect an overrun of up to 200 ms.**  The recorder works on a poll rather than
+watching continuously, so a `min_lock_seconds` wait is noticed up to one poll after
+it has actually elapsed, and only the configured value is charged against the
+allowance — the remainder lands on top.  A 10 s setting can therefore produce
+10.1 s of event.  The audio itself is trimmed to the sample; it is the moment the
+allowance starts from that is quantised.
+
+The log spells the sum out when each recording closes, because the total is not a
+number any setting names:
+
+```
+Recorded event-20260730-080714-0700.wav — 12.6 s: 2.6 s lead-in + 10.0 s from the
+lock (reached the 10 s limit)
+```
+
+A lead-in shorter than expected usually means the monitor had not been running
+long enough to fill its buffer — an arc already buzzing at startup is locked onto
+within a second or two, well before there is a full run-up to keep.  The log says
+so when that is the reason.
+
+### Replaying a recording
+
+```
+python -m buzz.main --playback event-20260729-143307-0700.wav
+```
+
+A bare filename is looked up in the recording directory; anything with a path in
+it is used as given.  Playback runs at the file's own sample rate, so the
+displays move at the speed the event actually happened.
+
+The toolbar carries a transport instead of the record button, since there is
+nothing to record and every reason to want to stop on an interesting moment:
+
+```
+Pause  Restart  Mute    ▶ 00:12 / 00:39 — event-20260729-184450-0700.wav
+```
+
+The first button is named for what clicking it does, so it reads **Pause** while
+playing and **Play** while paused; **Space** does the same thing without moving
+the mouse across the window you are recording.  **Restart** plays the file again
+from the beginning, from wherever you are and whether or not it has finished.  At
+the end of the file the time index turns to ■ and Play greys out, since Restart is
+the only thing left to do.
+
+### Hearing the replay
+
+Playback sends the audio to your default output device, so you can hear the buzz
+while you watch it; **Mute** (or **M**) silences it without stopping the replay.
+To start silent instead — on a machine with no sound card, or when you only want
+the displays — use `--mute`:
+
+```
+python -m buzz.main --playback event-20260729-184450-0700.wav --mute
+```
+
+Muting is the absence of an output stream rather than a volume of zero, which is
+what makes it safe on a machine that has no sound card at all: muted replay runs
+exactly the code that ran before playback could be heard, paced by the monitor's
+own clock.  Unmuted, the sound card becomes the clock instead — it is the one
+that decides when the next chunk is actually wanted.
+
+Pausing and reaching the end of the file release the device the same way, so a
+replay left paused is not holding a sound card open with nothing to send it.
+
+Powerline noise is usually recorded well below full scale — around −24 to −34 dBFS
+is typical — which is quiet on laptop speakers.  `--playback-gain` turns it up:
+
+```
+python -m buzz.main --playback event-20260729-184450-0700.wav --playback-gain 10
+```
+
+The gain is applied to the audio on its way to the sound card and to nothing else,
+so it cannot move a single dB of what the analyzer measures, what the meters read,
+or what any of it would have written to a CSV.  It is there to make the buzz
+audible, not to change it.
+
+Ask for more than the headroom allows and the loud parts will simply hit the rails
+and **distort** — 10 dB on a −24 dBFS recording is comfortable, 30 dB will not be.
+Turn it back down if it sounds crunchy; nothing about the analysis is affected
+either way.
+
+Switching between the two never loses your place in the file, and neither does
+**Restart**, which throws away the fraction of a second already queued to the card
+so the audio jumps back to the top with the display instead of trailing it.  If no
+output device is available the button greys out and says so.
+
+Restart resets the analyzer too, so the second pass is a genuine cold start:
+lock indicator to FREE, meters to silence, drift rate and phase forgotten, and the
+pulse train found again from nothing.  Watching the monitor acquire a signal is
+usually the point of replaying an event, and an analyzer that still remembered
+finding it the first time would open the second pass already locked.
+
+It also takes the pulse rate and level calibration from the file's metadata, so a
+recording measures the same wherever it is replayed — the sample rate is in the
+`.wav` header, but nothing else about how to read the audio is, and a 100 pps
+recording analysed as 120 pps simply never locks.  Any mismatch with your own
+config is logged.  A `.wav` from anywhere else still plays; it just warns that it
+is being analysed with your settings, which may not be the ones it was made with.
+
+### Short or weak recordings may not lock on replay
+
+A replay is analysed exactly as live audio is, so it is subject to the same
+acquisition behaviour — and a short file gives that behaviour very few chances.
+
+While searching, the analyzer examines one second of audio at a time, once a
+second.  Since the window and the interval are the same length, that is very nearly
+continuous: measured across a replay, about 98% of the timeline is examined.  Two
+things still work against a short, weak recording.
+
+**The opening seconds are barely examined.**  The first search is made before a
+full second has even been buffered, and the next lands about two seconds in.  A
+three-second file therefore gets one or two real attempts at it, not thirty.
+
+**The window averages.**  A burst shorter than a second is measured across the
+whole second, so half a second of pulse train reads about 6 dB weaker than it
+actually is — and the threshold for locking is 6 dB SNR.
+
+Together these mean a brief, marginal event that locked when it was captured may
+not lock when replayed.  Nothing is wrong with the recording; there is simply less
+of it to work with.  **Restart** resets the analyzer and refills the buffer, which
+gives it an independent second go — noise differs from pass to pass, and a
+borderline signal can fail one attempt and pass the next.  Capturing more of an
+event in the first place (`max_seconds`, or a longer `stop_after_seconds`) is the
+better fix.
+
+Replay is analysis only.  No CSV rows, no plots, no uploads, and no recording —
+looking at an old event again must not add minutes to a day it did not happen on.
+No audio *input* device is opened at all, so recordings can be reviewed on a
+machine with no receiver attached to it.  When the file runs out, playback stops
+and the displays hold their last frame.
+
 ---
 
 ## Display Window
 
 When started without `--headless`, the monitor opens a live display window
-with three panels:
+with three panels and a toolbar:
 
 ```
++--------------------------------------+
+|  Record    Recording off             |
 +-----------------------------+--------+
 |  Oscilloscope               |        |
 +-----------------------------+ NF SIG |
@@ -267,9 +634,14 @@ with three panels:
 +-----------------------------+--------+
 ```
 
+- **Toolbar** — across the top: arms recording, and shows what it is doing.
 - **Oscilloscope** — top left, a synchronized view of the raw audio waveform.
 - **Waterfall** — below it, a scrolling spectrogram.
-- **S-meters** — the right-hand column, running the full height of the window.
+- **S-meters** — the right-hand column, running the full height of the displays.
+
+Four keys work anywhere in the window: **A** switches the scope between its raw
+and averaged views, **R** arms or disarms recording, **Space** pauses or resumes
+playback, and **M** mutes or unmutes it.
 
 ![Display window](docs/sample_waterfall_display.png)
 
