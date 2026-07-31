@@ -5,3 +5,5 @@ __pycache__/
 .idea/
 .coverage
 htmlcov/
+# Scratch space: notes, probes, and anything else kept to hand but not shipped.
+tmp/

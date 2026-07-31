@@ -1,7 +1,12 @@
 # N6OL Powerline QRM Monitor — example configuration
 #
 # Copy this file to ~/.buzz/config.toml and edit to suit your setup.
-# All values shown are the defaults.
+#
+# Every option the monitor understands appears here.  The values shown are the
+# defaults, except for paths, hostnames, and URLs, which are examples to edit.
+# Options that are commented out have no useful default: leaving them commented
+# means either the monitor works it out (the recording directory), the feature is
+# off (Open-Meteo coordinates), or configure.py fills them in (the audio device).
 
 
 [audio]
@@ -67,6 +72,129 @@ url = "http://cumulusmx.local:8998/api/tags/process.json?temp&hum&SolarRad&wspee
 # Latitude and longitude for Open-Meteo (only used when source = "openmeteo").
 # latitude = 34.05
 # longitude = -118.25
+
+
+[recording]
+# Automatically save interference events as .wav files, which can be replayed
+# later with:  python -m buzz.main --playback event-20260729-143307-0700.wav
+#
+# A recording starts when the analyzer locks onto the pulse train and ends once
+# the signal has been gone for stop_after_seconds.  It opens with whatever audio
+# the monitor had already buffered when the lock happened, and ends with the
+# silence it waited through, so an event that begins and ends while the monitor
+# is running is captured whole, with a run-up and a run-out around it.
+#
+# Two things can still cut one short.  The lead-in cannot reach back further than
+# the buffer holds — about ten seconds at the default sample rate — so an arc that
+# was already buzzing when the monitor started began before the recording does.
+# And max_seconds, below, ends a recording mid-event by design.  The .wav's
+# metadata covers both: a capped recording records that as the reason it ended,
+# and every recording records how much lead-in it actually managed.
+
+# Set enabled = true to arm recording at startup.  --enable-recording arms it for
+# one run without editing this file, and the Record button (or the R key) in the
+# main window toggles it while the monitor is running.
+enabled = false
+
+# Where .wav files are written, and where --playback looks when it is given a
+# bare filename.  Defaults to a "recordings" folder under [station] path.
+# directory = "C:\\Users\\yourname\\recordings"
+
+# How many of the next events to record.  Recording disarms itself once this many
+# have been captured; pressing Record again starts a fresh count.  Set to 0 to
+# record every event until you switch recording off by hand.
+max_events = 10
+
+# Minutes between resets of that budget, which turns max_events into a rate rather
+# than a one-off: 1440 with the max_events above records up to ten events a day,
+# every day, unattended.  The cycle is measured from when the budget was last
+# reset, not from when it ran out, so it keeps its time of day instead of sliding
+# later by however long each day's events took to arrive.  A quiet period does not
+# carry its unused events forward — the budget tops back up either way.
+#
+# 0 never re-arms: once the budget is spent, recording stays off until you switch
+# it back on.  Switching it off by hand always cancels the cycle too.
+rearm_reset_minutes = 0
+
+# How much of the interference to record, in seconds.  This measures the event, not
+# the file: the run-up the ring buffer was already holding comes free on top, as does
+# the trailer afterwards, so the .wav on disk is always somewhat longer than the
+# number set here.
+#
+# Any min_lock_seconds spent waiting is counted against this, since those seconds are
+# part of the event and are kept — 3 there and 10 here gives ten seconds of event,
+# not thirteen.  A min_lock_snr wait is not counted: it is open-ended, and charging a
+# wait that can run to minutes would spend the whole allowance before the file was
+# even opened.
+#
+# Expect a recording to overrun this by up to 200 ms.  The recorder works on a poll
+# rather than watching continuously, so a min_lock_seconds wait is noticed up to one
+# poll after it has actually elapsed, and only the configured value is charged
+# against this — the remainder lands on top.  A 10 second setting can therefore
+# produce 10.1 seconds of event.
+#
+# Set it by how much of the noise is worth studying rather than by how big the files
+# should be.  0 records the whole event however long it runs.
+#
+# A capped recording does not roll over into a second file: the rest of that
+# event is skipped, and the next event starts the next file.
+#
+# The cap always wins over stop_after_seconds below, so setting it shorter than
+# that leaves room for less trailer than the other setting asks for.
+max_seconds = 120
+
+# Seconds without a lock before a recording is closed.  This audio is kept, so
+# this also decides how much trailer every recording ends with.  Raise it if a
+# flickering signal is being split across several files; lower it to trim dead
+# air off the end.
+stop_after_seconds = 10
+
+# How long the interference must be present before a recording starts.  A night of
+# two-second blips otherwise fills the directory with files too short to be worth
+# replaying; raise this until only the events you would actually sit and watch get
+# through.  0 records every lock, however brief.
+#
+# The waiting counts against max_seconds below.  Those seconds are part of the
+# event and the monitor keeps them, so 3 here with max_seconds = 10 gives ten
+# seconds of event — three waited through, seven recorded after — and not thirteen.
+#
+# Keep it short — 5 seconds or less.  It is also paid for out of the lead-in,
+# because the audio that comes from is a sliding window a few seconds long: wait two
+# seconds and every recording opens two seconds later relative to the event.  Two
+# ceilings apply and the value is clamped to the lower of them, with a warning
+# saying what was used instead: the length of that window, beyond which a recording
+# would start after the event began and miss the onset entirely; and max_seconds,
+# which the wait cannot exceed without spending the whole allowance it counts
+# against.
+min_lock_seconds = 0
+
+# Minimum signal-to-noise ratio, in dB, before a recording starts.  The analyzer is
+# sensitive enough to lock onto interference you can barely hear; this keeps those
+# events off the disk without making the monitor any less sensitive.
+#
+# Recording only.  It does not change when a signal is locked, measured, logged to
+# the CSV, or drawn on the display — the analyzer locks at 6 dB SNR, which is a
+# constant in the code rather than a setting here, so any value at or below 6 does
+# nothing at all.
+#
+# A signal that starts quiet and grows louder — which is how many arcs behave — is
+# not skipped.  Recording begins at the moment it crosses the threshold, so the
+# event is caught even if its opening seconds are not.
+#
+# Time spent below the threshold is paid for out of the lead-in, and the lead-in
+# runs out: only the last few seconds of audio are ever held, so the run-up you keep
+# is roughly the buffer's length minus the time spent waiting.  Sitting at 6 dB for
+# three seconds before crossing a threshold of 10 costs about three seconds of
+# run-up; sitting there for thirty loses the run-up altogether and opens the file
+# some twenty seconds into the event, onset and all.
+#
+# That is the one way this is sharper-edged than min_lock_seconds above, which is
+# capped at the buffer and so can never cost you the beginning of an event.  This
+# one's wait depends on the signal, so it cannot be capped — set it only as high as
+# it needs to be.  Something in the low teens is a reasonable place to start;
+# noise_min_snr in the [station] section is set to 12 for a related purpose and is a
+# fair guide.
+min_lock_snr = 0
 
 
 [server]

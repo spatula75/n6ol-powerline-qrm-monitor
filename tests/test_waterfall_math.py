@@ -4,12 +4,176 @@ import pytest
 
 from buzz.analyzer import AnalysisResult
 from buzz.dsp import SILENCE_DBFS
+from buzz.recorder import RecorderStatus
 from buzz.waterfall import (
-    build_colormap, _aggregate_meter_history, _color_scale_range, _correction_offset,
-    _mean_spectrum_db, _spectrum_percentiles,
+    build_colormap, format_clock, format_countdown, format_mute_button,
+    format_playback_button, format_playback_status, format_record_button,
+    format_recorder_status,
+    _aggregate_meter_history, _color_scale_range, _correction_offset, _mean_spectrum_db,
+    _spectrum_percentiles,
     _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE, _DB_FFT_NOISE_CORR, _FFT_ADVANCE_SAMPLES,
     _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE, _COLOR_HEADROOM, _MIN_DYNAMIC_RANGE_DB,
 )
+
+
+def _status(**kwargs) -> RecorderStatus:
+    fields = dict(armed=False, recording=False, events_remaining=None,
+                  elapsed_seconds=0.0, filename=None, rearm_in_seconds=None)
+    return RecorderStatus(**(fields | kwargs))
+
+
+class TestFormatRecorderStatus:
+    def test_off(self):
+        assert format_recorder_status(_status()) == 'Recording off'
+
+    def test_armed_with_a_budget(self):
+        status = _status(armed=True, events_remaining=3)
+        assert format_recorder_status(status) == 'Armed — 3 event(s) to record'
+
+    def test_armed_without_a_budget(self):
+        status = _status(armed=True, events_remaining=None)
+        assert format_recorder_status(status) == 'Armed — recording every event'
+
+    def test_recording_shows_elapsed_time_and_file(self):
+        status = _status(armed=True, recording=True, elapsed_seconds=72.4,
+                         filename='event.wav')
+        assert format_recorder_status(status) == '● REC 01:12 — event.wav'
+
+    def test_elapsed_time_is_truncated_not_rounded(self):
+        status = _status(armed=True, recording=True, elapsed_seconds=9.9,
+                         filename='event.wav')
+        assert format_recorder_status(status) == '● REC 00:09 — event.wav'
+
+    def test_no_recorder_at_all(self):
+        assert format_recorder_status(None) == 'Recording unavailable'
+
+    def test_off_with_a_pending_rearm_says_when(self):
+        status = _status(rearm_in_seconds=3600 * 23 + 60 * 47)
+        assert format_recorder_status(status) == 'Recording off — re-arms in 23h 47m'
+
+    def test_off_for_good_says_nothing_about_rearming(self):
+        assert format_recorder_status(_status()) == 'Recording off'
+
+    def test_armed_does_not_show_the_countdown(self):
+        status = _status(armed=True, events_remaining=3, rearm_in_seconds=3600)
+        assert format_recorder_status(status) == 'Armed — 3 event(s) to record'
+
+
+class TestFormatRecordButton:
+    def test_off_invites_recording(self):
+        assert format_record_button(_status())[0] == 'Record'
+
+    def test_armed_names_the_state_not_the_action(self):
+        assert format_record_button(_status(armed=True))[0] == 'Armed'
+
+    def test_recording_reads_the_same_as_armed(self):
+        """A button reading "Record" while a recording is in progress is the one
+        label that cannot be right."""
+        status = _status(armed=True, recording=True, filename='event.wav')
+        assert format_record_button(status)[0] == 'Armed'
+
+    def test_armed_tooltip_says_how_to_switch_it_off(self):
+        assert 'off' in format_record_button(_status(armed=True))[1]
+
+    def test_off_tooltip_gives_the_shortcut(self):
+        assert 'R' in format_record_button(_status())[1]
+
+    def test_playback_has_no_recorder_to_arm(self):
+        assert format_record_button(None) == ('Record',
+                                              'Recording is not available during playback')
+
+
+class TestFormatPlaybackStatus:
+    def test_playing(self):
+        assert (format_playback_status('event.wav', 12.0, 39.6, False, False)
+                == '▶ 00:12 / 00:39 — event.wav')
+
+    def test_paused(self):
+        assert format_playback_status('event.wav', 12.0, 39.6, True, False).startswith('▮▮')
+
+    def test_finished(self):
+        assert format_playback_status('event.wav', 39.6, 39.6, False, True).startswith('■')
+
+    def test_finished_wins_over_paused(self):
+        assert format_playback_status('event.wav', 39.6, 39.6, True, True).startswith('■')
+
+    def test_names_the_file_being_replayed(self):
+        assert 'event.wav' in format_playback_status('event.wav', 0.0, 1.0, False, False)
+
+    def test_minutes_roll_over(self):
+        assert '01:05' in format_playback_status('e.wav', 65.0, 130.0, False, False)
+
+
+class TestFormatPlaybackButton:
+    def test_playing_offers_pause(self):
+        assert format_playback_button(paused=False, finished=False)[0] == 'Pause'
+
+    def test_paused_offers_play(self):
+        assert format_playback_button(paused=True, finished=False)[0] == 'Play'
+
+    def test_enabled_while_there_is_something_to_play(self):
+        assert format_playback_button(paused=True, finished=False)[2] is True
+
+    def test_disabled_at_the_end_of_the_file(self):
+        assert format_playback_button(paused=False, finished=True)[2] is False
+
+    def test_the_end_points_at_restart(self):
+        assert 'Restart' in format_playback_button(paused=False, finished=True)[1]
+
+    def test_tooltip_gives_the_shortcut(self):
+        assert 'Space' in format_playback_button(paused=False, finished=False)[1]
+
+
+class TestFormatMuteButton:
+    def test_audible_offers_mute(self):
+        assert format_mute_button(muted=False, available=True)[0] == 'Mute'
+
+    def test_muted_offers_unmute(self):
+        assert format_mute_button(muted=True, available=True)[0] == 'Unmute'
+
+    def test_enabled_when_a_device_exists(self):
+        assert format_mute_button(muted=True, available=True)[2] is True
+
+    def test_disabled_without_a_device(self):
+        assert format_mute_button(muted=True, available=False)[2] is False
+
+    def test_missing_device_says_why(self):
+        assert 'No audio output device' in format_mute_button(muted=True, available=False)[1]
+
+    def test_muting_promises_playback_carries_on(self):
+        """Mute is not a stop button; the replay keeps running, just silently."""
+        assert 'continues' in format_mute_button(muted=False, available=True)[1]
+
+    def test_tooltip_gives_the_shortcut(self):
+        assert 'M' in format_mute_button(muted=False, available=True)[1]
+
+
+class TestFormatClock:
+    def test_seconds(self):
+        assert format_clock(9) == '00:09'
+
+    def test_minutes_and_seconds(self):
+        assert format_clock(125) == '02:05'
+
+    def test_truncates_rather_than_rounding(self):
+        assert format_clock(9.9) == '00:09'
+
+    def test_zero(self):
+        assert format_clock(0) == '00:00'
+
+
+class TestFormatCountdown:
+    def test_hours_and_minutes(self):
+        assert format_countdown(3600 * 5 + 60 * 8) == '5h 08m'
+
+    def test_minutes_only_below_an_hour(self):
+        assert format_countdown(60 * 47) == '47m'
+
+    def test_sub_minute_waits_are_not_reported_as_zero(self):
+        assert format_countdown(12) == 'under a minute'
+
+    def test_zero(self):
+        assert format_countdown(0) == 'under a minute'
 
 
 class TestBuildColormap:

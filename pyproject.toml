@@ -42,6 +42,15 @@ select = ["E", "F", "W", "I"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Integration tests are deselected by default: they drive real threads at real
+# speed, so they cost tens of seconds each where the unit suite costs milliseconds.
+# `pytest` stays the fast feedback loop that CI runs; `pytest -m integration
+# --no-cov` runs the slow one (--no-cov because the coverage gate is calibrated
+# against the unit suite, and measuring a different subset against it fails).
+addopts = "-m 'not integration'"
+markers = [
+    "integration: end-to-end over real threads and real time; slow, deselected by default",
+]
 
 [tool.coverage.run]
 source = ["lib/buzz", "configure"]

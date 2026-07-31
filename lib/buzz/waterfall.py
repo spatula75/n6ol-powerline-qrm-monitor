@@ -23,19 +23,28 @@ from math import ceil
 import numpy as np
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QColor, QFont, QImage, QPainter
-from PySide6.QtWidgets import QHBoxLayout, QMainWindow, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QHBoxLayout,
+    QLabel,
+    QMainWindow,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from buzz.analyzer import AnalysisResult, ContinuousAnalyzer
 from buzz.config import BuzzConfig
 from buzz.dsp import SILENCE_DBFS
-from buzz.sampler import AudioPipeline
+from buzz.playback import FilePlaybackPipeline
+from buzz.recorder import EventRecorder, RecorderStatus
+from buzz.sampler import RingBufferPipeline
 from buzz.scope import SCOPE_H, ScopeWidget
 
 # ---------------------------------------------------------------------------
 # Waterfall constants
 # ---------------------------------------------------------------------------
 
-_CHUNK = AudioPipeline.CHUNK_SIZE           # 512 samples
+_CHUNK = RingBufferPipeline.CHUNK_SIZE      # 512 samples
 _MAX_HZ = 4000                              # top of the displayed band
 _FREQ_LABEL_HZ = 500                        # frequency-axis tick spacing
 _PIXELS_PER_BIN = 5                         # horizontal scale (128 bins → 640 px at 16 kHz)
@@ -214,6 +223,107 @@ _SEGS_H      = _SEGS_BOTTOM - _SEGS_TOP   # ≈ 190 px for 13 segments
 _METER_UPDATE_MS = 200                    # meter poll cadence (matches analyzer LOCKED tick)
 _SMOOTH_N        = 5                      # recent results averaged for meter display
 
+# Recording toolbar: one row of controls across the top of the window, tall enough
+# for a standard push button and no taller — the displays are the point of the
+# window, and the bar is deliberately the least interesting thing in it.
+_BAR_H       = 28
+_BAR_BG      = '#141414'                  # slightly darker than the panels below it
+_BAR_TEXT    = '#c8c8c8'
+_REC_TEXT    = '#ff6464'                  # status line while audio is being written
+_BAR_DIM        = '#5a5a5a'               # a control with nothing left to offer
+_BAR_BORDER_DIM = '#2a2a2a'
+
+
+def format_countdown(seconds: float) -> str:
+    """A rough hours-and-minutes countdown, for a wait measured in hours not seconds."""
+    minutes = int(seconds // 60)
+    if minutes < 1:
+        return 'under a minute'
+    if minutes < 60:
+        return f'{minutes}m'
+    return f'{minutes // 60}h {minutes % 60:02d}m'
+
+
+def format_clock(seconds: float) -> str:
+    """Seconds as MM:SS, for a time index measured in minutes rather than hours."""
+    minutes, secs = divmod(int(seconds), 60)
+    return f'{minutes:02d}:{secs:02d}'
+
+
+def format_playback_status(name: str, position: float, duration: float,
+                           paused: bool, finished: bool) -> str:
+    """The transport's time index: where playback is, and how far it has to go.
+
+    All three marks come from the Geometric Shapes block, so they share a font's
+    fate rather than one of them turning up as a missing-glyph box on its own.
+    """
+    mark = '■' if finished else ('▮▮' if paused else '▶')
+    return f'{mark} {format_clock(position)} / {format_clock(duration)} — {name}'
+
+
+def format_playback_button(paused: bool, finished: bool) -> tuple[str, str, bool]:
+    """(label, tooltip, enabled) for the play/pause button.
+
+    Named for what clicking does rather than for the state it is in, which is the
+    universal convention for a transport control and the opposite of the record
+    button's — that one dims to show its action is spent, where this one always has
+    an action to offer.  Except at the end of the file, where there is nothing left
+    to play and Restart is the way back.
+    """
+    if finished:
+        return 'Play', 'Playback has reached the end — use Restart', False
+    if paused:
+        return 'Play', 'Resume playback (Space)', True
+    return 'Pause', 'Pause playback (Space)', True
+
+
+def format_mute_button(muted: bool, available: bool) -> tuple[str, str, bool]:
+    """(label, tooltip, enabled) for the playback mute button.
+
+    Named for the action, like the rest of the transport.  Disabled with a reason
+    when the machine has nothing to play through, rather than offered as a control
+    that quietly does nothing when clicked.
+    """
+    if not available:
+        return 'Unmute', 'No audio output device available for this recording', False
+    if muted:
+        return 'Unmute', 'Play the audio through the speakers (M)', True
+    return 'Mute', 'Silence the audio; playback continues (M)', True
+
+
+def format_record_button(status: RecorderStatus | None) -> tuple[str, str]:
+    """The record button's (label, tooltip) for the recorder's current state.
+
+    The label names the state the recorder is in, not the action the button takes.
+    "Record" on a button that is already recording is the one reading that cannot be
+    right, and the action is discoverable from the tooltip either way.
+    """
+    if status is None:
+        return 'Record', 'Recording is not available during playback'
+    if status.armed:
+        return 'Armed', 'Recording is armed — click, or press R, to switch it off'
+    return 'Record', 'Arm recording (R)'
+
+
+def format_recorder_status(status: RecorderStatus | None) -> str:
+    """One line describing what the recorder is doing, for the toolbar.
+
+    A disarmed recorder says when its budget comes back, if it is going to.  That is
+    the difference between a monitor that has finished for good and one that is
+    running to a schedule, and the two look identical otherwise.
+    """
+    if status is None:
+        return 'Recording unavailable'
+    if status.recording:
+        return f'● REC {format_clock(status.elapsed_seconds)} — {status.filename}'
+    if not status.armed:
+        if status.rearm_in_seconds is None:
+            return 'Recording off'
+        return f'Recording off — re-arms in {format_countdown(status.rearm_in_seconds)}'
+    if status.events_remaining is None:
+        return 'Armed — recording every event'
+    return f'Armed — {status.events_remaining} event(s) to record'
+
 
 def _n_segments_lit(dbm: float) -> int:
     """Return number of segments that should be illuminated for a given dBm reading."""
@@ -342,7 +452,7 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
     frame, so the display covers the full timeline rather than sampling it.
     """
 
-    def __init__(self, pipeline: AudioPipeline, config: BuzzConfig,
+    def __init__(self, pipeline: RingBufferPipeline, config: BuzzConfig,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pipeline = pipeline
@@ -546,12 +656,170 @@ class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt displ
         self._timer.stop()
 
 
+class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt display
+    """Toolbar strip, carrying whichever controls the run actually has.
+
+    Live audio gets a record button; a replayed file gets a transport — play/pause
+    and restart — because there is nothing to record and every reason to want to
+    stop on an interesting moment or run the event again.  Both get a status line.
+
+    Polls its source rather than being driven by it, at the same cadence as the
+    meters.  The recorder disarms itself when its event budget runs out and playback
+    stops at the end of the file, so the buttons have to follow their subject rather
+    than the other way round.
+
+    Buttons take no focus, so the window keeps receiving key presses (A for scope
+    mode, R for recording, Space for play/pause) instead of the space bar
+    re-triggering whichever button was clicked last.
+    """
+
+    def __init__(self, recorder: EventRecorder | None,
+                 playback: FilePlaybackPipeline | None = None,
+                 analyzer: ContinuousAnalyzer | None = None,
+                 parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self._recorder = recorder
+        self._playback = playback
+        self._analyzer = analyzer
+        self.setFixedHeight(_BAR_H)
+        # A plain QWidget draws its palette background and ignores the stylesheet's,
+        # which would leave the strip in the desktop's default grey with only the
+        # button and label dark.
+        self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self.setStyleSheet(
+            f'QWidget {{ background: {_BAR_BG}; }}'
+            f'QLabel {{ color: {_BAR_TEXT}; font-size: 11px; }}'
+            f'QPushButton {{ color: {_BAR_TEXT}; background: #2a2a2a; border: 1px solid #3c3c3c;'
+            '               border-radius: 3px; padding: 2px 10px; font-size: 11px; }'
+            # Armed and recording both read as spent rather than inviting: the action
+            # this button offers has already been taken, and a lit button suggests
+            # otherwise.  It stays clickable — dimmed is not disabled — because it is
+            # also the only way to switch recording off with the mouse.
+            f'QPushButton:checked {{ color: {_BAR_DIM}; background: {_BAR_BG};'
+            f'                       border-color: {_BAR_BORDER_DIM}; }}'
+            f'QPushButton:disabled {{ color: {_BAR_DIM}; border-color: {_BAR_BORDER_DIM}; }}'
+        )
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(6, 2, 6, 2)
+        layout.setSpacing(10)
+        self._record = self._play = self._restart = None
+        self._mute = None
+        if playback is not None:
+            self._play = self._add_button(layout, 'Pause', self.toggle_play)
+            self._restart = self._add_button(layout, 'Restart', self.restart)
+            self._mute = self._add_button(layout, 'Unmute', self.toggle_mute)
+        else:
+            self._record = self._add_button(layout, 'Record', self.toggle, checkable=True)
+            self._record.setEnabled(recorder is not None)
+        self._label = QLabel()
+        layout.addWidget(self._label)
+        layout.addStretch(1)
+
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+        self._timer.start(_METER_UPDATE_MS)
+        self._tick()
+
+    def _add_button(self, layout: QHBoxLayout, text: str, slot: object,
+                    checkable: bool = False) -> QPushButton:
+        button = QPushButton(text)
+        button.setCheckable(checkable)
+        button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        button.clicked.connect(slot)
+        layout.addWidget(button)
+        return button
+
+    # Each of these reports whether it had a subject to act on, so the main window can
+    # pass a key this run has no use for — R during playback, Space during live audio —
+    # on to Qt instead of swallowing it.
+
+    def toggle(self) -> bool:
+        """Arm or disarm recording (button click, or the R key on the main window)."""
+        if self._recorder is None:
+            return False
+        self._recorder.toggle()
+        self._tick()
+        return True
+
+    def toggle_play(self) -> bool:
+        """Pause or resume playback (button click, or the space bar)."""
+        if self._playback is None:
+            return False
+        self._playback.toggle_pause()
+        self._tick()
+        return True
+
+    def toggle_mute(self) -> bool:
+        """Switch the playback audio on or off (button click, or the M key)."""
+        if self._playback is None or not self._playback.output_available:
+            return False
+        self._playback.toggle_mute()
+        self._tick()
+        return True
+
+    def restart(self) -> None:
+        """Play the file again from the beginning, as though it had never been seen.
+
+        The analyzer is reset along with the audio.  Replaying an event to watch the
+        monitor find it is pointless if the monitor still remembers finding it the
+        first time — the second pass would open already locked, at a drift rate it
+        learned from the pass before.
+
+        Reset first, before a single sample of the new pass exists.  A tick already
+        in flight then finishes against the audio being abandoned, where a stale
+        phase estimate is harmless, rather than against fresh audio where it would
+        briefly publish a lock the reset had just revoked.
+        """
+        if self._playback is not None:
+            if self._analyzer is not None:
+                self._analyzer.reset()
+            self._playback.restart()
+            self._tick()
+
+    def _tick(self) -> None:
+        if self._playback is not None:
+            self._tick_playback()
+        else:
+            self._tick_recorder()
+
+    def _tick_playback(self) -> None:
+        paused, finished = self._playback.paused, self._playback.finished
+        self._label.setText(format_playback_status(
+            self._playback.path.name, self._playback.position, self._playback.duration,
+            paused, finished))
+        label, tooltip, enabled = format_playback_button(paused, finished)
+        self._play.setText(label)
+        self._play.setToolTip(tooltip)
+        self._play.setEnabled(enabled)
+        label, tooltip, enabled = format_mute_button(
+            self._playback.muted, self._playback.output_available)
+        self._mute.setText(label)
+        self._mute.setToolTip(tooltip)
+        self._mute.setEnabled(enabled)
+
+    def _tick_recorder(self) -> None:
+        status = self._recorder.status() if self._recorder is not None else None
+        self._label.setText(format_recorder_status(status))
+        self._label.setStyleSheet(
+            f'color: {_REC_TEXT};' if status is not None and status.recording else '')
+        label, tooltip = format_record_button(status)
+        self._record.setText(label)
+        self._record.setToolTip(tooltip)
+        self._record.setChecked(status is not None and status.armed)
+
+    def stop(self) -> None:
+        self._timer.stop()
+
+
 class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
     """Top-level window; closing it shuts down the audio pipeline and analyzer.
 
-    Layout is a scope over a waterfall on the left, with the S-meter panel running
-    the full height on the right:
+    A recording toolbar runs across the top, with a scope over a waterfall on the
+    left and the S-meter panel running the full height of both on the right:
 
+        +----------------------------------+
+        |  RecordingBarWidget (_BAR_H)     |
         +-------------------------+--------+
         |  ScopeWidget            |        |
         |  (SCOPE_H)              |        |
@@ -559,21 +827,33 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         |  WaterfallWidget        |        |
         |  (_WATERFALL_H)         |        |
         +-------------------------+--------+
+
+    The bar spans the whole width rather than sitting inside the left-hand stack,
+    which keeps the meter panel aligned with the displays it belongs to — its
+    segment geometry is derived from _WINDOW_H and does not survive being stretched
+    (see the _WINDOW_H comment).
     """
 
-    def __init__(self, pipeline: AudioPipeline, analyzer: ContinuousAnalyzer,
-                 config: BuzzConfig, always_on_top: bool = False) -> None:
+    def __init__(self, pipeline: RingBufferPipeline, analyzer: ContinuousAnalyzer,
+                 config: BuzzConfig, always_on_top: bool = False,
+                 recorder: EventRecorder | None = None,
+                 playback: FilePlaybackPipeline | None = None) -> None:
         super().__init__()
         self.setWindowTitle('N6OL Powerline QRM Monitor')
         if always_on_top:
             self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self._pipeline = pipeline
         self._analyzer = analyzer
+        self._recorder = recorder
 
         container = QWidget()
-        layout = QHBoxLayout(container)
-        layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(_PANEL_GAP)   # horizontal pad before the meter column
+        outer = QVBoxLayout(container)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(_PANEL_GAP)
+
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(_PANEL_GAP)      # horizontal pad before the meter column
 
         self._waterfall = WaterfallWidget(pipeline, config)
         # The scope takes its width from the waterfall rather than recomputing the
@@ -581,6 +861,7 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         # sample rate or displayed bandwidth ever changes.
         self._scope  = ScopeWidget(pipeline, analyzer, config, self._waterfall.width())
         self._meters = MeterPanelWidget(analyzer)
+        self._bar    = RecordingBarWidget(recorder, playback, analyzer)
 
         stack = QVBoxLayout()
         stack.setContentsMargins(0, 0, 0, 0)
@@ -588,24 +869,45 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         stack.addWidget(self._scope)
         stack.addWidget(self._waterfall)
 
-        layout.addLayout(stack)
-        layout.addWidget(self._meters)
+        row.addLayout(stack)
+        row.addWidget(self._meters)
+        outer.addWidget(self._bar)
+        outer.addLayout(row)
 
         self.setCentralWidget(container)
-        self.setFixedSize(
-            self._waterfall.width() + _PANEL_GAP + self._meters.width(), _WINDOW_H)
+        self.setFixedSize(self._waterfall.width() + _PANEL_GAP + self._meters.width(),
+                          _BAR_H + _PANEL_GAP + _WINDOW_H)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
-        """A toggles the scope between raw-persistence and averaged-envelope modes."""
-        if event.key() == Qt.Key.Key_A:
+        """A toggles the scope's display mode; R records; Space and M drive playback.
+
+        Space matters more than it looks during a screen recording: pausing on an
+        interesting moment without the mouse travelling across the captured window
+        keeps the recording about the signal rather than about the cursor.
+
+        A key whose subject this run does not have reaches Qt rather than stopping
+        here: only one of the record button and the transport exists at a time, and a
+        window that quietly ate the other one's key would also be eating whatever Qt
+        would otherwise have done with it.
+        """
+        key = event.key()
+        if key == Qt.Key.Key_A:
             self._scope.toggle_mode()
-        else:
+            return
+        if not ((key == Qt.Key.Key_R and self._bar.toggle())
+                or (key == Qt.Key.Key_Space and self._bar.toggle_play())
+                or (key == Qt.Key.Key_M and self._bar.toggle_mute())):
             super().keyPressEvent(event)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self._bar.stop()
         self._scope.stop()
         self._waterfall.stop()
         self._meters.stop()
         self._analyzer.stop()
+        # Before the pipeline: a recording in progress is closed while its audio
+        # source is still running, mirroring _wait_until_interrupted().
+        if self._recorder is not None:
+            self._recorder.stop()
         self._pipeline.close()
         event.accept()

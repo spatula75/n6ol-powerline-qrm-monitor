@@ -48,7 +48,7 @@ from PySide6.QtWidgets import QWidget
 from buzz.analyzer import ContinuousAnalyzer, TriggerSync
 from buzz.config import BuzzConfig
 from buzz.dsp import pulse_phase_period
-from buzz.sampler import AudioPipeline
+from buzz.sampler import RingBufferPipeline
 
 # ---------------------------------------------------------------------------
 # Geometry
@@ -435,7 +435,7 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
             sensitivity, resolving pulse shape that a single sweep buries in noise.
     """
 
-    def __init__(self, pipeline: AudioPipeline, analyzer: ContinuousAnalyzer,
+    def __init__(self, pipeline: RingBufferPipeline, analyzer: ContinuousAnalyzer,
                  config: BuzzConfig, width: int, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pipeline = pipeline
