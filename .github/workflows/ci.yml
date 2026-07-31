@@ -13,27 +13,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - name: Set up Python 3.12
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.12"
-
-      - name: Install PortAudio (required by sounddevice)
-        run: sudo apt-get install -y libportaudio2
-
-      - name: Install Qt runtime libraries (required by PySide6)
-        # PySide6's compiled QtGui extension dynamically links against these at
-        # import time -- not just when a window is actually shown -- so even the
-        # pure-function tests in test_waterfall_math.py need them, despite never
-        # creating a QApplication or a display.  The bare ubuntu-latest runner
-        # doesn't ship any of them.  libegl1/libgl1/libxkbcommon0 are the
-        # well-known minimum for QtGui to import cleanly on headless Linux; if a
-        # future PySide6 bump needs more, the ImportError will name the next
-        # missing .so and it can be added here.
-        run: sudo apt-get install -y libegl1 libgl1 libxkbcommon0
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
+      - uses: ./.github/actions/setup
 
       - name: Lint with ruff
         run: ruff check .
@@ -60,3 +40,26 @@ jobs:
         env:
           NUMBA_DISABLE_JIT: "0"
         run: pytest tests/
+
+  integration:
+    # A separate job rather than another step, so it runs alongside the unit suite
+    # instead of after it.  It costs a minute of wall clock where the unit suite
+    # costs seconds, and a PR should not wait the two end to end for an answer.
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup
+
+      - name: Run the integration suite
+        # --no-cov because the gate in pyproject.toml is calibrated against what the
+        # unit suite reaches; this run touches a different subset of the code and
+        # measuring it against that number fails for no reason worth acting on.
+        #
+        # These are timing-sensitive by construction -- playback is real-time because
+        # pacing is what is under test.  Their assertions are properties ("locked
+        # within N seconds", "the position advanced") rather than exact numbers, so a
+        # loaded runner makes them slow rather than red.  A flake here is a bug in the
+        # test and should be fixed as one, not retried away.
+        run: pytest -m integration --no-cov
