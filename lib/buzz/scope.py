@@ -42,12 +42,13 @@ from math import log10
 import numpy as np
 from numba import njit
 from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QImage, QPainter
+from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import QWidget
 
 from buzz.analyzer import ContinuousAnalyzer, TriggerSync
 from buzz.config import BuzzConfig
 from buzz.dsp import pulse_phase_period
+from buzz.fonts import display_font
 from buzz.sampler import RingBufferPipeline
 
 # ---------------------------------------------------------------------------
@@ -328,7 +329,9 @@ def trace_rows(values: np.ndarray, full_scale: float, height: int,
     return np.clip(np.rint(rows), 0, height - 1).astype(np.intp)
 
 
-@njit(boundscheck=True)  # boundscheck raises IndexError instead of segfaulting on OOB access
+# Eagerly compiled at import; see the note on average_pulse_amplitude in dsp.py for
+# why, and for what boundscheck and cache are doing.
+@njit('void(float32[:,:], int64[:], float64)', boundscheck=True, cache=True)
 def accumulate_trace(phosphor: np.ndarray, rows: np.ndarray, intensity: float) -> None:
     """Add one connected trace to the phosphor buffer, in place.
 
@@ -548,14 +551,14 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
 
     def _paint_header(self, painter: QPainter) -> None:
         painter.fillRect(0, 0, self._width, _HEADER_H, QColor(30, 30, 30))
-        painter.setFont(QFont('Monospace', 8, QFont.Weight.Bold))
+        painter.setFont(display_font(8, bold=True))
 
         label, (r, g, b) = _SYNC_STYLE[self._sync]
         painter.setPen(QColor(r, g, b))
         painter.drawText(6, 0, 70, _HEADER_H,
                          Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, label)
 
-        painter.setFont(QFont('Monospace', 8))
+        painter.setFont(display_font(8))
         painter.setPen(QColor(190, 190, 190))
         # Grid frequency is only meaningful once a phase has been measured; with no
         # lock the drift rate is still at its startup zero and would read as a
@@ -579,3 +582,4 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
 
     def stop(self) -> None:
         self._timer.stop()
+

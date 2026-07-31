@@ -214,3 +214,20 @@ remote_path = "/web/n6ol/noise/"
 
 # Path to the SSH private key used for authentication.
 key_path = "C:\\Users\\yourname\\.buzz\\buzz.pem"
+
+
+[render]
+# Where to find ffmpeg, used by --render and by nothing else.  The monitor never
+# looks for it unless you ask for a render, so leaving this empty costs nothing if
+# you never make a video.
+#
+# Empty (the default) searches PATH, which is where a normal install puts it -- so
+# most people never need to set this at all.  Set it when ffmpeg is installed
+# somewhere PATH doesn't reach: a Windows build unzipped into a folder, or winget's
+# shim directory in a terminal that hasn't been restarted since installing.
+#
+# Either the binary or the folder holding it will do.  A copy found on PATH is used
+# in preference to this setting.
+#
+# ffmpeg_path = "C:\Users\yourname\AppData\Local\Microsoft\WinGet\Links"
+ffmpeg_path = ""

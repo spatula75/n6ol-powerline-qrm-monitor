@@ -20,10 +20,11 @@ from harness import LOUD_PULSES, Monitor
 pytest.importorskip('PySide6', reason='the display needs Qt')
 
 from PySide6.QtCore import QPoint                                       # noqa: E402
-from PySide6.QtGui import QColor, QImage                                # noqa: E402
+from PySide6.QtGui import QColor, QFontMetrics, QImage, QPainter        # noqa: E402
 from PySide6.QtWidgets import QPushButton                               # noqa: E402
 
 from buzz.config import BuzzConfig                                      # noqa: E402
+from buzz.fonts import FAMILY, display_family, display_font             # noqa: E402
 from buzz.waterfall import _BAR_BG, _BAR_H, MainWindow, RecordingBarWidget  # noqa: E402
 
 _BAR_WIDTH = 600            # wide enough that the stretch leaves bare background
@@ -139,3 +140,63 @@ class TestRecordButtonShowsItsState:
         """Dimmed is not disabled.  Disabling it would leave the mouse no way to stop
         a recording that is running."""
         assert faces['enabled']
+
+
+@pytest.mark.integration
+class TestTheDisplayFontSurvivesAHeadlessPlatform:
+    """Text has to draw where the platform provides no fonts at all.
+
+    Qt's offscreen platform on Windows reports zero font families, so every label drew
+    as an empty box -- and that is precisely the platform a headless render uses. The
+    display font is therefore loaded from a file into the application's own database,
+    where the platform's cannot matter.
+
+    These run on Linux CI too, where offscreen *does* see fontconfig. That case is
+    worth covering as well: asking for the bundled family by name has to win over
+    whatever the system would otherwise have supplied, or a render made on one machine
+    would not look like a render made on another.
+    """
+
+    def test_the_bundled_family_is_what_gets_used(self, qt_app):
+        assert display_family() == FAMILY, (
+            f'The display resolved to {display_family()!r} rather than {FAMILY!r}. '
+            'Falling back means buzz.fonts could not load the .ttf from matplotlib -- '
+            'see the warning it logs, and tests/test_fonts.py for where it looks. On '
+            'a platform with no font database this leaves every label an empty box.')
+
+    def test_it_is_genuinely_monospace(self, qt_app):
+        """The bug underneath the tofu: 'Monospace' is a fontconfig generic that
+        resolves to Tahoma on Windows and to Alef when a bare font directory is
+        scanned -- both proportional, on a display whose labels are all tabular."""
+        metrics = QFontMetrics(display_font(10))
+        widths = {character: metrics.horizontalAdvance(character)
+                  for character in 'iWm1.'}
+        assert len(set(widths.values())) == 1, (
+            f'Advance widths differ across characters: {widths}. The display font is '
+            'proportional, so columns of frequencies and S-units will not line up. '
+            'Check that display_family() found DejaVu Sans Mono rather than falling '
+            'back to the "Monospace" generic.')
+
+    def test_it_actually_puts_ink_on_the_canvas(self, qt_app):
+        """The end of the chain, and the only part that would have caught the original
+        bug: a font can resolve, report metrics, and still draw nothing but boxes."""
+        image = QImage(240, 40, QImage.Format.Format_RGBA8888)
+        image.fill(0xFF000000)
+        painter = QPainter(image)
+        painter.setPen(0xFFFFFFFF)
+        painter.setFont(display_font(10))
+        painter.drawText(6, 26, 'S9 +40 3500 Hz')
+        painter.end()
+        lit = sum(1 for y in range(image.height()) for x in range(image.width())
+                  if image.pixelColor(x, y).lightness() > 100)
+        assert lit > 50, (
+            f'Only {lit} lit pixels from a 14-character string, which means the text '
+            'did not render. Empty tofu boxes would still light pixels, so near-zero '
+            'here means no glyphs at all were available.')
+
+    def test_the_toolbar_uses_the_same_face_as_the_panels(self, qt_app, monitor):
+        """The strip sets a font size in its stylesheet; without a family beside it Qt
+        supplies its default UI font, leaving proportional text above two panels of
+        monospace -- and a transport time index whose digits shift as it counts."""
+        bar = RecordingBarWidget(monitor.recorder, None, monitor.analyzer)
+        assert f'font-family: "{FAMILY}"' in bar.styleSheet()

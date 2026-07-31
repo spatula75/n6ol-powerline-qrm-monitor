@@ -31,6 +31,7 @@ import signal
 import sys
 import threading
 import wave
+from pathlib import Path
 from typing import TypeVar
 
 from buzz import wavmeta
@@ -227,6 +228,53 @@ def _wait_until_interrupted(pipeline: RingBufferPipeline, analyzer: ContinuousAn
         pipeline.close()
 
 
+def _start_render(args, config: BuzzConfig, window, pipeline: FilePlaybackPipeline,
+                  app) -> object:  # pragma: no cover -- needs a live Qt display
+    """Wire an .mp4 render onto a playback session, and quit when it finishes.
+
+    Imported here rather than at module scope so that a monitor run without --render
+    never loads the render code and never looks for ffmpeg — the same shape as the
+    PySide6 import below, and for the same reason: a feature nobody asked for should
+    not be able to fail.
+
+    The window is measured rather than told its size.  It was built without the
+    control strip, so it is 734x248 instead of 734x284, and a hard-coded frame size
+    here would be a second place to keep that in step.
+    """
+    from buzz.render import RenderError, RenderSession
+    from buzz.waterfall import DisplayRecorder
+
+    try:
+        session = RenderSession(Path(args.render), pipeline.path,
+                                window.width(), window.height(),
+                                gain_db=args.playback_gain,
+                                ffmpeg=config.render.ffmpeg_path or None)
+    except RenderError as exc:
+        # Before the event loop starts, so this is a clean exit with a message rather
+        # than a window that opens and then dies.
+        logger.error('%s', exc)
+        sys.exit(2)
+
+    recorder = DisplayRecorder(window, pipeline, session)
+    finished = False
+
+    def _done() -> None:
+        nonlocal finished
+        if finished:
+            return
+        finished = True
+        if recorder.error is not None:
+            app.exit(1)
+        else:
+            app.exit(0)
+
+    recorder.finished.connect(_done)
+    # Closing the window mid-render finishes the file where it stands rather than
+    # abandoning ffmpeg: an .mp4 whose moov atom was never written opens in nothing.
+    app.aboutToQuit.connect(recorder.stop)
+    return recorder
+
+
 def main() -> None:  # pragma: no cover
     parser = argparse.ArgumentParser(description='N6OL Powerline QRM Monitor')
     parser.add_argument('--headless', action='store_true',
@@ -245,7 +293,23 @@ def main() -> None:  # pragma: no cover
                         help='dB of gain for the playback audio only, to make a quiet '
                              'recording audible on small speakers. Does not affect '
                              'the analysis or anything it reports.')
+    parser.add_argument('--render', metavar='FILE.mp4',
+                        help='Render the --playback session to an .mp4 instead of just '
+                             'watching it: H.264 video of the display with the '
+                             'recording as its soundtrack. Hides the transport '
+                             'controls and plays through once. Needs ffmpeg, which is '
+                             'used for this and nothing else.')
     args = parser.parse_args()
+
+    if args.render and not args.playback:
+        parser.error('--render needs --playback: it records a replay of a recording, '
+                     'and there is nothing to replay without one.')
+    if args.render and args.headless:
+        # Rendering draws the real widgets, so it needs the display stack even though
+        # nobody is watching.  Faster-than-realtime headless rendering is a later
+        # thing, and it needs the analyzer driven by an injected clock first.
+        parser.error('--render cannot be combined with --headless yet; it captures the '
+                     'display window, so there has to be one.')
 
     configure_logging()
 
@@ -296,15 +360,23 @@ def main() -> None:  # pragma: no cover
     app = QApplication(sys.argv)
     window = MainWindow(pipeline, analyzer, config, always_on_top=args.top,
                         recorder=recorder,
-                        playback=pipeline if args.playback else None)
+                        playback=pipeline if args.playback else None,
+                        show_controls=not args.render)
     window.show()
+
+    recording_display = _start_render(args, config, window, pipeline, app) \
+        if args.render else None
     # Not before now, and not merely after show() either: show() returns before Qt
     # has finished creating and laying out the window, and audio started in that gap
     # plays to a screen that is not there yet — then breaks up as widget construction
     # holds the GIL away from the feeder.  A zero-delay timer fires on the first pass
     # of the event loop, by which time the window is up and the interpreter is idle.
-    if args.playback:
+    if args.playback and recording_display is None:
         QTimer.singleShot(0, pipeline.start)
+    if recording_display is not None:
+        # The transport is started by the recorder rather than here, so that the
+        # opening frame is captured before playback moves — see DisplayRecorder.start.
+        QTimer.singleShot(0, recording_display.start)
 
     # Allow Ctrl+C to close the window cleanly from the console
     signal.signal(signal.SIGINT, lambda *_: window.close())

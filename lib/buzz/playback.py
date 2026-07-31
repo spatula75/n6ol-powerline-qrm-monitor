@@ -166,6 +166,21 @@ class FilePlaybackPipeline(RingBufferPipeline):
         """
         if not self._started:
             self._started = True
+            # The deadline schedule starts here, not at construction.  _rebase() in
+            # __init__ sets an origin, and everything between building the pipeline
+            # and starting it — building the window, wiring the analyzer, compiling
+            # the FFT kernels on first use — is time the schedule counts as already
+            # spent.  The feeder then finds every early chunk overdue and delivers
+            # them as fast as the loop runs.
+            #
+            # Measured before this: 1.5 s between construction and start() put the
+            # transport at 1.600 s within 100 ms of starting.  That is a second and a
+            # half of a recording pushed through the analyzer at whatever speed the
+            # machine manages, which is not what any of it was tuned against, and it
+            # defeats the deliberate delay in main.py that waits for the window so
+            # the opening of an event is not heard before there is anywhere to see it.
+            with self._state:
+                self._rebase()
             self._thread.start()
 
     # ------------------------------------------------------------------ public

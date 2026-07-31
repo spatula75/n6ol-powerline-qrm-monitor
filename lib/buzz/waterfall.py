@@ -16,13 +16,14 @@ counts, and a new untested helper added outside these three classes will still
 trip the coverage gate.
 """
 
+import logging
 from collections import deque
 from collections.abc import Sequence
 from math import ceil
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QImage, QPainter
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -35,10 +36,13 @@ from PySide6.QtWidgets import (
 from buzz.analyzer import AnalysisResult, ContinuousAnalyzer
 from buzz.config import BuzzConfig
 from buzz.dsp import SILENCE_DBFS
+from buzz.fonts import display_family, display_font
 from buzz.playback import FilePlaybackPipeline
 from buzz.recorder import EventRecorder, RecorderStatus
 from buzz.sampler import RingBufferPipeline
 from buzz.scope import SCOPE_H, ScopeWidget
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Waterfall constants
@@ -526,7 +530,7 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         # Frequency axis
         painter.fillRect(0, 0, w, _AXIS_H, QColor(30, 30, 30))
         painter.setPen(QColor(200, 200, 200))
-        painter.setFont(QFont('Monospace', 8))
+        painter.setFont(display_font(8))
         bin_px = w / self._display_bins
         # Stop before _display_bins: a tick at that bin sits at x == width, drawing
         # its label off the right edge of the widget.
@@ -593,7 +597,7 @@ class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt displ
 
         # Header row (matches waterfall axis bar)
         painter.fillRect(0, 0, self.width(), _AXIS_H, QColor(30, 30, 30))
-        painter.setFont(QFont('Monospace', 7, QFont.Weight.Bold))
+        painter.setFont(display_font(7, bold=True))
         painter.setPen(QColor(180, 180, 180))
         painter.drawText(nf_x, 0, _BAR_W, _AXIS_H,
                          Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, 'NF')
@@ -623,7 +627,7 @@ class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt displ
         # from the integer gap division fall above the top bar, not below S1.
         base_gap = (_SEGS_H - _N_SEGS * _SEG_H) // (_N_SEGS - 1)
 
-        painter.setFont(QFont('Monospace', 7))
+        painter.setFont(display_font(7))
 
         for i in range(_N_SEGS):
             # i=0 → S1 (bottom), i=12 → S9+40 (top)
@@ -686,11 +690,19 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
         # which would leave the strip in the desktop's default grey with only the
         # button and label dark.
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # The same face the panels below are drawn in.  A stylesheet that sets a size
+        # but no family gets whatever Qt's default UI font is — Tahoma on Windows —
+        # so the strip sat in a proportional face above two panels of monospace, and
+        # its status line is a time index and a file name, which is exactly the sort
+        # of text that wants fixed advances.  Quoted because the family name has
+        # spaces in it, which a stylesheet otherwise reads as a list.
+        family = display_family()
         self.setStyleSheet(
             f'QWidget {{ background: {_BAR_BG}; }}'
-            f'QLabel {{ color: {_BAR_TEXT}; font-size: 11px; }}'
+            f'QLabel {{ color: {_BAR_TEXT}; font-family: "{family}"; font-size: 11px; }}'
             f'QPushButton {{ color: {_BAR_TEXT}; background: #2a2a2a; border: 1px solid #3c3c3c;'
-            '               border-radius: 3px; padding: 2px 10px; font-size: 11px; }'
+            f'               border-radius: 3px; padding: 2px 10px; font-family: "{family}";'
+            '                font-size: 11px; }'
             # Armed and recording both read as spent rather than inviting: the action
             # this button offers has already been taken, and a lit button suggests
             # otherwise.  It stays clickable — dimmed is not disabled — because it is
@@ -837,7 +849,8 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
     def __init__(self, pipeline: RingBufferPipeline, analyzer: ContinuousAnalyzer,
                  config: BuzzConfig, always_on_top: bool = False,
                  recorder: EventRecorder | None = None,
-                 playback: FilePlaybackPipeline | None = None) -> None:
+                 playback: FilePlaybackPipeline | None = None,
+                 show_controls: bool = True) -> None:
         super().__init__()
         self.setWindowTitle('N6OL Powerline QRM Monitor')
         if always_on_top:
@@ -861,7 +874,12 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         # sample rate or displayed bandwidth ever changes.
         self._scope  = ScopeWidget(pipeline, analyzer, config, self._waterfall.width())
         self._meters = MeterPanelWidget(analyzer)
-        self._bar    = RecordingBarWidget(recorder, playback, analyzer)
+        # Not built at all when the controls are hidden, rather than built and made
+        # invisible: --render wants the strip gone from the frame, and a widget that
+        # still exists is a widget still polling its subject twice a second to update
+        # a label nobody will see.
+        self._bar    = RecordingBarWidget(recorder, playback, analyzer) \
+            if show_controls else None
 
         stack = QVBoxLayout()
         stack.setContentsMargins(0, 0, 0, 0)
@@ -871,12 +889,17 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
 
         row.addLayout(stack)
         row.addWidget(self._meters)
-        outer.addWidget(self._bar)
+        if self._bar is not None:
+            outer.addWidget(self._bar)
         outer.addLayout(row)
 
         self.setCentralWidget(container)
+        # The bar takes its layout spacing with it when it goes, so a hidden-controls
+        # window is _BAR_H + _PANEL_GAP shorter -- 734x248 rather than 734x284.  Both
+        # dimensions stay even, which yuv420p requires.
+        bar_height = _BAR_H + _PANEL_GAP if self._bar is not None else 0
         self.setFixedSize(self._waterfall.width() + _PANEL_GAP + self._meters.width(),
-                          _BAR_H + _PANEL_GAP + _WINDOW_H)
+                          bar_height + _WINDOW_H)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         """A toggles the scope's display mode; R records; Space and M drive playback.
@@ -894,13 +917,42 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         if key == Qt.Key.Key_A:
             self._scope.toggle_mode()
             return
+        # Every key that acts on the toolbar goes to Qt instead when there is no
+        # toolbar.  A render is a fixed pass over a file, and a keystroke that paused
+        # or restarted it halfway would land in the video.
+        if self._bar is None:
+            super().keyPressEvent(event)
+            return
         if not ((key == Qt.Key.Key_R and self._bar.toggle())
                 or (key == Qt.Key.Key_Space and self._bar.toggle_play())
                 or (key == Qt.Key.Key_M and self._bar.toggle_mute())):
             super().keyPressEvent(event)
 
+    def frame_bytes(self) -> bytes:
+        """The window's pixels, in the byte order buzz.render expects.
+
+        Format_RGBA8888 is asked for explicitly rather than taken as it comes: Qt's
+        native 32-bit format is byte-swapped between big- and little-endian machines,
+        and a raw pipe has no way to say which one produced it.  Naming the format
+        pins the byte order on both ends.
+
+        Scanlines can carry padding to a 4-byte boundary, which at this width they do
+        not, but a frame with padding left in would shift every subsequent row and
+        turn the video into diagonal mush -- a spectacular failure from a silent
+        cause, so it is handled rather than assumed away.
+        """
+        image = self.grab().toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+        row_bytes = image.width() * 4
+        stride = image.bytesPerLine()
+        raw = bytes(image.constBits())
+        if stride == row_bytes:
+            return raw
+        return b''.join(raw[y * stride:y * stride + row_bytes]
+                        for y in range(image.height()))
+
     def closeEvent(self, event) -> None:  # noqa: N802
-        self._bar.stop()
+        if self._bar is not None:
+            self._bar.stop()
         self._scope.stop()
         self._waterfall.stop()
         self._meters.stop()
@@ -911,3 +963,92 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
             self._recorder.stop()
         self._pipeline.close()
         event.accept()
+
+
+class DisplayRecorder(QObject):  # pragma: no cover -- requires a live Qt display
+    """Feeds the window's pixels to a render session, at the display's own cadence.
+
+    Ticks at _UPDATE_MS, the same 10 fps the waterfall and scope repaint at, because
+    capturing faster than the picture changes only produces duplicate frames — and the
+    output grid is where duplicates are added, deliberately and more cheaply.
+
+    Each capture is stamped with where playback had reached, and the two are read
+    together on purpose.  The display is always showing analysis of audio slightly
+    past, and reading position alongside the pixels carries that lag into the file
+    unchanged, so the video matches the program rather than an idealised version of
+    it.  Correcting the lag would mean measuring it and subtracting, which is work
+    nobody asked for and would make the render stop being a record of what happened.
+    """
+
+    finished = Signal()
+
+    def __init__(self, window: MainWindow, playback: FilePlaybackPipeline,
+                 session: object, parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._window = window
+        self._playback = playback
+        self._session = session
+        self.error: Exception | None = None
+        self._done = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self) -> None:
+        """Capture the opening frame, then start the transport, then start ticking.
+
+        In that order, and the order is the whole point.  Starting playback first and
+        capturing whenever the event loop next got round to it lost the opening of
+        every render: a cold start compiles the FFT path and lays out the window,
+        which can hold the loop for over a second while the audio is already running.
+
+        Capturing once here forces that work to happen before the transport moves, so
+        the file begins at position zero — and the frame it begins with is a display
+        that has already been painted, rather than a blank one.
+        """
+        self._session.start()
+        self._session.submit(self._window.frame_bytes(), 0.0)
+        self._playback.start()
+        self._timer.start(_UPDATE_MS)
+
+    def stop(self) -> None:
+        """Close the file off wherever it has got to.  Idempotent."""
+        if self._done:
+            return
+        self._done = True
+        self._timer.stop()
+        try:
+            self._session.finish(self._playback.duration)
+        except Exception as exc:                        # noqa: BLE001
+            self._fail(exc)
+        self.finished.emit()
+
+    def _tick(self) -> None:
+        if self._done:
+            return
+        try:
+            # Position first, then the pixels.  The picture was painted by the
+            # widgets' own timers before this tick began, so it describes a moment at
+            # or before the position just read; taking position afterwards would
+            # claim the frame belongs later than it does.  The difference is a
+            # millisecond or two against a 33 ms grid, but it costs nothing to have
+            # the bias point the right way.
+            position = self._playback.position
+            self._session.submit(self._window.frame_bytes(), position)
+        except Exception as exc:                        # noqa: BLE001
+            self._fail(exc)
+            self.finished.emit()
+            return
+        if self._playback.finished:
+            self.stop()
+
+    def _fail(self, exc: Exception) -> None:
+        """Record the failure and stop, rather than letting it reach the event loop.
+
+        An exception raised inside a Qt slot does not propagate anywhere useful — it
+        is printed and swallowed, leaving a window that looks fine and a video that
+        silently stopped growing.  The caller checks `error` and reports it.
+        """
+        self.error = exc
+        self._done = True
+        self._timer.stop()
+        logger.error('Rendering stopped: %s', exc)

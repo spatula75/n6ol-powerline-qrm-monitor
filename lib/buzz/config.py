@@ -125,12 +125,25 @@ class RecordingConfig:
 
 
 @dataclass
+class RenderConfig:
+    # Where to find ffmpeg, for --render.  Empty searches PATH, which is where a
+    # normal install puts it, so most people never set this.  It is here for the
+    # installs that don't land on PATH -- a Windows build unzipped into a folder, or
+    # winget's shim directory before the terminal has been restarted.
+    #
+    # ffmpeg is needed for --render and for nothing else.  A monitor that never
+    # renders never looks for it, so leaving this empty costs nothing.
+    ffmpeg_path: str = ''
+
+
+@dataclass
 class BuzzConfig:
     audio: AudioConfig = field(default_factory=AudioConfig)
     station: StationConfig = field(default_factory=StationConfig)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
+    render: RenderConfig = field(default_factory=RenderConfig)
 
     @classmethod
     def from_toml(cls, path: Path | str = CONFIG_PATH) -> 'BuzzConfig':
@@ -142,6 +155,7 @@ class BuzzConfig:
             weather=_load_section(data, 'weather', WeatherConfig),
             server=_load_section(data, 'server', ServerConfig),
             recording=_load_section(data, 'recording', RecordingConfig),
+            render=_load_section(data, 'render', RenderConfig),
         )
 
 

@@ -62,4 +62,10 @@ jobs:
         # within N seconds", "the position advanced") rather than exact numbers, so a
         # loaded runner makes them slow rather than red.  A flake here is a bug in the
         # test and should be fixed as one, not retried away.
+        #
+        # BUZZ_REQUIRE_FFMPEG turns the render tests' skip into a failure.  They skip
+        # on a contributor's machine by design; in CI a skip would be invisible in a
+        # green run, and the render path would quietly stop being tested.
+        env:
+          BUZZ_REQUIRE_FFMPEG: "1"
         run: pytest -m integration --no-cov

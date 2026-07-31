@@ -5,7 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-from numpy import uint32, zeros
+from numpy import float32, zeros
 
 from buzz.config import BuzzConfig
 from buzz.dsp import (
@@ -32,7 +32,7 @@ def _make_pulse_signal(n: int = 48000, phase: int = 0, amplitude: int = 10000) -
     average_pulse_amplitude use, so the fixture models the signal the DSP
     actually looks for rather than one offset from it.
     """
-    data = np.zeros(n, dtype=np.int32)
+    data = np.zeros(n, dtype=np.float32)
     spp = SAMPLE_RATE / PULSE_RATE
     for i in range(int(n / spp)):
         pos = phase + round(i * spp)
@@ -110,13 +110,13 @@ class TestBuildPulseKernel:
 
 class TestCalculatePpsFitArray:
     def test_zero_input_gives_zero_output(self):
-        data = np.zeros(48000, dtype=np.int32)
+        data = np.zeros(48000, dtype=np.float32)
         k = build_pulse_kernel(SAMPLE_RATE, PULSE_RATE)
         out = calculate_pps_fit_array(data, k, PULSE_RATE // 2)
         np.testing.assert_allclose(out, 0.0, atol=1e-9)
 
     def test_output_is_1d(self):
-        data = np.zeros(48000, dtype=np.int32)
+        data = np.zeros(48000, dtype=np.float32)
         k = build_pulse_kernel(SAMPLE_RATE, PULSE_RATE)
         out = calculate_pps_fit_array(data, k, PULSE_RATE // 2)
         assert out.ndim == 1
@@ -131,7 +131,7 @@ class TestCalculatePpsFitArray:
         assert np.any(out != np.rint(out))   # genuinely fractional, not floats-holding-ints
 
     def test_uniform_input_gives_constant_output(self):
-        data = np.full(48000, 100, dtype=np.int32)
+        data = np.full(48000, 100, dtype=np.float32)
         k = build_pulse_kernel(SAMPLE_RATE, PULSE_RATE)
         out = calculate_pps_fit_array(data, k, PULSE_RATE // 2)
         np.testing.assert_allclose(out, 100.0, rtol=1e-9)
@@ -169,15 +169,15 @@ class TestCalculatePpsFitArray:
 
 class TestAveragePulseAmplitude:
     def test_zero_input_returns_zero(self):
-        data = zeros(48000, dtype=uint32)
+        data = zeros(48000, dtype=float32)
         assert average_pulse_amplitude(data, SAMPLE_RATE / PULSE_RATE, 60, 0) == 0
 
     def test_uniform_amplitude_returns_that_amplitude(self):
-        data = np.full(48000, 1000, dtype=uint32)
+        data = np.full(48000, 1000, dtype=np.float32)
         assert average_pulse_amplitude(data, SAMPLE_RATE / PULSE_RATE, 60, 0) == 1000
 
     def test_spikes_only_at_pulse_positions(self):
-        data = zeros(48000, dtype=uint32)
+        data = zeros(48000, dtype=float32)
         spp = SAMPLE_RATE / PULSE_RATE
         for i in range(60):
             pos = round(i * spp)
@@ -187,7 +187,7 @@ class TestAveragePulseAmplitude:
     @pytest.mark.parametrize('start_index', [0, 10, 50, 133, 266])
     def test_various_start_indices_match_direct_sum(self, start_index):
         rng = np.random.default_rng(7)
-        data = rng.integers(0, 32768, size=48000, dtype=uint32)
+        data = rng.integers(0, 32768, size=48000).astype(np.float32)
         result = average_pulse_amplitude(data, SAMPLE_RATE / PULSE_RATE, 60, start_index)
         # Direct reference sum
         spp = SAMPLE_RATE / PULSE_RATE
@@ -201,7 +201,7 @@ class TestAveragePulseAmplitude:
 
     def test_returns_unquantised_mean(self):
         """A non-integer mean must survive as a fraction, not floor to an int."""
-        data = zeros(48000, dtype=uint32)
+        data = zeros(48000, dtype=float32)
         spp = SAMPLE_RATE / PULSE_RATE
         for i in range(60):
             pos = round(i * spp)
@@ -256,19 +256,19 @@ class TestAnalyzeWindow:
 
     def test_flat_noise_gives_similar_amplitudes(self):
         rng = np.random.default_rng(0)
-        data = np.abs(rng.integers(50, 150, size=48000).astype(np.int32))
+        data = np.abs(rng.integers(50, 150, size=48000).astype(np.float32))
         window = analyze_window(data, SAMPLE_RATE, PULSE_RATE, self._kernel(), PULSE_RATE // 2)
         sig_db = amplitude_to_dbfs(window.signal_amplitude)
         noise_db = amplitude_to_dbfs(window.noise_amplitude)
         assert abs(sig_db - noise_db) < 5.0
 
     def test_too_short_window_returns_none(self):
-        data = np.zeros(10, dtype=np.int32)
+        data = np.zeros(10, dtype=np.float32)
         window = analyze_window(data, SAMPLE_RATE, PULSE_RATE, self._kernel(), PULSE_RATE // 2)
         assert window is None
 
     def test_empty_window_returns_none(self):
-        data = np.zeros(0, dtype=np.int32)
+        data = np.zeros(0, dtype=np.float32)
         window = analyze_window(data, SAMPLE_RATE, PULSE_RATE, self._kernel(), PULSE_RATE // 2)
         assert window is None
 
@@ -348,7 +348,7 @@ class TestGoldenFiles:
 
     def test_fit_array_matches_golden(self):
         audio = np.load(RESOURCES / 'synthetic_audio.npy')
-        mono = np.abs(audio[:, 0].astype(np.int32))
+        mono = np.abs(audio[:, 0].astype(np.float32))
         k = build_pulse_kernel(SAMPLE_RATE, PULSE_RATE)
         fit = calculate_pps_fit_array(mono, k, PULSE_RATE // 2)
         golden = np.load(RESOURCES / 'fit_array_golden.npy')
@@ -357,7 +357,7 @@ class TestGoldenFiles:
 
     def test_analyze_window_matches_golden(self):
         golden = np.load(RESOURCES / 'analysis_golden.npy')  # [snr, signal_dbfs, noise_dbfs]
-        mono = np.abs(np.load(RESOURCES / 'synthetic_audio.npy')[:, 0].astype(np.int32))
+        mono = np.abs(np.load(RESOURCES / 'synthetic_audio.npy')[:, 0].astype(np.float32))
         k = build_pulse_kernel(SAMPLE_RATE, PULSE_RATE)
         window = analyze_window(mono, SAMPLE_RATE, PULSE_RATE, k, PULSE_RATE // 2)
         signal = amplitude_to_dbfs(window.signal_amplitude)

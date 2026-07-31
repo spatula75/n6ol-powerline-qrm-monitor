@@ -7,6 +7,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `--render FILE.mp4` renders a `--playback` session to video: H.264 of the display
+  with the recording as its soundtrack, so an arc heard at two in the morning becomes
+  something that can be shown to somebody. The transport controls are removed rather
+  than hidden, since a render is a fixed pass over a file and there is nothing to
+  operate. Frames are captured at the display's own 10 fps and placed on a 30 fps grid
+  by the position playback had reached when the pixels were read — so the video carries
+  the analyzer's real lookback rather than an idealised version of it, and a slow frame
+  makes the render slow rather than out of sync. The audio is the recording itself,
+  handed to ffmpeg as a second input and never piped, which removes it from the sync
+  problem altogether. `--playback-gain` applies to the rendered audio, unlike live
+  playback where gain reaches the speakers alone; nothing measured is involved in a
+  rendered file, and a demo nobody can hear is useless.
+- Recordings keep their identity in the video. The `.wav`'s LIST/INFO tags — the event,
+  the station, the moment, and the calibration behind the numbers — are carried into the
+  MP4 container. Its cue marker is not: ffmpeg reads that as a chapter and MP4 chapters
+  are a *track*, so a single marker arrived as a third data stream. The lock offset
+  survives in the comment as `lead_in_seconds`.
+- `[render] ffmpeg_path` for installs that do not land on PATH. ffmpeg is needed for
+  `--render` and for nothing else; a monitor that never renders never looks for it, so
+  leaving this empty costs nothing.
+
+### Fixed
+- Playback no longer sprints through the opening of a recording. The deadline schedule
+  took its origin when the pipeline was *built* rather than when it was started, so
+  everything in between — building the window, wiring the analyzer, compiling the DSP
+  kernels — became a backlog the feeder delivered as fast as it could. Measured at 1.5 s
+  of startup putting the transport 1.6 s in within 100 ms of pressing play. The analyzer
+  was being shown the first seconds of every replay at whatever speed the machine
+  managed, and the deliberate wait for the window in `main.py` was itself the backlog.
+- The display's labels are monospace again, and exist at all when headless. They asked
+  for the `Monospace` family, which is a fontconfig generic: on Windows it resolved to
+  Tahoma, which is proportional, so columns of frequencies and S-units never lined up;
+  and under Qt's offscreen platform, which reports no fonts whatsoever, every label drew
+  as an empty box. The face is now loaded from a file into the application's own font
+  database, where neither the platform nor the machine's installed fonts can reach it.
+  DejaVu Sans Mono comes with matplotlib, already a dependency, so nothing new ships.
+
+### Changed
+- The JIT-compiled DSP helpers declare their signatures, so Numba compiles them at
+  import instead of on first call. Lazy compilation ran on whichever thread arrived
+  first — in the GUI, the Qt thread part-way through a paint, freezing the window for
+  about a second while audio carried on arriving. `cache=True` alongside means only the
+  first run after a change pays at all.
+
 ## [1.3.0] — 2026-07-30
 
 Event recording and playback arrive together: the monitor writes each locked event to

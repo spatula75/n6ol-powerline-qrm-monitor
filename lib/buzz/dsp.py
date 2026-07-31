@@ -81,7 +81,21 @@ def amplitude_to_dbm(amplitude: float, offset_db: float) -> float:
     return amplitude_to_dbfs(amplitude) + offset_db if amplitude > 0 else SILENCE_DBFS
 
 
-@njit(boundscheck=True)  # boundscheck raises IndexError instead of segfaulting on OOB access
+# Signatures given explicitly, which makes numba compile at import rather than on
+# the first call.  Lazy compilation happens on whichever thread gets there first --
+# in the GUI that is the Qt thread mid-paint, which froze the window for about a
+# second while audio kept arriving, and put a frozen second at the head of every
+# rendered video.  At import it costs the same second where nothing is watching.
+#
+# One signature, because one is all production uses.  Verified rather than assumed:
+# instrumented over a replayed .wav and over the live sound card, the window arrives
+# as float32 every time -- np.abs(int16 samples - a float32 DC estimate).  Declaring it
+# also means a caller passing anything else fails loudly here rather than quietly
+# compiling a second variant mid-flight, at whatever moment it first happens.
+#
+# boundscheck raises IndexError instead of segfaulting on OOB access; cache=True
+# reuses the compiled code between runs, so only the first run after a change pays.
+@njit('float64(float32[:], float64, int64, int64)', boundscheck=True, cache=True)
 def average_pulse_amplitude(mono_amplitude_array: np.ndarray, samples_per_pulse: float,
                             n_pulses: int, start_index: int) -> float:
     """Average the amplitude at each pulse position across the analysis window.
@@ -227,3 +241,4 @@ def analyze_window(mono_amplitude_array: np.ndarray, sample_rate: int, pulse_rat
     noise_amplitude = float(average_pulse_amplitude(
         mono_amplitude_array, samples_per_pulse, n_pulses, noise_phase))
     return WindowAnalysis(signal_amplitude, noise_amplitude, peak_phase, noise_phase)
+
