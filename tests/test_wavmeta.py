@@ -113,7 +113,7 @@ class TestReadInfo:
         path = _tagged(tmp_path)
         data = path.read_bytes()
         path.write_bytes(data[:len(data) // 2])
-        assert isinstance(wavmeta.read_info(path), dict)
+        assert wavmeta.read_info(path) == {}
 
     def test_an_absurd_chunk_length_is_not_allocated(self, tmp_path):
         """A chunk declares its own length in 32 bits, so a truncated transfer or one
@@ -132,12 +132,16 @@ class TestReadInfo:
         assert peak < 10 * 1024 * 1024
 
     def test_an_absurd_chunk_length_still_reads_as_metadata(self, tmp_path):
-        assert isinstance(wavmeta.read_info(_corrupt_list_size(_tagged(tmp_path))), dict)
+        """The clamp bounds the read, not the result: the chunk's real bytes are
+        untouched by the corruption, so the recovered tags are the exact ones written,
+        not merely some dict."""
+        assert wavmeta.read_info(_corrupt_list_size(_tagged(tmp_path))) == TAGS
 
     def test_an_absurd_chunk_length_still_reads_as_settings(self, tmp_path):
         """read_settings walks the same chunks, so it needs the same protection."""
-        assert isinstance(
-            wavmeta.read_settings(_corrupt_list_size(_tagged(tmp_path))), dict)
+        assert wavmeta.read_settings(_corrupt_list_size(_tagged(tmp_path))) == {
+            'pulse_rate': '120', 'lead_in_seconds': '9.6', 'ended': 'timeout',
+        }
 
     def test_odd_length_values_round_trip(self, tmp_path):
         tags = {'ICMT': 'odd'}          # 3 chars + NUL: the pad byte must not leak

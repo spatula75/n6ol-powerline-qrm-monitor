@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 
 from buzz.analyzer import AnalysisResult, ContinuousAnalyzer
 from buzz.config import BuzzConfig
+from buzz.constants import DB_PER_S_UNIT, S9_DBM
 from buzz.dsp import SILENCE_DBFS
 from buzz.fonts import display_family, display_font
 from buzz.playback import FilePlaybackPipeline
@@ -240,8 +241,13 @@ _COLOR_RANGE_EMA_ALPHA = 0.05
 # Meter constants
 # ---------------------------------------------------------------------------
 
-# S-unit thresholds in dBm (IARU HF standard: S9 = −73 dBm, 6 dB/unit below)
-_S_LEVELS_DBM = (-121, -115, -109, -103, -97, -91, -85, -79, -73, -63, -53, -43, -33)
+# S-unit thresholds in dBm.  S1 through S9 are DB_PER_S_UNIT apart, built up from
+# S9_DBM rather than nine more literals that would drift if either constant moved -
+# see buzz.constants.  Above S9 the IARU convention switches to 10 dB steps
+# ("S9+10", "S9+20", ...), a different spacing kept local here since nothing else
+# in the program needs it.
+_S_LEVELS_DBM = (tuple(S9_DBM - DB_PER_S_UNIT * n for n in range(8, -1, -1))
+                 + tuple(S9_DBM + 10 * n for n in range(1, 5)))
 _S_LABELS     = ('S1', 'S2', 'S3', 'S4', 'S5', 'S6', 'S7', 'S8', 'S9', '+10', '+20', '+30', '+40')
 _N_SEGS       = len(_S_LEVELS_DBM)          # 13
 
@@ -288,7 +294,7 @@ _CORR_H      = _SEG_H // 4                 # 3 px - phase-correction indicator h
 _CORR_TOP    = _AXIS_H + 2                 # top of correction strip (just below header)
 _SEGS_TOP    = _CORR_TOP + _CORR_H + 1    # S-meter bars start here
 _SEGS_BOTTOM = _WINDOW_H - 4              # 4 px bottom margin
-_SEGS_H      = _SEGS_BOTTOM - _SEGS_TOP   # ≈ 190 px for 13 segments
+_SEGS_H      = _SEGS_BOTTOM - _SEGS_TOP   # 214 px for 13 segments
 
 _METER_UPDATE_MS = 200                    # meter poll cadence (matches analyzer LOCKED tick)
 _SMOOTH_N        = 5                      # recent results averaged for meter display
@@ -612,7 +618,7 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         # Ticks at round frequencies, placed at whichever bin is nearest - rather than
         # at every Nth bin, labelled with that bin's own centre frequency.  A bin is
         # only 31.25 Hz wide at 16 kHz because the rate divides neatly; at 11025 it is
-        # 31.232 Hz, so every sixteenth bin fell at 499.7, 999.4, 1499.1 and the axis
+        # 31.232 Hz, so every sixteenth bin fell at 499.7, 999.4, 1499.2 and the axis
         # read "499 Hz  999 Hz  1499 Hz".  The tick moves by under half a bin - less
         # than a pixel here - and the number says what it means.
         #

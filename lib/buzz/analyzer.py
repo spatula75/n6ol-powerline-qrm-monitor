@@ -9,12 +9,15 @@ ContinuousAnalyzer runs on a daemon thread and maintains a three-state machine:
 
   LOCKED      - the 120 pps phase is known and the signal is present.  Each
                 tick (~200 ms) it calls average_pulse_amplitude at the
-                *predicted* peak and noise phases - O(scan_pulses) ≈ 60
-                operations.  Every REFINE_INTERVAL seconds it runs
-                _phase_search() to re-measure the phase and refine the drift
-                estimate.  A full FFT isn't needed here: any drift too large
-                for the narrow scan would already cause _quick_check() to lose
-                lock first.
+                *predicted* peak and noise phases, summing over the full 1 s
+                capture - about pulse_rate pulses per phase, roughly 240 summed
+                positions a tick at the default rate.  Direct time-domain
+                averaging, not the FFT the full analysis needs; scan_pulses
+                only sizes that FFT's kernel and plays no part here.  Every
+                REFINE_INTERVAL seconds it runs _phase_search() to re-measure
+                the phase and refine the drift estimate.  A full FFT isn't
+                needed here: any drift too large for the narrow scan would
+                already cause _quick_check() to lose lock first.
 
   SIGNAL_LOST - phase pair known but signal absent.  Four-tier re-acquisition:
                 Tier 1 (200 ms): _noise_check() samples live noise at _noise_phase

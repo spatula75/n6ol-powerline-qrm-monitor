@@ -215,10 +215,15 @@ def _nearest_slot(seconds: float, frame_rate: int) -> int:
     Truncating instead would be the obvious thing and is wrong twice over.  It biases
     every frame early by half a slot on average - a systematic 17 ms of video leading
     audio, which is precisely the kind of constant offset this design went to trouble
-    to avoid - and it is at the mercy of binary representation, where 0.3 * 30 is
-    8.999999999999998 and truncates to 8, dropping a frame from a perfectly ordinary
-    tenth of a second.  Nearest halves the worst-case error to half a slot and leaves
-    it unbiased.
+    to avoid - and it is at the mercy of binary representation.  Most decimal
+    fractions, chunk_period among them, have no exact binary form, so a position that
+    is mathematically a whole number of slots can land a hair under one: a playback
+    position of 32.8 s (chunk 1025 of the 16 kHz default) times 30 comes out
+    983.9999999999999 rather than 984, and truncates to 983, dropping a frame from a
+    perfectly ordinary position - not a contrived one, just an unlucky one.  Nearest
+    halves the worst-case error to half a slot, leaves it unbiased, and is immune to
+    this failure specifically: adding 0.5 before flooring clears a near-miss like
+    this one by a wide margin.
 
     `floor(x + 0.5)` rather than `round()` because round() rounds half to even, so
     round(0.5) is 0 and round(1.5) is 2 - the same reason the analyzer avoids it when

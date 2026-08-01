@@ -155,8 +155,10 @@ class FilePlaybackPipeline(RingBufferPipeline):
         super().__init__(sample_rate)
         self._samples, self.sample_rate = samples, sample_rate
         self.path = Path(path)
-        # Partial trailing chunks are dropped: consumers read whole chunks, and up
-        # to 32 ms of audio at the very end of a file is not worth a special case.
+        # Partial trailing chunks are dropped: consumers read whole chunks, and less
+        # than one chunk of audio at the very end of a file - up to 32 ms at the
+        # 16 kHz default, more at a lower rate and less at a higher one - is not
+        # worth a special case.
         self._chunks = len(self._samples) // self.CHUNK_SIZE
         self._chunk_period = self.CHUNK_SIZE / self.sample_rate
         # What will actually be played, rather than what the file holds, so that the
@@ -481,6 +483,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
                     logger.info('Playback finished: %s', self.path.name)
 
     def close(self) -> None:
+        """Stop the feeder and release the audio output, waiting briefly for both."""
         self._stop.set()
         with self._state:
             self._state.notify_all()

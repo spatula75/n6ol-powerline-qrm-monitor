@@ -15,10 +15,14 @@ lookup* rather than a search for an edge.  That is strictly better for this sign
 it cannot be fooled by a single loud noise spike, and it holds through fades
 because it is driven by the drift tracker rather than by any individual pulse.
 
-The sweep is exactly pulse_phase_period() samples wide - 400 samples, 3 pulse
-periods, 25 ms at the defaults.  That is the same modulus the analyzer reduces its
-phases by, which is what makes the mapping from phase to screen position exact:
-the trace wraps seamlessly, with no ambiguity about which period a phase refers to.
+The sweep shows _SWEEP_PULSES pulse periods - 3 pulse periods, 400 samples, 25 ms
+at the defaults - fixed at that pulse count so the timebase reflects the signal at
+any sample rate rather than a gcd of it (see sweep_geometry).  The starting offset
+is still wrapped to pulse_phase_period(), the modulus the analyzer reduces its own
+phases by, which is what makes the mapping from phase to screen position exact
+regardless of how that modulus relates to the sweep's own width - the two coincide
+at the defaults but not in general; sweep_geometry's docstring has the case where
+they differ.
 
 The sweep is shorter than the frame interval, so each frame overlays several real
 sweeps (4 at 25 ms per sweep and _UPDATE_MS = 100).  That is both the authentic
@@ -48,6 +52,7 @@ from PySide6.QtWidgets import QWidget
 
 from buzz.analyzer import ContinuousAnalyzer, TriggerSync
 from buzz.config import BuzzConfig
+from buzz.constants import FULL_SCALE_COUNTS
 from buzz.dsp import pulse_phase_period
 from buzz.fonts import display_font
 from buzz.sampler import RingBufferPipeline
@@ -206,8 +211,6 @@ _INITIAL_FULL_SCALE = 2048.0
 # Raw sample magnitude at which the input is treated as clipping.  Slightly inside
 # the int16 rail, since a converter usually flattens before it reaches the last code.
 _CLIP_COUNTS = 32000
-# Amplitude of a full-scale int16 sample, the 0 dBFS reference for full_scale_dbfs().
-_FULL_SCALE_COUNTS = 32768.0
 
 # ---------------------------------------------------------------------------
 # Status bar colours, by trigger sync state
@@ -229,10 +232,15 @@ def sweep_start_offset(trigger_phase: int, pretrigger: int, sweep_samples: int) 
 
     Backing off by `pretrigger` puts the triggering pulse one division in from the
     left edge rather than jammed against it, so its leading edge is visible - the
-    same reason a bench scope offers pre-trigger.  The result is taken modulo the
-    sweep width, which is legitimate precisely because the sweep width equals the
-    analyzer's phase modulus: offsets one sweep apart address identical positions
-    in the pulse grid.
+    same reason a bench scope offers pre-trigger.
+
+    `sweep_samples` names the parameter for the common case, where it is the sweep's
+    own width.  ScopeWidget instead passes the phase period: trigger_phase is only
+    meaningful modulo that period, since it is what the analyzer itself reduces its
+    phases by, so wrapping by anything else would not address the same position in
+    the pulse grid.  The two happen to be equal at the default sample rate, but not
+    in general - see sweep_geometry's docstring for when the phase period is shorter
+    than the sweep.
     """
     return int(trigger_phase - pretrigger) % sweep_samples
 
@@ -398,7 +406,7 @@ def full_scale_dbfs(full_scale: float) -> float:
     Caller supplies a value from auto_range_full_scale(), which is floored at
     _MIN_FULL_SCALE and so is always strictly positive.
     """
-    return 20.0 * log10(full_scale / _FULL_SCALE_COUNTS)
+    return 20.0 * log10(full_scale / FULL_SCALE_COUNTS)
 
 
 # ---------------------------------------------------------------------------

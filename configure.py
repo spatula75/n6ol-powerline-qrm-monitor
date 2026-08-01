@@ -17,12 +17,22 @@ sys.path.insert(0, str(Path(__file__).parent / 'lib'))
 
 import sounddevice as sd
 import tomli_w
-from buzz.config import CONFIG_PATH, AudioConfig, BuzzConfig, ServerConfig, StationConfig, WeatherConfig
+from buzz.config import (
+    CONFIG_PATH,
+    AudioConfig,
+    BuzzConfig,
+    RecordingConfig,
+    RenderConfig,
+    ServerConfig,
+    StationConfig,
+    WeatherConfig,
+)
 from buzz.device_setup import select_device
 
 
 def _section_dict(
-    obj: AudioConfig | StationConfig | WeatherConfig | ServerConfig,
+    obj: AudioConfig | StationConfig | WeatherConfig | ServerConfig
+        | RecordingConfig | RenderConfig,
 ) -> dict[str, str | int | float | bool]:
     return {k: v for k, v in asdict(obj).items() if v is not None}
 
@@ -52,10 +62,12 @@ def main() -> None:
 
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     data = {
-        'audio':   _section_dict(config.audio),
-        'station': _section_dict(config.station),
-        'weather': _section_dict(config.weather),
-        'server':  _section_dict(config.server),
+        'audio':     _section_dict(config.audio),
+        'station':   _section_dict(config.station),
+        'weather':   _section_dict(config.weather),
+        'server':    _section_dict(config.server),
+        'recording': _section_dict(config.recording),
+        'render':    _section_dict(config.render),
     }
     with open(CONFIG_PATH, 'wb') as f:
         tomli_w.dump(data, f)

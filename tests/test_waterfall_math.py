@@ -6,14 +6,15 @@ from buzz.analyzer import AnalysisResult
 from buzz.config import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 from buzz.dsp import SILENCE_DBFS
 from buzz.recorder import RecorderStatus
+from buzz.constants import DB_PER_S_UNIT, S9_DBM
 from buzz.waterfall import (
     build_colormap, format_clock, format_countdown, format_mute_button,
     format_playback_button, format_playback_status, format_record_button,
     format_recorder_status,
     _aggregate_meter_history, _color_scale_range, _correction_offset, _mean_spectrum_db,
-    _spectrum_percentiles,
+    _n_segments_lit, _spectrum_percentiles,
     spectrum_geometry, DISPLAY_BINS,
-    _MAX_HZ, _N_ROWS, _DB_RANGE,
+    _MAX_HZ, _N_ROWS, _DB_RANGE, _S_LEVELS_DBM,
     _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE, _COLOR_HEADROOM, _MIN_DYNAMIC_RANGE_DB,
 )
 
@@ -527,6 +528,47 @@ class TestWaterfallConstants:
         """"Top 1-2%" per the design: close to 100 but not on top of it, since a
         pure maximum would be at the mercy of a single outlier bin."""
         assert 90 < _COLOR_CEILING_PERCENTILE < 100
+
+
+class TestSLevelsDbm:
+    """The S-meter ladder, derived from buzz.constants rather than thirteen literals.
+
+    Pinned here rather than trusted to arithmetic alone: this is what silently drifted
+    out of step with device_setup.py's level bar before the two shared a source, so the
+    relationship is worth a test that goes red if it happens again.
+    """
+
+    def test_s9_sits_at_the_shared_constant(self):
+        assert _S_LEVELS_DBM[8] == S9_DBM
+
+    def test_s1_through_s9_are_a_db_per_s_unit_apart(self):
+        gaps = [b - a for a, b in zip(_S_LEVELS_DBM[:9], _S_LEVELS_DBM[1:9])]
+        assert gaps == [DB_PER_S_UNIT] * 8
+
+    def test_above_s9_steps_by_ten_not_by_the_s_unit(self):
+        """IARU's own convention, and deliberately not DB_PER_S_UNIT: S9+10 is ten
+        decibels above S9, not another S-unit's worth."""
+        gaps = [b - a for a, b in zip(_S_LEVELS_DBM[8:], _S_LEVELS_DBM[9:])]
+        assert gaps == [10.0] * 4
+
+    def test_thirteen_levels_for_thirteen_labels(self):
+        assert len(_S_LEVELS_DBM) == 13
+
+
+class TestNSegmentsLit:
+    """How many S-meter segments a reading illuminates."""
+
+    def test_below_s1_lights_nothing(self):
+        assert _n_segments_lit(_S_LEVELS_DBM[0] - 1) == 0
+
+    def test_exactly_s9_lights_nine(self):
+        assert _n_segments_lit(S9_DBM) == 9
+
+    def test_full_scale_lights_every_segment(self):
+        assert _n_segments_lit(_S_LEVELS_DBM[-1]) == 13
+
+    def test_one_db_short_of_a_threshold_does_not_light_it(self):
+        assert _n_segments_lit(S9_DBM - 1) == 8
 
 
 class TestSpectrumGeometry:

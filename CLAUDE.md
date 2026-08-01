@@ -10,9 +10,9 @@ arcing hardware, and logs signal and noise-floor levels to CSV, charts, and opti
 `.wav` event recordings. There is a live Qt display: waterfall, phase-synchronised
 oscilloscope, and S-unit bar graphs.
 
-It is a **field tool, not lab test equipment**. The goal is knowing when PG&E is making
-a racket, not chasing the last decibel. Precision work that costs clarity or testability
-is usually not worth it - say so rather than building it.
+It is a **field tool, not lab test equipment**. The goal is knowing when the utility is
+making a racket, not chasing the last decibel. Precision work that costs clarity or
+testability is usually not worth it - say so rather than building it.
 
 ## Layout
 
@@ -179,6 +179,19 @@ Tests first, then lint, then human eyes. In that order:
 4. **Hands-on verification.** Changes to the audio path, the display, or the charts get
    checked against a live radio before being committed - green tests are not the finish
    line for those.
+5. **Documentation drift.** A code or behaviour change means checking `README.md`,
+   `README-analysis.md`, and `config.example.toml` for anything the change makes wrong -
+   a described default that moved, a number that no longer holds, a flag or setting that
+   changed shape. Docs go stale exactly like comments do, and nothing else catches it;
+   there is no test that fails when a README goes out of date.
+6. **Diff artifacts.** Read the actual diff before staging, not just the file as it
+   ends up. Editing in passes leaves residue that runs and lints clean and is only
+   visible in the diff itself: a doubled blank line where a tool split one edit into
+   two, a comment whose sentence now trails off because an insertion fell inside it
+   rather than before or after, a line break that made sense against the old text and
+   reads as a non sequitur against the new. One of this file's own rules briefly read
+   "...its own copy - which is how" as an orphaned line-ending, caught only by rereading
+   the rendered result, not by any tool. Nothing enforces this but looking.
 
 Then ask before staging anything; see Git workflow.
 
@@ -395,6 +408,23 @@ Practical consequences:
   comment explaining where the value came from, or gets derived from something already
   in config. If the value was arbitrary, say so in the comment - that's honest and
   useful to the next reader.
+- **A constant used by two or more modules belongs in `buzz/constants.py`, not
+  redefined in each.** `FULL_SCALE_COUNTS`, `S9_DBM`, and `DB_PER_S_UNIT` live there
+  because dsp.py, scope.py, device_setup.py, waterfall.py, plotter.py, and
+  level_meter.py all need the same numbers and previously each defined its own copy,
+  which is how device_setup.py's level bar drifted to 4.75 dB/segment while every
+  S-meter in the program stayed at 6, with nothing to notice the two had come apart.
+  When auditing for duplicates, check root-level scripts (`level_meter.py`,
+  `configure.py`) as well as `lib/buzz/` - a first pass that grepped only the package
+  missed `level_meter.py`'s own copy of `S9_DBM` entirely. Move a constant here the
+  moment a second module needs it, not before: a value only one module uses belongs
+  with that module, where a reader finds it without a second file to check.
+  Derive dependents from the shared constant (`_BAR_WIDTH = round(20 * log10(...) /
+  DB_PER_S_UNIT)`) rather than hand-computing a literal that can drift again the same
+  way, and pin the relationship with a test - see `tests/test_constants.py`.
+  `buzz.dsp.SILENCE_DBFS` and `PULSE_WIDTH_SAMPLES` are already this kind of shared
+  constant and stay in `dsp.py` rather than moving: dsp is imported everywhere that
+  needs them, so a re-export would only add a second name for the same thing.
 
 ## Type hints
 
@@ -528,6 +558,17 @@ that call rather than quietly compiling another variant mid-flight.
   cross-check agrees with itself. It measures the source `.wav` now. Ask which of the two
   figures the buggy code could not have influenced; if the answer is neither, the test is
   decorative.
+- **A test must be able to fail.** No test exists to raise the coverage number; every
+  one exists to catch a specific way the code could be wrong, and if nothing the test
+  does could turn red for a real bug, it is not testing anything. The two failure
+  shapes to watch for: a test with no assertion, or one that runs code purely for the
+  line-coverage credit, and a test whose assertion is a tautology - checking that a
+  mock returned the value it was told to return, rather than that the code under test
+  computed something correctly from it. Mocking a boundary (ffmpeg, a device, the
+  filesystem) is correct and necessary; the mistake is mocking the computation itself
+  and then asserting on the mock's output, which proves only that Python can return a
+  value. Before trusting a test, ask what change to the real code would make it fail -
+  if the honest answer is "none," delete or rewrite it.
 - **Deleting a safeguard means guarding the reason it became unnecessary.** The frame
   padding in `ffmpeg_command()` was removed because the time-pinned FFT window makes the
   bin count 128 at every rate. True, but only because `validate_sample_rate` refuses
@@ -608,6 +649,23 @@ load-bearing line" is the line that matters; "the value lands at 128" is the val
   waves); the noise floor deliberately excluding the impulse so the comparison is
   meaningful; signal and noise-floor phase drifting independently; `gc.disable()` around
   plotting; the `-128` sentinel where `log(0)` would blow up.
+- **A factual claim in a docstring or comment gets checked before it is committed, not
+  taken on faith because it reads plausibly.** A number, a worked example, a count of
+  something, a "this is what X computes" - anything a reader could in principle verify -
+  actually gets verified: run the formula, read the code it describes, compute the
+  example by hand or in a scratch script. An audit of this codebase found a floating-point
+  example that was simply wrong (`0.3 * 30` is exactly `9.0` in Python, not the
+  `8.999999999999998` the comment claimed), a dB-per-segment figure calculated for the
+  wrong constant, and two docstrings still describing a design a refactor had already
+  replaced - `scope.py`'s "sweep width equals the phase period" claim, true only at the
+  16 kHz default, false in general since the sample-rate-independence work decoupled the
+  two. All four read as perfectly reasonable until checked.
+- **A change that touches the reasoning a nearby comment depends on means checking that
+  comment, not just the code.** A constant that moved, a formula that changed, a design
+  that was replaced - each can leave a comment three lines away (or in a different
+  module entirely, as with `scope.py`'s stale claim above) stating something that used
+  to be true. Re-derive the comment's claim against the new code before moving on, the
+  same way a changed API means checking every caller.
 - **Anticipate the reader's objection.** If someone would reasonably ask "why didn't you
   just do it the obvious way?", answer that in the comment.
 - **Loud comments for truly weird necessities** - workarounds for upstream bugs need

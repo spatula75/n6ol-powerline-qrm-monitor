@@ -1,11 +1,11 @@
 """
 Configuration dataclasses and TOML loader for the powerline QRM monitor.
 
-BuzzConfig is the top-level config object, composed of five section dataclasses:
-AudioConfig, StationConfig, WeatherConfig, ServerConfig, and RecordingConfig.  Each
-maps directly to a [section] in ~/.buzz/config.toml.  BuzzConfig.from_toml() reads
-the file and populates the dataclasses; unknown keys are silently ignored so old
-config files don't break when new fields are added.
+BuzzConfig is the top-level config object, composed of six section dataclasses:
+AudioConfig, StationConfig, WeatherConfig, ServerConfig, RecordingConfig, and
+RenderConfig.  Each maps directly to a [section] in ~/.buzz/config.toml.
+BuzzConfig.from_toml() reads the file and populates the dataclasses; unknown keys
+are silently ignored so old config files don't break when new fields are added.
 """
 
 import tomllib

@@ -347,6 +347,7 @@ class EventRecorder:
         return True
 
     def status(self) -> RecorderStatus:
+        """A snapshot of the recorder's current state, for the toolbar to poll and draw."""
         with self._lock:
             return RecorderStatus(
                 armed=self._armed,

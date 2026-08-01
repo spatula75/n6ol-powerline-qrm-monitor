@@ -166,9 +166,6 @@ class TestExampleConfigMatchesTheDataclasses:
     def test_every_option_is_documented(self):
         assert self._documented() == self._defined()
 
-    def test_the_example_loads(self):
-        assert isinstance(BuzzConfig.from_toml(_EXAMPLE), BuzzConfig)
-
     def test_uncommented_values_are_the_defaults(self):
         """The example file says the values it shows are the defaults, so they must be.
 

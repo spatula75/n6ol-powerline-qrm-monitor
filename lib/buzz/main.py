@@ -79,6 +79,11 @@ _T = TypeVar('_T')
 
 
 def configure_logging() -> None:
+    """Attach a console handler to the `buzz` logger tree; leave root silent.
+
+    Root stays at CRITICAL with no handler of its own, so a third-party library that
+    logs without configuring itself does not add noise to this program's output.
+    """
     logging_config = {
         'version': 1,
         'disable_existing_loggers': False,
@@ -404,11 +409,11 @@ def _resolve_gain(args: argparse.Namespace, config: BuzzConfig, source: Path) ->
     either exists -- and doing the measurement here means every way a render can be
     refused happens before a window opens or an output file is created.
 
-    Rendering defaults to measuring, because a rendered event sits around -45 LUFS and
-    well below a normal listening level -- the calibration deliberately keeps them
-    there -- and a video somebody has to strain at is not worth making. Watching
-    does not, because that is a different job: the operator is listening live, has the
-    volume control to hand, and did not ask to wait for a measurement.
+    Rendering defaults to measuring, because a rendered event sits around -45 LUFS,
+    well below a normal listening level -- the calibration process keeps it there
+    deliberately -- and a video somebody has to strain at is not worth making.
+    Watching does not, because that is a different job: the operator is listening
+    live, has the volume control to hand, and did not ask to wait for a measurement.
     """
     requested = args.playback_gain
     if requested is None:
@@ -422,6 +427,11 @@ def _resolve_gain(args: argparse.Namespace, config: BuzzConfig, source: Path) ->
 
 
 def main() -> None:  # pragma: no cover
+    """Parse arguments, wire up the monitor, and run it until told to stop.
+
+    See the module docstring for what each mode does; this is the order they happen
+    in, since several of the choices below depend on ones made earlier in the run.
+    """
     parser = argparse.ArgumentParser(description='N6OL Powerline QRM Monitor')
     parser.add_argument('--headless', action='store_true',
                         help='Run without GUI waterfall display')

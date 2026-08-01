@@ -1,6 +1,7 @@
 """Tests for configure.py: _section_dict filtering and main() device-save flow."""
 
 import tomllib
+from dataclasses import asdict
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -39,9 +40,11 @@ class TestSectionDict:
         d = _section_dict(cfg)
         assert d['device_index'] == 0
 
-    def test_returns_dict(self):
-        d = _section_dict(StationConfig())
-        assert isinstance(d, dict)
+    def test_a_section_with_no_none_fields_is_unfiltered(self):
+        """StationConfig has no Optional fields, so nothing here should be dropped -
+        the complement of test_excludes_none_values, which checks the field that is."""
+        station = StationConfig()
+        assert _section_dict(station) == asdict(station)
 
 
 class TestMainNoDeviceSelected:
@@ -128,3 +131,31 @@ class TestMainDeviceSelected:
         with open(config_path, 'rb') as f:
             data = tomllib.load(f)
         assert data['station']['callsign'] == 'W6TST'
+
+    def test_recording_and_render_settings_survive_a_save(self, tmp_path):
+        """BuzzConfig grew two sections after this flow was written, and main() was
+        never updated to save them: every run of configure.py silently reverted a
+        customised event budget or ffmpeg_path to its default, with nothing to say so.
+        Loading a full six-section config and saving it back has to round-trip all of
+        it, not just the four sections this bug's fix touched.
+        """
+        from buzz.config import BuzzConfig
+        config_path = tmp_path / 'config.toml'
+        config_path.write_bytes(b'')  # only its existence matters; from_toml is patched below
+        device = {'name': 'Mic', 'hostapi': 0}
+        hostapis = [{'name': 'DirectSound'}]
+        loaded_cfg = BuzzConfig()
+        loaded_cfg.recording.max_events = 42
+        loaded_cfg.render.ffmpeg_path = 'C:/custom/ffmpeg'
+        # from_toml's default param is bound at definition time, so patch the method
+        # itself rather than relying on patching CONFIG_PATH to redirect the load too.
+        with patch('configure.select_device', return_value=1), \
+             patch('configure.sd.query_devices', return_value=device), \
+             patch('configure.sd.query_hostapis', return_value=hostapis), \
+             patch('configure.CONFIG_PATH', config_path), \
+             patch.object(BuzzConfig, 'from_toml', return_value=loaded_cfg):
+            main()
+        with open(config_path, 'rb') as f:
+            data = tomllib.load(f)
+        assert data['recording']['max_events'] == 42
+        assert data['render']['ffmpeg_path'] == 'C:/custom/ffmpeg'

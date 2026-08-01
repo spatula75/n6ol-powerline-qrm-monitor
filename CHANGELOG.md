@@ -98,6 +98,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   you sent was ignored" should not have to be inferred from a reading that came out
   low. A render takes channel 0 too, so the video's audio is the audio that was
   measured rather than both channels beside a picture of one.
+- The device-setup level bar now shows 6 dB per segment, matching the S-meters
+  elsewhere in the program, instead of 4.75. It hard-coded a segment count computed
+  once for the wrong dB span rather than deriving it, so the two crept apart with
+  nothing to notice.
+- `configure.py` no longer discards a customised `[recording]` or `[render]` section
+  every time it saves. It loads the full six-section config but only ever wrote four
+  of them back, so an event budget, `max_seconds`, or `ffmpeg_path` set by hand
+  silently reverted to its default the next time a device was selected, with nothing
+  in the output to say so.
 
 ### Changed
 - The JIT-compiled DSP helpers declare their signatures, so Numba compiles them at
@@ -119,6 +128,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   grid frequency the reading to distrust rather than the levels. It is logged rather
   than raised, because a monitor that exits on a transient overflow loses every later
   measurement to protect one polluted minute, and the analyzer re-acquires by itself.
+- Constants two or more modules depend on now live in `buzz/constants.py` instead of
+  each module keeping its own copy: 16-bit full scale, S9's dBm reference, and the
+  6 dB-per-S-unit convention. `dsp.py`, `scope.py`, `waterfall.py`, `plotter.py`,
+  `device_setup.py`, and `level_meter.py` all read from it, and `device_setup.py`'s
+  bar width is now derived from the shared constants rather than a hand-computed
+  literal, which is what the 4.75 dB fix above depends on to stay fixed.
 
 ## [1.3.0] - 2026-07-30
 

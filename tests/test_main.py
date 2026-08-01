@@ -35,9 +35,6 @@ def restore_logging():
 
 
 class TestConfigureLogging:
-    def test_runs_without_error(self):
-        configure_logging()
-
     def test_buzz_logger_level_is_info(self):
         configure_logging()
         assert logging.getLogger('buzz').level == logging.INFO

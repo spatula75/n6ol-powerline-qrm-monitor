@@ -2,7 +2,7 @@
 
 from datetime import datetime, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, Mock, patch
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -298,12 +298,17 @@ class TestCollectionLoop:
         collector = _make_collector(cfg)
         t0 = datetime(2024, 1, 15, 10, 30, 0, tzinfo=_TZ)
         t1 = datetime(2024, 1, 15, 10, 31, 1, tzinfo=_TZ)
-        with patch.object(collector, '_run_collection', side_effect=KeyboardInterrupt), \
+        run_collection = Mock(side_effect=KeyboardInterrupt)
+        with patch.object(collector, '_run_collection', run_collection), \
              patch('buzz.collector.sleep'), \
              patch('buzz.collector.datetime') as mock_dt:
             mock_dt.now.side_effect = [t0, t1]
             mock_dt.fromisoformat = datetime.fromisoformat
             collector.collection_loop()   # must return, not propagate
+        # Not just that this returned without raising: it must have stopped on the
+        # first interrupt rather than swallowing it somewhere and looping again, which
+        # a `return` misplaced one level too shallow would do silently.
+        run_collection.assert_called_once()
 
     def test_runtime_exception_is_caught_and_loop_continues(self, tmp_path):
         cfg = _make_config(tmp_path)

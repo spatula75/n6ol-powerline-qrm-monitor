@@ -32,6 +32,7 @@ from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
 
 from buzz.config import BuzzConfig
+from buzz.constants import S9_DBM
 from buzz.csv_store import BUCKET_MINUTES, CsvStore
 
 # One day's values for a single trace.  A plain list as read from the CSV, and a NumPy
@@ -47,10 +48,6 @@ _R = TypeVar('_R')
 _GRAPH_W = 1600
 _GRAPH_H = 640
 _SUMMARY_H = 540
-
-# S9 signal strength per IARU recommendation: −73 dBm into 50 Ω.
-# Drawn as a reference line on the daily graph so it's easy to gauge signal severity.
-_S9_DBM = -73
 
 # The daily graph's y-axis always includes the dBm level corresponding to this
 # audio level (−48 dBFS + audio_rf_conversion_db), so a quiet or flat trace still
@@ -236,9 +233,9 @@ class Plotter:
 
         1.33 is a margin factor: since dBm values are negative, multiplying the
         most-negative value by 1.33 pushes the lower axis edge further down,
-        while dividing the least-negative value by 1.33 pulls the upper edge
-        down - keeping reference lines (noise floor, threshold, S9) away from
-        the plot borders.
+        while dividing the least-negative value by 1.33 pushes the upper edge
+        further up - both moving away from the data, which is what keeps
+        reference lines (noise floor, threshold, S9) off the plot borders.
         """
         station = self._config.station
         anchor = _AXIS_ANCHOR_DBFS + station.audio_rf_conversion_db
@@ -252,8 +249,8 @@ class Plotter:
         lines on the daily chart, returning their handles for the legend.
         """
         station = self._config.station
-        plot_s9 = axes.axhline(y=_S9_DBM, color='tan', linestyle='dashed',
-                               label=f'S9 ({_S9_DBM} dBm) signal strength')
+        plot_s9 = axes.axhline(y=S9_DBM, color='tan', linestyle='dashed',
+                               label=f'S9 ({S9_DBM:g} dBm) signal strength')
         plot_threshold = axes.axhline(y=station.noise_threshold, color='gray', linestyle='dashed',
                                       label=f'{station.noise_threshold} dBm threshold')
         plot_floor = axes.axhline(y=station.noise_floor, color='gray',

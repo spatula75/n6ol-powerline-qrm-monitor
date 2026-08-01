@@ -145,10 +145,13 @@ class TestAppend:
         assert len(lines) == 3
 
     def test_accepts_string_weather_values(self, tmp_path):
+        """Blank strings for every weather field - what a collection with weather
+        disabled actually passes - must not raise trying to format them as numbers,
+        and must come back as the blank fields they were, not dropped or defaulted."""
         store = _make_store(tmp_path)
         now = _ts(2024, 1, 15, 10, 30)
         result = store.append(now, 15.0, -80.0, -95.0, 'full', '', '', '', '', '', '')
-        assert result is not None
+        assert result == f'{now.isoformat()},15.00,-80.00,-95.00,full,,,,,,,,'
 
     def test_lock_status_in_header(self, tmp_path):
         store = _make_store(tmp_path)
@@ -286,11 +289,12 @@ class TestReadRangeToTimeDict:
         store.append(when, 20.0, -80.0, -95.0, 'full', 72, 50, 300, 5, 8, 180)
 
     def test_missing_files_silently_skipped(self, tmp_path):
+        """No file exists for any day in the range - every day hits the
+        FileNotFoundError branch, so the aggregate is empty rather than raising."""
         store = _make_store(tmp_path)
         start = _ts(2024, 1, 15, 0, 0)
         end = _ts(2024, 1, 17, 0, 0)
-        result = store.read_range_scores(start, end)
-        assert isinstance(result, dict)
+        assert store.read_range_scores(start, end) == {}
 
     def test_single_day_aggregated(self, tmp_path):
         store = _make_store(tmp_path)

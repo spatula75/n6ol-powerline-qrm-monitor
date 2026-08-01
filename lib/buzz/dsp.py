@@ -18,9 +18,11 @@ from numba import njit
 from numpy import uint32, zeros
 from scipy.signal import fftconvolve
 
-# dBFS reference for 16-bit audio: 0 dBFS = full-scale amplitude of 32768 (2^15).
+from buzz.constants import FULL_SCALE_COUNTS
+
+# dBFS reference for 16-bit audio: 0 dBFS = full-scale amplitude (2^15).
 # The factor of 20 (not 10) is because dBFS is defined in terms of amplitude, not power.
-DB_REFERENCE = 20 * log10(32768.0)
+DB_REFERENCE = 20 * log10(FULL_SCALE_COUNTS)
 
 # Amplitudes of zero (receiver off, muted input, driver returning silence) have no
 # logarithm; -128 dBFS is well below the ~-90 dBFS minimum for a 1-LSB 16-bit signal,

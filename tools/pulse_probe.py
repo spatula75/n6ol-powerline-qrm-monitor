@@ -319,6 +319,7 @@ def report(rectified: np.ndarray, config: BuzzConfig, show_profile: bool) -> Non
 
 
 def main() -> None:
+    """Capture live audio at the configured device and print the diagnostic report."""
     parser = argparse.ArgumentParser(description=__doc__.split('---')[0].strip())
     parser.add_argument('--seconds', type=float, default=8.0,
                         help='length of audio to capture (default 8; the ring buffer holds ~9.6)')
