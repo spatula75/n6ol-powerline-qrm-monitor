@@ -417,7 +417,7 @@ Recording off — re-arms in 23h 47m
 
 Switching recording off with the **Record** button cancels the cycle as well.  Off
 means off: a monitor that re-armed itself overnight because it happened to be
-turned off mid-cycle would be a nasty surprise to come back to.
+turned off mid-cycle would be a nasty surprise on your return.
 
 The recording directory is created when recording is armed, not when the first
 event arrives — at startup with `enabled = true` or `--enable-recording`, and
@@ -539,9 +539,11 @@ exactly the case this handles.  A file from a random sound card is likely to be
 - **Sample rate** may be anything from **8 kHz to 48 kHz**, and the display looks
   the same at all of them.  The FFT window is a fixed span of *time* rather than a
   fixed number of samples, so the waterfall keeps its 31 Hz per bin and its width
-  whatever the audio arrives at.  8 kHz is the floor because the display shows
-  0–4 kHz and that is exactly Nyquist there; anything outside the range is refused
-  with a message rather than analysed into plausible nonsense.
+  whatever the audio arrives at.  The buffer behind it is sized in seconds too, so
+  the analyzer always has the same 9.6 seconds of history to work with, and the
+  scope always shows the same three pulse periods.  8 kHz is the floor because the
+  display shows 0–4 kHz and that is exactly Nyquist there; anything outside the
+  range is refused with a message rather than analysed into plausible nonsense.
 - **Stereo** is reduced to **channel 0**, not mixed down — the same thing the live
   monitor does with a stereo input device — and it says so in the log.  Mixing
   would average the arc against whatever the other channel happens to hold.  If
@@ -554,6 +556,25 @@ What a foreign file cannot bring with it is the pulse rate and the level
 calibration, since those live in metadata this program writes.  Your own configured
 values are used instead and a warning says so, because a dBm reading taken against
 someone else's receiver settings looks entirely plausible and means nothing.
+
+The distinction is worth holding on to.  **Levels are suspect; the rest is not.**
+Whether the pulse train locks at all, how steady its phase is, the line frequency
+it reports, and the shape of the burst on the scope are properties of the
+interference rather than of the receiver, and survive the trip intact.  Those are
+what tell an arcing gap from somebody's switching supply.
+
+If you know the calibration the sending station used, supply it for the replay:
+
+```
+python -m buzz.main --playback from-a-ham.wav --audio-rf-conversion-db -28.5
+```
+
+That figure is used in place of your own for this run only, and takes precedence
+over one recorded in the file — the recording's own is normally right, being the
+receiver that made it, so overriding it is reported.  If nothing locks at all,
+suspect the grid instead: a European recording carries 100 pps, and against the
+configured 120 the analyzer will never acquire.  Set `audio.pulse_rate` to 100 and
+replay it.
 
 The toolbar carries a transport instead of the record button, since there is
 nothing to record and every reason to want to stop on an interesting moment:
@@ -641,7 +662,8 @@ recording measures the same wherever it is replayed — the sample rate is in th
 `.wav` header, but nothing else about how to read the audio is, and a 100 pps
 recording analysed as 120 pps simply never locks.  Any mismatch with your own
 config is logged.  A `.wav` from anywhere else still plays; it just warns that it
-is being analysed with your settings, which may not be the ones it was made with.
+is being analysed with your settings, which may not be the ones with which it was
+made.
 
 ### Rendering a replay to video
 
@@ -656,6 +678,13 @@ python -m buzz.main --playback event-20260729-184450-0700.wav --render arc.mp4
 The window opens without its transport controls, plays through once, and the
 program exits when the file is complete.  A render happens in real time, so a
 40-second recording takes 40 seconds.  It will not overwrite an existing file.
+
+Add `--headless` to render without a window at all — useful on a machine with no
+display, or simply to avoid one stealing focus for two minutes.  The video is
+identical either way, because the display font is carried with the program rather
+than borrowed from the desktop.  A headless render is silent as well: nobody is
+watching, so nothing is sent to the sound card.  That does not change the video's
+audio, which ffmpeg takes from the recording on disk.
 
 The video is H.264 at 30 fps with AAC audio, chosen to play in VLC and in Firefox
 without any persuasion.  The display genuinely updates ten times a second, so two
@@ -714,7 +743,8 @@ event in the first place (`max_seconds`, or a longer `stop_after_seconds`) is th
 better fix.
 
 Replay is analysis only.  No CSV rows, no plots, no uploads, and no recording —
-looking at an old event again must not add minutes to a day it did not happen on.
+looking at an old event again must not add minutes to a day on which it did not
+happen.
 No audio *input* device is opened at all, so recordings can be reviewed on a
 machine with no receiver attached to it.  When the file runs out, playback stops
 and the displays hold their last frame.
@@ -755,8 +785,8 @@ at the same place on every pass.
 
 The scope shows the actual audio waveform, swept in sync with the interference
 so that a repeating pulse train appears to stand still — the same effect as
-setting the sync control on a bench oscilloscope to match the signal you are
-looking at.
+setting the sync control on a bench oscilloscope to match the signal under
+observation.
 
 Each sweep covers **25 ms**, which is exactly three pulse periods at 120 pps, at
 **2.5 ms per division**.  Rather than triggering on signal amplitude, the sweep
@@ -795,7 +825,7 @@ regardless of receiver gain.
 | **○ FREE** (grey) | No pulse train to synchronize to.  The sweep free-runs and its horizontal position is arbitrary. |
 | `59.98 Hz` | Measured utility line frequency, derived from how fast the pulse phase is drifting.  Shown only when there is a phase to measure. |
 | `RAW` / `AVG` | Which view is active — see `A` above. |
-| `2.50 ms/div` | Horizontal timebase. |
+| `2.50 ms/div` | Horizontal timebase.  The trace is always three pulse periods wide, so this reads 2.50 ms/div on a 60 Hz grid and 3.00 on a 50 Hz one, whatever the sample rate. |
 | `FS −24.3 dBFS` | Vertical full scale, as headroom below digital clipping.  This is the auto-range's current setting. |
 | **CLIP** (red) | The input is hitting the converter's limit — reduce AF gain. |
 
