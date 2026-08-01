@@ -66,7 +66,7 @@ def _make_config(tmp_path: Path, sample_rate: int = SAMPLE_RATE, **recording) ->
     config.audio.sample_rate = sample_rate
     config.station.timezone = 'America/Los_Angeles'
     # An explicit baseline rather than whatever the shipped defaults happen to be:
-    # these tests count in chunks, and a default retuned for real 16 kHz audio lands
+    # these tests count in chunks, and a default retuned for real 16 kHz audio comes out
     # somewhere entirely different at this rate.  Length capping is off here so that
     # only the tests actually about the cap have to think about it.
     config.recording.directory = str(tmp_path)
@@ -173,8 +173,8 @@ class TestRecordingDirectory:
     """Created by arming, so a bad path is found while the operator is still there
     rather than at the end of an unattended day that recorded nothing.
 
-    Recording that is off reaches for nothing at all — no stray directory, and no
-    complaint about a path it was never going to use — so the check lands at startup
+    Recording that is off reaches for nothing at all - no stray directory, and no
+    complaint about a path it was never going to use - so the check happens at startup
     when armed there, and otherwise when the Record button is pressed."""
 
     def _blocked(self, tmp_path: Path) -> Path:
@@ -258,7 +258,7 @@ class TestRecordingDirectory:
 
     def test_a_writer_that_fails_after_opening_is_closed(self, tmp_path):
         """The file is open by the time the header settings are applied, so a failure
-        there has something to clean up — and closing it raises in turn, since it
+        there has something to clean up - and closing it raises in turn, since it
         never got the settings it needs to write a header."""
         recorder, pipeline, analyzer = _make_recorder(tmp_path)
         _feed(pipeline, 1)
@@ -347,13 +347,13 @@ class TestStartingARecording:
         recorder, pipeline, analyzer = _make_recorder(tmp_path)
         _feed(pipeline, 1)
         analyzer.lock()
-        analyzer.unlock()       # both edges land inside one poll interval
+        analyzer.unlock()       # both edges fall inside one poll interval
         recorder.tick()
         assert len(_wav_files(tmp_path)) == 1
 
     def test_directory_lost_mid_run_disarms_rather_than_raising(self, tmp_path):
-        """The startup check cannot cover a directory that goes away later — a
-        removable drive, or a tidy-up script — so opening a file still has to cope."""
+        """The startup check cannot cover a directory that goes away later - a
+        removable drive, or a tidy-up script - so opening a file still has to cope."""
         target = tmp_path / 'recordings'
         recorder, pipeline, analyzer = _make_recorder(tmp_path, directory=str(target))
         target.rmdir()
@@ -845,7 +845,7 @@ class TestMinimumSnr:
         """A recorder watching a lock of the given SNR, with its window filled.
 
         Ticked SNR_WINDOW times because that is what the recorder waits for before
-        judging anything — one reading decides nothing, by design.
+        judging anything - one reading decides nothing, by design.
         """
         recorder, pipeline, analyzer = _make_recorder(
             tmp_path, min_lock_snr=10.0, **recording)
@@ -1104,7 +1104,7 @@ class TestOddSettings:
         assert 're-armed' not in caplog.text
 
     def test_timeout_longer_than_the_cap_still_ends_the_recording(self, tmp_path):
-        """The cap wins, so the recording ends before the silence timeout can — which
+        """The cap wins, so the recording ends before the silence timeout can - which
         also means the trailer is only as long as the cap leaves room for."""
         recorder, pipeline, analyzer = _make_recorder(
             tmp_path, max_seconds=2.0, stop_after_seconds=30.0)
@@ -1161,7 +1161,7 @@ class TestEventBudget:
 
     def test_stopping_by_hand_does_not_blame_the_budget(self, tmp_path, caplog):
         """The last event's recording is still spent, but the operator is why
-        recording is now off — and saying "budget spent" alongside "disarmed" reads
+        recording is now off - and saying "budget spent" alongside "disarmed" reads
         as the monitor giving two different reasons for the same thing."""
         recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=1)
         analyzer.lock()
@@ -1512,7 +1512,7 @@ class TestLockStateHandoff:
         recorder, _, analyzer = _make_recorder(tmp_path)
         with recorder._state_lock:
             threading.Thread(target=analyzer.lock, daemon=True).start()
-            time.sleep(0.05)    # ample time for an unsynchronised listener to land
+            time.sleep(0.05)    # ample time for an unsynchronised listener to arrive
             assert recorder._locked is False
         assert _eventually(lambda: recorder._locked is True)
 

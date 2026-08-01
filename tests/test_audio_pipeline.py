@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from buzz.config import BuzzConfig
-from buzz.sampler import AudioPipeline, RingBufferPipeline, buffer_chunks
+from buzz.sampler import AudioPipeline, DropoutReporter, RingBufferPipeline, buffer_chunks
 
 SAMPLE_RATE = 16000
 CHUNK = AudioPipeline.CHUNK_SIZE
@@ -70,6 +70,69 @@ class TestAudioPipelineInit:
             mock_cls.return_value = MagicMock()
             AudioPipeline(config, 7)
         assert mock_cls.call_args.kwargs['device'] == 7
+
+
+class TestAudioPipelineDroppedAudio:
+    """What the callback does when PortAudio says it discarded input.
+
+    The audio still has to reach the buffer: a dropout costs the samples the driver
+    already threw away, and refusing the block that did arrive would throw away more.
+    """
+
+    def _fire_with_status(self, callback, status='input overflow', n: int = CHUNK) -> None:
+        data = np.full((n, 1), 5000, dtype=np.int16)
+        callback(data, n, None, status)
+
+    def test_the_block_that_did_arrive_is_still_buffered(self):
+        pipeline, _, callback = _make_pipeline()
+        self._fire_with_status(callback)
+        assert len(pipeline._buffer) == 1, (
+            'A dropout must not cost the block that arrived with it. The samples the '
+            'driver discarded are already gone; dropping this one as well would widen '
+            'the splice the analyzer has to recover from.')
+
+    def test_it_warns_and_gives_a_step_the_operator_can_actually_take(self, caplog):
+        """The three things a message owes its reader: what happened, what it means for
+        the measurement, and what to do about it.
+
+        The remedy has to be one that exists.  This message used to end "raise
+        chunk_size in the [audio] section of the config", and there is no such
+        setting - the block size is RingBufferPipeline.CHUNK_SIZE, a constant.  Worse,
+        _load_section drops unknown keys silently, so anyone who followed the advice
+        edited the config, restarted, and got no error and no change.
+        """
+        pipeline, _, callback = _make_pipeline()
+        with caplog.at_level('WARNING', logger='buzz.sampler'):
+            self._fire_with_status(callback)
+        message = caplog.text
+        assert 'overflow' in message and 'using audio' in message, (
+            f'Expected the warning to name the condition and a step that exists; '
+            f'got: {message!r}')
+        assert 'chunk_size' not in message, (
+            f'The remedy names a config setting that does not exist, so following it '
+            f'changes nothing and reports nothing; got: {message!r}')
+
+    def test_it_says_the_grid_frequency_is_what_to_distrust(self, caplog):
+        """The whole point of correcting this message. A splice makes the phase jump,
+        so the drift fit reads a step as drift; the levels are unaffected. Saying
+        "samples were dropped" alone would leave the reader guessing which number
+        went bad, and the obvious guess is the wrong one."""
+        pipeline, _, callback = _make_pipeline()
+        with caplog.at_level('WARNING', logger='buzz.sampler'):
+            self._fire_with_status(callback)
+        assert 'grid frequency' in caplog.text, (
+            f'The message must say the grid frequency is the unreliable reading; '
+            f'got: {caplog.text!r}')
+
+    def test_a_burst_produces_one_warning_not_one_per_block(self, caplog):
+        pipeline, _, callback = _make_pipeline()
+        with caplog.at_level('WARNING', logger='buzz.sampler'):
+            for _ in range(20):
+                self._fire_with_status(callback)
+        assert len(caplog.records) == 1, (
+            f'20 dropouts in quick succession produced {len(caplog.records)} log lines. '
+            'DropoutReporter is meant to hold them to one per interval, because this '
+            'runs on the PortAudio callback thread.')
 
 
 class TestAudioPipelineCallback:
@@ -308,7 +371,7 @@ class TestReadFrom:
 
     def test_a_read_starting_mid_chunk_begins_at_that_sample(self):
         """Only whole chunks are joined, so a position part-way into one has to be
-        trimmed off the front of the join rather than assumed to land on a seam."""
+        trimmed off the front of the join rather than assumed to fall on a seam."""
         pipeline = RingBufferPipeline()
         pipeline._append(np.arange(CHUNK, dtype=np.int16))
         span = pipeline.read_from(10)
@@ -320,8 +383,8 @@ class TestReadFrom:
         assert len(pipeline.read_from(10).samples) == CHUNK - 10
 
     def _uneven(self):
-        """Nothing promises every chunk is CHUNK_SIZE — only the live capture callback
-        is fixed-size — so a span is assembled by length, never by chunk count."""
+        """Nothing promises every chunk is CHUNK_SIZE - only the live capture callback
+        is fixed-size - so a span is assembled by length, never by chunk count."""
         pipeline = RingBufferPipeline()
         for value, length in ((1, 100), (2, 7), (3, 300)):
             pipeline._append(np.full(length, value, dtype=np.int16))
@@ -459,3 +522,47 @@ class TestBufferSizedInSeconds:
         this is the number that makes it a non-decision."""
         kilobytes = RingBufferPipeline(48000).capacity_samples * 2 / 1024
         assert kilobytes < 1024
+
+
+class TestDropoutReporter:
+    """When a run of dropped audio is worth another line in the log.
+
+    Dropped audio is rare enough on healthy hardware to be worth seeing the moment it
+    happens, and damaging enough when it persists that the log must not bury it under
+    one line per callback.  Those two pull opposite ways, which is what this rate limit
+    resolves.
+    """
+
+    def test_the_first_dropout_is_reported_at_once(self):
+        """No waiting for an interval to elapse: on a machine that has never dropped
+        audio, the first one is the interesting one."""
+        assert DropoutReporter(60.0).record(1000.0) == 1
+
+    def test_a_burst_inside_one_interval_is_reported_once(self):
+        reporter = DropoutReporter(60.0)
+        reporter.record(1000.0)
+        assert [reporter.record(1000.0 + n) for n in (1, 2, 3)] == [None, None, None], (
+            'Dropouts inside the interval must not each produce a line. This runs on '
+            'the PortAudio callback thread, where logging per block both floods the log '
+            'and spends time the audio path does not have.')
+
+    def test_the_count_accumulates_across_the_quiet_stretch(self):
+        """The suppressed ones are counted, not discarded, so the next line says how
+        bad it was rather than merely that it happened again."""
+        reporter = DropoutReporter(60.0)
+        reporter.record(1000.0)          # reported as 1
+        for n in (1, 2, 3):
+            reporter.record(1000.0 + n)  # suppressed, but counted
+        assert reporter.record(1061.0) == 4
+
+    def test_the_counter_resets_after_each_report(self):
+        """Otherwise every later line restates dropouts already reported, and a long
+        run reads as though it were accelerating."""
+        reporter = DropoutReporter(60.0)
+        reporter.record(1000.0)
+        reporter.record(1061.0)
+        assert reporter.record(1122.0) == 1
+
+    def test_dropouts_spaced_wider_than_the_interval_each_report(self):
+        reporter = DropoutReporter(60.0)
+        assert [reporter.record(1000.0 + n * 61.0) for n in range(3)] == [1, 1, 1]

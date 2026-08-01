@@ -1,7 +1,7 @@
 """Finding and running ffmpeg, on a machine that need not have it.
 
-Everything here mocks the boundary, so the whole file passes with no ffmpeg installed
-— which is the point: it is needed by --render and the loudness probe alone, and a
+Everything here mocks the boundary, so the whole file passes with no ffmpeg installed,
+which is the point: it is needed by --render and the loudness probe alone, and a
 contributor who uses neither should still get a green suite.
 """
 
@@ -18,7 +18,7 @@ class TestFindFfmpeg:
     """PATH first, then the configured location.
 
     That order keeps a normal install configuration-free; the setting is for installs
-    that do not land on PATH, like a Windows build unzipped into a folder.
+    that do not appear on PATH, like a Windows build unzipped into a folder.
     """
 
     def test_it_finds_ffmpeg_on_the_path(self):
@@ -72,7 +72,7 @@ class TestRun:
     def test_it_returns_both_streams_together(self):
         """ffmpeg writes filter summaries and errors to stderr and little to stdout, so
         a caller parsing a measurement and a caller reporting a failure want the same
-        text rather than having to guess which stream it landed on."""
+        text rather than having to guess which stream it came from."""
         finished = subprocess.CompletedProcess([], 0, stdout='out', stderr='err')
         with patch('buzz.ffmpeg.subprocess.run', return_value=finished):
             assert run(['ffmpeg']) == 'outerr'

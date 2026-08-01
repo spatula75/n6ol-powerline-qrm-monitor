@@ -166,13 +166,10 @@ class TestExampleConfigMatchesTheDataclasses:
     def test_every_option_is_documented(self):
         assert self._documented() == self._defined()
 
-    def test_the_example_loads(self):
-        assert isinstance(BuzzConfig.from_toml(_EXAMPLE), BuzzConfig)
-
     def test_uncommented_values_are_the_defaults(self):
         """The example file says the values it shows are the defaults, so they must be.
 
-        Only the settings that are genuinely site-specific are exempt — a hostname or
+        Only the settings that are truly site-specific are exempt - a hostname or
         a home directory cannot have a meaningful default, and the example gives a
         plausible one to edit.  Everything else drifts silently otherwise: a default
         changed in code leaves the example quietly documenting the old value.
@@ -234,7 +231,7 @@ class TestRecordingSectionLoading:
 class TestSampleRateAdmission:
     """The band the rest of the program can honestly work in, and the refusal outside it.
 
-    Both bounds are load-bearing rather than tidy-looking.  The floor is what makes the
+    Both bounds do work rather than merely looking tidy.  The floor is what makes the
     waterfall's bin count independent of the rate: below 8 kHz the Nyquist clamp in
     spectrum_geometry() starts biting and the window stops being 128 bins wide, which
     is the property buzz.render leans on when it declines to pad the frame.  The

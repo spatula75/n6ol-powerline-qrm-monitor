@@ -1,7 +1,7 @@
 """
 Audio input for the powerline QRM monitor.
 
-Pure audio I/O — the pulse-train analysis lives in buzz.dsp and buzz.analyzer.
+Pure audio I/O - the pulse-train analysis lives in buzz.dsp and buzz.analyzer.
 RingBufferPipeline holds the buffering all audio sources share; AudioPipeline
 adds a PortAudio callback that fills it live, and buzz.playback adds a
 file-backed source that replays a recorded .wav through the same interface.
@@ -16,6 +16,7 @@ import threading
 from collections import deque
 from dataclasses import dataclass
 from math import ceil
+from time import monotonic
 from typing import Self
 
 import numpy as np
@@ -41,6 +42,11 @@ _BUFFER_SECONDS = 9.6
 # 512 int16 samples, which is under a megabyte.  Sizing by duration is affordable
 # precisely because the audio is mono and narrow-band.
 _DEFAULT_SAMPLE_RATE = 16000
+
+# How often a continuing run of dropped audio is summarised.  A minute is chosen to
+# match the collector's cycle, so a log reporting dropouts lines up with the CSV rows
+# they affected.  The first one is always reported immediately; see DropoutReporter.
+_DROPOUT_REPORT_SECONDS = 60.0
 
 
 def buffer_chunks(sample_rate: int, chunk_size: int) -> int:
@@ -212,8 +218,8 @@ class RingBufferPipeline:
     def start(self) -> None:
         """Begin producing audio, for a source that does not start on construction.
 
-        Live capture has no use for this — its device is running by the time the
-        constructor returns — but a file-backed replay must not begin before the
+        Live capture has no use for this - its device is running by the time the
+        constructor returns - but a file-backed replay must not begin before the
         caller has somewhere to show it (see FilePlaybackPipeline.start), and a
         consumer holding a pipeline should not have to know which kind it has.
         """
@@ -228,16 +234,87 @@ class RingBufferPipeline:
         self.close()
 
 
+class DropoutReporter:
+    """Rate-limits the warning for audio the input device dropped.
+
+    Separate from AudioPipeline so it can be tested without opening a device, and
+    because the decision of when to speak is worth stating on its own.
+
+    The first dropout is reported at once, since one on a machine that has never had
+    one is worth seeing immediately.  After that a continuing run costs a single line
+    per interval carrying the count, rather than one per callback: this is called from
+    the PortAudio callback, on PortAudio's own thread, where a warning per block would
+    both flood the log and spend time the audio path does not have -- and where the
+    logging could itself provoke the next dropout.
+
+    A run that stops part-way through an interval takes its suppressed count with it:
+    five dropouts over two seconds and then quiet are reported as one.  Only the next
+    dropout can print anything, and there is no timer here to flush the remainder on.
+    That is the right way round for a warning whose job is to say a fault is ongoing.
+    """
+
+    def __init__(self, report_interval_seconds: float = _DROPOUT_REPORT_SECONDS) -> None:
+        self._interval = report_interval_seconds
+        self._pending = 0
+        self._reported_at: float | None = None
+
+    def record(self, now: float) -> int | None:
+        """Count one dropout; return how many to report, or None to stay quiet.
+
+        `now` is passed in rather than read here so a test can drive the clock.
+        """
+        self._pending += 1
+        if self._reported_at is not None and now - self._reported_at < self._interval:
+            return None
+        self._reported_at = now
+        count, self._pending = self._pending, 0
+        return count
+
+
 class AudioPipeline(RingBufferPipeline):
     """Live audio input: a PortAudio callback filling the shared ring buffer."""
 
     def __init__(self, config: BuzzConfig, device_index: int) -> None:
         super().__init__(config.audio.sample_rate)
+        self._dropouts = DropoutReporter()
 
         def _callback(indata: np.ndarray, frames: int,
                       time: object, status: sd.CallbackFlags) -> None:
             if status:
-                logger.warning('PortAudio callback status: %s', status)
+                # PortAudio reports every input fault through `status`, and they are
+                # all handled the same way because the recovery is the same.  On a
+                # capture stream it is in practice an overflow: the device captured
+                # faster than this callback collected, and the driver discarded the
+                # difference.
+                #
+                # Note what that does and does not do, because the obvious guess is
+                # wrong.  It leaves no gap and no silence -- this callback still gets a
+                # full block of current audio -- so nothing reads low.  What arrives is
+                # a *splice* of two runs that were never adjacent, and since
+                # _total_samples advances only by what is appended, the audio clock
+                # under-counts the time that really passed.  The pulse train did move
+                # through the discarded samples, so the next phase measurement jumps,
+                # and ContinuousAnalyzer's least-squares fit reads that step as drift.
+                # The grid frequency is therefore the reading to distrust, not the
+                # levels.
+                #
+                # Logged rather than raised.  This monitor runs unattended all day, and
+                # losing every later measurement to protect one polluted minute is the
+                # wrong trade; every other failure here degrades and carries on for the
+                # same reason.  The analyzer recovers by itself: a phase that stops
+                # making sense drops it to SEARCHING and it re-acquires.
+                dropped = self._dropouts.record(monotonic())
+                if dropped is not None:
+                    logger.warning(
+                        'The audio input reported %d error(s) (%s), almost always an '
+                        'overflow: the device captured faster than this program '
+                        'collected it, so the driver discarded the difference. The '
+                        'splice that leaves makes the pulse phase jump, so the grid '
+                        'frequency is the reading to distrust until the analyzer '
+                        're-acquires, which it does on its own; the levels are '
+                        'unaffected. Usually transient load - if it repeats, close '
+                        'whatever else on this machine is using audio.',
+                        dropped, status)
             self._append(indata[:, 0].copy())
 
         self._stream = sd.InputStream(
@@ -297,7 +374,7 @@ class LevelStream:
     for why the median rather than the mean).  It matters more here than anywhere
     else: this is the reading the operator calibrates audio_rf_conversion_db against,
     so an uncorrected offset would be baked into every measurement the monitor ever
-    reports.  Smoothing is what makes it viable at this block size — a 320-sample
+    reports.  Smoothing is what makes it viable at this block size - a 320-sample
     block is far too short to estimate an offset from on its own.
 
     Use as a context manager:

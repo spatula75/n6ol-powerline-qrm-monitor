@@ -1,20 +1,20 @@
 """Render a playback session to an .mp4 file, through ffmpeg.
 
 Only reached when `--render` is passed.  Nothing here is imported otherwise and the
-ffmpeg binary is never looked for, so a monitor that never renders cannot fail — or
-even complain — about a program it was never going to run.  The same reasoning as the
+ffmpeg binary is never looked for, so a monitor that never renders cannot fail - or
+even complain - about a program it was never going to run.  The same reasoning as the
 recorder's, which creates its directory when recording is armed rather than at
 startup.
 
 ffmpeg is driven as a subprocess rather than through a wrapper package.  There is one
 command line here, of fixed shape, and a literal argument list can be logged and
-pasted straight into a terminal when a render comes out wrong — which is worth more
+pasted straight into a terminal when a render comes out wrong - which is worth more
 than any ergonomics a builder API offers.  It also keeps the whole feature free of
 install-time weight: `subprocess` and `shutil` are the standard library, so a user
 who does not render adds nothing to their environment.
 
-Only the video is piped.  The audio ffmpeg needs is already a file on disk — the .wav
-being replayed — so it is passed as a second input and laid on its own timeline.  That
+Only the video is piped.  The audio ffmpeg needs is already a file on disk - the .wav
+being replayed - so it is passed as a second input and laid on its own timeline.  That
 removes the audio path from the sync problem altogether: there is no second stream to
 keep aligned, only frames to place correctly against a clock that is already right.
 """
@@ -37,8 +37,8 @@ logger = logging.getLogger(__name__)
 FRAME_RATE = 30
 
 # The display updates at 10 fps (_UPDATE_MS in waterfall.py and scope.py), so two out
-# of every three output frames are duplicates.  They cost almost nothing — a P-frame
-# with no residual — and the finer grid is what keeps frame placement inside the 32 ms
+# of every three output frames are duplicates.  They cost almost nothing - a P-frame
+# with no residual - and the finer grid is what keeps frame placement inside the 32 ms
 # quantum that the playback position itself is measured in.  See _FrameGrid.
 _KEYFRAME_INTERVAL = FRAME_RATE          # one per second, for scrubbing
 _CRF = 18
@@ -135,8 +135,8 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
     Firefox as the playback targets:
 
     - `yuv420p` and Main profile because Firefox will not decode High 4:4:4
-      Predictive, which rules out the 4:4:4 that this content — thin scope traces and
-      axis text — would otherwise benefit from.  A low CRF buys back some of what
+      Predictive, which rules out the 4:4:4 that this content - thin scope traces and
+      axis text - would otherwise benefit from.  A low CRF buys back some of what
       chroma subsampling costs.
     - `+faststart` because a Firefox target means the file may be served over HTTP,
       and a moov atom at the end forces the whole download before the first frame.
@@ -155,7 +155,7 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
     brought it back would fail there rather than here.
     """
     # Two decimals rather than repr: a measured gain is a float like
-    # 18.990000000000002, and that lands both in the filter argument and in the logged
+    # 18.990000000000002, and that appears both in the filter argument and in the logged
     # command an operator is meant to be able to paste into a terminal.  0.01 dB is
     # far below anything audible or measurable here.
     # Channel 0 rather than a downmix, so the video's audio is the audio that was
@@ -179,7 +179,7 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
         ffmpeg, '-hide_banner', '-loglevel', 'warning', '-n',
         # Input 0: our frames, already conformed to a constant rate.  rawvideo carries
         # no timestamps, which is exactly why the conform happens on our side of the
-        # pipe — see _FrameGrid — rather than being left to ffmpeg's -fps_mode.
+        # pipe - see _FrameGrid - rather than being left to ffmpeg's -fps_mode.
         '-f', 'rawvideo', '-pix_fmt', PIXEL_FORMAT,
         '-s', f'{width}x{height}', '-r', str(FRAME_RATE), '-i', 'pipe:0',
         # Input 1: the recording itself, untouched, on its own timeline.
@@ -213,15 +213,20 @@ def _nearest_slot(seconds: float, frame_rate: int) -> int:
     """Which grid slot a moment belongs to: nearest, and not banker's rounding.
 
     Truncating instead would be the obvious thing and is wrong twice over.  It biases
-    every frame early by half a slot on average — a systematic 17 ms of video leading
+    every frame early by half a slot on average - a systematic 17 ms of video leading
     audio, which is precisely the kind of constant offset this design went to trouble
-    to avoid — and it is at the mercy of binary representation, where 0.3 * 30 is
-    8.999999999999998 and truncates to 8, dropping a frame from a perfectly ordinary
-    tenth of a second.  Nearest halves the worst-case error to half a slot and leaves
-    it unbiased.
+    to avoid - and it is at the mercy of binary representation.  Most decimal
+    fractions, chunk_period among them, have no exact binary form, so a position that
+    is mathematically a whole number of slots can land a hair under one: a playback
+    position of 32.8 s (chunk 1025 of the 16 kHz default) times 30 comes out
+    983.9999999999999 rather than 984, and truncates to 983, dropping a frame from a
+    perfectly ordinary position - not a contrived one, just an unlucky one.  Nearest
+    halves the worst-case error to half a slot, leaves it unbiased, and is immune to
+    this failure specifically: adding 0.5 before flooring clears a near-miss like
+    this one by a wide margin.
 
     `floor(x + 0.5)` rather than `round()` because round() rounds half to even, so
-    round(0.5) is 0 and round(1.5) is 2 — the same reason the analyzer avoids it when
+    round(0.5) is 0 and round(1.5) is 2 - the same reason the analyzer avoids it when
     staying in phase.
     """
     return math.floor(seconds * frame_rate + 0.5)
@@ -233,7 +238,7 @@ class _FrameGrid:
     The display paints when its timer fires, which is neither exactly 10 fps nor
     aligned to anything; the file needs frames at exact multiples of 1/30 s.  Something
     has to reconcile the two, and doing it here rather than handing ffmpeg timestamped
-    frames keeps the arithmetic somewhere it can be read and tested — rawvideo over a
+    frames keeps the arithmetic somewhere it can be read and tested - rawvideo over a
     pipe has no timestamps to hand it anyway.
 
     The rule is that a frame captured at audio position `t` shows what was on screen
@@ -255,7 +260,7 @@ class _FrameGrid:
         """How many copies of the current frame precede one captured at `position`.
 
         Zero is a normal answer: the display runs at 10 fps against a 30 fps grid, so
-        roughly two captures in three land in a slot that is already accounted for.
+        roughly two captures in three fall in a slot that is already accounted for.
         """
         target = _nearest_slot(position, self._frame_rate)
         if target <= self._filled:
@@ -273,7 +278,7 @@ class _FrameGrid:
         The last captured frame is held for whatever is left.  Without this the video
         stops at the final capture and ends slightly short of its own audio.
 
-        Consumes rather than reports, exactly as slots_before() does — the count is
+        Consumes rather than reports, exactly as slots_before() does - the count is
         being written by the caller, so the grid has to know it has been.  Leaving
         `filled` behind here would understate the finished file by its whole tail.
         """
@@ -290,7 +295,7 @@ class RenderSession:
 
     Frames go in as they are captured, each stamped with where playback had reached
     when its pixels were read.  Reading the two together is what preserves the
-    analyzer's lookback — the display genuinely is showing a moment slightly past, and
+    analyzer's lookback - the display really is showing a moment slightly past, and
     a render that corrected for that would no longer match the program.
     """
 
@@ -315,7 +320,7 @@ class RenderSession:
     def start(self) -> None:
         """Launch ffmpeg and open the pipe.  Refuses to overwrite an existing file."""
         refuse_existing_output(self.output)
-        logger.info('Rendering to %s — %dx%d at %d fps', self.output,
+        logger.info('Rendering to %s - %dx%d at %d fps', self.output,
                     self.width, self.height, FRAME_RATE)
         # Logged in full, and at info: this is the one thing worth having in the log
         # when a render comes out wrong, because it can be pasted into a terminal
@@ -329,7 +334,7 @@ class RenderSession:
                 f'Could not start ffmpeg at {self._command[0]}: {exc}. The file was '
                 'found but the operating system refused to run it, which usually '
                 'means it is not executable, is a broken symlink, or is built for a '
-                'different architecture. Try running it directly from a terminal — '
+                'different architecture. Try running it directly from a terminal - '
                 'the error there is normally more specific than this one.') from exc
 
     def submit(self, pixels: bytes, position: float) -> None:
@@ -339,7 +344,7 @@ class RenderSession:
                 f'Cannot add a frame to the render: got {len(pixels)} bytes where '
                 f'{self._expected_bytes} were expected for a {self.width}x'
                 f'{self.height} frame in {PIXEL_FORMAT}. Raw video has no framing of '
-                'its own, so a short frame would not be detected by ffmpeg — it would '
+                'its own, so a short frame would not be detected by ffmpeg - it would '
                 'shift every following row and turn the video into diagonal mush. '
                 'The usual cause is the window being a different size from the one '
                 'this session was built for, or pixels arriving in a format other '
@@ -396,7 +401,7 @@ class RenderSession:
         reap children at exit, so without this an abandoned ffmpeg outlives the monitor
         and goes on writing a file nobody wants.
 
-        The .mp4 it leaves has no moov atom and will not open.  That is expected — the
+        The .mp4 it leaves has no moov atom and will not open.  That is expected - the
         caller's message already says the partial file should be deleted.
         """
         if self._process is None:
@@ -428,7 +433,7 @@ class RenderSession:
             raise RenderError(
                 f'ffmpeg stopped accepting frames part-way through {self.output}: '
                 f'{exc}. This means the encoder exited while the render was still '
-                'running — most often because it rejected the arguments it was given, '
+                'running - most often because it rejected the arguments it was given, '
                 'or ran out of disk. It explains itself on stderr, which appears just '
                 'above this message. The partly-written file is not usable and should '
                 'be deleted before trying again.') from exc

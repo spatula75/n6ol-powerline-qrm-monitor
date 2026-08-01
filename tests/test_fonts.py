@@ -73,7 +73,7 @@ class TestFontFiles:
             'face reads as a rendering fault rather than as bold text.\n'
             '\n'
             'To fix: check what matplotlib now ships under fonts/ttf and update '
-            '_FILES in lib/buzz/fonts.py. If the bold file is genuinely gone, drop it '
+            '_FILES in lib/buzz/fonts.py. If the bold file is truly gone, drop it '
             'from _FILES deliberately and accept synthesised bold, rather than '
             'leaving this failing.')
 

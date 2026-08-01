@@ -27,7 +27,7 @@ def find_ffmpeg(configured: str | None = None) -> str:
 
     PATH first, then `render.ffmpeg_path` from the config.  That order means a normal
     install needs no configuration at all, and the setting exists for the installs
-    that do not land on PATH — a Windows build unzipped into a folder, or winget's
+    that do not appear on PATH - a Windows build unzipped into a folder, or winget's
     shim directory in a terminal that has not been restarted since.
 
     The consequence worth knowing: a copy on PATH wins over a configured one, so the
@@ -50,7 +50,7 @@ def find_ffmpeg(configured: str | None = None) -> str:
         raise FfmpegError(
             f'ffmpeg is not on PATH and render.ffmpeg_path points at {configured}, '
             'where there is no ffmpeg. Correct the setting to the folder holding '
-            'ffmpeg, or install it so it lands on PATH.')
+            'ffmpeg, or install it so it appears on PATH.')
     raise FfmpegError(
         'ffmpeg was not found on PATH, and this needs it. Install it (on Windows, '
         '"winget install Gyan.FFmpeg") or set render.ffmpeg_path in the config to '
@@ -62,7 +62,7 @@ def run(command: list[str], *, timeout: float = 300.0) -> str:
     """Run ffmpeg to completion and return everything it said.
 
     ffmpeg writes its filter summaries and its errors to stderr, so both streams are
-    captured and returned together — a caller parsing a measurement and a caller
+    captured and returned together - a caller parsing a measurement and a caller
     reporting a failure want the same text.
 
     For invocations that produce a file, use subprocess directly: this waits for the

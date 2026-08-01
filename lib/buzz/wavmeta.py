@@ -1,7 +1,7 @@
 """
 RIFF metadata for recorded .wav files: provenance tags and cue markers.
 
-The stdlib wave module writes audio and nothing else — Wave_write has no metadata
+The stdlib wave module writes audio and nothing else - Wave_write has no metadata
 API at all, and its setmark() raises outright.  So the chunks are assembled here
 and appended after wave has closed the file.
 
@@ -16,7 +16,7 @@ Two kinds of metadata go in:
 
   LIST/INFO   Free-text tags (INAM, IART, ICRD, ISFT, ICMT) that editors and
               taggers display.  ICMT carries the settings a replay needs in
-              key=value form — the sample rate is in the format header, but the
+              key=value form - the sample rate is in the format header, but the
               grid's pulse rate and the station's dB calibration are not, and
               without them a recording measures differently on another machine.
 
@@ -54,7 +54,7 @@ def _chunk(chunk_id: bytes, payload: bytes) -> bytes:
     return chunk_id + struct.pack('<I', len(payload)) + payload + (b'\x00' * (len(payload) % 2))
 
 
-def build_info(tags: dict[str, str]) -> bytes:
+def _build_info(tags: dict[str, str]) -> bytes:
     """A LIST/INFO chunk from four-character tag ids to text.
 
     Values are NUL-terminated, as the INFO convention expects; the pad byte that
@@ -66,7 +66,7 @@ def build_info(tags: dict[str, str]) -> bytes:
     return _chunk(b'LIST', body)
 
 
-def build_cues(cues: dict[int, str]) -> bytes:
+def _build_cues(cues: dict[int, str]) -> bytes:
     """A cue chunk plus the LIST/adtl chunk holding each cue point's label.
 
     Positions are sample frames from the start of the file.  For uncompressed PCM
@@ -85,7 +85,7 @@ def build_cues(cues: dict[int, str]) -> bytes:
 def append_metadata(path: Path | str, tags: dict[str, str],
                     cues: dict[int, str] | None = None) -> None:
     """Append INFO tags and cue markers to a finished .wav, fixing up the RIFF size."""
-    blob = build_info(tags) + (build_cues(cues) if cues else b'')
+    blob = _build_info(tags) + (_build_cues(cues) if cues else b'')
     with open(path, 'r+b') as f:
         f.seek(0, 2)
         f.write(blob)
@@ -106,8 +106,8 @@ def _iter_chunks(f: Any) -> Any:
     its own length in 32 bits, so a truncated download or a corrupt byte can claim
     four gigabytes; read(size) on that allocates the four gigabytes before finding out
     there is nothing to put in them, and MemoryError is not the "no metadata" this
-    module promises to degrade to.  The walk itself was always safe — an overshooting
-    seek lands past EOF and the next read comes back short — but a caller holding a
+    module promises to degrade to.  The walk itself was always safe - an overshooting
+    seek goes past EOF and the next read comes back short - but a caller holding a
     size it trusts is not.
     """
     f.seek(0, 2)
@@ -147,7 +147,7 @@ def _parse_info(body: bytes) -> dict[str, str]:
 
     A corrupt or truncated length is not treated as an error, in keeping with the
     rest of this module: the value is whatever bytes are actually there, and the
-    next position lands past the end of the body, which ends the walk.  Tags read
+    next position falls past the end of the body, which ends the walk.  Tags read
     before that point are kept.
     """
     tags, pos = {}, 0
@@ -187,7 +187,7 @@ def setting(settings: dict[str, str], key: str, cast: Callable[[str], _T]) -> _T
     """Return settings[key] converted by `cast`, or None if absent or unparsable.
 
     A recording made by other software, or by an older version of this one, simply
-    has nothing to say about the key — which is not an error, just an absence.
+    has nothing to say about the key - which is not an error, just an absence.
     """
     try:
         return cast(settings[key])

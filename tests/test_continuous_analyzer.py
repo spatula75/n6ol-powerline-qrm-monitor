@@ -35,7 +35,7 @@ def _make_analyzer() -> ContinuousAnalyzer:
     pipeline = MagicMock(spec=AudioPipeline)
     pipeline.wait_for_data.return_value = True
     # Drift is tracked against the audio clock.  Freezing it means no audio time
-    # passes between calls, so these tests see no drift prediction at all — the
+    # passes between calls, so these tests see no drift prediction at all - the
     # tracker is exercised separately with _AlignedStreamPipeline, which advances it.
     pipeline.total_samples = 0
     return ContinuousAnalyzer(pipeline, cfg)
@@ -88,7 +88,7 @@ class TestAnalysisResult:
         assert r.locked     is True
 
     def test_unlocked_signal_coincides_with_noise(self):
-        """The plotter and meter panel rely on this convention — see AnalysisResult.unlocked."""
+        """The plotter and meter panel rely on this convention - see AnalysisResult.unlocked."""
         r = AnalysisResult.unlocked(-92.5)
         assert r.signal_dbm == r.noise_dbm == -92.5
         assert r.snr == 0.0
@@ -327,7 +327,7 @@ class TestStateListeners:
 
 
 # ---------------------------------------------------------------------------
-# Tick methods — per-state scheduling (tier cadence and transition wiring)
+# Tick methods - per-state scheduling (tier cadence and transition wiring)
 # ---------------------------------------------------------------------------
 
 class TestTickMethods:
@@ -431,7 +431,7 @@ class TestResultBuffer:
         assert az.drain_results() == [r]
 
     def test_drain_clears_the_buffer(self):
-        """Each collection cycle must average a disjoint set of results — a
+        """Each collection cycle must average a disjoint set of results - a
         non-draining read would re-average the previous minute's tail."""
         az = _make_analyzer()
         az._publish(AnalysisResult(signal_dbm=-70.0, noise_dbm=-90.0, snr=20.0, locked=True))
@@ -537,7 +537,7 @@ class TestFullAnalysis:
         _step(az, az._noise_check)
         noise_result = az.latest_result()
         assert noise_result is not None and noise_result.locked is False
-        # Now run full_analysis with flat noise — should NOT overwrite
+        # Now run full_analysis with flat noise - should NOT overwrite
         _step(az, az._full_analysis)
         assert az.latest_result() == noise_result
 
@@ -723,7 +723,7 @@ class TestPhaseSearch:
         az._pipeline.get_snapshot.return_value = _pulse_audio(phase=new_peak)
         _step(az, az._phase_search)
         assert az._state == 'LOCKED'
-        # Noise phase must land within the search radius of where it started,
+        # Noise phase must fall within the search radius of where it started,
         # confirming it was searched independently rather than shifted by the
         # signal delta.
         r     = ContinuousAnalyzer.PHASE_SEARCH_RADIUS
@@ -759,7 +759,7 @@ class TestPhaseSearch:
     def test_phase_search_updates_correction_even_without_relock(self):
         """Correction field is written on every phase_search call, not only on relock."""
         az = _signal_lost_analyzer()
-        az._latest_signal_correction = 999   # sentinel — must be overwritten
+        az._latest_signal_correction = 999   # sentinel - must be overwritten
         az._pipeline.get_snapshot.return_value = _noise_audio()
         _step(az, az._phase_search)
         assert az._state == 'SIGNAL_LOST'
@@ -785,7 +785,7 @@ class TestPhaseSearch:
     def test_phase_search_updates_noise_correction_even_without_relock(self):
         """Noise correction is written on every phase_search call, not only on relock."""
         az = _signal_lost_analyzer()
-        az._latest_noise_correction = 999   # sentinel — must be overwritten
+        az._latest_noise_correction = 999   # sentinel - must be overwritten
         az._pipeline.get_snapshot.return_value = _noise_audio()
         _step(az, az._phase_search)
         assert az._state == 'SIGNAL_LOST'
@@ -799,7 +799,7 @@ class TestPhaseSearch:
 class TestPhaseSearchTrackingThreshold:
     """Acquire/track hysteresis: acquiring a lock from SIGNAL_LOST demands
     LOCK_ACQUIRE_SNR, but tracking drift while LOCKED only requires
-    LOCK_LOSE_SNR — otherwise signals in the 2–6 dB band would hold lock
+    LOCK_LOSE_SNR - otherwise signals in the 2–6 dB band would hold lock
     without being able to follow drift, guaranteeing eventual loss."""
 
     WEAK_AMPLITUDE = 85   # vs ~50 mean-abs noise → SNR ≈ 5 dB, between the thresholds
@@ -845,13 +845,13 @@ class TestScanPhaseHysteresis:
 
     def test_marginally_louder_challenger_does_not_move_the_phase(self):
         az = _make_analyzer()
-        data = self._two_train_data(30, 10000, 35, 10300)   # +3 % — inside the margin
+        data = self._two_train_data(30, 10000, 35, 10300)   # +3 % - inside the margin
         phase, offset = az._scan_phase(data, center=30, anchor=100, minimize=False)
         assert (phase, offset) == (30, 0)
 
     def test_clearly_louder_challenger_moves_the_phase(self):
         az = _make_analyzer()
-        data = self._two_train_data(30, 10000, 35, 11000)   # +10 % — beats the margin
+        data = self._two_train_data(30, 10000, 35, 11000)   # +10 % - beats the margin
         phase, offset = az._scan_phase(data, center=30, anchor=100, minimize=False)
         assert (phase, offset) == (35, 5)
 
@@ -872,7 +872,7 @@ class TestScanPhaseHysteresis:
 class _AlignedStreamPipeline:
     """Reproduces AudioPipeline snapshot semantics over a synthetic stream: the
     window ends at the chunk-quantised tail, adjusted down to a multiple of
-    `align`.  Honouring `align` is the behaviour under test — with align=1 the
+    `align`.  Honouring `align` is the behaviour under test - with align=1 the
     window's phase origin moves with the tail and stored phases go stale."""
 
     CHUNK = 512
@@ -976,7 +976,7 @@ class TestPhaseHoldTimeout:
 
     Keeps the state machine and the display in step: trigger_phase() reports HOLD
     purely on _phases_valid, so an unbounded SIGNAL_LOST would claim a synchronised
-    sweep indefinitely — all night, if the arc quits at dusk.
+    sweep indefinitely - all night, if the arc quits at dusk.
     """
 
     def _lost(self, phase_age_s):
@@ -1118,8 +1118,8 @@ class TestDriftRateLearning:
 
         The 0.15 bound is measured rather than assumed: swept across 1201 drift rates
         from -30 to +30, this construction peaks at 0.146 (at +26.6) and averages
-        0.042.  Rounding is deterministic per rate, so some rates genuinely fare worse
-        than others — hence a bound near the measured maximum rather than the mean.
+        0.042.  Rounding is deterministic per rate, so some rates truly fare worse
+        than others - hence a bound near the measured maximum rather than the mean.
         """
         az = self._feed(self._analyzer(), true_rate)
         assert az.phase_drift_rate() == pytest.approx(true_rate, abs=0.15)
@@ -1140,7 +1140,7 @@ class TestDriftRateLearning:
         gap_at = az._phases_measured_at + ContinuousAnalyzer.MAX_PHASE_HISTORY_GAP + 1.0
         az._record_phase_measurement(123, 100, measured_at=gap_at)
         assert len(az._phase_history) == 1
-        # The rate itself survives the gap — the grid kept drifting while we were away.
+        # The rate itself survives the gap - the grid kept drifting while we were away.
         assert az.phase_drift_rate() == pytest.approx(before)
 
     def test_reset_keeps_the_rate_but_drops_the_points(self):
@@ -1217,7 +1217,7 @@ class TestSnapshotPhaseAlignment:
     """Regression for the moving-phase-origin bug: 512-sample chunks are not a
     whole number of 133.33-sample pulse periods, so an unaligned snapshot's
     phase origin cycles through 25 offsets (multiples of 5.33 samples) as the
-    tail advances — and phases learned in one snapshot point at the wrong
+    tail advances - and phases learned in one snapshot point at the wrong
     samples in the next.  With aligned capture, lock must survive arbitrary
     tail movement on a perfect, drift-free signal."""
 
@@ -1236,7 +1236,7 @@ class TestSnapshotPhaseAlignment:
         az = ContinuousAnalyzer(pipe, _make_config())
         _step(az, az._full_analysis)
         assert az._state == 'LOCKED'
-        # 200 ms ticks advance ~6.25 chunks (6,6,6,7 pattern) — plus deliberate
+        # 200 ms ticks advance ~6.25 chunks (6,6,6,7 pattern) - plus deliberate
         # jitter so many residues of the 25-chunk misalignment cycle are visited.
         for advance in [6, 6, 6, 7, 7, 6, 8, 5, 31, 6, 13, 6, 6, 7, 9, 25]:
             pipe.chunks += advance
@@ -1264,7 +1264,7 @@ class TestSnapshotPhaseAlignment:
         az = ContinuousAnalyzer(pipe, _make_config())
         if not track_drift:
             # Demand more points than the history can ever hold, so no fit is ever
-            # produced and the rate stays at its initial zero — reproducing the
+            # produced and the rate stays at its initial zero - reproducing the
             # behaviour from before drift tracking existed.
             az.DRIFT_FIT_MIN_POINTS = 10 ** 9
         _step(az, az._full_analysis)
@@ -1288,7 +1288,7 @@ class TestSnapshotPhaseAlignment:
 
         Untracked, a drifting signal reads several dB low: the phase goes stale
         between refines, and worse, the sampling grid walks away from the pulses
-        within each analysis window.  Tracking fixes both — it predicts the phase
+        within each analysis window.  Tracking fixes both - it predicts the phase
         forward and spaces the samples at the measured rate.
 
         A residual of about a dB remains and is expected: phases are whole samples,
@@ -1334,8 +1334,8 @@ class TestSnapshotPhaseAlignment:
 
     def test_lock_tracks_realistic_grid_drift(self):
         """A +0.05 Hz pulse-rate error (ordinary grid drift) slips the phase
-        ~6.7 samples/s.  Emulating the LOCKED cadence — two quick checks then a
-        refine per REFINE_INTERVAL — the analyzer must hold lock continuously
+        ~6.7 samples/s.  Emulating the LOCKED cadence - two quick checks then a
+        refine per REFINE_INTERVAL - the analyzer must hold lock continuously
         for ~25 simulated seconds and keep every correction well inside
         PHASE_SEARCH_RADIUS."""
         pipe = _AlignedStreamPipeline(self._pulse_stream(pulse_rate=120.05))
@@ -1398,7 +1398,7 @@ class TestFastScan:
 
 
 class TestRunResilience:
-    """_run() must not let a single bad tick silently kill the daemon thread —
+    """_run() must not let a single bad tick silently kill the daemon thread -
     see the exception guard's comment for why that matters for an unattended
     monitor."""
 

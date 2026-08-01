@@ -78,7 +78,7 @@ class TestExtractSweeps:
 
 
 class TestSynchronisation:
-    """The property the whole display exists for: a pulse lands on the same column
+    """The property the whole display exists for: a pulse falls on the same column
     regardless of where in the pulse period the signal happens to sit."""
 
     @pytest.mark.parametrize('phase', [0, 37, 133, 200, 267, 399])
@@ -367,7 +367,7 @@ class TestUpdateRunningAverage:
 
     def test_rectifies_before_averaging(self):
         """A negative-going pulse must contribute its magnitude, not cancel a
-        positive one — the envelope is what carries the signal."""
+        positive one - the envelope is what carries the signal."""
         sweeps = np.array([[-1000.0], [1000.0]])
         assert update_running_average(None, sweeps, 0.05)[0] == pytest.approx(1000.0)
 

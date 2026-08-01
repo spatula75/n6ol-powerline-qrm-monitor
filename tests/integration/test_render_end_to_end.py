@@ -2,7 +2,7 @@
 
     pytest -m integration --no-cov
 
-Tier 2 — a real ffmpeg, a real Qt paint pass, and a real replay at real speed.  The
+Tier 2 - a real ffmpeg, a real Qt paint pass, and a real replay at real speed.  The
 monitor is launched as a subprocess rather than assembled in-process, so what is under
 test includes the parts nothing else covers: argument parsing, the lazy import that
 keeps ffmpeg optional, the window built without its control strip, and the ordering
@@ -38,7 +38,7 @@ if _MISSING and _REQUIRED:  # pragma: no cover -- only reached in a broken CI im
     raise RuntimeError(
         'BUZZ_REQUIRE_FFMPEG=1 is set, so the render integration tests must run, but '
         f'ffmpeg={FFMPEG!r} and ffprobe={FFPROBE!r} on PATH.\n\n'
-        'This environment was configured expecting both — see the ffmpeg step in '
+        'This environment was configured expecting both - see the ffmpeg step in '
         '.github/actions/setup. The likely cause is a runner image that no longer '
         'ships them, or an install step that succeeded without putting them on PATH '
         'for this step.\n\n'
@@ -197,7 +197,7 @@ class TestTheRecordingsIdentityTravelsWithIt:
                        if isinstance(stream, dict) and 'codec_type' in stream)
         assert kinds == ['audio', 'video'], (
             f'Expected only a video and an audio stream, found {kinds}. A "data" '
-            'stream means chapters came through from the recording again — see '
+            'stream means chapters came through from the recording again - see '
             '-map_chapters in ffmpeg_command().')
 
 
@@ -215,7 +215,7 @@ class TestTheControlsAreGone:
 
     def test_both_dimensions_stay_even(self, rendered):
         """yuv420p subsamples chroma by two in each direction, so an odd dimension is
-        not encodable — a constraint that only bites when the layout changes."""
+        not encodable - a constraint that only bites when the layout changes."""
         video = probe(rendered)['video']
         assert video['width'] % 2 == 0 and video['height'] % 2 == 0
 
@@ -254,7 +254,7 @@ class TestAudioAndVideoLineUp:
         # which is precisely the failure.  What remains is the partial trailing chunk
         # playback drops, 32 ms, plus up to half a frame of grid rounding.
         #
-        # The margin is real rather than assumed.  Intact, this measured 7 ms short.
+        # The margin is measured rather than assumed.  Intact, this measured 7 ms short.
         # With the opening capture removed from DisplayRecorder.start() and the
         # backfill removed from RenderSession.submit(), it came out 165 ms short and
         # failed here -- while the two tests either side of this one went on passing,
@@ -280,7 +280,7 @@ class TestTheAudioIsNormalised:
 
     The unit tests check the arithmetic against a measurement; only measuring the
     finished .mp4 shows that the gain was computed, passed through the filter chain,
-    survived AAC encoding, and landed where it was aimed.
+    survived AAC encoding, and arrived where it was aimed.
     """
 
     def test_it_lands_on_the_broadcast_target(self, rendered):
@@ -384,8 +384,8 @@ def foreign_renders(tmp_path_factory):
 class TestForeignSampleRates:
     """A .wav from somebody else, at whatever rate their sound card happened to use.
 
-    The display used to size itself from the sample rate — it shows 0-4 kHz, so the bin
-    count and therefore the window width followed the rate.  11025 Hz landed on 185 bins
+    The display used to size itself from the sample rate - it shows 0-4 kHz, so the bin
+    count and therefore the window width followed the rate.  11025 Hz came out at 185 bins
     and a 1019 px window, which yuv420p cannot encode at all, and 44.1 kHz on a
     waterfall less than half the width of the one at 16 kHz.  The FFT window is a fixed
     span of time now, so the rate cancels and the frame is the same at all of them;
@@ -404,7 +404,7 @@ class TestForeignSampleRates:
     def test_the_frame_is_encodable(self, foreign_renders, rate):
         """yuv420p subsamples chroma by two each way, so an odd dimension is refused
         outright. Nothing pads the frame, because with the geometry pinned to time
-        nothing can arrive odd — so this is the assertion standing in for that padding,
+        nothing can arrive odd - so this is the assertion standing in for that padding,
         and it is the one that has to go red if a layout change ever makes it wrong."""
         video = probe(foreign_renders[rate][1])['video']
         width, height = int(video['width']), int(video['height'])
@@ -425,7 +425,7 @@ class TestForeignSampleRates:
     def test_the_frame_is_the_same_size_at_every_rate(self, foreign_renders):
         """The FFT window is a fixed span of time, so the bin count -- and therefore
         the window width -- does not depend on the sample rate. This used to vary from
-        1374 px at 8 kHz down to 324 px at 44.1 kHz, and 11025 Hz landed on an odd
+        1374 px at 8 kHz down to 324 px at 44.1 kHz, and 11025 Hz came out at an odd
         width that yuv420p refused outright."""
         sizes = {rate: (int(probe(output)['video']['width']),
                         int(probe(output)['video']['height']))

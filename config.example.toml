@@ -1,4 +1,4 @@
-# N6OL Powerline QRM Monitor — example configuration
+# N6OL Powerline QRM Monitor - example configuration
 #
 # Copy this file to ~/.buzz/config.toml and edit to suit your setup.
 #
@@ -60,9 +60,9 @@ summary_start_date_iso = "2024-01-01T00:00:00+0000"
 
 [weather]
 # Weather data source. Options:
-#   "cumulusmx" — pull from a local CumulusMX weather station HTTP endpoint
-#   "openmeteo" — pull from the free Open-Meteo API (no account required)
-#   "none"      — disable weather data; weather columns in CSV will be blank
+#   "cumulusmx" - pull from a local CumulusMX weather station HTTP endpoint
+#   "openmeteo" - pull from the free Open-Meteo API (no account required)
+#   "none"      - disable weather data; weather columns in CSV will be blank
 source = "cumulusmx"
 
 # CumulusMX JSON endpoint (only used when source = "cumulusmx").
@@ -85,7 +85,7 @@ url = "http://cumulusmx.local:8998/api/tags/process.json?temp&hum&SolarRad&wspee
 # is running is captured whole, with a run-up and a run-out around it.
 #
 # Two things can still cut one short.  The lead-in cannot reach back further than
-# the buffer holds — about ten seconds at the default sample rate — so an arc that
+# the buffer holds - about ten seconds at the default sample rate - so an arc that
 # was already buzzing when the monitor started began before the recording does.
 # And max_seconds, below, ends a recording mid-event by design.  The .wav's
 # metadata covers both: a capped recording records that as the reason it ended,
@@ -110,7 +110,7 @@ max_events = 10
 # every day, unattended.  The cycle is measured from when the budget was last
 # reset, not from when it ran out, so it keeps its time of day instead of sliding
 # later by however long each day's events took to arrive.  A quiet period does not
-# carry its unused events forward — the budget tops back up either way.
+# carry its unused events forward - the budget tops back up either way.
 #
 # 0 never re-arms: once the budget is spent, recording stays off until you switch
 # it back on.  Switching it off by hand always cancels the cycle too.
@@ -122,7 +122,7 @@ rearm_reset_minutes = 0
 # number set here.
 #
 # Any min_lock_seconds spent waiting is counted against this, since those seconds are
-# part of the event and are kept — 3 there and 10 here gives ten seconds of event,
+# part of the event and are kept - 3 there and 10 here gives ten seconds of event,
 # not thirteen.  A min_lock_snr wait is not counted: it is open-ended, and charging a
 # wait that can run to minutes would spend the whole allowance before the file was
 # even opened.
@@ -130,7 +130,7 @@ rearm_reset_minutes = 0
 # Expect a recording to overrun this by up to 200 ms.  The recorder works on a poll
 # rather than watching continuously, so a min_lock_seconds wait is noticed up to one
 # poll after it has actually elapsed, and only the configured value is charged
-# against this — the remainder lands on top.  A 10 second setting can therefore
+# against this - the remainder sits on top.  A 10 second setting can therefore
 # produce 10.1 seconds of event.
 #
 # Set it by how much of the noise is worth studying rather than by how big the files
@@ -156,9 +156,9 @@ stop_after_seconds = 10
 #
 # The waiting counts against max_seconds below.  Those seconds are part of the
 # event and the monitor keeps them, so 3 here with max_seconds = 10 gives ten
-# seconds of event — three waited through, seven recorded after — and not thirteen.
+# seconds of event - three waited through, seven recorded after - and not thirteen.
 #
-# Keep it short — 5 seconds or less.  It is also paid for out of the lead-in,
+# Keep it short - 5 seconds or less.  It is also paid for out of the lead-in,
 # because the audio that comes from is a sliding window a few seconds long: wait two
 # seconds and every recording opens two seconds later relative to the event.  Two
 # ceilings apply and the value is clamped to the lower of them, with a warning
@@ -173,11 +173,11 @@ min_lock_seconds = 0
 # events off the disk without making the monitor any less sensitive.
 #
 # Recording only.  It does not change when a signal is locked, measured, logged to
-# the CSV, or drawn on the display — the analyzer locks at 6 dB SNR, which is a
+# the CSV, or drawn on the display - the analyzer locks at 6 dB SNR, which is a
 # constant in the code rather than a setting here, so any value at or below 6 does
 # nothing at all.
 #
-# A signal that starts quiet and grows louder — which is how many arcs behave — is
+# A signal that starts quiet and grows louder - which is how many arcs behave - is
 # not skipped.  Recording begins at the moment it crosses the threshold, so the
 # event is caught even if its opening seconds are not.
 #
@@ -190,7 +190,7 @@ min_lock_seconds = 0
 #
 # That is the one way this is sharper-edged than min_lock_seconds above, which is
 # capped at the buffer and so can never cost you the beginning of an event.  This
-# one's wait depends on the signal, so it cannot be capped — set it only as high as
+# one's wait depends on the signal, so it cannot be capped - set it only as high as
 # it needs to be.  Something in the low teens is a reasonable place to start;
 # noise_min_snr in the [station] section is set to 12 for a related purpose and is a
 # fair guide.

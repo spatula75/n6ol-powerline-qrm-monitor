@@ -29,6 +29,7 @@ class Publisher:
         self._template = environment.get_template('index.html')
 
     def generate_index(self, output_filename: Path | str, collection_time: datetime, image_path: str) -> None:
+        """Render index.html from the template and write it to `output_filename`."""
         collection_time_formatted = collection_time.strftime('%d %B %Y %H:%M:%S %Z (%z)')
         # The 23:59 collection is the last one of the calendar day.  Suppress the
         # auto-refresh on that final page so the browser doesn't reload after midnight
@@ -70,7 +71,7 @@ class Publisher:
                 sftp.put(str(local_file), f'{server.remote_path}{file_prefix}{destination_name}')
         except Exception:
             logger.exception(
-                'Uploading output files to %s failed — check SSH key (%s), '
+                'Uploading output files to %s failed - check SSH key (%s), '
                 'remote path (%s), and host reachability.  If the error is an '
                 'unknown host key, add it with: ssh-keyscan %s >> %s . '
                 'Files will be re-uploaded next cycle.',

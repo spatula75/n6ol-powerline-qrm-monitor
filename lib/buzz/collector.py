@@ -3,8 +3,8 @@ Measurement loop: samples audio, stores results, generates plots, and uploads fi
 
 Collector.collection_loop() runs forever (until KeyboardInterrupt), waking at the
 top of each minute to call _run_collection().  _run_collection() averages several
-audio samples, appends a CSV row, renders daily plots, and — if uploads are enabled
-— generates an HTML index and SCPs everything to the configured web server.
+audio samples, appends a CSV row, renders daily plots, and, if uploads are enabled,
+generates an HTML index and SCPs everything to the configured web server.
 """
 
 import logging
@@ -41,8 +41,8 @@ class Collector:
         Signal and SNR are averaged only over locked results, so an intermittent
         signal's unlocked ticks don't drag the level down mid-minute; noise floor
         is averaged over every result regardless of lock.  With no locked results
-        at all, signal mirrors noise — mirroring AnalysisResult.unlocked()'s
-        convention — so the plotted traces coincide instead of gapping.  With no
+        at all, signal mirrors noise - mirroring AnalysisResult.unlocked()'s
+        convention - so the plotted traces coincide instead of gapping.  With no
         results at all, the minute reads as silence with status 'none'.
         """
         if not results:
@@ -70,7 +70,7 @@ class Collector:
         typical hardware, or 0.003-0.006 Hz at 60 Hz), so the third digit is only
         meaningful for how the frequency *changes*, not for what it is.  That error
         is a single multiplicative constant, so if the card is ever calibrated the
-        whole logged history can be corrected by one scale factor — which is also
+        whole logged history can be corrected by one scale factor - which is also
         why the raw drift rate is worth keeping alongside the derived frequency.
         """
         if not any(r.locked for r in results):
@@ -80,14 +80,18 @@ class Collector:
     def _fetch_weather_or_blank(self) -> tuple:
         """Fetch current weather, degrading to blank fields on any failure.
 
-        Weather is decoration on the noise measurement — a failed fetch must not
+        Weather is decoration on the noise measurement - a failed fetch must not
         cost us the CSV row.
         """
         try:
             return self._weather.fetch()
         except Exception:
-            logger.warning('Weather fetch failed — recording measurement without weather data.',
-                           exc_info=True)
+            logger.warning(
+                'Could not fetch weather, so this measurement is recorded with its '
+                'weather columns blank; the noise figures themselves are unaffected. '
+                'Usually the station is unreachable or slow to answer. Check the '
+                '[weather] section of the config if every row comes out blank.',
+                exc_info=True)
             return EMPTY_WEATHER
 
     def _render_daily_plots(self, csv_filename: Path, plot_filename: Path,
@@ -95,7 +99,7 @@ class Collector:
         """Render the raw and 6-point-smoothed daily signal-vs-noise-floor charts."""
         self._plotter.generate_graph_from_csv(csv_filename, plot_filename)
         # smooth=6 applies a 6-point moving average (6 minutes); reduces noise in the
-        # displayed trace without obscuring genuine interference events.
+        # displayed trace without obscuring true interference events.
         self._plotter.generate_graph_from_csv(csv_filename, smooth_plot_filename, smooth=6)
 
     def _render_hourly_summaries(self, zone: ZoneInfo, output_dir: Path) -> list[Path]:
@@ -189,6 +193,6 @@ class Collector:
                 return
             except Exception:
                 logger.exception(
-                    'Collection cycle failed — likely a transient hardware or network error; '
+                    'Collection cycle failed - likely a transient hardware or network error; '
                     'will retry at the next minute boundary.'
                 )

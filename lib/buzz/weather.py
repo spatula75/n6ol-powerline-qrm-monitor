@@ -3,10 +3,10 @@ Weather data clients for annotating noise measurements with environmental condit
 
 All clients implement WeatherClient and return a WeatherData record.
 
-CumulusMXWeatherClient — reads from a local CumulusMX weather station's JSON API.
-OpenMeteoWeatherClient — fetches current conditions from the free Open-Meteo API
+CumulusMXWeatherClient - reads from a local CumulusMX weather station's JSON API.
+OpenMeteoWeatherClient - fetches current conditions from the free Open-Meteo API
                          (no key required, requires internet access).
-NullWeatherClient      — returns EMPTY_WEATHER; use when no weather source is
+NullWeatherClient      - returns EMPTY_WEATHER; use when no weather source is
                          configured.
 """
 

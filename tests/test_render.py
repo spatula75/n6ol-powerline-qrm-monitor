@@ -3,7 +3,7 @@
 Everything here runs on a machine that has never had ffmpeg installed, which is the
 point: the binary is required only by `--render`, so the suite must not need it.  The
 process is mocked; what is under test is the arithmetic that decides where a frame
-lands, the argument list handed to ffmpeg, and the refusals that happen before it is
+falls, the argument list handed to ffmpeg, and the refusals that happen before it is
 ever started.
 """
 
@@ -64,7 +64,7 @@ class TestFrameGrid:
         assert grid.slots_before(0.1) == 3
 
     def test_ten_fps_capture_fills_the_grid_evenly(self):
-        """Three output frames per capture, with no slot skipped and none doubled —
+        """Three output frames per capture, with no slot skipped and none doubled -
         which is what keeps a 30 fps file honest about 10 fps content."""
         grid = _FrameGrid()
         counts = [grid.slots_before(tenth / 10) for tenth in range(30)]
@@ -130,7 +130,7 @@ class TestFfmpegCommand:
         assert str(tmp_path / 'in.wav') in command
 
     def test_frames_are_declared_at_the_output_rate(self, command):
-        """They arrive already conformed, so the declared rate is the real one — the
+        """They arrive already conformed, so the declared rate is the real one - the
         pipe carries no timestamps that could say otherwise."""
         assert command[command.index('-r') + 1] == str(FRAME_RATE)
 
@@ -231,7 +231,7 @@ class TestRenderSession:
 
     def test_the_first_frame_writes_nothing_yet(self, started):
         """It has not been on screen for any time yet; what it is owed is decided by
-        where the *next* capture lands."""
+        where the *next* capture falls."""
         session, process, _ = started
         session.submit(frame(1), 0.0)
         process.stdin.write.assert_not_called()
@@ -323,7 +323,7 @@ class TestRenderSession:
 
     def test_an_unrunnable_ffmpeg_is_reported_with_its_path(self, tmp_path):
         """Found but not runnable is a different failure from not found, and needs a
-        different remedy — so it gets its own message naming the path that failed."""
+        different remedy - so it gets its own message naming the path that failed."""
         with patch('buzz.ffmpeg.shutil.which', return_value='/bad/ffmpeg'), \
              patch('buzz.render.subprocess.Popen',
                    side_effect=OSError('Exec format error')):
@@ -333,7 +333,7 @@ class TestRenderSession:
                 session.start()
 
     def test_a_pipe_already_closed_does_not_mask_the_real_failure(self, started):
-        """If ffmpeg has already exited, closing its stdin raises — and that error is
+        """If ffmpeg has already exited, closing its stdin raises - and that error is
         a symptom. The exit status underneath is the useful thing, so the close is
         allowed to fail and the status is what gets reported."""
         session, process, _ = started

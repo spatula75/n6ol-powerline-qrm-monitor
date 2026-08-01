@@ -23,14 +23,14 @@ That average is called the *folded profile*, and it is the pulse shape.
 The catch is that utility power is never exactly 60 Hz.  A small error means
 the pulses arrive slightly early or late each time, so over a few seconds they walk
 away from where the fold expects them.  Averaging then blurs the pulse instead of
-sharpening it — at the drift rates seen in practice, an 8-second fold can smear a
+sharpening it - at the drift rates seen in practice, an 8-second fold can smear a
 pulse across 40+ samples.
 
 So we do not guess the drift: we search for it.  Every candidate drift rate gets a
 folded profile, and the correct rate is the one that produces the *sharpest* profile,
-because that is the only rate at which the pulses land on top of each other.  This
+because that is the only rate at which the pulses fall on top of each other.  This
 measures the drift and removes it in a single step, and it needs no phase tracking
-and no assumption about how many sources are present — every source hangs off the
+and no assumption about how many sources are present - every source hangs off the
 same grid, so one drift correction de-smears all of them at once.
 """
 
@@ -65,7 +65,7 @@ def rectify(audio: np.ndarray) -> np.ndarray:
     """Remove the DC offset and take the absolute value, as the analyzer does.
 
     The median is used rather than the mean because the pulse train itself would
-    drag a mean away from the true offset — see ContinuousAnalyzer._capture.
+    drag a mean away from the true offset - see ContinuousAnalyzer._capture.
     """
     samples = audio.astype(np.float64)
     return np.abs(samples - np.median(samples))
@@ -146,7 +146,7 @@ def find_source_peaks(profile: np.ndarray) -> list[int]:
 
     Each arcing utility phase produces its own pulse train, offset from the others by
     120 degrees of the power cycle.  Within one pulse period that is a third of the
-    period — about 44 samples at 16 kHz / 120 pps — so several peaks at roughly that
+    period - about 44 samples at 16 kHz / 120 pps - so several peaks at roughly that
     spacing means several phases are arcing at once.
     """
     floor = profile.min()
@@ -319,6 +319,7 @@ def report(rectified: np.ndarray, config: BuzzConfig, show_profile: bool) -> Non
 
 
 def main() -> None:
+    """Capture live audio at the configured device and print the diagnostic report."""
     parser = argparse.ArgumentParser(description=__doc__.split('---')[0].strip())
     parser.add_argument('--seconds', type=float, default=8.0,
                         help='length of audio to capture (default 8; the ring buffer holds ~9.6)')

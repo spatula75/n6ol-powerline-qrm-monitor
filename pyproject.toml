@@ -15,7 +15,7 @@ dependencies = [
     "scipy>=1.17",
     "matplotlib>=3.10",
     # The display window. main.py falls back to headless when this is missing, which
-    # is for service installs that genuinely have no display stack -- not a statement
+    # is for service installs that truly have no display stack -- not a statement
     # that the GUI is optional, so it belongs here rather than in an extra.
     "PySide6>=6.7",
     "paramiko>=3.4",
