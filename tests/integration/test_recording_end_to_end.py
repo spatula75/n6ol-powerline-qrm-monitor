@@ -7,9 +7,9 @@ Deselected by default because it costs tens of seconds.  Run it with:
 These drive the components the unit tests stub out: a real ContinuousAnalyzer
 measuring real synthetic audio, a real EventRecorder polling on its own thread, and
 a real ring buffer filling and discarding in real time.  That combination is where
-this project's costly bugs have lived — an analyzer reset that silently did
+this project's costly bugs have lived - an analyzer reset that silently did
 nothing, a recording that came out empty because a limit was measured from the
-wrong end — none of which a stubbed analyzer would have shown.
+wrong end - none of which a stubbed analyzer would have shown.
 """
 
 import numpy as np
@@ -72,7 +72,7 @@ class TestThresholdCrossing:
 
     def test_the_lock_is_older_than_the_file(self, crossed):
         """The lock happened while the arc was still faint, long enough ago that it
-        has fallen out of the buffer — which is exactly the case that used to save
+        has fallen out of the buffer - which is exactly the case that used to save
         the event as a nought-second recording."""
         settings = wavmeta.read_settings(crossed.recordings()[0])
         assert float(settings['lead_in_seconds']) == 0.0

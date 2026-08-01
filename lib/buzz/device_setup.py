@@ -6,7 +6,7 @@ compatibility, then samples 100 ms of audio to measure ambient amplitude.
 Results are displayed as a logarithmic ASCII level bar so the user can
 visually identify which device is carrying the RF signal.
 
-On Windows the same physical input is often listed three times — once each
+On Windows the same physical input is often listed three times - once each
 under MME, DirectSound, and WASAPI.  The deduplication logic in _best_api_devices()
 collapses these to a single entry, preferring WASAPI (which routes through the
 Windows audio engine and respects system input level controls).  On Linux, macOS,
@@ -21,7 +21,14 @@ from typing import Any
 import numpy as np
 import sounddevice as sd
 
-_BAR_WIDTH = 19
+from buzz.constants import DB_PER_S_UNIT, FULL_SCALE_COUNTS
+
+# Segments span 1 LSB to full scale, each one DB_PER_S_UNIT wide - matching what the
+# waterfall's S-meters call an S-unit, so the two displays read the same way.  Derived
+# rather than a literal count, so a change to either shared constant moves this with
+# it instead of silently drifting, which is exactly how this bar ended up at 4.75
+# dB/segment while the S-meters stayed at 6.
+_BAR_WIDTH = round(20 * log10(FULL_SCALE_COUNTS) / DB_PER_S_UNIT)
 _FILL = '█'
 _EMPTY = '░'
 
@@ -45,9 +52,9 @@ class DeviceInfo:
 
 
 def _amplitude_bar(amplitude: float) -> str:
-    """Render amplitude as a logarithmic bar: empty at 1 LSB, full at 16-bit
-    full scale (32768), so each filled char spans an equal number of dB."""
-    n = min(_BAR_WIDTH, int(_BAR_WIDTH * log10(max(1.0, amplitude)) / log10(32768.0)))
+    """Render amplitude as a logarithmic bar: empty at 1 LSB, full at full scale,
+    each filled char spanning DB_PER_S_UNIT dB - see _BAR_WIDTH."""
+    n = min(_BAR_WIDTH, int(_BAR_WIDTH * log10(max(1.0, amplitude)) / log10(FULL_SCALE_COUNTS)))
     return _FILL * n + _EMPTY * (_BAR_WIDTH - n)
 
 
@@ -141,7 +148,7 @@ def _enumerate_input_devices(sample_rate: int) -> list[DeviceInfo]:
 
 def _print_device_table(devices: list[DeviceInfo], current_real_index: int | None = None) -> None:
     print()
-    print('  Audio level is logarithmic — each █ ≈ 6 dB above silence (16-bit)')
+    print(f'  Audio level is logarithmic - each █ ≈ {DB_PER_S_UNIT:g} dB above silence (16-bit)')
     print()
     idx_w = len(str(len(devices)))
     print(f"  {'#':>{idx_w}}  [{'LEVEL'.center(_BAR_WIDTH)}]  DEVICE")

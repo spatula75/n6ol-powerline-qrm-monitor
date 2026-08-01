@@ -1,13 +1,13 @@
 """Shared apparatus for the integration suite: real components, driven at real speed.
 
 Kept out of conftest.py because these are things the tests import and call, not
-fixtures pytest injects — conftest.py next door holds the fixtures built on top of
+fixtures pytest injects - conftest.py next door holds the fixtures built on top of
 them.  Importable as a bare module name because pytest puts each test file's own
 directory on sys.path when there is no __init__.py beside it.
 
 Nothing here opens an audio device.  Playback is muted by default and the monitor
 is fed by appending to the ring buffer directly, so the whole of this tier runs on
-a machine with no sound card at all — which is what a CI runner is.
+a machine with no sound card at all - which is what a CI runner is.
 """
 
 import threading
@@ -66,7 +66,7 @@ class StateLog:
 
     Registered as a listener rather than polled, for the reason add_state_listener()
     gives: lock is an event, not a level.  A test that polls `analyzer.state` can
-    miss a lock that comes and goes between two polls — and one of the things this
+    miss a lock that comes and goes between two polls - and one of the things this
     suite exists to prove is that a lock *dropped*, which is precisely the kind of
     brief transition polling is blind to.
 
@@ -143,7 +143,7 @@ class Replay:
 
     Muted, so no output stream is ever opened and playback stays paced by its own
     deadline schedule.  That is the same clock a machine with no sound card uses, but
-    it does mean this class cannot say anything about the other one — see the note in
+    it does mean this class cannot say anything about the other one - see the note in
     the module docstring of test_replay_transport.py.
     """
 
@@ -163,7 +163,7 @@ class Replay:
         self.playback.close()
 
     def restart(self) -> None:
-        """Exactly what the Restart button does — see waterfall.RecordingBarWidget.
+        """Exactly what the Restart button does - see waterfall.RecordingBarWidget.
 
         Reset before restart, in that order, because the order is part of what is
         being tested: reset while the abandoned pass is still the newest audio, so a

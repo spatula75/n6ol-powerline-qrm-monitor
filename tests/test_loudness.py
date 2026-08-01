@@ -84,7 +84,7 @@ class TestSilence:
     def test_silence_is_judged_before_the_dual_mono_correction(self):
         """The bug this pins: adding 3.01 first lifts the -70.0 sentinel to -66.99, so
         the test never fires and a zero-length recording gets a real gain computed for
-        it.  Observed on a genuine 0-second file, which came out at -2.2 dB."""
+        it.  Observed on an actual 0-second file, which came out at -2.2 dB."""
         with patch('buzz.loudness.run', return_value=SILENT):
             loudness = measure('empty.wav', 'ffmpeg')
         assert loudness.integrated_lufs > -70.0     # corrected, above the sentinel
@@ -95,7 +95,7 @@ class TestSilence:
 
     def test_silence_does_not_get_attenuated_by_the_ceiling(self):
         """A near-empty file measured +0.2 dBTP, which the ceiling alone would answer
-        with -2.2 dB of attenuation — arithmetically right and meaningless."""
+        with -2.2 dB of attenuation - arithmetically right and meaningless."""
         assert auto_gain_db(measured(is_effectively_silent=True,
                                      true_peak_dbtp=0.2)) == 0.0
 

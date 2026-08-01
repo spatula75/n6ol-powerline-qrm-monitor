@@ -1,11 +1,11 @@
 """
 Configuration dataclasses and TOML loader for the powerline QRM monitor.
 
-BuzzConfig is the top-level config object, composed of five section dataclasses:
-AudioConfig, StationConfig, WeatherConfig, ServerConfig, and RecordingConfig.  Each
-maps directly to a [section] in ~/.buzz/config.toml.  BuzzConfig.from_toml() reads
-the file and populates the dataclasses; unknown keys are silently ignored so old
-config files don't break when new fields are added.
+BuzzConfig is the top-level config object, composed of six section dataclasses:
+AudioConfig, StationConfig, WeatherConfig, ServerConfig, RecordingConfig, and
+RenderConfig.  Each maps directly to a [section] in ~/.buzz/config.toml.
+BuzzConfig.from_toml() reads the file and populates the dataclasses; unknown keys
+are silently ignored so old config files don't break when new fields are added.
 """
 
 import tomllib
@@ -65,7 +65,7 @@ class AudioConfig:
     # Sounddevice name of the audio input recording the RF-to-audio converted signal.
     input_device_name: str = 'Line In (Realtek(R) Audio), Windows DirectSound'
     # PortAudio device index written by configure.py for reference. Not used at
-    # runtime — the device is always resolved by input_device_name, which is stable
+    # runtime - the device is always resolved by input_device_name, which is stable
     # across reboots. Indices change whenever Windows reassigns USB/audio devices.
     device_index: int | None = None
     # Audio sample rate in Hz. Must match what the input device is configured to use,
@@ -171,7 +171,7 @@ class RecordingConfig:
 class RenderConfig:
     # Where to find ffmpeg, for --render.  Empty searches PATH, which is where a
     # normal install puts it, so most people never set this.  It is here for the
-    # installs that don't land on PATH -- a Windows build unzipped into a folder, or
+    # installs that don't appear on PATH -- a Windows build unzipped into a folder, or
     # winget's shim directory before the terminal has been restarted.
     #
     # ffmpeg is needed for --render and for nothing else.  A monitor that never

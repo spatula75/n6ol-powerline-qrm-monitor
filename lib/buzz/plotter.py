@@ -10,14 +10,16 @@ All output is saved as PNG.  The _gc_guarded decorator does two things: forces a
 gc.collect() after each render (working around a matplotlib memory-leak bug that
 causes handles to accumulate across repeated savefig calls), and disables the
 cyclic GC for the duration of the render itself (working around a PySide6/shiboken
-crash — see the decorator's docstring for the full story).
+crash - see the decorator's docstring for the full story).
 """
 
 import gc  # noqa: I001
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
+from typing import ParamSpec, TypeVar
 from zoneinfo import ZoneInfo
 
 import matplotlib
@@ -26,17 +28,26 @@ import matplotlib.dates as mdates
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.axes import Axes
+from matplotlib.lines import Line2D
 
 from buzz.config import BuzzConfig
+from buzz.constants import S9_DBM
 from buzz.csv_store import BUCKET_MINUTES, CsvStore
+
+# One day's values for a single trace.  A plain list as read from the CSV, and a NumPy
+# array once _smooth() has run over it, so anything holding a series has to accept both.
+Series = list[float] | np.ndarray
+
+# _gc_guarded wraps plot methods without changing their signatures, so it is generic
+# over the function it decorates.  Callable[..., Any] would compile but erase the
+# argument types of every method it is applied to.
+_P = ParamSpec('_P')
+_R = TypeVar('_R')
 
 _GRAPH_W = 1600
 _GRAPH_H = 640
 _SUMMARY_H = 540
-
-# S9 signal strength per IARU recommendation: −73 dBm into 50 Ω.
-# Drawn as a reference line on the daily graph so it's easy to gauge signal severity.
-_S9_DBM = -73
 
 # The daily graph's y-axis always includes the dBm level corresponding to this
 # audio level (−48 dBFS + audio_rf_conversion_db), so a quiet or flat trace still
@@ -94,15 +105,15 @@ def _smooth(data: list[float], points: int) -> np.ndarray:
     return ret[points - 1:] / points
 
 
-def _gc_guarded(func):
+def _gc_guarded(func: Callable[_P, _R]) -> Callable[_P, _R]:
     # ------------------------------------------------------------------------
-    # WHY THIS DECORATOR DISABLES THE GC DURING THE CALL — READ BEFORE REMOVING
+    # WHY THIS DECORATOR DISABLES THE GC DURING THE CALL - READ BEFORE REMOVING
     #
     # We have hit a real, reproducible crash in production: a Windows access
     # violation (0xC0000005) that took the whole process down. faulthandler
     # caught it and the traceback showed the collector thread mid-gc.collect(),
     # inside matplotlib's Artist.set() -> cbook.normalize_kwargs(), which had
-    # called into shibokensupport/signature/loader.py — that's PySide6/shiboken
+    # called into shibokensupport/signature/loader.py - that's PySide6/shiboken
     # internals, not matplotlib's.
     #
     # The mechanism: importing PySide6 anywhere in the process (this app does,
@@ -111,10 +122,10 @@ def _gc_guarded(func):
     # supports a Qt-for-Python feature (__feature__ snake_case/true_property)
     # this codebase never uses, but it installs unconditionally regardless.
     # When matplotlib's kwarg-normalization internals do an import in the
-    # course of rendering — on this, the collector thread, which has nothing
-    # to do with Qt — it gets routed through that hook. Qt for Python has a
+    # course of rendering - on this, the collector thread, which has nothing
+    # to do with Qt - it gets routed through that hook. Qt for Python has a
     # documented history of reference-counting bugs in this exact module
-    # (see PYSIDE-2660, "Crash on deallocating None triggered via Shiboken" —
+    # (see PYSIDE-2660, "Crash on deallocating None triggered via Shiboken" -
     # fixed for that specific repro, but the crash we hit is a new one on a
     # newer Python/PySide6 combination). Our crash happened when the cyclic GC
     # ran *while* that hook's C-level bookkeeping was mid-flight, and walked a
@@ -124,7 +135,7 @@ def _gc_guarded(func):
     # lock exists and have no reason to respect it, and the PySIDE-2660 repro
     # crashed with no second thread involved at all, so this isn't purely a
     # race we could serialize away. The one thing that actually protects every
-    # thread — ours and Qt's — is disabling the GC itself for the narrow
+    # thread - ours and Qt's - is disabling the GC itself for the narrow
     # window where matplotlib is exercising this code path, since gc.disable()
     # is a single interpreter-wide switch with authority over all of them.
     # ------------------------------------------------------------------------
@@ -133,7 +144,7 @@ def _gc_guarded(func):
     # that causes handles to accumulate across repeated savefig calls. It runs
     # after re-enabling GC, once we're past the risky window.
     @wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
         was_enabled = gc.isenabled()
         gc.disable()
         try:
@@ -149,10 +160,10 @@ def _gc_guarded(func):
 @dataclass(frozen=True)
 class _DailySeries:
     """One day's data for the daily chart, already smoothed if requested."""
-    timestamps: list
-    signals: list
-    noises: list
-    source_power_estimate: list
+    timestamps: list[datetime]
+    signals: Series
+    noises: Series
+    source_power_estimate: list[float]
     title: str
 
 
@@ -192,7 +203,7 @@ class Plotter:
                             source_power_estimate=self._estimate_source_power(signals, snrs),
                             title=title)
 
-    def _estimate_source_power(self, signals, snrs) -> list:
+    def _estimate_source_power(self, signals: Series, snrs: list[float]) -> list[float]:
         """Estimate the noise source's transmitted power by adding back the
         measured path loss, for qualifying detections only.
 
@@ -222,9 +233,9 @@ class Plotter:
 
         1.33 is a margin factor: since dBm values are negative, multiplying the
         most-negative value by 1.33 pushes the lower axis edge further down,
-        while dividing the least-negative value by 1.33 pulls the upper edge
-        down — keeping reference lines (noise floor, threshold, S9) away from
-        the plot borders.
+        while dividing the least-negative value by 1.33 pushes the upper edge
+        further up - both moving away from the data, which is what keeps
+        reference lines (noise floor, threshold, S9) off the plot borders.
         """
         station = self._config.station
         anchor = _AXIS_ANCHOR_DBFS + station.audio_rf_conversion_db
@@ -233,20 +244,21 @@ class Plotter:
                    max(series.source_power_estimate), anchor) / 1.33
         return min_y, max_y
 
-    def _draw_reference_lines(self, axes) -> list:
+    def _draw_reference_lines(self, axes: Axes) -> list[Line2D]:
         """Draw the S9, detection-threshold, and typical-noise-floor reference
         lines on the daily chart, returning their handles for the legend.
         """
         station = self._config.station
-        plot_s9 = axes.axhline(y=_S9_DBM, color='tan', linestyle='dashed',
-                               label=f'S9 ({_S9_DBM} dBm) signal strength')
+        plot_s9 = axes.axhline(y=S9_DBM, color='tan', linestyle='dashed',
+                               label=f'S9 ({S9_DBM:g} dBm) signal strength')
         plot_threshold = axes.axhline(y=station.noise_threshold, color='gray', linestyle='dashed',
                                       label=f'{station.noise_threshold} dBm threshold')
         plot_floor = axes.axhline(y=station.noise_floor, color='gray',
                                   label=f'{station.noise_floor} dBm typical noise floor')
         return [plot_s9, plot_threshold, plot_floor]
 
-    def _style_dual_axes(self, axes, noise_twin, plot_signal, plot_noise) -> None:
+    def _style_dual_axes(self, axes: Axes, noise_twin: Axes,
+                         plot_signal: Line2D, plot_noise: Line2D) -> None:
         """Label the shared x/y axes, colour each y-axis to match its trace, and
         hide the twin axis's own tick labels since it shares its scale with the
         primary axis.
@@ -299,7 +311,7 @@ class Plotter:
             # zorder makes green paint on top there, so an unlocked stretch reads as a
             # single clean green trace instead of a gap. NaN-masking red instead used
             # to fragment it into dozens of disconnected dashes whenever lock flickered
-            # on and off for a minute or two — worse than useless once smoothed, since
+            # on and off for a minute or two - worse than useless once smoothed, since
             # the moving average blended real signal readings with unlocked rows'
             # noise-floor stand-in before the mask was even applied.
             plot_signal, = axes.plot(series.timestamps, series.signals, 'r-',
@@ -317,7 +329,8 @@ class Plotter:
             figure.savefig(output_filename, pil_kwargs={'optimize': True})
             plt.close(figure)
 
-    def _summary_bar_data(self, start_date: datetime, end_date: datetime) -> tuple[list, list, list] | None:
+    def _summary_bar_data(self, start_date: datetime, end_date: datetime
+                          ) -> tuple[list[datetime], list[int], list[str]] | None:
         """Aggregate scores into 15-minute buckets across the date range, normalise
         to the peak bucket (= 100%), and pick each bar's colour by intensity.
 

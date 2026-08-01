@@ -80,7 +80,7 @@ class TestBuildPulseKernel:
         assert len(k) == expected
 
     def test_no_trailing_or_leading_zeros(self):
-        """Last pulse group sits flush against the end — no padding to convolve through."""
+        """Last pulse group sits flush against the end - no padding to convolve through."""
         k = build_pulse_kernel(SAMPLE_RATE, PULSE_RATE)
         assert k[0] == 1 and k[-1] == 1
 
@@ -128,7 +128,7 @@ class TestCalculatePpsFitArray:
         k = build_pulse_kernel(SAMPLE_RATE, PULSE_RATE)
         out = calculate_pps_fit_array(data, k, PULSE_RATE // 2)
         assert np.issubdtype(out.dtype, np.floating)
-        assert np.any(out != np.rint(out))   # genuinely fractional, not floats-holding-ints
+        assert np.any(out != np.rint(out))   # truly fractional, not floats-holding-ints
 
     def test_uniform_input_gives_constant_output(self):
         data = np.full(48000, 100, dtype=np.float32)
@@ -139,7 +139,7 @@ class TestCalculatePpsFitArray:
     @pytest.mark.parametrize('start_index', [0, 1, 133, 5000, 20000])
     def test_fit_score_equals_average_pulse_amplitude(self, start_index):
         """The FFT fit at position n must equal what average_pulse_amplitude
-        measures at start_index = n — they are two routes to the same sum, and
+        measures at start_index = n - they are two routes to the same sum, and
         the whole state machine depends on the FFT's chosen phase measuring the
         same way the cheap path later re-measures it."""
         rng = np.random.default_rng(5)
@@ -344,7 +344,7 @@ class TestGoldenFiles:
     @pytest.fixture(autouse=True)
     def require_goldens(self):
         if not (RESOURCES / 'synthetic_audio.npy').exists():
-            pytest.skip('golden files not generated — run tests/resources/generate_goldens.py')
+            pytest.skip('golden files not generated - run tests/resources/generate_goldens.py')
 
     def test_fit_array_matches_golden(self):
         audio = np.load(RESOURCES / 'synthetic_audio.npy')

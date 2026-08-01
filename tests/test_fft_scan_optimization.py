@@ -6,7 +6,7 @@ Properties under test:
 1. Kernel pulse positions use round(), matching average_pulse_amplitude, and the
    kernel carries no leading or trailing zeros.
 2. Reversing the kernel is what turns convolution into correlation.  The kernel is
-   not a palindrome, so skipping the reversal gives a different — wrong — answer.
+   not a palindrome, so skipping the reversal gives a different - wrong - answer.
 3. fftconvolve(x, kernel[::-1]) == np.correlate(x, kernel) within float tolerance.
 4. The optimisation produces the same argmax and argmin as a direct correlation on
    synthetic pulse data.
@@ -37,7 +37,7 @@ SCAN_PULSES = PULSE_RATE // 2
 
 
 def _build_padded_kernel(sample_rate):
-    """Kernel with trailing zeros — the trimmed kernel must match it over the valid range."""
+    """Kernel with trailing zeros - the trimmed kernel must match it over the valid range."""
     pf = sample_rate / PULSE_RATE
     coeffs = zeros(ceil(SCAN_PULSES * pf), dtype=uint32)
     for i in range(SCAN_PULSES):
@@ -82,7 +82,7 @@ class TestKernelShape:
         truncated = {int(i * pf) + j
                      for i in range(SCAN_PULSES) for j in range(PULSE_WIDTH_SAMPLES)}
         assert set(np.where(kernel == 1)[0].tolist()) == rounded
-        assert rounded != truncated          # the two rules genuinely disagree here
+        assert rounded != truncated          # the two rules truly disagree here
 
     def test_no_leading_or_trailing_zeros(self):
         kernel = build_pulse_kernel(SAMPLE_RATE, PULSE_RATE)
@@ -174,8 +174,8 @@ class TestScanPreservesExtrema:
 
     @pytest.mark.parametrize("offset", [0, 5, 50, 100])
     def test_detected_phase_is_exact(self, offset):
-        """With kernel and signal on the same round()ed grid the peak lands exactly
-        on the true phase — the one-sample bias from the old truncated kernel is gone."""
+        """With kernel and signal on the same round()ed grid the peak falls exactly
+        on the true phase - the one-sample bias from the old truncated kernel is gone."""
         data = _make_pulse_signal(offset)
         kernel = build_pulse_kernel(SAMPLE_RATE, PULSE_RATE)
         fit = calculate_pps_fit_array(data, kernel, SCAN_PULSES)

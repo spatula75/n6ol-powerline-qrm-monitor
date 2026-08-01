@@ -35,9 +35,6 @@ def restore_logging():
 
 
 class TestConfigureLogging:
-    def test_runs_without_error(self):
-        configure_logging()
-
     def test_buzz_logger_level_is_info(self):
         configure_logging()
         assert logging.getLogger('buzz').level == logging.INFO
@@ -534,7 +531,7 @@ class TestTheEntryPointLogsAtAll:
     """main.py is the one module that must not name its logger from __name__.
 
     Run as `python -m buzz.main` its __name__ is '__main__', which sits outside the
-    `buzz` hierarchy that configure_logging() attaches the console handler to — so
+    `buzz` hierarchy that configure_logging() attaches the console handler to - so
     every message from this file went nowhere in the invocation the README documents.
     """
 

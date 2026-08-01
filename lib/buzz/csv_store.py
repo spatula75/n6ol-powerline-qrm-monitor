@@ -64,7 +64,7 @@ class CsvStore:
         by-products of the analyzer's drift tracking rather than measurements the
         monitor depends on, and a row with no pulse-train lock has nothing to report
         for them.  They are written after Signal Lock Status, ahead of the weather
-        fields — read_rows() only ever reads up to index 4, so inserting there leaves
+        fields - read_rows() only ever reads up to index 4, so inserting there leaves
         parsing of both older and newer files completely unaffected.
         """
         csv_filename = self.filename_for_date(now)
@@ -90,7 +90,7 @@ class CsvStore:
 
         Nothing beyond index 4 is read.  That is deliberate and is what lets columns
         be added after Signal Lock Status without breaking files written by older
-        versions — the fields that shift are ones this parser never looks at.
+        versions - the fields that shift are ones this parser never looks at.
         """
         zone = ZoneInfo(self._config.station.timezone)
         rows: list[CsvRow] = []

@@ -6,7 +6,7 @@ the pps scan kernel, scoring how well a pulse train fits at each phase offset
 (FFT convolution), averaging amplitude at the pulse positions (Numba JIT), and
 converting amplitudes to dBFS.  analyze_window() ties them together: given one
 window of rectified audio it finds the best and worst pulse phases and measures
-the amplitude at each — the single analysis step both the continuous analyzer
+the amplitude at each - the single analysis step both the continuous analyzer
 and the golden-file tests build on.
 """
 
@@ -18,9 +18,11 @@ from numba import njit
 from numpy import uint32, zeros
 from scipy.signal import fftconvolve
 
-# dBFS reference for 16-bit audio: 0 dBFS = full-scale amplitude of 32768 (2^15).
+from buzz.constants import FULL_SCALE_COUNTS
+
+# dBFS reference for 16-bit audio: 0 dBFS = full-scale amplitude (2^15).
 # The factor of 20 (not 10) is because dBFS is defined in terms of amplitude, not power.
-DB_REFERENCE = 20 * log10(32768.0)
+DB_REFERENCE = 20 * log10(FULL_SCALE_COUNTS)
 
 # Amplitudes of zero (receiver off, muted input, driver returning silence) have no
 # logarithm; -128 dBFS is well below the ~-90 dBFS minimum for a 1-LSB 16-bit signal,
@@ -30,8 +32,8 @@ SILENCE_DBFS = -128.0
 # Number of consecutive samples that must be elevated for a position to count as a pulse.
 # Requiring a sustained signal across several adjacent samples rejects very short transient
 # pops (static, clicks, relay bounce) that are unlikely to be part of a repetitive
-# powerline-arc pattern.  The value is somewhat arbitrary — 3 samples at 16 kHz is only
-# ~188 µs — but it meaningfully reduces false triggers from sub-millisecond impulse noise.
+# powerline-arc pattern.  The value is somewhat arbitrary - 3 samples at 16 kHz is only
+# ~188 µs - but it meaningfully reduces false triggers from sub-millisecond impulse noise.
 PULSE_WIDTH_SAMPLES = 3
 
 
@@ -54,13 +56,13 @@ def pulse_phase_period(sample_rate: int, pulse_rate: int) -> int:
     Pulse positions are round(i * sample_rate / pulse_rate), and samples_per_pulse is
     not generally a whole number of samples (133.333 at 16 kHz / 120 pps).  The grid
     only realigns with the sample clock after sample_rate // gcd(sample_rate,
-    pulse_rate) samples — 400 samples, or exactly 3 pulse periods, at the defaults.
+    pulse_rate) samples - 400 samples, or exactly 3 pulse periods, at the defaults.
 
     This, not samples_per_pulse, is the correct modulus for a phase.  Two start offsets
     one full period apart sample identical positions; offsets one samples_per_pulse
     apart differ by a sample on two thirds of the pulses.  Being an integer, it also
     keeps the phase arithmetic exact: reducing a float argmax by a fractional modulus
-    can land a hair under the true value (4.999999999997698) and truncate to the
+    can fall a hair under the true value (4.999999999997698) and truncate to the
     wrong phase.
     """
     return sample_rate // gcd(sample_rate, pulse_rate)
@@ -105,13 +107,13 @@ def average_pulse_amplitude(mono_amplitude_array: np.ndarray, samples_per_pulse:
     true spacing depends on the actual grid frequency: if the grid is off by even
     0.05 pps, sampling at the nominal spacing walks 6.7 samples away from the real
     pulses over a one-second window, which costs about 6 dB.  Callers that have
-    measured the drift should pass the corrected spacing — see
+    measured the drift should pass the corrected spacing - see
     ContinuousAnalyzer._effective_samples_per_pulse().
 
     n_pulses is the number of pulse positions to average.  Samples PULSE_WIDTH_SAMPLES
     adjacent values per pulse position, then divides by the total sample count.
     Equivalent to correlating with the pulse kernel but without multiplying through
-    the ~97% zeros — build_pulse_kernel() places its ones at the same round()ed
+    the ~97% zeros - build_pulse_kernel() places its ones at the same round()ed
     positions, so the two agree sample for sample.
 
     Internally clamps n_pulses so the last access (start_index + pos + width - 1)
@@ -136,7 +138,7 @@ def average_pulse_amplitude(mono_amplitude_array: np.ndarray, samples_per_pulse:
         for j in range(PULSE_WIDTH_SAMPLES):
             # float() pins the accumulator to double precision and is not redundant.
             # Callers pass float32 audio, and under NumPy 2's NEP 50 promotion rules
-            # `python_float + np.float32` yields np.float32 — so without the cast the
+            # `python_float + np.float32` yields np.float32 - so without the cast the
             # running total silently degrades to single precision after the first
             # addition, and several hundred additions later it has drifted about 1e-4
             # from the FFT path that calculate_pps_fit_array computes in float64.
@@ -196,7 +198,7 @@ def calculate_pps_fit_array(mono_amplitude_array: np.ndarray, kernel: np.ndarray
                       kernel[::-1].astype(np.float64), mode='valid')
     # Each raw score is a sum over the kernel's PULSE_WIDTH_SAMPLES × scan_pulses
     # ones; dividing by that count converts it to a mean amplitude per sampled
-    # position — the same scale average_pulse_amplitude reports.
+    # position - the same scale average_pulse_amplitude reports.
     return raw / (PULSE_WIDTH_SAMPLES * scan_pulses)
 
 
@@ -209,17 +211,17 @@ def analyze_window(mono_amplitude_array: np.ndarray, sample_rate: int, pulse_rat
     amplitude at each across the window.  The minimum-correlation phase is used
     as the noise reference deliberately: sampling at the positions LEAST
     correlated with the pulse train measures everything except the powerline
-    interference — atmospheric noise, man-made QRM, receiver thermal noise — so
+    interference - atmospheric noise, man-made QRM, receiver thermal noise - so
     the caller can judge whether powerline noise is actually the dominant problem.
 
     Returns None when the window is too short to fit even one pulse train after
     the phase offsets are applied.
     """
     fit = calculate_pps_fit_array(mono_amplitude_array, kernel, scan_pulses)
-    if fit.size == 0:   # window shorter than the kernel — no valid positions
+    if fit.size == 0:   # window shorter than the kernel - no valid positions
         return None
     samples_per_pulse = sample_rate / pulse_rate
-    # Reduce modulo the exact repeat period, in integer arithmetic — see
+    # Reduce modulo the exact repeat period, in integer arithmetic - see
     # pulse_phase_period().  A perfectly periodic signal makes every position one
     # period apart an equal-best fit, so which one argmax returns is decided by FFT
     # round-off; only an exact modulus maps them all back to the same phase.
