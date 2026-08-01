@@ -37,6 +37,17 @@ Runtime deps are pinned in `requirements.txt`; `pyproject.toml` carries the loos
 ranges for packaging. `numpy` is capped below 2.5 by numba's own constraint — check
 that ceiling before bumping either.
 
+**Prefer Bourne shell to PowerShell** where a Bourne shell is available, and don't mix
+the two within a task — the commands in this file are written for it, and switching
+between them mid-task means two sets of quoting rules and two sets of surprises.
+
+PowerShell's surprises are the reason, and they are quiet ones. `Measure-Object -Line`
+does not count blank lines, so a line count of a Markdown file comes back plausible
+and wrong (385 against a true 467). A native command's stderr is wrapped into
+ErrorRecords, so a `git checkout` that succeeded is rendered as a `NativeCommandError`
+with `$?` false. Windows PowerShell 5.1 has no `&&` or `||`, so chaining needs
+`; if ($?) { }`. None of these announce themselves.
+
 ## Commands
 
     pytest --cov                      # unit suite; must stay at or above the 97% gate
@@ -50,8 +61,16 @@ that ceiling before bumping either.
     python level_meter.py                          # live S-meter for setting RF/AF gain
 
 `main.py` flags: `--headless`, `--top`, `--enable-recording`, `--playback FILE`,
-`--mute`, `--playback-gain DB`. Playback replays a recorded `.wav` through the whole
-pipeline and suppresses CSV, plots, uploads, and recording.
+`--mute`, `--playback-gain DB|auto`, `--render FILE.mp4`. Playback replays a recorded
+`.wav` through the whole pipeline and suppresses CSV, plots, uploads, and recording.
+`--render` needs ffmpeg, implies `--playback-gain auto`, and with `--headless` paints
+offscreen and implies `--mute`.
+
+**Use `--top` whenever starting a real render during a session.** A render opens a
+window and plays through in real time; without always-on-top it can come up behind the
+editor, and the operator is then listening to audio from a window they cannot see,
+with no way to tell whether it is working. Only skip it when deliberately testing the
+headless path.
 
 The coverage gate lives in `pyproject.toml` as the single source of truth — don't pass
 `--cov-fail-under` on the command line, it silently overrides it.
@@ -179,7 +198,59 @@ the interpreted one.
 - The coverage gate lives in `[tool.coverage.report] fail_under`. Don't pass
   `--cov-fail-under` on the command line — it silently overrides the file.
 
-## Wrapping up a unit of work
+## Reporting finished work
+
+### Summarise structural changes
+
+When a sizeable unit of work is done, **describe what changed structurally** before
+anything else: what was added, where it lives, and what it does. New modules, new
+classes, new config sections, new flags, new test files — each named, placed, and
+explained in a sentence. Say what calls it and what it depends on.
+
+Length is not the constraint here; being skippable is. A reader who has not been
+watching every edit needs enough to hold the shape of the change in their head, and to
+know where to look when something goes wrong in three weeks. This is the same
+principle as "don't overdrive your headlights", applied after the fact: work the
+reader cannot navigate has outrun them just as surely as work they cannot verify.
+
+Cover the changes that were *not* obvious from the request as well — a fix made along
+the way, a message reworded, a dependency added — and say plainly where something was
+left undone or where a test does not guard what it appears to.
+
+### PR descriptions and review comments
+
+**Be brief here — the opposite of the above.** A PR body is read by someone deciding
+where to spend their attention, so point at the few things that matter: the centrepiece
+of the change, the critical fix, the one decision worth arguing about. Whatever a
+reviewer would regret skimming past.
+
+Not a changelog and not a file listing — the diff already says what changed. The PR
+says what to *look at* and why it is the important part.
+
+**Then annotate the diff itself.** Prose in the description is not the same as a note
+sitting on the line it is about. After opening a PR, leave **inline review comments**
+on the handful of places that matter: the crux of the change, a fix whose reasoning is
+not visible from the code, a decision a reviewer might otherwise silently disagree
+with, a test that guards something subtle. A few, not a running commentary — every
+comment spends attention that the important ones need.
+
+`gh pr review` cannot do this; it only posts a top-level body. Line-anchored comments
+go through the API, as one review carrying several:
+
+    gh api --method POST repos/OWNER/REPO/pulls/N/reviews \
+      --input review.json
+
+    # review.json
+    { "event": "COMMENT",
+      "body": "optional overall note",
+      "comments": [
+        { "path": "lib/buzz/render.py", "line": 128, "side": "RIGHT",
+          "body": "why this line is the one to look at" }
+      ] }
+
+`line` must be a line the diff actually touches, `side` is `RIGHT` for added lines and
+`LEFT` for removed ones, and `start_line` with `line` spans a range. A comment on an
+untouched line is rejected, so anchor to the change rather than to its surroundings.
 
 When finishing a piece of work, if you did something **noteworthy** (a non-obvious
 architectural pattern, a load-bearing convention, a footgun future contributors will
@@ -329,6 +400,7 @@ Patterns already established, worth reaching for again:
 - **Vectorize.** No Python-level loops or list comprehensions over sample arrays.
 - **`@njit` numeric helpers** that work only on NumPy values and don't touch Python
   objects — but not when it would cost testability or clarity for a marginal gain.
+  **Always with an explicit signature** — see below.
 - **Cheap check first, expensive confirmation second.** Re-acquisition runs a short,
   narrow probe and only escalates to the full FFT search when the probe suggests there's
   something there.
@@ -352,6 +424,38 @@ Optimization is also where headlights get overdriven most easily, because the wi
 real and the reasoning is mathematical. Explain the identity before exploiting it, and
 leave an equivalence test behind.
 
+### Numba: always compile eagerly
+
+**Every `@njit` gets an explicit signature**, so numba compiles at import instead of on
+first call. Take the time to work out the right types; it is not optional and it is not
+a micro-optimisation.
+
+Lazy compilation runs on whichever thread reaches the function first. In this program
+that is the Qt thread, part-way through a paint, while audio keeps arriving on another
+one — so the window locks for about a second at the worst possible moment. It put a
+frozen second at the head of every rendered video and made the display ignore the
+opening of every replay. Declaring the signatures took that from 1.1 s to 0.23 s.
+
+Pair it with `cache=True` so the compiled code survives between runs and only the first
+run after a source change pays at all.
+
+**Work the types out from the running program, not by reading.** Reading the code gave
+the wrong answer twice: the array looked like `float64` or `int16` and is in fact
+`float32` every time — `np.abs(int16 samples - a float32 DC estimate)`. The reliable
+method:
+
+1. Leave the decorator lazy for a moment and exercise the real paths.
+2. Read `fn.signatures` off the dispatcher — numba lists exactly what it compiled.
+3. **Check it against production, not the test suite.** The suite compiled three
+   signatures; two were test artefacts. Wrap the function and log dtypes while the real
+   analyser runs.
+4. **Cover every source.** A replayed `.wav` and the live sound card can differ in
+   principle, so check both before declaring. Here they agreed — that is a result, not
+   an assumption.
+
+A declared signature also means a caller passing something unexpected fails loudly at
+that call rather than quietly compiling another variant mid-flight.
+
 ## Tests
 
 - Cover every method of any appreciable complexity. Separate tests into discrete files
@@ -363,6 +467,14 @@ leave an equivalence test behind.
   state it. See "First principle: express the intention".
 - Golden files and generated sample audio in `tests/resources/` pin down DSP behaviour
   so later tweaks have to be deliberate.
+- **When a test stands in for a sound source, it uses the dtype the real source
+  produces.** Synthetic audio is easy to build in whatever type is convenient, and the
+  convenient one is usually wrong: tests here fed `int32` and `uint32` arrays into a
+  path that only ever sees `float32` in production. Nothing failed, because the code
+  under test is generic — so the tests quietly exercised type combinations that cannot
+  occur, and the one place it mattered (a numba signature) only surfaced it by
+  accident. Check what the live pipeline actually produces, and match it. This applies
+  to the golden generator too, or the pinned values describe a path nobody runs.
 - When a refactor makes something testable that wasn't before, write the test then.
 - `tests/conftest.py` sets `NUMBA_DISABLE_JIT=1` so `@njit` function bodies are visible
   to coverage. Without it every JIT-compiled function reads as untested no matter how
@@ -384,8 +496,43 @@ leave an equivalence test behind.
   `StateLog` in `tests/integration/harness.py`. Polling `analyzer.state` cannot see a
   lock that dropped and came back between two polls, and that is exactly what restart
   has to prove. Push, don't poll applies to tests too.
+- **Integration tests run muted and headless.** Anything that launches the monitor
+  passes `--mute` and `--headless` (or sets `QT_QPA_PLATFORM=offscreen`) unless the
+  thing under test is the audio device or the window itself. A suite that seizes the
+  speakers or throws a window in front of whoever is running it will not be run, and
+  neither adds anything to what is usually being tested. Note that `--headless` alone
+  does *not* imply `--mute` — only `--render --headless` does — and that headless
+  playback never exits on its own, so a test driving it must stop the process rather
+  than wait for it.
 - Integration tests complement running the program by hand; they don't replace it.
   A lit button or a timer starting at the wrong number needs a person looking.
+
+### Optional features must not hold coverage hostage
+
+An optional dependency is one a user can decline — ffmpeg for `--render` is the
+example. **Its absence must not move the coverage number**, or the gate starts failing
+on machines that simply chose not to install something, and the fix people reach for
+is lowering the gate.
+
+The shape that works, and what `render.py` does:
+
+- **Unit-test against the boundary, mocked.** `shutil.which` and `subprocess.Popen`
+  are patched, so every line of the module is exercised with no binary present.
+  Measured: `render.py` sits at 96% and `fonts.py` at 100% with ffmpeg entirely absent
+  from PATH.
+- **Put the real thing in the integration tier**, which runs `--no-cov` and is
+  deselected from the unit run, so it cannot affect the number either way.
+- **Skip, don't fail, when it is missing** — a contributor who never renders still
+  gets a green suite.
+- **But make CI fail rather than skip.** A skip is invisible in a green run, so an
+  environment that was meant to have the dependency and lost it would quietly stop
+  testing that path. `BUZZ_REQUIRE_FFMPEG=1`, set only by the workflows, turns the
+  skip into a failure that says which tool is missing and where it was installed from.
+
+If a feature genuinely cannot be covered without the dependency, find a workaround —
+extract the logic behind an interface and test that — rather than letting CI's result
+depend on what happens to be installed. A coverage gate that means different things on
+different machines means nothing.
 
 ## Comments and documentation
 
@@ -416,6 +563,44 @@ Match the voice already in the codebase: concise, factual, plain. Avoid AI-assis
   known, say so.
 - This project is meant to be educational as well as functional, and gets used as
   reference material. Comments have an audience beyond whoever is editing the file.
+
+### Error messages
+
+An error message is read by someone who is stuck, usually in a hurry, and often
+without the source in front of them. **Every message — raised, logged, or asserted —
+carries three things:**
+
+1. **Context.** What was being attempted when it failed, with the specifics filled in:
+   the path, the setting, the device, the value. "Not found" is useless; "not found on
+   PATH, and --render needs it" is not.
+2. **What the error means and what likely caused it,** in plain language. Name the
+   probable cause where there is one, and say which of several it might be rather than
+   leaving the reader to guess. Avoid restating the exception class in prose.
+3. **What to do about it.** A concrete next step — the command to run, the setting to
+   change, the file to look in. If the failure is survivable, say what the program did
+   instead, so nobody hunts a problem that has already been worked around.
+
+**Three things, not three paragraphs.** Two or three sentences carries all of it; past
+that the message stops being read, which costs more than leaving something out. Cut the
+reasoning and keep the facts — *why* it works this way belongs in a comment beside the
+code, where the person who needs it is already looking.
+
+**Don't end a sentence with a preposition** in anything the user sees — messages, log
+lines, `--help` text, README prose. "the figure at which it was recorded", not "the
+figure it was recorded at". A made-up rule, and this project follows it anyway; the
+house style is formal and the messages should match it. Comments and docstrings are
+not user-facing and need not bother.
+
+Precedents worth copying: `find_ffmpeg()` in `render.py` names the missing program, the
+one flag that needs it, the winget command that installs it, the config setting that
+points at it instead, and that nothing else in the monitor cares. The font test in
+`test_fonts.py` names the directory it searched, why the file is loaded from there at
+all, what probably moved, and what the display degrades to meanwhile.
+
+This applies to test failure messages as much as to runtime errors. A test that fails
+with a bare `assert files` tells whoever hits it that something is wrong and nothing
+else; the person reading it is usually not the person who wrote it, and may be reading
+it in CI output months later.
 
 ## Working style
 

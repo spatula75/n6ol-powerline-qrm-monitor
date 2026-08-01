@@ -47,7 +47,7 @@ def main() -> None:
     np.save(RESOURCES / 'synthetic_audio.npy', audio)
     print(f'synthetic_audio.npy  shape={audio.shape}  dtype={audio.dtype}')
 
-    mono = np.abs(audio[:, 0].astype(np.int32))
+    mono = np.abs(audio[:, 0].astype(np.float32))
     kernel = build_pulse_kernel(SAMPLE_RATE, PULSE_RATE)
     fit = calculate_pps_fit_array(mono, kernel, SCAN_PULSES)
     np.save(RESOURCES / 'fit_array_golden.npy', fit)

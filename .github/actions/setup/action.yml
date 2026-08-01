@@ -33,6 +33,30 @@ runs:
       shell: bash
       run: sudo apt-get install -y libegl1 libgl1 libxkbcommon0
 
+    - name: Install ffmpeg (for --render and the render integration tests)
+      # Only --render uses it, and the monitor is careful never to look for it
+      # otherwise -- but CI should exercise the render path rather than skip it, so it
+      # is installed here rather than left to chance.  The runner images have shipped
+      # ffmpeg for a while; installing it explicitly means a future image that drops
+      # it fails here, with a message, instead of silently skipping the tests.
+      shell: bash
+      run: sudo apt-get install -y ffmpeg
+
     - name: Install dependencies
       shell: bash
       run: pip install -r requirements.txt
+
+    - name: Confirm the toolchain is actually present
+      # apt succeeding is not the same as the binary being on PATH for the step that
+      # needs it.  Checked once, here, so a broken environment fails with this message
+      # rather than as a puzzling skip in the test output much later.
+      shell: bash
+      run: |
+        set -euo pipefail
+        for tool in ffmpeg ffprobe; do
+          command -v "$tool" >/dev/null || {
+            echo "::error::$tool is not on PATH after installation. The render integration tests need both, and would otherwise skip silently."
+            exit 1
+          }
+          echo "$tool: $(command -v "$tool")"
+        done

@@ -9,7 +9,7 @@ pin that equivalence so we can trust the direct-sum path in AudioSampler.
 
 import numpy as np
 import pytest
-from numpy import uint32, zeros
+from numpy import float32, zeros
 
 from buzz.dsp import average_pulse_amplitude as _sum_pulse_train
 
@@ -34,21 +34,21 @@ def _fast_result(data, n_pulses, start_index):
 
 
 def _random_data(seed, length=48000):
-    return np.random.default_rng(seed).integers(0, 32768, size=length, dtype=uint32)
+    return np.random.default_rng(seed).integers(0, 32768, size=length).astype(float32)
 
 
 class TestSumPulseTrainEquivalence:
 
     def test_all_zeros(self):
-        data = zeros(48000, dtype=uint32)
+        data = zeros(48000, dtype=float32)
         assert _fast_result(data, 60, 0) == _direct_sum(data, SAMPLE_RATE, 60, 0) == 0
 
     def test_uniform_amplitude(self):
-        data = np.full(48000, 1000, dtype=uint32)
+        data = np.full(48000, 1000, dtype=np.float32)
         assert _fast_result(data, 60, 0) == _direct_sum(data, SAMPLE_RATE, 60, 0) == 1000
 
     def test_pulse_only_at_expected_positions(self):
-        data = zeros(48000, dtype=uint32)
+        data = zeros(48000, dtype=float32)
         pf = SAMPLE_RATE / 120
         for i in range(60):
             pos = round(i * pf)

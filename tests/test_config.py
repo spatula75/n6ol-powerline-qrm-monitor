@@ -7,8 +7,8 @@ from pathlib import Path
 import pytest
 
 from buzz.config import (
-    AudioConfig, BuzzConfig, RecordingConfig, ServerConfig, StationConfig, WeatherConfig,
-    _load_section,
+    MAX_SAMPLE_RATE, MIN_SAMPLE_RATE, AudioConfig, BuzzConfig, RecordingConfig,
+    ServerConfig, StationConfig, WeatherConfig, _load_section, validate_sample_rate,
 )
 
 _EXAMPLE = Path(__file__).resolve().parent.parent / 'config.example.toml'
@@ -229,3 +229,53 @@ class TestRecordingSectionLoading:
     def test_missing_section_uses_defaults(self, tmp_path):
         cfg = self._load(tmp_path, b'[audio]\nsample_rate = 8000\n')
         assert cfg.recording.enabled is False
+
+
+class TestSampleRateAdmission:
+    """The band the rest of the program can honestly work in, and the refusal outside it.
+
+    Both bounds are load-bearing rather than tidy-looking.  The floor is what makes the
+    waterfall's bin count independent of the rate: below 8 kHz the Nyquist clamp in
+    spectrum_geometry() starts biting and the window stops being 128 bins wide, which
+    is the property buzz.render leans on when it declines to pad the frame.  The
+    ceiling is the ring buffer, which is sized in seconds and so costs more memory as
+    the rate climbs.
+    """
+
+    def test_the_rate_this_program_records_at_is_admitted(self):
+        validate_sample_rate(16000, 'event.wav', 16000)
+
+    def test_both_bounds_are_inclusive(self):
+        """Stated as a test because the message quotes the bounds as a closed interval,
+        and a message that disagrees with the code is worse than no message."""
+        validate_sample_rate(MIN_SAMPLE_RATE, 'floor.wav', 16000)
+        validate_sample_rate(MAX_SAMPLE_RATE, 'ceiling.wav', 16000)
+
+    def test_the_rates_a_foreign_file_arrives_at_are_admitted(self):
+        for rate in (11025, 22050, 44100):
+            validate_sample_rate(rate, f'{rate}.wav', 16000)
+
+    def test_below_the_floor_is_refused(self):
+        with pytest.raises(ValueError):
+            validate_sample_rate(MIN_SAMPLE_RATE - 1, 'slow.wav', 16000)
+
+    def test_above_the_ceiling_is_refused(self):
+        with pytest.raises(ValueError):
+            validate_sample_rate(MAX_SAMPLE_RATE + 1, 'fast.wav', 16000)
+
+    def test_the_refusal_names_the_file_and_its_rate(self):
+        """Whoever hits this is holding a file somebody sent them and has no idea what
+        is in it; the message is the only thing that will tell them."""
+        with pytest.raises(ValueError, match=r'from-a-ham\.wav.*96000 Hz'):
+            validate_sample_rate(96000, 'from-a-ham.wav', 16000)
+
+    def test_the_refusal_states_the_condition_that_failed(self):
+        with pytest.raises(ValueError,
+                           match=f'{MIN_SAMPLE_RATE} <= sample rate <= {MAX_SAMPLE_RATE}'):
+            validate_sample_rate(96000, 'from-a-ham.wav', 16000)
+
+    def test_the_remedy_suggests_this_stations_own_rate(self):
+        """Not a hard-coded 16000: a station configured for 48 kHz should be told to
+        resample to 48 kHz, or the advice sends it to a rate nothing else here uses."""
+        with pytest.raises(ValueError, match='resampling it to 48000 Hz'):
+            validate_sample_rate(4000, 'slow.wav', 48000)

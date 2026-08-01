@@ -833,7 +833,7 @@ class TestScanPhaseHysteresis:
 
     def _two_train_data(self, phase_a: int, amp_a: int, phase_b: int, amp_b: int) -> np.ndarray:
         """Silent background with two interleaved pulse trains at fixed phases."""
-        data = np.zeros(SAMPLE_RATE, dtype=np.int32)
+        data = np.zeros(SAMPLE_RATE, dtype=np.float32)
         spp = SAMPLE_RATE / PULSE_RATE
         for i in range(int(SAMPLE_RATE / spp)):
             base = round(i * spp)
@@ -860,7 +860,7 @@ class TestScanPhaseHysteresis:
         deadband the winner is essentially random every call and the NF correction
         indicator dances.  On featureless noise it must stay put."""
         az = _make_analyzer()
-        data = np.abs(_noise_audio().astype(np.int32))
+        data = np.abs(_noise_audio().astype(np.float32))
         phase, offset = az._scan_phase(data, center=60, anchor=5, minimize=True)
         assert (phase, offset) == (60, 0)
 

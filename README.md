@@ -417,7 +417,7 @@ Recording off — re-arms in 23h 47m
 
 Switching recording off with the **Record** button cancels the cycle as well.  Off
 means off: a monitor that re-armed itself overnight because it happened to be
-turned off mid-cycle would be a nasty surprise to come back to.
+turned off mid-cycle would be a nasty surprise on your return.
 
 The recording directory is created when recording is armed, not when the first
 event arrives — at startup with `enabled = true` or `--enable-recording`, and
@@ -456,13 +456,26 @@ IART  N6OL
 ICRD  2026-07-29T14:33:07-07:00
 ISFT  n6ol-powerline-qrm-monitor 1.1.0
 ICMT  sample_rate=16000 pulse_rate=120 audio_rf_conversion_db=-32.0
-      lead_in_seconds=9.6 ended=timeout
+      lead_in_seconds=9.6 lead_in_max_seconds=9.6 ended=timeout
 cue   sample 153600 → "LOCK"
 ```
 
 `ended` is the one thing the audio itself cannot tell you: whether the recording
 stopped because the event finished (`timeout`), because the length cap cut it
 short (`capped`), or because you stopped it (`operator`, `shutdown`).
+
+`lead_in_max_seconds` is there so `lead_in_seconds` can be read honestly.  The
+buffer is a sliding window and it keeps sliding while `min_lock_seconds` is waited
+out, so the lead-in can never exceed the buffer's capacity less that wait.  A file
+sitting **at** the bound is telling you it kept everything it had — the arc was
+already running and how long the lock really took is unknowable.  A file **below**
+it is reporting a genuine measurement.  Without the bound written down the two look
+identical, and neither the buffer size nor `min_lock_seconds` is recorded anywhere
+else in the file.
+
+With a 9.6 s buffer and `min_lock_seconds = 3`, every saturated recording reads
+`lead_in_seconds` of about 6.6 rather than 9.6, which is the wait coming out of the
+front.
 
 ### How long a file ends up
 
@@ -516,6 +529,53 @@ A bare filename is looked up in the recording directory; anything with a path in
 it is used as given.  Playback runs at the file's own sample rate, so the
 displays move at the speed the event actually happened.
 
+### Files from somebody else
+
+Any 16-bit PCM `.wav` plays, not only ones this program recorded — being sent a
+capture by another operator and wanting to know whether it locks at 120 pps is
+exactly the case this handles.  A file from a random sound card is likely to be
+44.1 kHz and stereo, and both are fine:
+
+- **Sample rate** may be anything from **8 kHz to 48 kHz**, and the display looks
+  the same at all of them.  The FFT window is a fixed span of *time* rather than a
+  fixed number of samples, so the waterfall keeps its 31 Hz per bin and its width
+  whatever the audio arrives at.  The buffer behind it is sized in seconds too, so
+  the analyzer always has the same 9.6 seconds of history to work with, and the
+  scope always shows the same three pulse periods.  8 kHz is the floor because the
+  display shows 0–4 kHz and that is exactly Nyquist there; anything outside the
+  range is refused with a message rather than analysed into plausible nonsense.
+- **Stereo** is reduced to **channel 0**, not mixed down — the same thing the live
+  monitor does with a stereo input device — and it says so in the log.  Mixing
+  would average the arc against whatever the other channel happens to hold.  If
+  the interference is only on the right channel, extract that channel first.
+- **Sample width** must be 16-bit.  The signal chain is int16 end to end, and
+  silently converting a 24- or 32-bit file would put what is measured here at odds
+  with what the same audio measured live.
+
+What a foreign file cannot bring with it is the pulse rate and the level
+calibration, since those live in metadata this program writes.  Your own configured
+values are used instead and a warning says so, because a dBm reading taken against
+someone else's receiver settings looks entirely plausible and means nothing.
+
+The distinction is worth holding on to.  **Levels are suspect; the rest is not.**
+Whether the pulse train locks at all, how steady its phase is, the line frequency
+it reports, and the shape of the burst on the scope are properties of the
+interference rather than of the receiver, and survive the trip intact.  Those are
+what tell an arcing gap from somebody's switching supply.
+
+If you know the calibration the sending station used, supply it for the replay:
+
+```
+python -m buzz.main --playback from-a-ham.wav --audio-rf-conversion-db -28.5
+```
+
+That figure is used in place of your own for this run only, and takes precedence
+over one recorded in the file — the recording's own is normally right, being the
+receiver that made it, so overriding it is reported.  If nothing locks at all,
+suspect the grid instead: a European recording carries 100 pps, and against the
+configured 120 the analyzer will never acquire.  Set `audio.pulse_rate` to 100 and
+replay it.
+
 The toolbar carries a transport instead of the record button, since there is
 nothing to record and every reason to want to stop on an interesting moment:
 
@@ -567,6 +627,25 @@ and **distort** — 10 dB on a −24 dBFS recording is comfortable, 30 dB will n
 Turn it back down if it sounds crunchy; nothing about the analysis is affected
 either way.
 
+Rather than guessing, `--playback-gain auto` measures the recording and works the
+figure out:
+
+```
+python -m buzz.main --playback event-20260729-184450-0700.wav --playback-gain auto
+```
+
+It takes whichever is smaller of the gain that reaches −23 LUFS (the EBU R128
+broadcast reference) and the gain that leaves true peak at −2 dBTP, so it gets as
+close to a standard listening level as it can without letting anything clip.  A
+recording whose bursts sit high above its noise floor hits the peak ceiling first
+and comes out a little quieter, which is the right way round.  The result is a
+single fixed gain — no compression and no limiting, because both would reshape the
+pulse envelope that carries how bad the interference actually is.
+
+`auto` needs ffmpeg, and it reads the whole file before playback starts, so there
+is a pause of a second or two on a long recording.  The log says what it measured
+and what it chose.
+
 Switching between the two never loses your place in the file, and neither does
 **Restart**, which throws away the fraction of a second already queued to the card
 so the audio jumps back to the top with the display instead of trailing it.  If no
@@ -583,7 +662,59 @@ recording measures the same wherever it is replayed — the sample rate is in th
 `.wav` header, but nothing else about how to read the audio is, and a 100 pps
 recording analysed as 120 pps simply never locks.  Any mismatch with your own
 config is logged.  A `.wav` from anywhere else still plays; it just warns that it
-is being analysed with your settings, which may not be the ones it was made with.
+is being analysed with your settings, which may not be the ones with which it was
+made.
+
+### Rendering a replay to video
+
+`--render` records the replay to an `.mp4` — the display exactly as it appears,
+with the recording as its soundtrack — so an arc heard at two in the morning
+becomes something you can show somebody:
+
+```
+python -m buzz.main --playback event-20260729-184450-0700.wav --render arc.mp4
+```
+
+The window opens without its transport controls, plays through once, and the
+program exits when the file is complete.  A render happens in real time, so a
+40-second recording takes 40 seconds.  It will not overwrite an existing file.
+
+Add `--headless` to render without a window at all — useful on a machine with no
+display, or simply to avoid one stealing focus for two minutes.  The video is
+identical either way, because the display font is carried with the program rather
+than borrowed from the desktop.  A headless render is silent as well: nobody is
+watching, so nothing is sent to the sound card.  That does not change the video's
+audio, which ffmpeg takes from the recording on disk.
+
+The video is H.264 at 30 fps with AAC audio, chosen to play in VLC and in Firefox
+without any persuasion.  The display genuinely updates ten times a second, so two
+frames in three are duplicates; they cost almost nothing, and the finer grid is
+what keeps picture and sound together.  Each frame is timed by where playback had
+reached when its pixels were read, which means the analyzer's normal lag is
+preserved rather than quietly corrected — the video shows what the monitor showed,
+not an idealised version of it.
+
+The recording's own metadata travels with it: what the event was, which station
+heard it, when, and the calibration behind the numbers.
+
+**`--render` implies `--playback-gain auto`**, because a rendered event sits around
+−45 LUFS, well below a normal listening level.  That is by design: the
+calibration process deliberately keeps the audio low, which is right for measuring
+impulsive noise and awkward for showing it to somebody.  To override it, pass a figure — including zero for no gain at all:
+
+```
+python -m buzz.main --playback event.wav --render arc.mp4 --playback-gain 0
+```
+
+Whatever gain is used is written into the video's metadata as `render_gain_db`, so
+the file says how far its audio was raised.  Watching a replay does *not* imply
+auto gain — that is a different job, with the volume control to hand and nobody
+waiting on a measurement.
+
+Rendering needs **ffmpeg**, and nothing else in the monitor does.  If it is not on
+your PATH, set `ffmpeg_path` in the `[render]` section of the config to the folder
+holding it.  On Windows, `winget install Gyan.FFmpeg` puts it on PATH for any new
+terminal.
 
 ### Short or weak recordings may not lock on replay
 
@@ -612,7 +743,8 @@ event in the first place (`max_seconds`, or a longer `stop_after_seconds`) is th
 better fix.
 
 Replay is analysis only.  No CSV rows, no plots, no uploads, and no recording —
-looking at an old event again must not add minutes to a day it did not happen on.
+looking at an old event again must not add minutes to a day on which it did not
+happen.
 No audio *input* device is opened at all, so recordings can be reviewed on a
 machine with no receiver attached to it.  When the file runs out, playback stops
 and the displays hold their last frame.
@@ -653,8 +785,8 @@ at the same place on every pass.
 
 The scope shows the actual audio waveform, swept in sync with the interference
 so that a repeating pulse train appears to stand still — the same effect as
-setting the sync control on a bench oscilloscope to match the signal you are
-looking at.
+setting the sync control on a bench oscilloscope to match the signal under
+observation.
 
 Each sweep covers **25 ms**, which is exactly three pulse periods at 120 pps, at
 **2.5 ms per division**.  Rather than triggering on signal amplitude, the sweep
@@ -693,7 +825,7 @@ regardless of receiver gain.
 | **○ FREE** (grey) | No pulse train to synchronize to.  The sweep free-runs and its horizontal position is arbitrary. |
 | `59.98 Hz` | Measured utility line frequency, derived from how fast the pulse phase is drifting.  Shown only when there is a phase to measure. |
 | `RAW` / `AVG` | Which view is active — see `A` above. |
-| `2.50 ms/div` | Horizontal timebase. |
+| `2.50 ms/div` | Horizontal timebase.  The trace is always three pulse periods wide, so this reads 2.50 ms/div on a 60 Hz grid and 3.00 on a 50 Hz one, whatever the sample rate. |
 | `FS −24.3 dBFS` | Vertical full scale, as headroom below digital clipping.  This is the auto-range's current setting. |
 | **CLIP** (red) | The input is hitting the converter's limit — reduce AF gain. |
 
