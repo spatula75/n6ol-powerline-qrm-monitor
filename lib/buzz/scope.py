@@ -239,8 +239,11 @@ def sweep_start_offset(trigger_phase: int, pretrigger: int, sweep_samples: int) 
     meaningful modulo that period, since it is what the analyzer itself reduces its
     phases by, so wrapping by anything else would not address the same position in
     the pulse grid.  The two happen to be equal at the default sample rate, but not
-    in general - see sweep_geometry's docstring for when the phase period is shorter
-    than the sweep.
+    in general, and they differ in both directions: the phase period is shorter at
+    48 kHz (400 against a 1200-sample sweep) and longer at 11.025 kHz (735 against
+    276).  Longer is the case worth knowing about, since the offset can then exceed
+    the sweep width; sweep_geometry allows for it with a whole phase period of slack
+    at the head of the capture.
     """
     return int(trigger_phase - pretrigger) % sweep_samples
 

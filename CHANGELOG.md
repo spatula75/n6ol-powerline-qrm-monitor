@@ -99,9 +99,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   low. A render takes channel 0 too, so the video's audio is the audio that was
   measured rather than both channels beside a picture of one.
 - The device-setup level bar now shows 6 dB per segment, matching the S-meters
-  elsewhere in the program, instead of 4.75. It hard-coded a segment count computed
-  once for the wrong dB span rather than deriving it, so the two crept apart with
-  nothing to notice.
+  elsewhere in the program, instead of 4.75. The bar spans 1 LSB to 16-bit full scale,
+  which is a fixed 90.31 dB, so its width and its dB per segment are the same number
+  said two ways. The width was a bare 19 from the configurator's first commit, and the
+  caption beside it claimed "≈ 6 dB" in that same commit: the two never agreed, rather
+  than drifting apart. 90.31 / 6 gives 15, and the width is derived from it now.
 - `configure.py` no longer discards a customised `[recording]` or `[render]` section
   every time it saves. It loads the full six-section config but only ever wrote four
   of them back, so an event budget, `max_seconds`, or `ffmpeg_path` set by hand

@@ -29,11 +29,14 @@ from buzz.config import (
 )
 from buzz.device_setup import select_device
 
+# Every section BuzzConfig is composed of.  Named because the alternative is a
+# six-way union inline, and because a section added to BuzzConfig has to be added
+# here and to the table main() writes -- omitting it from that table is the bug
+# that silently reverted [recording] and [render] on every save.
+_Section = AudioConfig | StationConfig | WeatherConfig | ServerConfig | RecordingConfig | RenderConfig
 
-def _section_dict(
-    obj: AudioConfig | StationConfig | WeatherConfig | ServerConfig
-        | RecordingConfig | RenderConfig,
-) -> dict[str, str | int | float | bool]:
+
+def _section_dict(obj: _Section) -> dict[str, str | int | float | bool]:
     return {k: v for k, v in asdict(obj).items() if v is not None}
 
 

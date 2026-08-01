@@ -5,6 +5,7 @@ are not tested here - they require real PortAudio devices.
 """
 
 import pytest
+from buzz.constants import FULL_SCALE_COUNTS
 from buzz.device_setup import _amplitude_bar, _reason_bar, _BAR_WIDTH, _FILL, _EMPTY
 
 
@@ -14,7 +15,7 @@ class TestAmplitudeBar:
         assert _amplitude_bar(0.0) == _EMPTY * _BAR_WIDTH
 
     def test_full_scale_is_all_filled(self):
-        assert _amplitude_bar(32768.0) == _FILL * _BAR_WIDTH
+        assert _amplitude_bar(FULL_SCALE_COUNTS) == _FILL * _BAR_WIDTH
 
     def test_length_always_bar_width(self):
         for amp in [0, 1, 100, 1000, 10000, 32768, 1_000_000]:
@@ -71,4 +72,18 @@ class TestReasonBar:
 
     @pytest.mark.parametrize('hz', [8000, 44100, 48000, 96000, 192000])
     def test_common_sample_rate_reasons_fit(self, hz):
-        assert len(_reason_bar(f'needs {hz} Hz')) == _BAR_WIDTH
+        """Asserting the text survives, not that the bar is _BAR_WIDTH long.
+
+        _reason_bar pads or truncates unconditionally, so a length check passes
+        whatever it was handed and this test could not have failed.  It matters now:
+        the bar narrowed from 19 columns to 15 when its width was derived from
+        DB_PER_S_UNIT, and 'needs 192000 Hz' is exactly 15 - the longest reason the
+        program produces has no headroom left, and truncation would silently print
+        'needs 192000 H'.
+        """
+        reason = f'needs {hz} Hz'
+        assert _reason_bar(reason).strip() == reason, (
+            f'The rate a device wants no longer fits the {_BAR_WIDTH}-column level '
+            f'bar, so it is truncated to something misleading. Either shorten the '
+            f'wording or widen the bar - but the width is derived from '
+            f'DB_PER_S_UNIT, so widening it changes what a segment means.')

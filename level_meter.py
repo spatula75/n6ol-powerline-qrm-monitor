@@ -88,7 +88,7 @@ def main() -> None:
     print(f'Device : {config.audio.input_device_name}')
     print(f'Offset : {config.station.audio_rf_conversion_db:+.1f} dB  '
           f'(audio_rf_conversion_db from config)')
-    print(f'Scale  : S1 = {_S1_DBM} dBm  -  S9 = {S9_DBM} dBm  '
+    print(f'Scale  : S1 = {_S1_DBM:g} dBm  -  S9 = {S9_DBM:g} dBm  '
           f'(each S-unit = {DB_PER_S_UNIT:g} dB)')
     print()
     print('Adjust RF and AF gain until the reading here matches your S-meter.')

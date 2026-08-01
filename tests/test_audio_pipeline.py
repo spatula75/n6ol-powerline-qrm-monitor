@@ -91,16 +91,26 @@ class TestAudioPipelineDroppedAudio:
             'driver discarded are already gone; dropping this one as well would widen '
             'the splice the analyzer has to recover from.')
 
-    def test_it_warns_and_names_the_setting_to_change(self, caplog):
+    def test_it_warns_and_gives_a_step_the_operator_can_actually_take(self, caplog):
         """The three things a message owes its reader: what happened, what it means for
-        the measurement, and what to do about it."""
+        the measurement, and what to do about it.
+
+        The remedy has to be one that exists.  This message used to end "raise
+        chunk_size in the [audio] section of the config", and there is no such
+        setting - the block size is RingBufferPipeline.CHUNK_SIZE, a constant.  Worse,
+        _load_section drops unknown keys silently, so anyone who followed the advice
+        edited the config, restarted, and got no error and no change.
+        """
         pipeline, _, callback = _make_pipeline()
         with caplog.at_level('WARNING', logger='buzz.sampler'):
             self._fire_with_status(callback)
         message = caplog.text
-        assert 'dropout' in message and 'chunk_size' in message, (
-            f'Expected the dropout warning to name the condition and the setting that '
-            f'addresses it; got: {message!r}')
+        assert 'overflow' in message and 'using audio' in message, (
+            f'Expected the warning to name the condition and a step that exists; '
+            f'got: {message!r}')
+        assert 'chunk_size' not in message, (
+            f'The remedy names a config setting that does not exist, so following it '
+            f'changes nothing and reports nothing; got: {message!r}')
 
     def test_it_says_the_grid_frequency_is_what_to_distrust(self, caplog):
         """The whole point of correcting this message. A splice makes the phase jump,

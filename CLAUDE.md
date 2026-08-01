@@ -166,25 +166,34 @@ tagging again.
 
 ## Before every commit
 
-Tests first, then lint, then human eyes. In that order:
+Judgement calls first, cheapest mechanical check next, most expensive last, human eyes
+after all of it. In that order:
 
-1. **Unit suite with coverage** - `pytest --cov`. Must pass, and coverage must stay at
+1. **Dead code.** While you are already in the area, look for anything certainly
+   unused - a function nothing calls, a branch nothing reaches, a path an earlier
+   refactor left behind - and ask before removing it, ahead of the checks below. Ask
+   rather than delete unasked and ask rather than leave it: whether it is truly dead or
+   a hook for something not yet wired up is the user's call, not one to guess at.
+2. **Lint** - `ruff check .`. Runs before the test suite, every time, because it is
+   fast and cheap where tests are not - there is no reason to wait minutes for a test
+   failure that a two-second lint pass would already have caught. Must come back
+   completely clean, not merely free of *new* complaints. Fix what it reports rather
+   than suppressing it.
+3. **Unit suite with coverage** - `pytest --cov`. Must pass, and coverage must stay at
    or above the 97% gate. Running plain `pytest` without `--cov` hides a coverage
    failure that CI then catches; that has broken the build before.
-2. **Lint** - `ruff check .`. Must come back completely clean, not merely free of *new*
-   complaints. Fix what it reports rather than suppressing it.
-3. **Integration tier**, when the change touches audio, analysis, playback, recording,
+4. **Integration tier**, when the change touches audio, analysis, playback, recording,
    or the display - `pytest -m integration --no-cov`. CI runs it on every PR, so
    catching a failure locally is cheaper than catching it on GitHub.
-4. **Hands-on verification.** Changes to the audio path, the display, or the charts get
+5. **Hands-on verification.** Changes to the audio path, the display, or the charts get
    checked against a live radio before being committed - green tests are not the finish
    line for those.
-5. **Documentation drift.** A code or behaviour change means checking `README.md`,
+6. **Documentation drift.** A code or behaviour change means checking `README.md`,
    `README-analysis.md`, and `config.example.toml` for anything the change makes wrong -
    a described default that moved, a number that no longer holds, a flag or setting that
    changed shape. Docs go stale exactly like comments do, and nothing else catches it;
    there is no test that fails when a README goes out of date.
-6. **Diff artifacts.** Read the actual diff before staging, not just the file as it
+7. **Diff artifacts.** Read the actual diff before staging, not just the file as it
    ends up. Editing in passes leaves residue that runs and lints clean and is only
    visible in the diff itself: a doubled blank line where a tool split one edit into
    two, a comment whose sentence now trails off because an insertion fell inside it

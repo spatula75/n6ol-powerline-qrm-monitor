@@ -246,6 +246,11 @@ class DropoutReporter:
     the PortAudio callback, on PortAudio's own thread, where a warning per block would
     both flood the log and spend time the audio path does not have -- and where the
     logging could itself provoke the next dropout.
+
+    A run that stops part-way through an interval takes its suppressed count with it:
+    five dropouts over two seconds and then quiet are reported as one.  Only the next
+    dropout can print anything, and there is no timer here to flush the remainder on.
+    That is the right way round for a warning whose job is to say a fault is ongoing.
     """
 
     def __init__(self, report_interval_seconds: float = _DROPOUT_REPORT_SECONDS) -> None:
@@ -276,8 +281,11 @@ class AudioPipeline(RingBufferPipeline):
         def _callback(indata: np.ndarray, frames: int,
                       time: object, status: sd.CallbackFlags) -> None:
             if status:
-                # Overflow is the flag that matters here: the device captured faster
-                # than this callback collected, and the driver discarded the difference.
+                # PortAudio reports every input fault through `status`, and they are
+                # all handled the same way because the recovery is the same.  On a
+                # capture stream it is in practice an overflow: the device captured
+                # faster than this callback collected, and the driver discarded the
+                # difference.
                 #
                 # Note what that does and does not do, because the obvious guess is
                 # wrong.  It leaves no gap and no silence -- this callback still gets a
@@ -298,13 +306,14 @@ class AudioPipeline(RingBufferPipeline):
                 dropped = self._dropouts.record(monotonic())
                 if dropped is not None:
                     logger.warning(
-                        'The audio input reported %d dropout(s) (%s): the device '
-                        'captured faster than this program collected it, so the driver '
-                        'discarded the difference. Pulse phase jumps across the splice, '
-                        'so the grid frequency is unreliable until the analyzer '
-                        're-acquires, which it does on its own. Usually transient load; '
-                        'if it repeats, close other audio applications or raise '
-                        'chunk_size in the [audio] section of the config.',
+                        'The audio input reported %d error(s) (%s), almost always an '
+                        'overflow: the device captured faster than this program '
+                        'collected it, so the driver discarded the difference. The '
+                        'splice that leaves makes the pulse phase jump, so the grid '
+                        'frequency is the reading to distrust until the analyzer '
+                        're-acquires, which it does on its own; the levels are '
+                        'unaffected. Usually transient load - if it repeats, close '
+                        'whatever else on this machine is using audio.',
                         dropped, status)
             self._append(indata[:, 0].copy())
 
