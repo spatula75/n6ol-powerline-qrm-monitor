@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 from buzz.analyzer import AnalysisResult
+from buzz.config import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 from buzz.dsp import SILENCE_DBFS
 from buzz.recorder import RecorderStatus
 from buzz.waterfall import (
@@ -546,6 +547,33 @@ class TestSpectrumGeometry:
             f'{spectrum_geometry(rate).display_bins} bins rather than {DISPLAY_BINS}, '
             'so the window changes shape with the sample rate. The bin count is meant '
             'to be _MAX_HZ * _WINDOW_SECONDS, independent of the rate.')
+
+    def test_every_admitted_rate_gives_an_encodable_frame(self):
+        """The precondition rendering relies on, checked over the whole band.
+
+        ffmpeg_command() pads nothing, because with the window pinned to time nothing
+        can arrive odd — and yuv420p subsamples chroma by two each way, so an odd
+        dimension is refused outright.  Only the waterfall's width varies with the
+        rate, so that claim reduces to the bin count being even at every rate
+        validate_sample_rate admits.
+
+        Exhaustive rather than a handful of rates, and it costs about a second.  The
+        rates above are all comfortably inside the band, so they would go on passing if
+        the band itself moved: drop MIN_SAMPLE_RATE to 7500 and 252 rates become legal
+        at an odd bin count, from 7547 Hz at 121 bins and a 699 px window, and every
+        render at those rates fails in x264 with nothing here to have warned about it.
+        This is the test that ties the two together.
+        """
+        odd = [rate for rate in range(MIN_SAMPLE_RATE, MAX_SAMPLE_RATE + 1)
+               if spectrum_geometry(rate).display_bins % 2]
+        assert not odd, (
+            f'{len(odd)} admitted sample rates give an odd bin count, starting at '
+            f'{odd[0]} Hz with {spectrum_geometry(odd[0]).display_bins} bins. The '
+            'frame is that many bins wide times _PIXELS_PER_BIN plus a fixed panel, so '
+            'an odd count makes an odd frame and x264 refuses the render outright. '
+            'Either the sample-rate band in config.py widened past what the geometry '
+            'holds for, or _WINDOW_SECONDS changed; ffmpeg_command() no longer pads, '
+            'so one of the two has to give.')
 
     @pytest.mark.parametrize('rate', RATES)
     def test_resolution_stays_constant(self, rate):
