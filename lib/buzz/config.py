@@ -17,6 +17,48 @@ _T = TypeVar('_T')
 
 CONFIG_PATH = Path.home() / '.buzz' / 'config.toml'
 
+# The band of sample rates this program will work in.
+#
+# The floor is set by what the display and the analysis are looking at: the waterfall
+# shows 0-4 kHz, so 8 kHz is exactly twice that and the lowest rate that can carry the
+# band at all.  Below it the top of the display is above Nyquist and there is nothing
+# there to show.
+#
+# The ceiling is practical rather than theoretical.  Nothing in a powerline arc lives
+# above a few kHz, so a higher rate buys no signal and costs proportionally more of
+# everything -- and the fixed-size ring buffer holds 3.2 s at 48 kHz against 9.6 s at
+# 16 kHz, so history shrinks as the rate climbs.  48 kHz is the highest rate a file
+# from elsewhere is likely to arrive at, and the lowest useful history this can give.
+MIN_SAMPLE_RATE = 8000
+MAX_SAMPLE_RATE = 48000
+
+
+def validate_sample_rate(sample_rate: int, source: str, configured_rate: int) -> None:
+    """Refuse a sample rate the rest of the program cannot honestly work at.
+
+    Refusing rather than coping, because both directions produce a display and a set
+    of numbers that look perfectly plausible and are not: below the floor the top of
+    the waterfall is above Nyquist and shows an empty band, and far above the ceiling
+    the buffer holds too little history for the analyzer to acquire the way it was
+    tuned to.  `source` names where the rate came from, since a bad one can arrive
+    from the config or from a file somebody sent.
+
+    `configured_rate` is this station's own, which is what the remedy suggests
+    resampling to -- a file at the rate the rest of the setup already uses is the one
+    that needs the least explaining afterwards.  It is a suggestion rather than an
+    instruction because anything inside the band will work.
+    """
+    if not MIN_SAMPLE_RATE <= sample_rate <= MAX_SAMPLE_RATE:
+        raise ValueError(
+            f'{source} has a sample rate of {sample_rate} Hz, and this program works '
+            f'only where {MIN_SAMPLE_RATE} <= sample rate <= {MAX_SAMPLE_RATE} Hz. '
+            f'Below {MIN_SAMPLE_RATE} Hz the 4 kHz the display and the analysis look '
+            'at is above Nyquist, so there is nothing there to measure; above '
+            f'{MAX_SAMPLE_RATE} Hz the fixed-size buffer holds too little history to '
+            'acquire reliably, and a powerline arc has nothing to say up there '
+            f'anyway. Consider resampling it to {configured_rate} Hz, the rate this '
+            'station is configured to use.')
+
 
 @dataclass
 class AudioConfig:
@@ -26,7 +68,8 @@ class AudioConfig:
     # runtime — the device is always resolved by input_device_name, which is stable
     # across reboots. Indices change whenever Windows reassigns USB/audio devices.
     device_index: int | None = None
-    # Audio sample rate in Hz. Must match what the input device is configured to use.
+    # Audio sample rate in Hz. Must match what the input device is configured to use,
+    # and must lie between MIN_SAMPLE_RATE and MAX_SAMPLE_RATE -- see validate_sample_rate.
     sample_rate: int = 16000
     # Powerline interference pulse rate in Hz: 120 for 60 Hz grid (North America),
     # 100 for 50 Hz grid (Europe and most of the rest of the world).
@@ -125,12 +168,25 @@ class RecordingConfig:
 
 
 @dataclass
+class RenderConfig:
+    # Where to find ffmpeg, for --render.  Empty searches PATH, which is where a
+    # normal install puts it, so most people never set this.  It is here for the
+    # installs that don't land on PATH -- a Windows build unzipped into a folder, or
+    # winget's shim directory before the terminal has been restarted.
+    #
+    # ffmpeg is needed for --render and for nothing else.  A monitor that never
+    # renders never looks for it, so leaving this empty costs nothing.
+    ffmpeg_path: str = ''
+
+
+@dataclass
 class BuzzConfig:
     audio: AudioConfig = field(default_factory=AudioConfig)
     station: StationConfig = field(default_factory=StationConfig)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
+    render: RenderConfig = field(default_factory=RenderConfig)
 
     @classmethod
     def from_toml(cls, path: Path | str = CONFIG_PATH) -> 'BuzzConfig':
@@ -142,6 +198,7 @@ class BuzzConfig:
             weather=_load_section(data, 'weather', WeatherConfig),
             server=_load_section(data, 'server', ServerConfig),
             recording=_load_section(data, 'recording', RecordingConfig),
+            render=_load_section(data, 'render', RenderConfig),
         )
 
 

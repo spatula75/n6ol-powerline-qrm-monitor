@@ -16,13 +16,16 @@ counts, and a new untested helper added outside these three classes will still
 trip the coverage gate.
 """
 
+import logging
 from collections import deque
 from collections.abc import Sequence
+from dataclasses import dataclass
 from math import ceil
+from typing import TYPE_CHECKING
 
 import numpy as np
-from PySide6.QtCore import Qt, QTimer
-from PySide6.QtGui import QColor, QFont, QImage, QPainter
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -35,48 +38,58 @@ from PySide6.QtWidgets import (
 from buzz.analyzer import AnalysisResult, ContinuousAnalyzer
 from buzz.config import BuzzConfig
 from buzz.dsp import SILENCE_DBFS
+from buzz.fonts import display_family, display_font
 from buzz.playback import FilePlaybackPipeline
 from buzz.recorder import EventRecorder, RecorderStatus
 from buzz.sampler import RingBufferPipeline
 from buzz.scope import SCOPE_H, ScopeWidget
 
+if TYPE_CHECKING:
+    # For the hint on DisplayRecorder only.  buzz.render is loaded lazily by main, so
+    # that a monitor nobody asked to render never imports it and never looks for
+    # ffmpeg; importing it here at runtime would defeat that for every run that opens
+    # a window.
+    from buzz.render import RenderSession
+
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Waterfall constants
 # ---------------------------------------------------------------------------
 
-_CHUNK = RingBufferPipeline.CHUNK_SIZE      # 512 samples
+_BUFFER_CHUNK = RingBufferPipeline.CHUNK_SIZE   # 512 samples; the ring buffer's unit
 _MAX_HZ = 4000                              # top of the displayed band
 _FREQ_LABEL_HZ = 500                        # frequency-axis tick spacing
-_PIXELS_PER_BIN = 5                         # horizontal scale (128 bins → 640 px at 16 kHz)
+_PIXELS_PER_BIN = 5                         # horizontal scale (128 bins → 640 px)
 _N_ROWS = 48                                # history rows (~4.8 s at 100 ms/frame)
 _PIXELS_PER_ROW = 2                         # vertical scale; _WINDOW_H is derived from this
 _UPDATE_MS = 100
 # Initial guess for the floor-to-ceiling span (8 S-units), used only until the
 # colour scale has real data to auto-range from — see _update_color_range().
 _DB_RANGE = 48.0
-# FFT magnitude that corresponds to 0 dBFS: a full-scale (amplitude 32768)
-# sinusoid centred on a bin peaks at 32768 × _CHUNK/4.  The /4 is two factors
-# of 1/2: the Hann window attenuates the average sample to half (its coherent
-# gain, sum(w)/N = 1/2), and a real sinusoid's FFT splits its magnitude
-# equally between the +f and −f bins.
-_DB_REF = 20 * np.log10(32768.0 * _CHUNK / 4)
-# Maps a broadband time-domain level onto the per-bin level the display reads.
-#
-# _DB_REF references a *tone* (coherent gain, sum(w)/N = 1/2).  Broadband noise
-# obeys the window's *noise power* gain instead: a signal of RMS sigma gives
-# E|X|^2 = sigma^2 * sum(w^2) = sigma^2 * 3N/8.  So the per-bin reading for noise is
-#     20log10(sigma) + 10log10(3N/8) - 20log10(32768 * N/4)
-# and undoing the tone reference to recover a per-bin anchor from a known broadband
-# floor needs 20log10(N/4) - 10log10(3N/8) = 10log10(N/6).  Using 10log10(3N/8)
-# here instead applies the window's ENBW (1.5 bins) in the wrong direction and
-# lands the anchor 20log10(1.5) = 3.5 dB low.
-_DB_FFT_NOISE_CORR = float(10 * np.log10(_CHUNK / 6))  # ≈ 19.3 dB
 _AXIS_H = 24                                # pixels reserved for frequency axis / header
 
-# Periodic (not symmetric) Hann: spectral analysis wants w[n] = 0.5(1-cos(2*pi*n/N)),
-# which is what np.hanning(N+1)[:-1] gives.  np.hanning(N) alone divides by N-1 and
-# is the symmetric variant intended for filter design.
-_HANN = np.hanning(_CHUNK + 1)[:-1].astype(np.float32)
+# The FFT window, in *time* rather than in samples.  32 ms, which is what 512 samples
+# meant at the 16 kHz this program records at, so nothing about the display changes at
+# that rate.
+#
+# Fixing the duration rather than the sample count is what makes the display behave the
+# same at any sample rate, and the reason is one cancellation: the number of bins
+# covering 0-_MAX_HZ is _MAX_HZ * N / rate, and N is rate * _WINDOW_SECONDS, so the
+# rate cancels and the bin count is _MAX_HZ * _WINDOW_SECONDS at every rate.  Frequency
+# resolution comes out at 31.2 Hz per bin from 8 kHz to 48 kHz.
+#
+# Fixing the sample count instead — which is what this did — makes the window a shorter
+# slice of time as the rate rises, so resolution falls with it: at 44.1 kHz a 512-sample
+# window is 86 Hz per bin and covers 0-4 kHz in 46 bins, giving a waterfall 230 px wide
+# instead of 640.
+_WINDOW_SECONDS = 512 / 16000
+# Constant by the cancellation above, which is the point: the waterfall is the same
+# width whatever the audio arrives at.  8 kHz is the lowest rate that can supply it —
+# N is 256 there, Nyquist lands exactly on bin 128, and the display is the whole
+# spectrum up to 4 kHz with nothing to spare.  Below that the top of the display would
+# be above Nyquist; see config.MIN_SAMPLE_RATE.
+DISPLAY_BINS = round(_MAX_HZ * _WINDOW_SECONDS)   # 128
 # How much of each FFT frame is re-analysed in the next one.  Hann tapers to zero at
 # both edges, so without overlap an impulse's contribution depends entirely on where
 # it happens to land: a third of arrival positions are attenuated by more than 12 dB,
@@ -89,8 +102,65 @@ _HANN = np.hanning(_CHUNK + 1)[:-1].astype(np.float32)
 # harmonic content up to twice the fundamental, so it takes 75% to flatten — measured
 # ripple there is exactly 0.00 dB.
 _FFT_OVERLAP = 0.75
-# Samples the FFT window advances between consecutive frames.
-_FFT_ADVANCE_SAMPLES = round(_CHUNK * (1 - _FFT_OVERLAP))   # 128
+
+
+@dataclass(frozen=True, eq=False)
+class SpectrumGeometry:
+    """Everything about the FFT that depends on the sample rate.
+
+    These were module constants computed from a fixed 512-sample window, which was
+    correct only at 16 kHz.  They are derived per rate now — see spectrum_geometry —
+    and the dB references are unchanged in form: both already had the window length in
+    them, so taking N from the rate keeps them right rather than making them right.
+    """
+
+    sample_rate: int
+    window: int             # N, the FFT length
+    advance: int            # samples between consecutive frames
+    display_bins: int
+    hz_per_bin: float
+    hann: np.ndarray
+    # FFT magnitude corresponding to 0 dBFS: a full-scale (amplitude 32768) sinusoid
+    # centred on a bin peaks at 32768 × N/4.  The /4 is two factors of 1/2: the Hann
+    # window attenuates the average sample to half (its coherent gain, sum(w)/N = 1/2),
+    # and a real sinusoid's FFT splits its magnitude equally between the +f and −f bins.
+    db_ref: float
+    # Maps a broadband time-domain level onto the per-bin level the display reads.
+    #
+    # db_ref references a *tone* (coherent gain, sum(w)/N = 1/2).  Broadband noise
+    # obeys the window's *noise power* gain instead: a signal of RMS sigma gives
+    # E|X|^2 = sigma^2 * sum(w^2) = sigma^2 * 3N/8.  So the per-bin reading for noise is
+    #     20log10(sigma) + 10log10(3N/8) - 20log10(32768 * N/4)
+    # and undoing the tone reference to recover a per-bin anchor from a known broadband
+    # floor needs 20log10(N/4) - 10log10(3N/8) = 10log10(N/6).  Using 10log10(3N/8)
+    # here instead applies the window's ENBW (1.5 bins) in the wrong direction and
+    # lands the anchor 20log10(1.5) = 3.5 dB low.
+    noise_correction: float
+
+
+def spectrum_geometry(sample_rate: int) -> SpectrumGeometry:
+    """Work out the FFT geometry for `sample_rate`.
+
+    A pure function of the rate, so the whole of it can be checked without a display —
+    which matters more than usual here, because getting it wrong moves every dB the
+    waterfall shows rather than breaking anything visibly.
+    """
+    window = round(sample_rate * _WINDOW_SECONDS)
+    # Periodic (not symmetric) Hann: spectral analysis wants w[n] = 0.5(1-cos(2*pi*n/N)),
+    # which is what np.hanning(N+1)[:-1] gives.  np.hanning(N) alone divides by N-1 and
+    # is the symmetric variant intended for filter design.
+    hann = np.hanning(window + 1)[:-1].astype(np.float32)
+    return SpectrumGeometry(
+        sample_rate=sample_rate,
+        window=window,
+        advance=round(window * (1 - _FFT_OVERLAP)),
+        # Clamped at Nyquist for the floor case: at 8 kHz the two are equal.
+        display_bins=min(DISPLAY_BINS, window // 2),
+        hz_per_bin=sample_rate / window,
+        hann=hann,
+        db_ref=float(20 * np.log10(32768.0 * window / 4)),
+        noise_correction=float(10 * np.log10(window / 6)),
+    )
 
 # ---------------------------------------------------------------------------
 # Auto-ranging colour scale
@@ -226,6 +296,9 @@ _SMOOTH_N        = 5                      # recent results averaged for meter di
 # Recording toolbar: one row of controls across the top of the window, tall enough
 # for a standard push button and no taller — the displays are the point of the
 # window, and the bar is deliberately the least interesting thing in it.
+# The window's own background, which is only ever seen in the gaps between panels.
+# Matches the toolbar strip so the whole window is one colour behind its contents.
+_WINDOW_BG   = '#141414'
 _BAR_H       = 28
 _BAR_BG      = '#141414'                  # slightly darker than the panels below it
 _BAR_TEXT    = '#c8c8c8'
@@ -360,7 +433,8 @@ def _aggregate_meter_history(history: Sequence[AnalysisResult]) -> tuple[float, 
     return nf_dbm, sum(r.signal_dbm for r in locked_results) / len(locked_results), True
 
 
-def _mean_spectrum_db(samples: np.ndarray, display_bins: int, db_min: float) -> np.ndarray | None:
+def _mean_spectrum_db(samples: np.ndarray, geometry: SpectrumGeometry,
+                      db_min: float) -> np.ndarray | None:
     """Mean FFT power in dB across overlapped frames of samples, or None if
     there isn't a single whole frame.
 
@@ -374,18 +448,19 @@ def _mean_spectrum_db(samples: np.ndarray, display_bins: int, db_min: float) -> 
     averaging is defined on power, and averaging magnitude biases the result
     10log10(4/pi) = 1.05 dB low for Gaussian noise while converging more slowly.
     """
-    if len(samples) < _CHUNK:
+    window, advance = geometry.window, geometry.advance
+    if len(samples) < window:
         return None
-    n_frames = (len(samples) - _CHUNK) // _FFT_ADVANCE_SAMPLES + 1
-    start = len(samples) - ((n_frames - 1) * _FFT_ADVANCE_SAMPLES + _CHUNK)
-    frames = np.lib.stride_tricks.sliding_window_view(samples[start:], _CHUNK)[::_FFT_ADVANCE_SAMPLES]
-    windowed = frames.astype(np.float32) * _HANN
-    spectrum = np.fft.rfft(windowed, axis=1)[:, :display_bins]
+    n_frames = (len(samples) - window) // advance + 1
+    start = len(samples) - ((n_frames - 1) * advance + window)
+    frames = np.lib.stride_tricks.sliding_window_view(samples[start:], window)[::advance]
+    windowed = frames.astype(np.float32) * geometry.hann
+    spectrum = np.fft.rfft(windowed, axis=1)[:, :geometry.display_bins]
     power = (spectrum.real ** 2 + spectrum.imag ** 2).mean(axis=0)
     # log10(0) bins are replaced by db_min via the where(); suppress the -inf warning.
-    # 10*log10(power) is the same scale as 20*log10(magnitude), so _DB_REF still applies.
+    # 10*log10(power) is the same scale as 20*log10(magnitude), so db_ref still applies.
     with np.errstate(divide='ignore'):
-        return np.where(power > 0, 10 * np.log10(power) - _DB_REF, db_min)
+        return np.where(power > 0, 10 * np.log10(power) - geometry.db_ref, db_min)
 
 
 def _spectrum_percentiles(history_db: np.ndarray, floor_percentile: float,
@@ -456,25 +531,31 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._pipeline = pipeline
-        # Bin geometry follows the configured sample rate: each FFT bin spans
-        # sample_rate/_CHUNK Hz, and we display 0–_MAX_HZ (clamped to the rfft
-        # output length for sample rates below 2×_MAX_HZ).
+        # The FFT window is a fixed span of time, so the bin count — and therefore this
+        # widget's width — is the same at every sample rate.  See spectrum_geometry.
         sample_rate = config.audio.sample_rate
-        self._hz_per_bin = sample_rate / _CHUNK
-        self._display_bins = min(_MAX_HZ * _CHUNK // sample_rate, _CHUNK // 2)
-        self._label_interval = max(1, round(_FREQ_LABEL_HZ / self._hz_per_bin))
+        self._geometry = spectrum_geometry(sample_rate)
+        self._hz_per_bin = self._geometry.hz_per_bin
+        self._display_bins = self._geometry.display_bins
         # First guess for the colour floor, from the station's configured
         # calibration.  It only has to hold up for the first couple of seconds —
         # _update_color_range() replaces it with the real, live level once actual
         # data starts arriving.
         floor_seed = (config.station.noise_floor
                       - config.station.audio_rf_conversion_db
-                      - _DB_FFT_NOISE_CORR)
-        # Audio pulled per display row, rounded up to whole chunks so consecutive
-        # rows overlap slightly (4 chunks = 128 ms per 100 ms row at 16 kHz) rather
-        # than leaving gaps.  _mean_spectrum_db then splits this into 50%-overlapped
-        # FFT frames (7 frames of 512 for 2048 samples).
-        self._frame_chunks = ceil(_UPDATE_MS / 1000 * sample_rate / _CHUNK)
+                      - self._geometry.noise_correction)
+        # Audio pulled per display row, rounded up to whole ring-buffer chunks so
+        # consecutive rows overlap slightly (4 chunks = 128 ms per 100 ms row at
+        # 16 kHz) rather than leaving gaps.  _mean_spectrum_db then splits this into
+        # overlapped FFT frames.
+        #
+        # At least one whole FFT window, or there would be nothing to transform: the
+        # window grows with the sample rate while a display row stays 100 ms, and at
+        # 8 kHz a row is 800 samples against a 256-sample window, so this only ever
+        # binds if either number is changed.
+        row_chunks = ceil(_UPDATE_MS / 1000 * sample_rate / _BUFFER_CHUNK)
+        self._frame_chunks = max(row_chunks,
+                                 ceil(self._geometry.window / _BUFFER_CHUNK))
         self._last_total_samples = 0
         self._history_db = np.full((_N_ROWS, self._display_bins), floor_seed, dtype=np.float32)
         # Smoothed colour floor/ceiling that paintEvent renders with; see
@@ -497,8 +578,8 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
             return
         self._last_total_samples = total
 
-        samples = self._pipeline.get_snapshot(self._frame_chunks * _CHUNK)
-        db = _mean_spectrum_db(samples, self._display_bins, self._color_floor)
+        samples = self._pipeline.get_snapshot(self._frame_chunks * _BUFFER_CHUNK)
+        db = _mean_spectrum_db(samples, self._geometry, self._color_floor)
         if db is None:
             return
         self._history_db[1:] = self._history_db[:-1]
@@ -526,14 +607,26 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         # Frequency axis
         painter.fillRect(0, 0, w, _AXIS_H, QColor(30, 30, 30))
         painter.setPen(QColor(200, 200, 200))
-        painter.setFont(QFont('Monospace', 8))
+        painter.setFont(display_font(8))
         bin_px = w / self._display_bins
-        # Stop before _display_bins: a tick at that bin sits at x == width, drawing
-        # its label off the right edge of the widget.
-        for b in range(0, self._display_bins, self._label_interval):
-            x = int(b * bin_px)
+        # Ticks at round frequencies, placed at whichever bin is nearest — rather than
+        # at every Nth bin, labelled with that bin's own centre frequency.  A bin is
+        # only 31.25 Hz wide at 16 kHz because the rate divides neatly; at 11025 it is
+        # 31.232 Hz, so every sixteenth bin fell at 499.7, 999.4, 1499.1 and the axis
+        # read "499 Hz  999 Hz  1499 Hz".  The tick moves by under half a bin — less
+        # than a pixel here — and the number says what it means.
+        #
+        # Stop short of the last bin: a tick placed there sits at x == width, which puts
+        # its line on the edge and its label wholly outside the widget.  The bound is
+        # the frequency at which the rounding above would first reach that bin, half a
+        # bin below its centre — so at every supported rate the axis ends at 3500 rather
+        # than drawing a 4000 nobody can see.
+        last_placeable_hz = (self._display_bins - 0.5) * self._hz_per_bin
+        for step in range(ceil(last_placeable_hz / _FREQ_LABEL_HZ)):
+            hz = step * _FREQ_LABEL_HZ
+            x = int(round(hz / self._hz_per_bin) * bin_px)
             painter.drawLine(x, _AXIS_H - 5, x, _AXIS_H)
-            painter.drawText(x + 2, _AXIS_H - 6, f'{int(b * self._hz_per_bin)} Hz')
+            painter.drawText(x + 2, _AXIS_H - 6, f'{hz} Hz')
 
         # Waterfall — each row is exactly _PIXELS_PER_ROW pixels tall.
         # Map dB-above-floor onto the 0–255 colormap index range: _color_floor
@@ -593,7 +686,7 @@ class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt displ
 
         # Header row (matches waterfall axis bar)
         painter.fillRect(0, 0, self.width(), _AXIS_H, QColor(30, 30, 30))
-        painter.setFont(QFont('Monospace', 7, QFont.Weight.Bold))
+        painter.setFont(display_font(7, bold=True))
         painter.setPen(QColor(180, 180, 180))
         painter.drawText(nf_x, 0, _BAR_W, _AXIS_H,
                          Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, 'NF')
@@ -623,7 +716,7 @@ class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt displ
         # from the integer gap division fall above the top bar, not below S1.
         base_gap = (_SEGS_H - _N_SEGS * _SEG_H) // (_N_SEGS - 1)
 
-        painter.setFont(QFont('Monospace', 7))
+        painter.setFont(display_font(7))
 
         for i in range(_N_SEGS):
             # i=0 → S1 (bottom), i=12 → S9+40 (top)
@@ -686,11 +779,19 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
         # which would leave the strip in the desktop's default grey with only the
         # button and label dark.
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        # The same face the panels below are drawn in.  A stylesheet that sets a size
+        # but no family gets whatever Qt's default UI font is — Tahoma on Windows —
+        # so the strip sat in a proportional face above two panels of monospace, and
+        # its status line is a time index and a file name, which is exactly the sort
+        # of text that wants fixed advances.  Quoted because the family name has
+        # spaces in it, which a stylesheet otherwise reads as a list.
+        family = display_family()
         self.setStyleSheet(
             f'QWidget {{ background: {_BAR_BG}; }}'
-            f'QLabel {{ color: {_BAR_TEXT}; font-size: 11px; }}'
+            f'QLabel {{ color: {_BAR_TEXT}; font-family: "{family}"; font-size: 11px; }}'
             f'QPushButton {{ color: {_BAR_TEXT}; background: #2a2a2a; border: 1px solid #3c3c3c;'
-            '               border-radius: 3px; padding: 2px 10px; font-size: 11px; }'
+            f'               border-radius: 3px; padding: 2px 10px; font-family: "{family}";'
+            '                font-size: 11px; }'
             # Armed and recording both read as spent rather than inviting: the action
             # this button offers has already been taken, and a lit button suggests
             # otherwise.  It stays clickable — dimmed is not disabled — because it is
@@ -837,7 +938,8 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
     def __init__(self, pipeline: RingBufferPipeline, analyzer: ContinuousAnalyzer,
                  config: BuzzConfig, always_on_top: bool = False,
                  recorder: EventRecorder | None = None,
-                 playback: FilePlaybackPipeline | None = None) -> None:
+                 playback: FilePlaybackPipeline | None = None,
+                 show_controls: bool = True) -> None:
         super().__init__()
         self.setWindowTitle('N6OL Powerline QRM Monitor')
         if always_on_top:
@@ -847,6 +949,16 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         self._recorder = recorder
 
         container = QWidget()
+        # The gaps between panels are this widget showing through, and without an
+        # explicit colour they are whatever the platform's palette happens to be:
+        # measured at (30,30,30) under a dark Windows theme and (239,239,239) under
+        # Qt's offscreen platform, which has no desktop theme to read.  So the same
+        # recording rendered windowed and headless came out with dark and near-white
+        # separators — and two operators with different Windows themes would get
+        # different videos of the same event.  Stating it makes a render depend on the
+        # program rather than on the machine it ran on.
+        container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        container.setStyleSheet(f'background: {_WINDOW_BG};')
         outer = QVBoxLayout(container)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(_PANEL_GAP)
@@ -861,7 +973,12 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         # sample rate or displayed bandwidth ever changes.
         self._scope  = ScopeWidget(pipeline, analyzer, config, self._waterfall.width())
         self._meters = MeterPanelWidget(analyzer)
-        self._bar    = RecordingBarWidget(recorder, playback, analyzer)
+        # Not built at all when the controls are hidden, rather than built and made
+        # invisible: --render wants the strip gone from the frame, and a widget that
+        # still exists is a widget still polling its subject twice a second to update
+        # a label nobody will see.
+        self._bar    = RecordingBarWidget(recorder, playback, analyzer) \
+            if show_controls else None
 
         stack = QVBoxLayout()
         stack.setContentsMargins(0, 0, 0, 0)
@@ -871,12 +988,17 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
 
         row.addLayout(stack)
         row.addWidget(self._meters)
-        outer.addWidget(self._bar)
+        if self._bar is not None:
+            outer.addWidget(self._bar)
         outer.addLayout(row)
 
         self.setCentralWidget(container)
+        # The bar takes its layout spacing with it when it goes, so a hidden-controls
+        # window is _BAR_H + _PANEL_GAP shorter -- 734x248 rather than 734x284.  Both
+        # dimensions stay even, which yuv420p requires.
+        bar_height = _BAR_H + _PANEL_GAP if self._bar is not None else 0
         self.setFixedSize(self._waterfall.width() + _PANEL_GAP + self._meters.width(),
-                          _BAR_H + _PANEL_GAP + _WINDOW_H)
+                          bar_height + _WINDOW_H)
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         """A toggles the scope's display mode; R records; Space and M drive playback.
@@ -894,13 +1016,42 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         if key == Qt.Key.Key_A:
             self._scope.toggle_mode()
             return
+        # Every key that acts on the toolbar goes to Qt instead when there is no
+        # toolbar.  A render is a fixed pass over a file, and a keystroke that paused
+        # or restarted it halfway would land in the video.
+        if self._bar is None:
+            super().keyPressEvent(event)
+            return
         if not ((key == Qt.Key.Key_R and self._bar.toggle())
                 or (key == Qt.Key.Key_Space and self._bar.toggle_play())
                 or (key == Qt.Key.Key_M and self._bar.toggle_mute())):
             super().keyPressEvent(event)
 
+    def frame_bytes(self) -> bytes:
+        """The window's pixels, in the byte order buzz.render expects.
+
+        Format_RGBA8888 is asked for explicitly rather than taken as it comes: Qt's
+        native 32-bit format is byte-swapped between big- and little-endian machines,
+        and a raw pipe has no way to say which one produced it.  Naming the format
+        pins the byte order on both ends.
+
+        Scanlines can carry padding to a 4-byte boundary, which at this width they do
+        not, but a frame with padding left in would shift every subsequent row and
+        turn the video into diagonal mush -- a spectacular failure from a silent
+        cause, so it is handled rather than assumed away.
+        """
+        image = self.grab().toImage().convertToFormat(QImage.Format.Format_RGBA8888)
+        row_bytes = image.width() * 4
+        stride = image.bytesPerLine()
+        raw = bytes(image.constBits())
+        if stride == row_bytes:
+            return raw
+        return b''.join(raw[y * stride:y * stride + row_bytes]
+                        for y in range(image.height()))
+
     def closeEvent(self, event) -> None:  # noqa: N802
-        self._bar.stop()
+        if self._bar is not None:
+            self._bar.stop()
         self._scope.stop()
         self._waterfall.stop()
         self._meters.stop()
@@ -911,3 +1062,99 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
             self._recorder.stop()
         self._pipeline.close()
         event.accept()
+
+
+class DisplayRecorder(QObject):  # pragma: no cover -- requires a live Qt display
+    """Feeds the window's pixels to a render session, at the display's own cadence.
+
+    Ticks at _UPDATE_MS, the same 10 fps the waterfall and scope repaint at, because
+    capturing faster than the picture changes only produces duplicate frames — and the
+    output grid is where duplicates are added, deliberately and more cheaply.
+
+    Each capture is stamped with where playback had reached, and the two are read
+    together on purpose.  The display is always showing analysis of audio slightly
+    past, and reading position alongside the pixels carries that lag into the file
+    unchanged, so the video matches the program rather than an idealised version of
+    it.  Correcting the lag would mean measuring it and subtracting, which is work
+    nobody asked for and would make the render stop being a record of what happened.
+    """
+
+    finished = Signal()
+
+    def __init__(self, window: MainWindow, playback: FilePlaybackPipeline,
+                 session: 'RenderSession', parent: QObject | None = None) -> None:
+        super().__init__(parent)
+        self._window = window
+        self._playback = playback
+        self._session = session
+        self.error: Exception | None = None
+        self._done = False
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._tick)
+
+    def start(self) -> None:
+        """Capture the opening frame, then start the transport, then start ticking.
+
+        In that order, and the order is the whole point.  Starting playback first and
+        capturing whenever the event loop next got round to it lost the opening of
+        every render: a cold start compiles the FFT path and lays out the window,
+        which can hold the loop for over a second while the audio is already running.
+
+        Capturing once here forces that work to happen before the transport moves, so
+        the file begins at position zero — and the frame it begins with is a display
+        that has already been painted, rather than a blank one.
+        """
+        self._session.start()
+        self._session.submit(self._window.frame_bytes(), 0.0)
+        self._playback.start()
+        self._timer.start(_UPDATE_MS)
+
+    def stop(self) -> None:
+        """Close the file off wherever it has got to.  Idempotent."""
+        if self._done:
+            return
+        self._done = True
+        self._timer.stop()
+        try:
+            self._session.finish(self._playback.duration)
+        except Exception as exc:                        # noqa: BLE001
+            self._fail(exc)
+        self.finished.emit()
+
+    def _tick(self) -> None:
+        if self._done:
+            return
+        try:
+            # Position first, then the pixels.  The picture was painted by the
+            # widgets' own timers before this tick began, so it describes a moment at
+            # or before the position just read; taking position afterwards would
+            # claim the frame belongs later than it does.  The difference is a
+            # millisecond or two against a 33 ms grid, but it costs nothing to have
+            # the bias point the right way.
+            position = self._playback.position
+            self._session.submit(self._window.frame_bytes(), position)
+        except Exception as exc:                        # noqa: BLE001
+            self._fail(exc)
+            self.finished.emit()
+            return
+        if self._playback.finished:
+            self.stop()
+
+    def _fail(self, exc: Exception) -> None:
+        """Record the failure and stop, rather than letting it reach the event loop.
+
+        An exception raised inside a Qt slot does not propagate anywhere useful — it
+        is printed and swallowed, leaving a window that looks fine and a video that
+        silently stopped growing.  The caller checks `error` and reports it.
+
+        The session is aborted rather than finished, and it has to be aborted here:
+        setting `_done` is what makes the later stop() a no-op, so this is the last
+        code that will touch the encoder.  Without it ffmpeg is left holding an open
+        pipe and outlives the monitor, since Python does not reap its children on the
+        way out.
+        """
+        self.error = exc
+        self._done = True
+        self._timer.stop()
+        self._session.abort()
+        logger.error('Rendering stopped: %s', exc)

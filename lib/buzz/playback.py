@@ -42,16 +42,38 @@ _BYTES_PER_SAMPLE = 2   # 16-bit PCM, matching what the recorder writes
 _INT16_MIN, _INT16_MAX = -32768, 32767
 
 
+def sample_rate_of(path: Path | str) -> int:
+    """The sample rate from a .wav's header, without reading its audio.
+
+    Exists so that a rate this program cannot work at is refused before anything
+    expensive runs -- the loudness probe reads the whole recording, and being turned
+    away after that has happened is a poor experience.  A header read is a few bytes.
+    """
+    with wave.open(str(path), 'rb') as wav:
+        return wav.getframerate()
+
+
 def load_wav(path: Path | str) -> tuple[np.ndarray, int]:
     """Read a 16-bit PCM .wav into (int16 samples, sample rate).
 
-    Multi-channel files are reduced to channel 0 rather than mixed down, matching
-    what the live pipeline does with a stereo input device.
+    Any .wav plays, not only ones this program recorded — somebody being sent a file
+    by another operator is exactly who this is for.  One property is refused rather
+    than coped with: the **sample width**.  The whole signal chain is int16 end to end,
+    and silently converting a 24- or 32-bit file would put what is measured here at
+    odds with what the same audio measured live — a display and a set of numbers that
+    look entirely plausible and are wrong.
 
-    Sample width is the one property worth refusing outright: the whole signal
-    chain is int16 end to end, and silently converting a 24- or 32-bit file would
-    invite a mismatch between what the analyzer measures here and what it measured
-    live.  Recordings this program produces are always 16-bit.
+    The sample rate is *not* checked here, nor by the pipeline.  Reading a .wav and
+    deciding what rates this program will work at are different questions, and the
+    second belongs to main -- which is where a file from outside becomes something the
+    analyzer and display will be asked to work on.  A caller that only wants the
+    samples back, which the tests do at rates chosen for speed, should not be subject
+    to a policy about the display's bandwidth.
+
+    Multi-channel files are reduced to channel 0 rather than mixed down, matching what
+    the live pipeline does with a stereo input device, and say so in the log — a file
+    from elsewhere is quite likely to be stereo, and "half of what you sent was
+    ignored" should not have to be inferred from a reading that came out low.
     """
     with wave.open(str(path), 'rb') as wav:
         if wav.getsampwidth() != _BYTES_PER_SAMPLE:
@@ -59,6 +81,18 @@ def load_wav(path: Path | str) -> tuple[np.ndarray, int]:
                 f'{path}: expected 16-bit PCM audio, got {wav.getsampwidth() * 8}-bit')
         channels = wav.getnchannels()
         sample_rate = wav.getframerate()
+        if channels > 1:
+            # Said out loud rather than left to the docstring.  A file from somebody
+            # else is quite likely to be stereo, and "we analysed half of what you
+            # sent" is not something anyone should have to infer from a number that
+            # came out lower than expected.  Channel 0 rather than a downmix, matching
+            # what the live pipeline does with a stereo input device -- mixing would
+            # average the arc against whatever the other channel happens to hold.
+            logger.warning(
+                '%s has %d channels; analysing channel 0 only, not a downmix: the '
+                'same thing the live monitor does with a stereo input. Extract another '
+                'channel to mono first if the interference is not on this one.',
+                Path(path).name, channels)
         frames = wav.readframes(wav.getnframes())
     samples = np.frombuffer(frames, dtype='<i2')[::channels]
     # astype() rather than the frombuffer view: that view is read-only and borrows
@@ -112,8 +146,11 @@ class FilePlaybackPipeline(RingBufferPipeline):
 
     def __init__(self, path: Path | str, muted: bool = True,
                  gain_db: float = 0.0) -> None:
-        super().__init__()
-        self._samples, self.sample_rate = load_wav(path)
+        # Loaded before the buffer is sized, because the buffer is sized in seconds
+        # and only the file knows what rate those seconds are at.
+        samples, sample_rate = load_wav(path)
+        super().__init__(sample_rate)
+        self._samples, self.sample_rate = samples, sample_rate
         self.path = Path(path)
         # Partial trailing chunks are dropped: consumers read whole chunks, and up
         # to 32 ms of audio at the very end of a file is not worth a special case.
@@ -166,6 +203,21 @@ class FilePlaybackPipeline(RingBufferPipeline):
         """
         if not self._started:
             self._started = True
+            # The deadline schedule starts here, not at construction.  _rebase() in
+            # __init__ sets an origin, and everything between building the pipeline
+            # and starting it — building the window, wiring the analyzer, compiling
+            # the FFT kernels on first use — is time the schedule counts as already
+            # spent.  The feeder then finds every early chunk overdue and delivers
+            # them as fast as the loop runs.
+            #
+            # Measured before this: 1.5 s between construction and start() put the
+            # transport at 1.600 s within 100 ms of starting.  That is a second and a
+            # half of a recording pushed through the analyzer at whatever speed the
+            # machine manages, which is not what any of it was tuned against, and it
+            # defeats the deliberate delay in main.py that waits for the window so
+            # the opening of an event is not heard before there is anywhere to see it.
+            with self._state:
+                self._rebase()
             self._thread.start()
 
     # ------------------------------------------------------------------ public

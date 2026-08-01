@@ -26,10 +26,29 @@ from buzz.dsp import SILENCE_DBFS, amplitude_to_dbm
 
 logger = logging.getLogger(__name__)
 
-# Ring buffer capacity in chunks.  300 × 512 samples at 16 kHz ≈ 9.6 seconds — ample
-# headroom for the continuous analyzer's 1 s aligned windows and the waterfall's
+# Ring buffer capacity, in seconds of audio rather than in samples.
+#
+# 9.6 s is exactly what 300 chunks of 512 came to at 16 kHz, so nothing changes at the
+# rate this program records at.  Expressing it as a duration is what makes it mean the
+# same thing at any other rate: a fixed sample count held 9.6 s at 16 kHz but only 3.5 s
+# at 44.1 kHz, silently shrinking both the analyzer's history and the lead-in an event
+# recording opens with, in proportion to a setting nobody would connect to either.
+#
+# Ample headroom for the continuous analyzer's 1 s aligned windows and the waterfall's
 # per-frame reads, and it doubles as the lead-in an event recording opens with.
-_BUFFER_CHUNKS = 300
+_BUFFER_SECONDS = 9.6
+# What the buffer costs at the top of the supported range: 48 kHz needs 900 chunks of
+# 512 int16 samples, which is under a megabyte.  Sizing by duration is affordable
+# precisely because the audio is mono and narrow-band.
+_DEFAULT_SAMPLE_RATE = 16000
+
+
+def buffer_chunks(sample_rate: int, chunk_size: int) -> int:
+    """How many chunks hold _BUFFER_SECONDS of audio at `sample_rate`.
+
+    Rounded up, so the buffer is never shorter than the duration it promises.
+    """
+    return ceil(_BUFFER_SECONDS * sample_rate / chunk_size)
 
 
 @dataclass(frozen=True)
@@ -62,8 +81,13 @@ class RingBufferPipeline:
 
     CHUNK_SIZE = 512  # samples per callback block; 32 ms at 16 kHz
 
-    def __init__(self) -> None:
-        self._buffer: deque[np.ndarray] = deque(maxlen=_BUFFER_CHUNKS)
+    def __init__(self, sample_rate: int = _DEFAULT_SAMPLE_RATE) -> None:
+        # The rate is taken here only to size the buffer: this class never looks at the
+        # audio, and a subclass that knows the real rate passes it up.  Sizing in
+        # seconds is what keeps the analyzer's history and a recording's lead-in
+        # meaning the same thing whatever the audio arrives at.
+        self._chunks = buffer_chunks(sample_rate, self.CHUNK_SIZE)
+        self._buffer: deque[np.ndarray] = deque(maxlen=self._chunks)
         self._condition = threading.Condition()
         # Monotonic count of samples ever captured; keeps growing after the deque
         # starts discarding old chunks.  Global sample positions derived from this
@@ -159,7 +183,7 @@ class RingBufferPipeline:
         slides, so a second spent waiting is a second of run-up that has fallen off
         the far end by the time the file opens.
         """
-        return _BUFFER_CHUNKS * self.CHUNK_SIZE
+        return self._chunks * self.CHUNK_SIZE
 
     @property
     def total_samples(self) -> int:
@@ -208,7 +232,7 @@ class AudioPipeline(RingBufferPipeline):
     """Live audio input: a PortAudio callback filling the shared ring buffer."""
 
     def __init__(self, config: BuzzConfig, device_index: int) -> None:
-        super().__init__()
+        super().__init__(config.audio.sample_rate)
 
         def _callback(indata: np.ndarray, frames: int,
                       time: object, status: sd.CallbackFlags) -> None:
