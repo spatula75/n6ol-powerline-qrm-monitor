@@ -229,5 +229,8 @@ key_path = "C:\\Users\\yourname\\.buzz\\buzz.pem"
 # Either the binary or the folder holding it will do.  A copy found on PATH is used
 # in preference to this setting.
 #
-# ffmpeg_path = "C:\Users\yourname\AppData\Local\Microsoft\WinGet\Links"
+# Backslashes are doubled because TOML reads a single one as the start of an escape
+# sequence, exactly as in key_path above.
+#
+# ffmpeg_path = "C:\\Users\\yourname\\AppData\\Local\\Microsoft\\WinGet\\Links"
 ffmpeg_path = ""

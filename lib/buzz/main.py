@@ -33,14 +33,14 @@ import sys
 import threading
 import wave
 from pathlib import Path
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from buzz import wavmeta
 from buzz.analyzer import ContinuousAnalyzer
 from buzz.collector import Collector
 from buzz.config import CONFIG_PATH, BuzzConfig, validate_sample_rate
 from buzz.csv_store import CsvStore
-from buzz.playback import FilePlaybackPipeline, resolve_playback_path
+from buzz.playback import FilePlaybackPipeline, resolve_playback_path, sample_rate_of
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher
 from buzz.recorder import EventRecorder
@@ -51,6 +51,16 @@ from buzz.weather import (
     OpenMeteoWeatherClient,
     WeatherClient,
 )
+
+if TYPE_CHECKING:
+    # Named for the type hints below and imported nowhere at runtime.  Qt and the
+    # render code are both loaded lazily inside the functions that need them -- Qt so
+    # that --headless needs no display libraries, the render code so that a monitor
+    # nobody asked to render cannot fail on ffmpeg -- and a module-scope import here
+    # would undo both.
+    from PySide6.QtWidgets import QApplication
+
+    from buzz.waterfall import DisplayRecorder, MainWindow
 
 faulthandler.enable()
 
@@ -139,6 +149,27 @@ def _adopt(name: str, filename: str, configured: _T, recorded: _T | None) -> _T:
     return recorded
 
 
+def check_playback_source(path: Path, config: BuzzConfig) -> None:
+    """Refuse a file the rest of the run cannot use, from its header alone.
+
+    Checked here rather than deeper down: this is where a file from outside becomes
+    something the analyzer and display will be asked to work on, and the only place
+    that knows it came from a person rather than from a test.
+
+    Called twice on the way to a render, and deliberately.  main() calls it first, so
+    that a rate this program does not work at is refused before the loudness probe has
+    read the whole recording for nothing; open_playback_pipeline calls it as well, so
+    the guarantee belongs to the function rather than to the order main happens to do
+    things in.  Two header reads is not a cost worth reasoning about.
+    """
+    try:
+        validate_sample_rate(sample_rate_of(path), path.name, config.audio.sample_rate)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    except (OSError, wave.Error) as exc:
+        raise SystemExit(f'Cannot play back {path}: {exc}') from exc
+
+
 def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
                            gain_db: float = 0.0,
                            rf_conversion_db: float | None = None) -> FilePlaybackPipeline:
@@ -164,18 +195,11 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
     somewhere to watch it — see FilePlaybackPipeline.start().
     """
     path = resolve_playback_path(name, config.recording.directory_path(config.station))
+    check_playback_source(path, config)
     try:
         pipeline = FilePlaybackPipeline(path, muted=muted, gain_db=gain_db)
     except (OSError, wave.Error, ValueError) as exc:
         raise SystemExit(f'Cannot play back {path}: {exc}') from exc
-
-    # Checked here rather than deeper down: this is where a file from outside becomes
-    # something the analyzer and display will be asked to work on, and the only place
-    # that knows it came from a person rather than from a test.
-    try:
-        validate_sample_rate(pipeline.sample_rate, path.name)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
 
     settings = wavmeta.read_settings(path)
     pulse_rate = wavmeta.setting(settings, 'pulse_rate', int)
@@ -271,8 +295,9 @@ def _wait_until_interrupted(pipeline: RingBufferPipeline, analyzer: ContinuousAn
         pipeline.close()
 
 
-def _start_render(args, config: BuzzConfig, window, pipeline: FilePlaybackPipeline,
-                  app) -> object:  # pragma: no cover -- needs a live Qt display
+def _start_render(args: argparse.Namespace, config: BuzzConfig, window: 'MainWindow',
+                  pipeline: FilePlaybackPipeline,
+                  app: 'QApplication') -> 'DisplayRecorder':  # pragma: no cover -- needs a live Qt display
     """Wire an .mp4 render onto a playback session, and quit when it finishes.
 
     Imported here rather than at module scope so that a monitor run without --render
@@ -362,16 +387,16 @@ def _check_render_output(output: Path) -> None:
     RenderSession checks this too, but not until it is built -- by which time the
     loudness probe has read the whole recording for nothing.  One stat here saves that,
     and gives the operator the message before a window opens.
+
+    The refusal itself comes from buzz.render so that both checks say the same thing;
+    imported here rather than at module scope for the usual reason, that a run without
+    --render should never load the render code at all.
     """
-    if output.exists():
-        raise RuntimeError(
-            f'Cannot render: {output} already exists. Renders never overwrite, because '
-            'one takes as long as the recording it replays and silently destroying a '
-            'previous one would be an expensive mistake. Delete it or pass a different '
-            '--render filename.')
+    from buzz.render import refuse_existing_output
+    refuse_existing_output(output)
 
 
-def _resolve_gain(args, config: BuzzConfig, source: Path) -> float:  # pragma: no cover
+def _resolve_gain(args: argparse.Namespace, config: BuzzConfig, source: Path) -> float:
     """Settle on a playback gain before anything is built that depends on it.
 
     Deliberately early.  The gain is a constructor argument to the playback pipeline
@@ -464,11 +489,12 @@ def main() -> None:  # pragma: no cover
             logger.warning('--enable-recording is ignored during playback.')
         source = resolve_playback_path(
             args.playback, config.recording.directory_path(config.station))
-        # Everything that can refuse a render happens here, before a window opens or a
-        # file is created, cheapest check first: is ffmpeg there, would we overwrite
-        # something, and only then the measurement that has to read the whole file.
+        # Everything that can refuse a run happens here, before a window opens or a
+        # file is created, and in order of what each one costs: a .wav header read,
+        # then a stat, then the measurement that has to read the whole recording.
         # A failure now costs a message; the same failure later costs a half-written
         # .mp4 and a window that appears and dies.
+        check_playback_source(source, config)
         try:
             if args.render:
                 _check_render_output(Path(args.render))

@@ -33,7 +33,7 @@ MIN_SAMPLE_RATE = 8000
 MAX_SAMPLE_RATE = 48000
 
 
-def validate_sample_rate(sample_rate: int, source: str) -> None:
+def validate_sample_rate(sample_rate: int, source: str, configured_rate: int) -> None:
     """Refuse a sample rate the rest of the program cannot honestly work at.
 
     Refusing rather than coping, because both directions produce a display and a set
@@ -42,17 +42,22 @@ def validate_sample_rate(sample_rate: int, source: str) -> None:
     the buffer holds too little history for the analyzer to acquire the way it was
     tuned to.  `source` names where the rate came from, since a bad one can arrive
     from the config or from a file somebody sent.
+
+    `configured_rate` is this station's own, which is what the remedy suggests
+    resampling to -- a file at the rate the rest of the setup already uses is the one
+    that needs the least explaining afterwards.  It is a suggestion rather than an
+    instruction because anything inside the band will work.
     """
     if not MIN_SAMPLE_RATE <= sample_rate <= MAX_SAMPLE_RATE:
         raise ValueError(
-            f'{source} has a sample rate of {sample_rate} Hz, outside the '
-            f'{MIN_SAMPLE_RATE}-{MAX_SAMPLE_RATE} Hz this program works in. '
+            f'{source} has a sample rate of {sample_rate} Hz, and this program works '
+            f'only where {MIN_SAMPLE_RATE} <= sample rate <= {MAX_SAMPLE_RATE} Hz. '
             f'Below {MIN_SAMPLE_RATE} Hz the 4 kHz the display and the analysis look '
-            f'at is above Nyquist, so there is nothing there to measure; above '
+            'at is above Nyquist, so there is nothing there to measure; above '
             f'{MAX_SAMPLE_RATE} Hz the fixed-size buffer holds too little history to '
             'acquire reliably, and a powerline arc has nothing to say up there '
-            'anyway. Resample the file to 16000 Hz, which is the rate at which this '
-            'program records.')
+            f'anyway. Consider resampling it to {configured_rate} Hz, the rate this '
+            'station is configured to use.')
 
 
 @dataclass

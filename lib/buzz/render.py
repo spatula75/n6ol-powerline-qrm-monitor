@@ -53,6 +53,12 @@ _AUDIO_RATE = 48000                      # 16 kHz plays badly in some browsers
 PIXEL_FORMAT = 'rgba'
 _BYTES_PER_PIXEL = 4
 
+# How long an abandoned ffmpeg is given to exit before it is killed.  Generous: with
+# its input closed it still has to flush the encoder and rewrite the file for
+# +faststart, and that is worth waiting out for a render of any length.  Nothing is
+# waiting on it -- the operator has already been told the render failed.
+_ABORT_SECONDS = 10.0
+
 
 class RenderError(FfmpegError):
     """Rendering could not start, or ffmpeg failed while it ran.
@@ -86,6 +92,22 @@ def rendered_comment(source: Path, gain_db: float) -> str | None:
     return wavmeta.format_settings(settings)
 
 
+def refuse_existing_output(output: Path) -> None:
+    """Raise unless `output` is free to write.
+
+    Two places need this and they need to say the same thing: main checks it before
+    the loudness probe reads the whole recording for nothing, and RenderSession checks
+    it again at start() as the backstop for the file appearing in between.  Keeping
+    the wording here means the two cannot drift apart.
+    """
+    if output.exists():
+        raise RenderError(
+            f'Cannot render to {output}: it already exists. Renders never overwrite, '
+            'because one takes as long as the recording it replays and silently '
+            'destroying a previous one would be an expensive mistake. Delete it or '
+            'pass a different --render filename.')
+
+
 def _source_channels(source: Path) -> int:
     """How many channels the recording has, for the audio filter and the layout.
 
@@ -101,21 +123,6 @@ def _source_channels(source: Path) -> int:
         logger.warning('Could not read the channel count from %s (%s); assuming mono.',
                        source, exc)
         return 1
-
-
-def even(size: int) -> int:
-    """Round a frame dimension up to the next even number.
-
-    yuv420p subsamples chroma by two in each direction, so an odd dimension is not
-    encodable and x264 refuses the whole render.  The display is sized from the sample
-    rate — it shows 0-4 kHz, so the bin count and therefore the width follow the rate —
-    and at 11025 Hz that lands on 185 bins, 925 px of waterfall and a 1019 px window.
-    Every other common rate happens to come out even.
-
-    Padding belongs here rather than in the display: the constraint is the codec's, and
-    the window should not change shape to suit a feature the operator may never use.
-    """
-    return size + (size % 2)
 
 
 def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: int,
@@ -137,6 +144,15 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
       prompting, since a prompt on a pipe would simply hang.  The caller checks first
       so the operator gets a better message than ffmpeg's; this is the backstop for
       the file appearing in between.
+
+    Nothing pads the frame to an even size, which yuv420p needs, because nothing can
+    arrive odd: the only rate-dependent term in the window is the waterfall's width,
+    and the FFT window is a fixed span of time, so the bin count is 4000 Hz x 32 ms =
+    128 at every rate config.validate_sample_rate admits.  The window is therefore
+    734x248 always.  This did once vary -- a fixed 512-sample window gave 185 bins at
+    11025 Hz and a 1019 px window that x264 refused outright -- and the integration
+    tier renders at four rates and asserts both dimensions, so a layout change that
+    brought it back would fail there rather than here.
     """
     # Two decimals rather than repr: a measured gain is a float like
     # 18.990000000000002, and that lands both in the filter argument and in the logged
@@ -159,11 +175,6 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
     # 2" refuses the render outright -- so anything else is left to the guess, which
     # gets it right.
     layout = ('-channel_layout', 'mono') if source_channels == 1 else ()
-    # A no-op at every sample rate whose geometry lands even, which is all of the
-    # common ones bar 11025 Hz.  Stated as explicit numbers rather than ceil(iw/2)*2
-    # so the logged command still says exactly what it did.
-    padded = (('-vf', f'pad={even(width)}:{even(height)}')
-              if (width % 2 or height % 2) else ())
     return [
         ffmpeg, '-hide_banner', '-loglevel', 'warning', '-n',
         # Input 0: our frames, already conformed to a constant rate.  rawvideo carries
@@ -173,7 +184,6 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
         '-s', f'{width}x{height}', '-r', str(FRAME_RATE), '-i', 'pipe:0',
         # Input 1: the recording itself, untouched, on its own timeline.
         *layout, '-i', str(source),
-        *padded,
         '-c:v', 'libx264', '-preset', _PRESET, '-crf', str(_CRF),
         '-profile:v', _PROFILE, '-pix_fmt', 'yuv420p', '-g', str(_KEYFRAME_INTERVAL),
         '-c:a', 'aac', '-b:a', _AUDIO_BITRATE, '-ar', str(_AUDIO_RATE), *gain,
@@ -304,12 +314,7 @@ class RenderSession:
 
     def start(self) -> None:
         """Launch ffmpeg and open the pipe.  Refuses to overwrite an existing file."""
-        if self.output.exists():
-            raise RenderError(
-                f'Cannot start rendering: {self.output} already exists. Renders never '
-                'overwrite, because one takes as long as the recording it replays and '
-                'silently destroying a previous one would be an expensive mistake. '
-                'Delete it or pass a different --render filename.')
+        refuse_existing_output(self.output)
         logger.info('Rendering to %s — %dx%d at %d fps', self.output,
                     self.width, self.height, FRAME_RATE)
         # Logged in full, and at info: this is the one thing worth having in the log
@@ -380,6 +385,37 @@ class RenderSession:
                 'first. The command that was run is in the log at INFO, and can be '
                 'pasted into a terminal to reproduce it by hand.')
         logger.info('Rendered %d frames to %s', self._grid.filled, self.output)
+
+    def abort(self) -> None:
+        """Give up on the render, leaving no ffmpeg behind.  Idempotent, never raises.
+
+        finish() is the orderly close and reports what ffmpeg made of it.  This is for
+        the path where a frame could not be captured at all: the render is already
+        lost, so there is nothing left to report, and the only thing still worth doing
+        is not walking away from a subprocess holding an open pipe.  Python does not
+        reap children at exit, so without this an abandoned ffmpeg outlives the monitor
+        and goes on writing a file nobody wants.
+
+        The .mp4 it leaves has no moov atom and will not open.  That is expected — the
+        caller's message already says the partial file should be deleted.
+        """
+        if self._process is None:
+            return
+        process, self._process = self._process, None
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass                  # already gone, which is the outcome wanted here
+        try:
+            process.wait(timeout=_ABORT_SECONDS)
+        except subprocess.TimeoutExpired:
+            # It had its chance to shut down on its own.  Nothing it is still doing is
+            # of any use, since the file was never going to be playable.
+            logger.warning('ffmpeg did not exit within %g s of the render being '
+                           'abandoned; killing it.', _ABORT_SECONDS)
+            process.kill()
+            process.wait()
 
     def _write(self, count: int) -> None:
         """Write `count` copies of the frame currently on screen."""

@@ -241,4 +241,3 @@ def analyze_window(mono_amplitude_array: np.ndarray, sample_rate: int, pulse_rat
     noise_amplitude = float(average_pulse_amplitude(
         mono_amplitude_array, samples_per_pulse, n_pulses, noise_phase))
     return WindowAnalysis(signal_amplitude, noise_amplitude, peak_phase, noise_phase)
-

@@ -42,10 +42,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   figure, including `0`, overrides that; watching a replay does not imply it at all.
   The gain used is written into the video's metadata as `render_gain_db`, so the file
   says how far its audio was raised.
+- `--audio-rf-conversion-db DB` supplies the level calibration for a replay, for the
+  runs where the file cannot. A `.wav` this program recorded carries its own and needs
+  no help; one from another operator is otherwise analysed with the figure configured
+  for this station, which may be nothing like the receiver that made it — so every dBm
+  and S-unit reading is wrong by an unknown amount while looking entirely plausible.
+  Supply the sending station's figure and it is used for that run alone. It takes
+  precedence over one recorded in the file, and says so when it does, since the
+  recording's own is normally the right one.
 - `[render] ffmpeg_path` for installs that do not land on PATH. ffmpeg is needed for
   `--render` and the loudness probe that feeds it, and for nothing else; a monitor
   that never renders never looks for it, so leaving this empty costs nothing.
-
 - Recordings now note `lead_in_max_seconds` beside `lead_in_seconds`, so the latter can
   be read honestly. The ring buffer keeps sliding while `min_lock_seconds` is waited
   out, so the lead-in can never exceed the buffer's capacity less that wait — and a
@@ -70,7 +77,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as an empty box. The face is now loaded from a file into the application's own font
   database, where neither the platform nor the machine's installed fonts can reach it.
   DejaVu Sans Mono comes with matplotlib, already a dependency, so nothing new ships.
-
 - The waterfall keeps its size and its frequency resolution at any sample rate. Its FFT
   window is a fixed span of *time* now — 32 ms, which is what 512 samples meant at
   16 kHz — rather than a fixed number of samples, so the bin count works out at

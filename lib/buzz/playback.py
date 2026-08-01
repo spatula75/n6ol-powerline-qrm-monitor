@@ -42,23 +42,33 @@ _BYTES_PER_SAMPLE = 2   # 16-bit PCM, matching what the recorder writes
 _INT16_MIN, _INT16_MAX = -32768, 32767
 
 
+def sample_rate_of(path: Path | str) -> int:
+    """The sample rate from a .wav's header, without reading its audio.
+
+    Exists so that a rate this program cannot work at is refused before anything
+    expensive runs -- the loudness probe reads the whole recording, and being turned
+    away after that has happened is a poor experience.  A header read is a few bytes.
+    """
+    with wave.open(str(path), 'rb') as wav:
+        return wav.getframerate()
+
+
 def load_wav(path: Path | str) -> tuple[np.ndarray, int]:
     """Read a 16-bit PCM .wav into (int16 samples, sample rate).
 
     Any .wav plays, not only ones this program recorded — somebody being sent a file
-    by another operator is exactly who this is for.  Two properties are refused rather
-    than coped with, because both would otherwise produce a display and a set of
-    numbers that look entirely plausible and are wrong:
+    by another operator is exactly who this is for.  One property is refused rather
+    than coped with: the **sample width**.  The whole signal chain is int16 end to end,
+    and silently converting a 24- or 32-bit file would put what is measured here at
+    odds with what the same audio measured live — a display and a set of numbers that
+    look entirely plausible and are wrong.
 
-    - **Sample width.**  The whole signal chain is int16 end to end, and silently
-      converting a 24- or 32-bit file would put what is measured here at odds with
-      what the same audio measured live.
     The sample rate is *not* checked here, nor by the pipeline.  Reading a .wav and
     deciding what rates this program will work at are different questions, and the
-    second belongs to main.open_playback_pipeline -- the function that takes a file
-    from outside and makes sense of it.  A caller that only wants the samples back,
-    which the tests do at rates chosen for speed, should not be subject to a policy
-    about the display's bandwidth.
+    second belongs to main -- which is where a file from outside becomes something the
+    analyzer and display will be asked to work on.  A caller that only wants the
+    samples back, which the tests do at rates chosen for speed, should not be subject
+    to a policy about the display's bandwidth.
 
     Multi-channel files are reduced to channel 0 rather than mixed down, matching what
     the live pipeline does with a stereo input device, and say so in the log — a file

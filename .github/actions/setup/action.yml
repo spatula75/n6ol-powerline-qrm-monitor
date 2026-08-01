@@ -55,8 +55,7 @@ runs:
         set -euo pipefail
         for tool in ffmpeg ffprobe; do
           command -v "$tool" >/dev/null || {
-            echo "::error::$tool is not on PATH after installation. The render "\
-                 "integration tests need both, and would otherwise skip silently."
+            echo "::error::$tool is not on PATH after installation. The render integration tests need both, and would otherwise skip silently."
             exit 1
           }
           echo "$tool: $(command -v "$tool")"

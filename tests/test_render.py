@@ -416,3 +416,110 @@ class TestRenderedComment:
         command = ffmpeg_command('ffmpeg', tmp_path / 'o.mp4', tmp_path / 'i.wav',
                                  WIDTH, HEIGHT, gain_db=18.990000000000002)
         assert command[command.index('-af') + 1] == 'volume=18.99dB'
+
+
+class TestAbort:
+    """Giving up on a render without leaving ffmpeg behind.
+
+    The path that reaches this is a frame capture that raised, which has already lost
+    the render.  Nothing here is about salvaging the file -- it cannot be salvaged,
+    having no moov atom -- and everything is about the subprocess: Python does not reap
+    its children on the way out, so an ffmpeg still holding an open pipe outlives the
+    monitor and goes on writing.
+    """
+
+    @pytest.fixture
+    def started(self, tmp_path):
+        process = MagicMock()
+        process.stdin = MagicMock()
+        process.wait.return_value = 0
+        with patch('buzz.ffmpeg.shutil.which', return_value='ffmpeg'), \
+             patch('buzz.render.subprocess.Popen', return_value=process):
+            session = RenderSession(tmp_path / 'out.mp4', tmp_path / 'in.wav',
+                                    WIDTH, HEIGHT)
+            session.start()
+            yield session, process
+
+    def test_it_closes_the_pipe(self, started):
+        """ffmpeg reads until end of input; without this it waits forever for frames
+        that are never coming."""
+        session, process = started
+        session.abort()
+        process.stdin.close.assert_called_once()
+
+    def test_it_waits_for_the_process(self, started):
+        session, process = started
+        session.abort()
+        process.wait.assert_called_once()
+
+    def test_it_writes_no_further_frames(self, started):
+        """finish() pads out to the recording's length; abort() must not, or a render
+        that failed at two seconds still costs the whole encode."""
+        session, process = started
+        session.submit(frame(1), 0.0)
+        process.stdin.write.reset_mock()
+        session.abort()
+        process.stdin.write.assert_not_called()
+
+    def test_it_is_idempotent(self, started):
+        """Wired to a Qt failure path and to aboutToQuit, so it can be reached twice."""
+        session, process = started
+        session.abort()
+        session.abort()
+        process.wait.assert_called_once()
+
+    def test_a_session_never_started_is_a_no_op(self, tmp_path):
+        with patch('buzz.ffmpeg.shutil.which', return_value='ffmpeg'):
+            session = RenderSession(tmp_path / 'o.mp4', tmp_path / 'i.wav',
+                                    WIDTH, HEIGHT)
+        session.abort()          # no process to abandon; must not raise
+
+    def test_it_does_not_raise_when_the_pipe_is_already_gone(self, started):
+        """The usual reason for aborting is that ffmpeg died, which is exactly when
+        closing its stdin fails. Raising here would replace the real error."""
+        session, process = started
+        process.stdin.close.side_effect = OSError('already closed')
+        session.abort()
+
+    def test_an_ffmpeg_that_will_not_exit_is_killed(self, started):
+        """Nothing it is still doing is of any use, and the monitor is on its way out."""
+        session, process = started
+        process.wait.side_effect = [subprocess.TimeoutExpired('ffmpeg', 10.0), 0]
+        session.abort()
+        process.kill.assert_called_once()
+
+    def test_finish_after_an_abort_does_nothing(self, started):
+        """aboutToQuit calls stop(), which calls finish(); the abort has already
+        disowned the process, and waiting on it again would hang."""
+        session, process = started
+        session.abort()
+        process.wait.reset_mock()
+        session.finish(10.0)
+        process.wait.assert_not_called()
+
+
+class TestSourceChannels:
+    """How many channels the recording has, read from the header before encoding."""
+
+    def _wav(self, path: Path, channels: int) -> Path:
+        import wave
+        with wave.open(str(path), 'wb') as handle:
+            handle.setnchannels(channels)
+            handle.setsampwidth(2)
+            handle.setframerate(16000)
+            handle.writeframes(b'\x00\x00' * 64 * channels)
+        return path
+
+    def test_a_recording_this_program_made_is_mono(self, tmp_path):
+        assert render._source_channels(self._wav(tmp_path / 'mono.wav', 1)) == 1
+
+    def test_a_file_from_elsewhere_may_be_stereo(self, tmp_path):
+        """Which is what puts pan=mono|c0=c0 in the filter chain: the display was drawn
+        from channel 0, so the video's audio has to be channel 0 too."""
+        assert render._source_channels(self._wav(tmp_path / 'stereo.wav', 2)) == 2
+
+    def test_the_channel_count_reaches_the_command(self, tmp_path):
+        source = self._wav(tmp_path / 'stereo.wav', 2)
+        with patch('buzz.ffmpeg.shutil.which', return_value='ffmpeg'):
+            session = RenderSession(tmp_path / 'out.mp4', source, WIDTH, HEIGHT)
+        assert 'pan=mono|c0=c0' in ' '.join(session._command)

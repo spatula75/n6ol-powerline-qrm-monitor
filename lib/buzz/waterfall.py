@@ -21,6 +21,7 @@ from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from math import ceil
+from typing import TYPE_CHECKING
 
 import numpy as np
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
@@ -42,6 +43,13 @@ from buzz.playback import FilePlaybackPipeline
 from buzz.recorder import EventRecorder, RecorderStatus
 from buzz.sampler import RingBufferPipeline
 from buzz.scope import SCOPE_H, ScopeWidget
+
+if TYPE_CHECKING:
+    # For the hint on DisplayRecorder only.  buzz.render is loaded lazily by main, so
+    # that a monitor nobody asked to render never imports it and never looks for
+    # ffmpeg; importing it here at runtime would defeat that for every run that opens
+    # a window.
+    from buzz.render import RenderSession
 
 logger = logging.getLogger(__name__)
 
@@ -601,15 +609,20 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         painter.setPen(QColor(200, 200, 200))
         painter.setFont(display_font(8))
         bin_px = w / self._display_bins
-        # Stop before _display_bins: a tick at that bin sits at x == width, drawing
-        # its label off the right edge of the widget.
         # Ticks at round frequencies, placed at whichever bin is nearest — rather than
         # at every Nth bin, labelled with that bin's own centre frequency.  A bin is
         # only 31.25 Hz wide at 16 kHz because the rate divides neatly; at 11025 it is
         # 31.232 Hz, so every sixteenth bin fell at 499.7, 999.4, 1499.1 and the axis
         # read "499 Hz  999 Hz  1499 Hz".  The tick moves by under half a bin — less
         # than a pixel here — and the number says what it means.
-        for step in range(int(self._display_bins * self._hz_per_bin) // _FREQ_LABEL_HZ + 1):
+        #
+        # Stop short of the last bin: a tick placed there sits at x == width, which puts
+        # its line on the edge and its label wholly outside the widget.  The bound is
+        # the frequency at which the rounding above would first reach that bin, half a
+        # bin below its centre — so at every supported rate the axis ends at 3500 rather
+        # than drawing a 4000 nobody can see.
+        last_placeable_hz = (self._display_bins - 0.5) * self._hz_per_bin
+        for step in range(ceil(last_placeable_hz / _FREQ_LABEL_HZ)):
             hz = step * _FREQ_LABEL_HZ
             x = int(round(hz / self._hz_per_bin) * bin_px)
             painter.drawLine(x, _AXIS_H - 5, x, _AXIS_H)
@@ -1069,7 +1082,7 @@ class DisplayRecorder(QObject):  # pragma: no cover -- requires a live Qt displa
     finished = Signal()
 
     def __init__(self, window: MainWindow, playback: FilePlaybackPipeline,
-                 session: object, parent: QObject | None = None) -> None:
+                 session: 'RenderSession', parent: QObject | None = None) -> None:
         super().__init__(parent)
         self._window = window
         self._playback = playback
@@ -1133,8 +1146,15 @@ class DisplayRecorder(QObject):  # pragma: no cover -- requires a live Qt displa
         An exception raised inside a Qt slot does not propagate anywhere useful — it
         is printed and swallowed, leaving a window that looks fine and a video that
         silently stopped growing.  The caller checks `error` and reports it.
+
+        The session is aborted rather than finished, and it has to be aborted here:
+        setting `_done` is what makes the later stop() a no-op, so this is the last
+        code that will touch the encoder.  Without it ffmpeg is left holding an open
+        pipe and outlives the monitor, since Python does not reap its children on the
+        way out.
         """
         self.error = exc
         self._done = True
         self._timer.stop()
+        self._session.abort()
         logger.error('Rendering stopped: %s', exc)

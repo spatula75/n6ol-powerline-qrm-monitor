@@ -4,6 +4,7 @@ import argparse
 import logging
 import time
 import wave
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import buzz.main as main_module
@@ -179,6 +180,7 @@ class TestPlaybackWritesNothing:
         with patch('sys.argv', ['buzz', '--headless', *argv]), \
              patch('buzz.main.CONFIG_PATH', tmp_path / 'no-such-config.toml'), \
              patch('buzz.main.configure_logging'), \
+             patch('buzz.main.check_playback_source'), \
              patch('buzz.main.open_playback_pipeline') as playback, \
              patch('buzz.main.AudioSampler') as sampler, \
              patch('buzz.main.ContinuousAnalyzer'), \
@@ -606,3 +608,119 @@ class TestSuppliedCalibration:
             self._play(tmp_path, BuzzConfig(), rf_conversion_db=-32.0,
                        audio_rf_conversion_db=-32.0)
         assert 'records a calibration of' not in caplog.text
+
+
+class TestResolveGain:
+    """Which gain a run ends up with, and when measuring is worth the wait.
+
+    The distinction the branching exists for: a render is a file somebody else will
+    watch, so it is measured by default; watching a replay is the operator listening
+    live with the volume control to hand, so it is not.  An explicit figure -- zero
+    included -- beats both, which is why the flag defaults to None rather than 0.0.
+    """
+
+    def _args(self, playback_gain=None, render=None) -> argparse.Namespace:
+        return argparse.Namespace(playback_gain=playback_gain, render=render)
+
+    def test_watching_without_a_figure_applies_none(self):
+        assert main_module._resolve_gain(
+            self._args(), BuzzConfig(), Path('event.wav')) == 0.0
+
+    def test_a_figure_is_used_as_given(self):
+        assert main_module._resolve_gain(
+            self._args(playback_gain=12.5), BuzzConfig(), Path('event.wav')) == 12.5
+
+    def test_an_explicit_zero_overrides_the_render_default(self):
+        """The case that needs None to exist at all: "--playback-gain 0 --render" has
+        to mean "leave it alone", not "you said nothing, so measure it"."""
+        with patch('buzz.loudness.resolve_gain') as measured:
+            gain = main_module._resolve_gain(
+                self._args(playback_gain=0.0, render='out.mp4'),
+                BuzzConfig(), Path('event.wav'))
+        assert gain == 0.0
+        assert not measured.called, (
+            'A gain was given explicitly, so nothing should have been measured -- the '
+            'probe reads the whole recording and the operator did not ask for it.')
+
+    def test_rendering_without_a_figure_measures(self):
+        config = BuzzConfig()
+        with patch('buzz.ffmpeg.find_ffmpeg', return_value='/usr/bin/ffmpeg'), \
+                patch('buzz.loudness.resolve_gain', return_value=19.0) as measured:
+            gain = main_module._resolve_gain(
+                self._args(render='out.mp4'), config, Path('event.wav'))
+        assert gain == 19.0
+        assert measured.call_args.args == (Path('event.wav'), '/usr/bin/ffmpeg')
+
+    def test_auto_is_honoured_without_a_render(self):
+        """--playback-gain auto is allowed on its own; it just is not the default."""
+        with patch('buzz.ffmpeg.find_ffmpeg', return_value='/usr/bin/ffmpeg'), \
+                patch('buzz.loudness.resolve_gain', return_value=16.4):
+            gain = main_module._resolve_gain(
+                self._args(playback_gain=main_module.AUTO_GAIN),
+                BuzzConfig(), Path('event.wav'))
+        assert gain == 16.4
+
+    def test_the_configured_ffmpeg_path_is_offered_to_the_search(self):
+        config = BuzzConfig()
+        config.render.ffmpeg_path = 'C:/ffmpeg/bin'
+        with patch('buzz.ffmpeg.find_ffmpeg', return_value='C:/ffmpeg/bin/ffmpeg.exe') as found, \
+                patch('buzz.loudness.resolve_gain', return_value=1.0):
+            main_module._resolve_gain(self._args(render='out.mp4'), config,
+                                      Path('event.wav'))
+        assert found.call_args.args == ('C:/ffmpeg/bin',)
+
+    def test_an_unset_path_searches_only_the_path(self):
+        """Empty means "look on PATH", and find_ffmpeg takes None for that -- passing
+        the empty string through would have it check a directory named ''."""
+        with patch('buzz.ffmpeg.find_ffmpeg', return_value='/usr/bin/ffmpeg') as found, \
+                patch('buzz.loudness.resolve_gain', return_value=1.0):
+            main_module._resolve_gain(self._args(render='out.mp4'), BuzzConfig(),
+                                      Path('event.wav'))
+        assert found.call_args.args == (None,)
+
+
+class TestCheckPlaybackSource:
+    """The header-only refusal that runs before anything expensive.
+
+    Separate from open_playback_pipeline so that main() can run it first: the loudness
+    probe reads the whole recording, and being turned away after waiting for that is a
+    poor way to find out the file was never going to work.
+    """
+
+    def _wav(self, path, sample_rate) -> Path:
+        with wave.open(str(path), 'wb') as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(sample_rate)
+            handle.writeframes(b'\x00\x00' * 128)
+        return path
+
+    def test_a_rate_in_the_band_passes(self, tmp_path):
+        main_module.check_playback_source(
+            self._wav(tmp_path / 'ok.wav', 16000), BuzzConfig())
+
+    def test_a_rate_outside_the_band_exits(self, tmp_path):
+        """SystemExit rather than a traceback: being sent a 96 kHz file is an ordinary
+        thing to happen, not a bug in the monitor."""
+        with pytest.raises(SystemExit, match='96000 Hz'):
+            main_module.check_playback_source(
+                self._wav(tmp_path / 'fast.wav', 96000), BuzzConfig())
+
+    def test_the_exit_message_suggests_this_stations_rate(self, tmp_path):
+        config = BuzzConfig()
+        config.audio.sample_rate = 48000
+        with pytest.raises(SystemExit, match='resampling it to 48000 Hz'):
+            main_module.check_playback_source(
+                self._wav(tmp_path / 'slow.wav', 4000), config)
+
+    def test_a_file_that_is_not_a_wav_exits_naming_it(self, tmp_path):
+        """Reached before the pipeline is built, so this is the first thing to notice a
+        mistyped or corrupt file and has to report it as well as the pipeline would."""
+        broken = tmp_path / 'not-audio.wav'
+        broken.write_bytes(b'this is not a RIFF file')
+        with pytest.raises(SystemExit, match='Cannot play back'):
+            main_module.check_playback_source(broken, BuzzConfig())
+
+    def test_a_missing_file_exits(self, tmp_path):
+        with pytest.raises(SystemExit):
+            main_module.check_playback_source(tmp_path / 'gone.wav', BuzzConfig())

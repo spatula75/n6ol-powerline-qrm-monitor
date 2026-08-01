@@ -696,4 +696,3 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
 
     def stop(self) -> None:
         self._timer.stop()
-

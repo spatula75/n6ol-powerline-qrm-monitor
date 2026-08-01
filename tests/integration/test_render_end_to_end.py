@@ -233,24 +233,40 @@ class TestAudioAndVideoLineUp:
             'source, so a gap means frames were lost or duplicated rather than that '
             'the clocks drifted.')
 
-    def test_the_video_lasts_as_long_as_the_replay_did(self, rendered):
+    def test_the_video_lasts_as_long_as_the_replay_did(self, rendered, recorded_event):
         """The bug this catches shipped a 1.5 s video from a 3 s recording while
         reporting the right number of frames: the first capture arrived after startup
         had already burned a second, and the frames before it were counted but never
-        written."""
-        streams = probe(rendered)
-        source = float(streams['format']['duration'])
-        video = float(streams['video']['duration'])
-        # Within a couple of frames, not within ten percent.  Whatever is lost at the
-        # start is lost silently and the file still looks plausible, so the tolerance
-        # has to be tight enough to notice a fraction of a second.  The legitimate
-        # shortfall is one dropped partial chunk, 32 ms, plus grid rounding.
-        assert source - video < 0.2, (
-            f'Video is {video:.3f}s against a {source:.3f}s recording, {source - video:.3f}s '
-            'short. Time missing from the front means the first frame was captured '
-            'after playback had already moved: DisplayRecorder.start() captures one '
-            'frame before starting the transport, and RenderSession.submit() backfills '
-            'if that first frame still arrives late. Check both are intact.')
+        written.
+
+        The recording is measured, not the render.  Every length inside the .mp4 agrees
+        with every other one however much was lost, because -shortest trims the audio to
+        whatever the video came to -- so a render missing its first second is a
+        perfectly self-consistent file, and the only number that can contradict it comes
+        from outside.
+        """
+        recording = float(probe(recorded_event)['format']['duration'])
+        video = float(probe(rendered)['video']['duration'])
+        # Tight on purpose, and safe to be: a loaded machine cannot shorten the file.
+        # A late tick duplicates the previous frame to cover the gap it left, and
+        # finish() pads out to the recording's length whatever the ticks did, so the
+        # only way to come up short is frames counted at the front and never written --
+        # which is precisely the failure.  What remains is the partial trailing chunk
+        # playback drops, 32 ms, plus up to half a frame of grid rounding.
+        #
+        # The margin is real rather than assumed.  Intact, this measured 7 ms short.
+        # With the opening capture removed from DisplayRecorder.start() and the
+        # backfill removed from RenderSession.submit(), it came out 165 ms short and
+        # failed here -- while the two tests either side of this one went on passing,
+        # which is why the recording has to be measured from outside the .mp4.  Load
+        # only widens that gap: a slower machine takes longer to reach the first tick.
+        assert recording - video < 0.1, (
+            f'Video is {video:.3f}s against a {recording:.3f}s recording, '
+            f'{recording - video:.3f}s short. Time missing from the front means the '
+            'first frame was captured after playback had already moved: '
+            'DisplayRecorder.start() captures one frame before starting the transport, '
+            'and RenderSession.submit() backfills if that first frame still arrives '
+            'late. Check both are intact.')
 
     def test_the_frame_count_matches_the_duration(self, rendered):
         """Every slot on the grid holds a frame: no gaps, no padding at the end."""
@@ -368,10 +384,12 @@ def foreign_renders(tmp_path_factory):
 class TestForeignSampleRates:
     """A .wav from somebody else, at whatever rate their sound card happened to use.
 
-    The display sizes itself from the sample rate — it shows 0-4 kHz, so the bin count
-    and therefore the window width follow the rate — which means rendering has to cope
-    with a frame size it did not choose.  That is not hypothetical: 11025 Hz lands on
-    185 bins and a 1019 px window, and yuv420p cannot encode an odd dimension.
+    The display used to size itself from the sample rate — it shows 0-4 kHz, so the bin
+    count and therefore the window width followed the rate.  11025 Hz landed on 185 bins
+    and a 1019 px window, which yuv420p cannot encode at all, and 44.1 kHz on a
+    waterfall less than half the width of the one at 16 kHz.  The FFT window is a fixed
+    span of time now, so the rate cancels and the frame is the same at all of them;
+    these render at four rates to hold that.
     """
 
     @pytest.mark.parametrize('rate', FOREIGN_RATES)
@@ -385,13 +403,16 @@ class TestForeignSampleRates:
     @pytest.mark.parametrize('rate', FOREIGN_RATES)
     def test_the_frame_is_encodable(self, foreign_renders, rate):
         """yuv420p subsamples chroma by two each way, so an odd dimension is refused
-        outright. 11025 Hz is the one common rate whose geometry lands odd."""
+        outright. Nothing pads the frame, because with the geometry pinned to time
+        nothing can arrive odd — so this is the assertion standing in for that padding,
+        and it is the one that has to go red if a layout change ever makes it wrong."""
         video = probe(foreign_renders[rate][1])['video']
         width, height = int(video['width']), int(video['height'])
         assert width % 2 == 0 and height % 2 == 0, (
             f'A {rate} Hz file rendered {width}x{height}, which yuv420p cannot encode. '
-            'The pad filter in ffmpeg_command() is what rounds the captured frame up '
-            'to even; check it fired.')
+            'The window geometry has picked up an odd dimension: only the waterfall '
+            'width varies at all, and spectrum_geometry() is meant to hold it at 128 '
+            'bins for every rate config.validate_sample_rate admits.')
 
     @pytest.mark.parametrize('rate', FOREIGN_RATES)
     def test_audio_and_video_still_agree(self, foreign_renders, rate):
