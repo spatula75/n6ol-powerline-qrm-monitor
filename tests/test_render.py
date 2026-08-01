@@ -14,8 +14,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from buzz import render
+from buzz.ffmpeg import FfmpegError
 from buzz.render import (FRAME_RATE, RenderError, RenderSession, _FrameGrid,
-                         _nearest_slot, ffmpeg_command, find_ffmpeg)
+                         _nearest_slot, ffmpeg_command)
 
 WIDTH, HEIGHT = 734, 248
 FRAME_BYTES = WIDTH * HEIGHT * 4
@@ -111,58 +112,6 @@ class TestFrameGrid:
             assert abs(shown_at - capture) <= 0.5 / FRAME_RATE + 1e-9
 
 
-class TestFindFfmpeg:
-    """PATH first, then the configured location.
-
-    That order keeps a normal install configuration-free; the setting is for installs
-    that do not land on PATH, like a Windows build unzipped into a folder.
-    """
-
-    def test_it_finds_ffmpeg_on_the_path(self):
-        with patch('buzz.render.shutil.which', return_value='/usr/bin/ffmpeg'):
-            assert find_ffmpeg() == '/usr/bin/ffmpeg'
-
-    def test_the_path_wins_over_the_configured_location(self, tmp_path):
-        """Documented consequence of searching PATH first: the setting cannot override
-        a working ffmpeg with a different build."""
-        configured = tmp_path / 'ffmpeg.exe'
-        configured.write_bytes(b'')
-        with patch('buzz.render.shutil.which', return_value='/usr/bin/ffmpeg'):
-            assert find_ffmpeg(str(configured)) == '/usr/bin/ffmpeg'
-
-    def test_the_configured_location_is_used_when_the_path_has_none(self, tmp_path):
-        configured = tmp_path / 'ffmpeg.exe'
-        configured.write_bytes(b'')
-        with patch('buzz.render.shutil.which', return_value=None):
-            assert find_ffmpeg(str(configured)) == str(configured)
-
-    def test_a_configured_directory_is_accepted_as_well_as_a_binary(self, tmp_path):
-        """"Where ffmpeg is" reads more naturally as the folder, and a config that
-        failed on the folder would report no ffmpeg at a path where it plainly is."""
-        (tmp_path / 'ffmpeg.exe').write_bytes(b'')
-        with patch('buzz.render.shutil.which', return_value=None):
-            assert find_ffmpeg(str(tmp_path)) == str(tmp_path / 'ffmpeg.exe')
-
-    def test_a_missing_binary_says_what_to_do_about_it(self):
-        with patch('buzz.render.shutil.which', return_value=None):
-            with pytest.raises(RenderError, match='not found on PATH'):
-                find_ffmpeg()
-
-    def test_the_message_says_it_is_needed_only_for_rendering(self):
-        """A user who does not render should not be left thinking the monitor is
-        broken or that they now have a dependency to satisfy."""
-        with patch('buzz.render.shutil.which', return_value=None):
-            with pytest.raises(RenderError, match='only for --render'):
-                find_ffmpeg()
-
-    def test_a_configured_location_with_nothing_in_it_names_the_setting(self, tmp_path):
-        """The operator set something and it was wrong; the message has to say which
-        setting, or they are left guessing which of the two lookups failed."""
-        with patch('buzz.render.shutil.which', return_value=None):
-            with pytest.raises(RenderError, match='render.ffmpeg_path'):
-                find_ffmpeg(str(tmp_path / 'nowhere'))
-
-
 class TestFfmpegCommand:
     """The argument list, asserted as a value rather than by running anything."""
 
@@ -233,7 +182,7 @@ class TestFfmpegCommand:
         useless."""
         command = ffmpeg_command('ffmpeg', tmp_path / 'o.mp4', tmp_path / 'i.wav',
                                  WIDTH, HEIGHT, gain_db=6.0)
-        assert command[command.index('-af') + 1] == 'volume=6.0dB'
+        assert command[command.index('-af') + 1] == 'volume=6.00dB'
 
 
 class TestRenderSession:
@@ -245,7 +194,7 @@ class TestRenderSession:
         process = MagicMock()
         process.stdin = MagicMock()
         process.wait.return_value = 0
-        with patch('buzz.render.shutil.which', return_value='ffmpeg'), \
+        with patch('buzz.ffmpeg.shutil.which', return_value='ffmpeg'), \
              patch('buzz.render.subprocess.Popen', return_value=process) as popen:
             session = RenderSession(tmp_path / 'out.mp4', tmp_path / 'in.wav',
                                     WIDTH, HEIGHT)
@@ -260,15 +209,17 @@ class TestRenderSession:
         """Checked here rather than left to ffmpeg so the operator gets a message
         naming the file, before a process is started."""
         (tmp_path / 'out.mp4').write_bytes(b'')
-        with patch('buzz.render.shutil.which', return_value='ffmpeg'):
+        with patch('buzz.ffmpeg.shutil.which', return_value='ffmpeg'):
             session = RenderSession(tmp_path / 'out.mp4', tmp_path / 'in.wav',
                                     WIDTH, HEIGHT)
             with pytest.raises(RenderError, match='already exists'):
                 session.start()
 
     def test_a_missing_ffmpeg_fails_before_anything_is_built(self, tmp_path):
-        with patch('buzz.render.shutil.which', return_value=None):
-            with pytest.raises(RenderError):
+        """Raised by buzz.ffmpeg as the parent FfmpegError, not RenderError: the
+        toolchain being absent is not a fact about rendering."""
+        with patch('buzz.ffmpeg.shutil.which', return_value=None):
+            with pytest.raises(FfmpegError):
                 RenderSession(tmp_path / 'o.mp4', tmp_path / 'i.wav', WIDTH, HEIGHT)
 
     def test_a_wrongly_sized_frame_is_refused(self, started):
@@ -373,7 +324,7 @@ class TestRenderSession:
     def test_an_unrunnable_ffmpeg_is_reported_with_its_path(self, tmp_path):
         """Found but not runnable is a different failure from not found, and needs a
         different remedy — so it gets its own message naming the path that failed."""
-        with patch('buzz.render.shutil.which', return_value='/bad/ffmpeg'), \
+        with patch('buzz.ffmpeg.shutil.which', return_value='/bad/ffmpeg'), \
              patch('buzz.render.subprocess.Popen',
                    side_effect=OSError('Exec format error')):
             session = RenderSession(tmp_path / 'o.mp4', tmp_path / 'i.wav',
@@ -393,7 +344,7 @@ class TestRenderSession:
             session.finish(0.1)
 
     def test_finishing_without_starting_is_harmless(self, tmp_path):
-        with patch('buzz.render.shutil.which', return_value='ffmpeg'):
+        with patch('buzz.ffmpeg.shutil.which', return_value='ffmpeg'):
             session = RenderSession(tmp_path / 'o.mp4', tmp_path / 'i.wav',
                                     WIDTH, HEIGHT)
         session.finish(1.0)
@@ -402,10 +353,66 @@ class TestRenderSession:
         """The single most useful thing in the log when a render comes out wrong."""
         process = MagicMock()
         process.stdin = MagicMock()
-        with patch('buzz.render.shutil.which', return_value='ffmpeg'), \
+        with patch('buzz.ffmpeg.shutil.which', return_value='ffmpeg'), \
              patch('buzz.render.subprocess.Popen', return_value=process):
             session = RenderSession(tmp_path / 'o.mp4', tmp_path / 'i.wav',
                                     WIDTH, HEIGHT)
             with caplog.at_level('INFO', logger=render.__name__):
                 session.start()
         assert any('ffmpeg command:' in r.message for r in caplog.records)
+
+
+class TestRenderedComment:
+    """The recording's settings line, with the gain this render applied added to it.
+
+    A demo raised by 20-odd dB should say so: someone shown the video has no other way
+    to know the audio is not at the level it was recorded at.
+    """
+
+    def test_the_gain_is_added_to_the_recordings_settings(self, tmp_path):
+        source = tmp_path / 'event.wav'
+        with patch('buzz.render.wavmeta.read_settings',
+                   return_value={'sample_rate': '16000', 'ended': 'capped'}):
+            comment = render.rendered_comment(source, 19.0)
+        assert 'render_gain_db=+19.0' in comment
+        assert 'sample_rate=16000' in comment, 'the original settings must survive'
+
+    def test_a_negative_gain_keeps_its_sign(self, tmp_path):
+        with patch('buzz.render.wavmeta.read_settings', return_value={'ended': 'capped'}):
+            assert 'render_gain_db=-2.2' in render.rendered_comment(tmp_path / 'e.wav', -2.2)
+
+    def test_a_recording_with_no_settings_is_left_alone(self, tmp_path):
+        """One made by other software, or by a version predating the settings line.
+        Returning None leaves the copied tags untouched rather than inventing a
+        comment that claims to describe a recording it does not."""
+        with patch('buzz.render.wavmeta.read_settings', return_value={}):
+            assert render.rendered_comment(tmp_path / 'e.wav', 19.0) is None
+
+    def test_an_unreadable_recording_warns_and_carries_on(self, tmp_path, caplog):
+        """Failing to annotate the metadata is not a reason to abandon a render that
+        would otherwise be fine."""
+        with patch('buzz.render.wavmeta.read_settings', side_effect=OSError('gone')):
+            with caplog.at_level('WARNING', logger='buzz.render'):
+                assert render.rendered_comment(tmp_path / 'e.wav', 19.0) is None
+        assert 'tags unchanged' in caplog.text
+
+    def test_the_comment_reaches_the_command_after_map_metadata(self, tmp_path):
+        """Order is the whole mechanism: -map_metadata copies the recording's comment,
+        and this has to override it rather than be overridden."""
+        command = ffmpeg_command('ffmpeg', tmp_path / 'o.mp4', tmp_path / 'i.wav',
+                                 WIDTH, HEIGHT, comment='sample_rate=16000 render_gain_db=+19.0')
+        assert command.index('-metadata') > command.index('-map_metadata')
+        assert command[command.index('-metadata') + 1].startswith('comment=')
+
+    def test_no_metadata_override_when_there_is_nothing_to_say(self, tmp_path):
+        command = ffmpeg_command('ffmpeg', tmp_path / 'o.mp4', tmp_path / 'i.wav',
+                                 WIDTH, HEIGHT)
+        assert '-metadata' not in command
+
+    def test_the_gain_filter_is_not_a_float_repr(self, tmp_path):
+        """A measured gain is a float like 18.990000000000002, which would otherwise
+        appear both in the filter and in the command the operator is invited to paste
+        into a terminal."""
+        command = ffmpeg_command('ffmpeg', tmp_path / 'o.mp4', tmp_path / 'i.wav',
+                                 WIDTH, HEIGHT, gain_db=18.990000000000002)
+        assert command[command.index('-af') + 1] == 'volume=18.99dB'

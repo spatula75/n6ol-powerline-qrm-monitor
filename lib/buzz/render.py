@@ -21,9 +21,12 @@ keep aligned, only frames to place correctly against a clock that is already rig
 
 import logging
 import math
-import shutil
 import subprocess
+import wave
 from pathlib import Path
+
+from buzz import wavmeta
+from buzz.ffmpeg import FfmpegError, find_ffmpeg
 
 logger = logging.getLogger(__name__)
 
@@ -51,51 +54,73 @@ PIXEL_FORMAT = 'rgba'
 _BYTES_PER_PIXEL = 4
 
 
-class RenderError(RuntimeError):
-    """Rendering could not start, or ffmpeg failed while it ran."""
+class RenderError(FfmpegError):
+    """Rendering could not start, or ffmpeg failed while it ran.
 
-
-def find_ffmpeg(configured: str | None = None) -> str:
-    """Locate the ffmpeg binary, or say clearly why rendering cannot happen.
-
-    PATH first, then `render.ffmpeg_path` from the config.  That order means a normal
-    install needs no configuration at all, and the setting exists for the installs
-    that do not land on PATH — a Windows build unzipped into a folder, or winget's
-    shim directory in a terminal that has not been restarted since.
-
-    The consequence worth knowing: a copy on PATH wins over a configured one, so the
-    setting cannot be used to override a working ffmpeg with a different build.  That
-    has not been needed; if it ever is, the order is one line.
-
-    Called once, when a render is asked for.  Failing here costs the operator nothing
-    but a message; failing after ten minutes of rendering costs them ten minutes, so
-    it happens before the first frame rather than at the first write.
+    A kind of FfmpegError, so a caller that only wants to know whether anything about
+    the toolchain went wrong can catch the one class.
     """
-    on_path = shutil.which('ffmpeg')
-    if on_path:
-        return on_path
-    if configured:
-        # Accept a directory as well as the binary itself.  Pointing at the folder is
-        # the more natural reading of "where ffmpeg is", and getting it wrong would
-        # otherwise fail with a message about a file that is plainly right there.
-        candidate = Path(configured)
-        if candidate.is_dir():
-            candidate = candidate / 'ffmpeg.exe' if (candidate / 'ffmpeg.exe').exists() \
-                else candidate / 'ffmpeg'
-        if candidate.exists():
-            return str(candidate)
-        raise RenderError(
-            f'ffmpeg is not on PATH and render.ffmpeg_path points at {configured}, '
-            'where there is no ffmpeg.')
-    raise RenderError(
-        'ffmpeg was not found on PATH, and --render needs it. Install it (on Windows, '
-        '"winget install Gyan.FFmpeg") or set render.ffmpeg_path in the config to '
-        'where it lives. ffmpeg is required only for --render; nothing else in the '
-        'monitor uses it.')
+
+
+def rendered_comment(source: Path, gain_db: float) -> str | None:
+    """The recording's settings line with the gain this render applied added to it.
+
+    A demo raised by 20-odd dB should say so.  The comment already carries the
+    calibration the numbers were measured against, and someone shown the video has no
+    other way to know the audio is not at the level it was recorded at.
+
+    Round-tripped through wavmeta's own parse and format rather than string-appended,
+    so the line keeps the shape everything else reads it with.  Returns None when the
+    recording has no settings to extend -- one made by other software, or by a version
+    that predates them -- and the caller then leaves the copied tags alone.
+    """
+    try:
+        settings = wavmeta.read_settings(source)
+    except (OSError, ValueError) as exc:
+        logger.warning('Could not read the settings from %s (%s); the rendered file '
+                       'will carry the recording\'s tags unchanged.', source, exc)
+        return None
+    if not settings:
+        return None
+    settings['render_gain_db'] = f'{gain_db:+.1f}'
+    return wavmeta.format_settings(settings)
+
+
+def _source_channels(source: Path) -> int:
+    """How many channels the recording has, for the audio filter and the layout.
+
+    Read straight from the header rather than asked of ffmpeg: it is one small read
+    and it happens before the encoder is started.  An unreadable file falls back to
+    mono, which is what this program records and the safe assumption -- the caller is
+    about to open the same file for playback and will report the real problem.
+    """
+    try:
+        with wave.open(str(source), 'rb') as handle:
+            return handle.getnchannels()
+    except (OSError, wave.Error) as exc:                          # pragma: no cover
+        logger.warning('Could not read the channel count from %s (%s); assuming mono.',
+                       source, exc)
+        return 1
+
+
+def even(size: int) -> int:
+    """Round a frame dimension up to the next even number.
+
+    yuv420p subsamples chroma by two in each direction, so an odd dimension is not
+    encodable and x264 refuses the whole render.  The display is sized from the sample
+    rate — it shows 0-4 kHz, so the bin count and therefore the width follow the rate —
+    and at 11025 Hz that lands on 185 bins, 925 px of waterfall and a 1019 px window.
+    Every other common rate happens to come out even.
+
+    Padding belongs here rather than in the display: the constraint is the codec's, and
+    the window should not change shape to suit a feature the operator may never use.
+    """
+    return size + (size % 2)
 
 
 def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: int,
-                   gain_db: float = 0.0) -> list[str]:
+                   gain_db: float = 0.0, comment: str | None = None,
+                   source_channels: int = 1) -> list[str]:
     """The full argument list for a render, as a value rather than a side effect.
 
     Kept a plain function of its inputs so the command can be asserted on directly,
@@ -113,7 +138,32 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
       so the operator gets a better message than ffmpeg's; this is the backstop for
       the file appearing in between.
     """
-    gain = ('-af', f'volume={gain_db}dB') if gain_db else ()
+    # Two decimals rather than repr: a measured gain is a float like
+    # 18.990000000000002, and that lands both in the filter argument and in the logged
+    # command an operator is meant to be able to paste into a terminal.  0.01 dB is
+    # far below anything audible or measurable here.
+    # Channel 0 rather than a downmix, so the video's audio is the audio that was
+    # analysed.  ffmpeg reads the recording from disk while the display was drawn from
+    # channel 0 alone, so without this a stereo source would produce a video whose
+    # sound carries both channels beside a picture that measured one -- the same class
+    # of quiet mismatch the sample-width check exists to prevent.  A no-op for anything
+    # this program recorded, which is always mono.
+    filters = ['pan=mono|c0=c0'] if source_channels > 1 else []
+    if gain_db:
+        filters.append(f'volume={gain_db:.2f}dB')
+    gain = ('-af', ','.join(filters)) if filters else ()
+    # Declared only when the file really is mono, which is the case worth silencing:
+    # ffmpeg guesses the layout of a .wav because the header carries a channel count
+    # and no mask, and says so every run.  Declaring a layout that disagrees with the
+    # file is fatal -- "Specified channel layout 'mono' has 1 channels, but input has
+    # 2" refuses the render outright -- so anything else is left to the guess, which
+    # gets it right.
+    layout = ('-channel_layout', 'mono') if source_channels == 1 else ()
+    # A no-op at every sample rate whose geometry lands even, which is all of the
+    # common ones bar 11025 Hz.  Stated as explicit numbers rather than ceil(iw/2)*2
+    # so the logged command still says exactly what it did.
+    padded = (('-vf', f'pad={even(width)}:{even(height)}')
+              if (width % 2 or height % 2) else ())
     return [
         ffmpeg, '-hide_banner', '-loglevel', 'warning', '-n',
         # Input 0: our frames, already conformed to a constant rate.  rawvideo carries
@@ -122,7 +172,8 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
         '-f', 'rawvideo', '-pix_fmt', PIXEL_FORMAT,
         '-s', f'{width}x{height}', '-r', str(FRAME_RATE), '-i', 'pipe:0',
         # Input 1: the recording itself, untouched, on its own timeline.
-        '-i', str(source),
+        *layout, '-i', str(source),
+        *padded,
         '-c:v', 'libx264', '-preset', _PRESET, '-crf', str(_CRF),
         '-profile:v', _PROFILE, '-pix_fmt', 'yuv420p', '-g', str(_KEYFRAME_INTERVAL),
         '-c:a', 'aac', '-b:a', _AUDIO_BITRATE, '-ar', str(_AUDIO_RATE), *gain,
@@ -137,6 +188,9 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
         # sitting alongside the video and audio.  The lock offset is already in the
         # comment tag as lead_in_seconds, so nothing is lost by dropping it.
         '-map_chapters', '-1',
+        # After -map_metadata, so this overrides the copied comment rather than being
+        # overridden by it.  Order is the whole mechanism here.
+        *(('-metadata', f'comment={comment}') if comment else ()),
         '-movflags', '+faststart',
         # Guards against the two streams disagreeing about the length by a frame or
         # two; without it the file ends with whichever ran longer, silent or frozen.
@@ -237,7 +291,9 @@ class RenderSession:
         self.width, self.height = width, height
         self._expected_bytes = width * height * _BYTES_PER_PIXEL
         self._command = ffmpeg_command(find_ffmpeg(ffmpeg), self.output, self.source,
-                                       width, height, gain_db)
+                                       width, height, gain_db,
+                                       rendered_comment(self.source, gain_db),
+                                       _source_channels(self.source))
         self._grid = _FrameGrid()
         self._process: subprocess.Popen | None = None
         self._previous: bytes | None = None

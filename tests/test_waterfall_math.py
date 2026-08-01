@@ -11,9 +11,15 @@ from buzz.waterfall import (
     format_recorder_status,
     _aggregate_meter_history, _color_scale_range, _correction_offset, _mean_spectrum_db,
     _spectrum_percentiles,
-    _CHUNK, _MAX_HZ, _N_ROWS, _DB_RANGE, _DB_FFT_NOISE_CORR, _FFT_ADVANCE_SAMPLES,
+    spectrum_geometry, DISPLAY_BINS,
+    _MAX_HZ, _N_ROWS, _DB_RANGE,
     _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE, _COLOR_HEADROOM, _MIN_DYNAMIC_RANGE_DB,
 )
+
+
+# The rate this program records at, so these pin the same numbers the loose module
+# constants used to before the FFT geometry became per-rate.
+GEOMETRY = spectrum_geometry(16000)
 
 
 def _status(**kwargs) -> RecorderStatus:
@@ -270,30 +276,34 @@ class TestAggregateMeterHistory:
 
 
 class TestMeanSpectrumDb:
-    _BINS = 128
+    # 16 kHz, which is what this program records at, so these pin the same numbers the
+    # loose constants used to.  TestSpectrumGeometry below covers the other rates.
+    _GEOMETRY = spectrum_geometry(16000)
+    _BINS = _GEOMETRY.display_bins
     _DB_MIN = -88.0
 
     def _tone(self, n_chunks: int, bin_index: int = 10, amplitude: float = 32767.0) -> np.ndarray:
-        """Sinusoid at an exact FFT bin frequency, n_chunks × 512 samples long."""
-        t = np.arange(n_chunks * _CHUNK)
-        return (amplitude * np.cos(2 * np.pi * bin_index * t / _CHUNK)).astype(np.int16)
+        """Sinusoid at an exact FFT bin frequency, n_chunks windows long."""
+        window = GEOMETRY.window
+        t = np.arange(n_chunks * window)
+        return (amplitude * np.cos(2 * np.pi * bin_index * t / window)).astype(np.int16)
 
     def test_full_scale_tone_reads_near_zero_dbfs(self):
         """Validates the _DB_REF calibration: a full-scale sinusoid peaks at ~0 dBFS."""
-        db = _mean_spectrum_db(self._tone(1), self._BINS, self._DB_MIN)
+        db = _mean_spectrum_db(self._tone(1), GEOMETRY, self._DB_MIN)
         assert abs(db.max()) < 0.1
 
     def test_tone_peak_lands_in_its_bin(self):
-        db = _mean_spectrum_db(self._tone(4, bin_index=20), self._BINS, self._DB_MIN)
+        db = _mean_spectrum_db(self._tone(4, bin_index=20), GEOMETRY, self._DB_MIN)
         assert int(np.argmax(db)) == 20
 
     def test_averages_power_not_magnitude(self):
         """A tone present in half the frames must read −3 dB (mean of |X|²), not
         −6 dB (mean of |X|).  Welch averaging is defined on power; averaging
         magnitude biases low and converges more slowly."""
-        full = _mean_spectrum_db(self._tone(16), self._BINS, self._DB_MIN).max()
-        samples = np.concatenate([self._tone(8), np.zeros(8 * _CHUNK, dtype=np.int16)])
-        half = _mean_spectrum_db(samples, self._BINS, self._DB_MIN).max()
+        full = _mean_spectrum_db(self._tone(16), GEOMETRY, self._DB_MIN).max()
+        samples = np.concatenate([self._tone(8), np.zeros(8 * GEOMETRY.window, dtype=np.int16)])
+        half = _mean_spectrum_db(samples, GEOMETRY, self._DB_MIN).max()
         assert half - full == pytest.approx(-3.01, abs=0.15)
 
     def test_impulse_energy_is_independent_of_position(self):
@@ -306,36 +316,36 @@ class TestMeanSpectrumDb:
         familiar 50% rule is the amplitude condition and still leaves 3.01 dB of
         ripple.  Sweeping a whole hop's worth of positions must be flat."""
         def _impulse_db(pos: int) -> float:
-            x = np.zeros(8 * _CHUNK, dtype=np.int16)
+            x = np.zeros(8 * GEOMETRY.window, dtype=np.int16)
             x[pos] = 30000
-            return float(_mean_spectrum_db(x, self._BINS, self._DB_MIN).mean())
+            return float(_mean_spectrum_db(x, GEOMETRY, self._DB_MIN).mean())
 
-        levels = [_impulse_db(2 * _CHUNK + d) for d in range(0, _FFT_ADVANCE_SAMPLES, 8)]
+        levels = [_impulse_db(2 * GEOMETRY.window + d) for d in range(0, GEOMETRY.advance, 8)]
         assert max(levels) - min(levels) < 0.01
 
     def test_noise_floor_anchor_matches_measured_per_bin_level(self):
-        """Pins _DB_FFT_NOISE_CORR.  Broadband noise of known RMS must land on the
+        """Pins GEOMETRY.noise_correction.  Broadband noise of known RMS must land on the
         anchor the widget computes for db_min, within a fraction of a dB.  The old
         constant applied the Hann ENBW in the wrong direction and sat 4.4 dB low."""
         sigma = 800.0
-        noise = np.random.default_rng(3).normal(0, sigma, _CHUNK * 400).astype(np.int16)
-        db = _mean_spectrum_db(noise.astype(np.int32), self._BINS, -200.0)
+        noise = np.random.default_rng(3).normal(0, sigma, GEOMETRY.window * 400).astype(np.int16)
+        db = _mean_spectrum_db(noise.astype(np.int32), GEOMETRY, -200.0)
         rms_dbfs = 20 * np.log10(sigma) - 20 * np.log10(32768.0)
-        assert float(db.mean()) == pytest.approx(rms_dbfs - _DB_FFT_NOISE_CORR, abs=0.2)
+        assert float(db.mean()) == pytest.approx(rms_dbfs - GEOMETRY.noise_correction, abs=0.2)
 
     def test_partial_chunk_is_trimmed_from_the_front(self):
         tone = self._tone(2)
         with_partial = np.concatenate([np.full(100, 30000, dtype=np.int16), tone])
         np.testing.assert_allclose(
-            _mean_spectrum_db(with_partial, self._BINS, self._DB_MIN),
-            _mean_spectrum_db(tone, self._BINS, self._DB_MIN))
+            _mean_spectrum_db(with_partial, GEOMETRY, self._DB_MIN),
+            _mean_spectrum_db(tone, GEOMETRY, self._DB_MIN))
 
     def test_less_than_one_chunk_returns_none(self):
-        assert _mean_spectrum_db(np.zeros(_CHUNK - 1, dtype=np.int16),
-                                 self._BINS, self._DB_MIN) is None
+        assert _mean_spectrum_db(np.zeros(GEOMETRY.window - 1, dtype=np.int16),
+                                 GEOMETRY, self._DB_MIN) is None
 
     def test_silence_reads_db_min(self):
-        db = _mean_spectrum_db(np.zeros(_CHUNK, dtype=np.int16), self._BINS, self._DB_MIN)
+        db = _mean_spectrum_db(np.zeros(GEOMETRY.window, dtype=np.int16), GEOMETRY, self._DB_MIN)
         assert np.all(db == self._DB_MIN)
 
 
@@ -480,8 +490,8 @@ class TestQuietBandDoesNotPaintItselfHot:
         rng = np.random.default_rng(7)
         rows = []
         for _ in range(_N_ROWS):
-            block = rng.normal(0, 300, _CHUNK * 4).astype(np.int16)
-            rows.append(_mean_spectrum_db(block.astype(np.int32), 128, -200.0))
+            block = rng.normal(0, 300, GEOMETRY.window * 4).astype(np.int16)
+            rows.append(_mean_spectrum_db(block.astype(np.int32), GEOMETRY, -200.0))
         history = np.array(rows)
 
         floor, ceiling = _spectrum_percentiles(
@@ -497,7 +507,7 @@ class TestQuietBandDoesNotPaintItselfHot:
 class TestWaterfallConstants:
     def test_display_bins_formula_at_16k(self):
         # At 16 kHz: 128 bins × 31.25 Hz/bin = 4000 Hz
-        assert _MAX_HZ * _CHUNK // 16000 == 128
+        assert _MAX_HZ * GEOMETRY.window // 16000 == 128
 
     def test_db_range_is_48(self):
         assert _DB_RANGE == 48.0
@@ -516,3 +526,66 @@ class TestWaterfallConstants:
         """"Top 1-2%" per the design: close to 100 but not on top of it, since a
         pure maximum would be at the mercy of a single outlier bin."""
         assert 90 < _COLOR_CEILING_PERCENTILE < 100
+
+
+class TestSpectrumGeometry:
+    """The FFT window is a fixed span of time, so the display is the same at any rate.
+
+    The bin count covering 0-_MAX_HZ is _MAX_HZ * N / rate, and N is rate * seconds, so
+    the rate cancels.  That is what keeps the waterfall 640 px wide whether the audio
+    arrives at 8 kHz or 48 kHz, and what keeps its frequency resolution constant --
+    where a fixed 512-sample window gave 86 Hz per bin at 44.1 kHz against 31 Hz at 16.
+    """
+
+    RATES = (8000, 11025, 16000, 22050, 32000, 44100, 48000)
+
+    @pytest.mark.parametrize('rate', RATES)
+    def test_the_display_is_the_same_width_at_every_rate(self, rate):
+        assert spectrum_geometry(rate).display_bins == DISPLAY_BINS, (
+            f'At {rate} Hz the waterfall would be '
+            f'{spectrum_geometry(rate).display_bins} bins rather than {DISPLAY_BINS}, '
+            'so the window changes shape with the sample rate. The bin count is meant '
+            'to be _MAX_HZ * _WINDOW_SECONDS, independent of the rate.')
+
+    @pytest.mark.parametrize('rate', RATES)
+    def test_resolution_stays_constant(self, rate):
+        assert spectrum_geometry(rate).hz_per_bin == pytest.approx(31.25, abs=0.15)
+
+    @pytest.mark.parametrize('rate', RATES)
+    def test_the_window_grows_with_the_rate(self, rate):
+        """A fixed 32 ms, which is the whole mechanism."""
+        assert spectrum_geometry(rate).window == pytest.approx(rate * 0.032, abs=1)
+
+    def test_eight_kilohertz_is_exactly_the_floor(self):
+        """N is 256 there and Nyquist lands on bin 128, so the display is the entire
+        spectrum up to 4 kHz with nothing to spare. Below it the top of the display
+        would be above Nyquist, which is why config refuses it."""
+        geometry = spectrum_geometry(8000)
+        assert geometry.display_bins == geometry.window // 2 == DISPLAY_BINS
+
+    @pytest.mark.parametrize('rate', RATES)
+    def test_a_full_scale_tone_still_reads_zero_dbfs(self, rate):
+        """The calibration that matters: db_ref has N in it, so moving N from a
+        constant to the sample rate has to leave a full-scale sinusoid at 0 dBFS
+        everywhere. If this drifts, every dB the waterfall shows is wrong at that
+        rate and nothing else would say so."""
+        geometry = spectrum_geometry(rate)
+        t = np.arange(geometry.window * 2)
+        tone = (32767.0 * np.cos(2 * np.pi * 10 * t / geometry.window)).astype(np.int16)
+        db = _mean_spectrum_db(tone, geometry, -120.0)
+        assert abs(db.max()) < 0.2, (
+            f'At {rate} Hz a full-scale tone reads {db.max():.2f} dBFS, not 0. '
+            'db_ref is 20*log10(32768 * N/4); check N is the geometry window.')
+
+    @pytest.mark.parametrize('rate', (8000, 16000, 44100))
+    def test_broadband_noise_lands_on_its_anchor(self, rate):
+        """The companion calibration, noise_correction, which is what seeds the colour
+        floor from the station's configured noise floor."""
+        geometry = spectrum_geometry(rate)
+        sigma = 300.0
+        noise = np.random.default_rng(3).normal(
+            0, sigma, geometry.window * 400).astype(np.int16)
+        db = _mean_spectrum_db(noise.astype(np.int32), geometry, -200.0)
+        rms_dbfs = 20 * np.log10(sigma / 32768.0)
+        assert float(db.mean()) == pytest.approx(
+            rms_dbfs - geometry.noise_correction, abs=0.2)

@@ -6,7 +6,7 @@ import numpy as np
 import pytest
 
 from buzz.config import BuzzConfig
-from buzz.sampler import _BUFFER_CHUNKS, AudioPipeline, RingBufferPipeline
+from buzz.sampler import AudioPipeline, RingBufferPipeline, buffer_chunks
 
 SAMPLE_RATE = 16000
 CHUNK = AudioPipeline.CHUNK_SIZE
@@ -342,7 +342,8 @@ class TestReadFrom:
         last called, five times a second for as long as a recording lasts.  Joining the
         whole ~10 second buffer to keep the newest 512 samples of it is several hundred
         kilobytes copied to throw away, so the span takes only the chunks it touches."""
-        pipeline = self._pipeline(_BUFFER_CHUNKS)
+        # A full buffer at the default rate, which is what the capacity is sized for.
+        pipeline = self._pipeline(buffer_chunks(16000, RingBufferPipeline.CHUNK_SIZE))
         end = pipeline.read_from(0).end
         pipeline._append(np.zeros(CHUNK, dtype=np.int16))
 
@@ -422,3 +423,39 @@ class TestAudioPipelineContextManager:
                 pass
         mock_sd.stop.assert_called_once()
         mock_sd.close.assert_called_once()
+
+
+class TestBufferSizedInSeconds:
+    """The buffer holds a duration, not a sample count.
+
+    It doubles as the analyzer's history and as the lead-in an event recording opens
+    with, so a fixed sample count made both shrink with the sample rate: 9.6 s at
+    16 kHz but only 3.5 s at 44.1 kHz, in proportion to a setting nobody would connect
+    to either of them.
+    """
+
+    RATES = (8000, 11025, 16000, 22050, 44100, 48000)
+
+    @pytest.mark.parametrize('rate', RATES)
+    def test_it_holds_the_same_duration_at_every_rate(self, rate):
+        held = RingBufferPipeline(rate).capacity_samples / rate
+        assert held == pytest.approx(9.6, abs=0.02), (
+            f'At {rate} Hz the buffer holds {held:.2f} s rather than 9.6. The capacity '
+            'is meant to be a duration converted to chunks, not a fixed chunk count.')
+
+    def test_the_default_rate_is_unchanged(self):
+        """9.6 s at 16 kHz is exactly the 300 chunks of 512 this used to be, so nothing
+        moves at the rate the program records at."""
+        assert RingBufferPipeline().capacity_samples == 300 * RingBufferPipeline.CHUNK_SIZE
+
+    @pytest.mark.parametrize('rate', RATES)
+    def test_it_is_never_shorter_than_it_promises(self, rate):
+        """Rounded up: a buffer a chunk short of its stated duration would trim the
+        oldest fraction of a second off every recording's lead-in."""
+        assert RingBufferPipeline(rate).capacity_samples >= 9.6 * rate
+
+    def test_the_cost_stays_reasonable_at_the_top_of_the_range(self):
+        """Sizing by duration is only affordable because the audio is mono int16;
+        this is the number that makes it a non-decision."""
+        kilobytes = RingBufferPipeline(48000).capacity_samples * 2 / 1024
+        assert kilobytes < 1024

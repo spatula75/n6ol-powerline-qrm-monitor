@@ -61,8 +61,16 @@ with `$?` false. Windows PowerShell 5.1 has no `&&` or `||`, so chaining needs
     python level_meter.py                          # live S-meter for setting RF/AF gain
 
 `main.py` flags: `--headless`, `--top`, `--enable-recording`, `--playback FILE`,
-`--mute`, `--playback-gain DB`. Playback replays a recorded `.wav` through the whole
-pipeline and suppresses CSV, plots, uploads, and recording.
+`--mute`, `--playback-gain DB|auto`, `--render FILE.mp4`. Playback replays a recorded
+`.wav` through the whole pipeline and suppresses CSV, plots, uploads, and recording.
+`--render` needs ffmpeg, implies `--playback-gain auto`, and with `--headless` paints
+offscreen and implies `--mute`.
+
+**Use `--top` whenever starting a real render during a session.** A render opens a
+window and plays through in real time; without always-on-top it can come up behind the
+editor, and the operator is then listening to audio from a window they cannot see,
+with no way to tell whether it is working. Only skip it when deliberately testing the
+headless path.
 
 The coverage gate lives in `pyproject.toml` as the single source of truth — don't pass
 `--cov-fail-under` on the command line, it silently overrides it.

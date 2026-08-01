@@ -37,7 +37,8 @@ rasterisation and colour maths below it are plain functions with no Qt dependenc
 and are unit tested in test_scope_math.py.
 """
 
-from math import log10
+from dataclasses import dataclass
+from math import ceil, log10
 
 import numpy as np
 from numba import njit
@@ -100,11 +101,25 @@ _PRETRIGGER_DIVISIONS = 1.5
 
 _UPDATE_MS = 100                         # matches the waterfall's frame cadence
 
-# Audio pulled per frame, in sweeps.  _UPDATE_MS covers 4 sweeps of 25 ms; taking 6
-# leaves room for the trigger offset to consume up to one sweep at the head and
-# still render a full frame's worth, with the remainder overlapping the next frame
-# rather than leaving a gap.
-_CAPTURE_SWEEPS = 6
+# What the trace shows and how long the phosphor remembers, both counted in *pulse
+# periods* rather than in samples or milliseconds.
+#
+# The pulse period is the only length here with any physical meaning: it is the thing
+# being looked at.  Counting in it is what makes the display say the same thing at any
+# sample rate and at either grid frequency — three cycles across the screen, twenty-four
+# cycles of persistence, whether the audio arrives at 8 kHz or 48, and whether the grid
+# is 60 Hz (120 pps) or 50 Hz (100 pps).
+#
+# Time per division then follows the grid, which is the honest answer rather than a
+# compromise: 2.50 ms/div at 120 pps and 3.00 ms/div at 100 pps, because a 50 Hz grid
+# genuinely has a longer period.  Forcing both to 2.50 would show 2.5 cycles at 100 pps
+# — the same picture stretched, saying less about the waveform.
+#
+# 24 is chosen so the sweep count comes out whole everywhere: every phase period met in
+# practice is 1, 2, 3, 4 or 8 pulse periods, and 24 divides by all of them.  See
+# sweep_geometry for what happens at a rate where it does not.
+_SWEEP_PULSES = 3
+_PHOSPHOR_PULSES = 24
 
 # ---------------------------------------------------------------------------
 # Phosphor
@@ -222,27 +237,122 @@ def sweep_start_offset(trigger_phase: int, pretrigger: int, sweep_samples: int) 
     return int(trigger_phase - pretrigger) % sweep_samples
 
 
-def n_complete_sweeps(n_samples: int, start: int, sweep_samples: int) -> int:
+@dataclass(frozen=True)
+class SweepGeometry:
+    """How the trace is cut out of the audio, for one sample rate and grid frequency.
+
+    A pure value, so the arithmetic can be checked exhaustively without a display.
+    Getting it wrong does not crash anything: it quietly shows a different number of
+    pulses, or superimposes sweeps that were sampled at different sub-sample offsets
+    and blurs the trace, neither of which announces itself.
+    """
+
+    sample_rate: int
+    pulse_rate: int
+    # The pulse grid's repeat period.  Sweeps must start a whole number of these apart
+    # or they sample the grid at different offsets -- see stride_samples.
+    phase_period: int
+    sweep_samples: int      # what is drawn: _SWEEP_PULSES pulse periods
+    stride_samples: int     # distance between successive sweeps
+    n_sweeps: int           # how many are accumulated into the phosphor
+    capture_samples: int    # audio to pull per frame to supply them
+    pretrigger: int
+    ms_per_division: float
+
+    @property
+    def phosphor_seconds(self) -> float:
+        return self.n_sweeps * self.stride_samples / self.sample_rate
+
+
+def sweep_geometry(sample_rate: int, pulse_rate: int) -> SweepGeometry:
+    """Work out the trace geometry for a sample rate and grid frequency.
+
+    Everything is counted in pulse periods and then converted, which is what keeps the
+    display saying the same thing everywhere: _SWEEP_PULSES cycles across the screen and
+    _PHOSPHOR_PULSES cycles of persistence, at any rate and either grid frequency.
+
+    The one thing that cannot be chosen freely is the *stride*.  Successive sweeps have
+    to begin a whole phase period apart, because that is the only interval after which
+    the pulse grid repeats against the sample clock; step by anything else and each
+    sweep samples the pulses at a slightly different sub-sample offset, so they no
+    longer superimpose and the trace smears.  The phase period is often shorter than
+    the sweep (one pulse period at 48 kHz / 120 pps), so the stride is the fewest whole
+    phase periods that reach the sweep width -- which means consecutive sweeps can
+    overlap in the audio, exactly as a real scope re-triggers on a running signal.
+    """
+    pulse_period = sample_rate / pulse_rate
+    phase_period = pulse_phase_period(sample_rate, pulse_rate)
+    # Always a whole number: the phase period is by construction a whole number of
+    # pulse periods.
+    pulses_per_phase = max(1, round(phase_period / pulse_period))
+
+    stride_phases = ceil(_SWEEP_PULSES / pulses_per_phase)
+    stride_samples = stride_phases * phase_period
+    stride_pulses = stride_phases * pulses_per_phase
+    sweep_samples = round(_SWEEP_PULSES * pulse_period)
+
+    # At every rate and grid frequency met in practice this divides exactly.  It will
+    # not at a rate whose phase period is a large number of pulse periods -- 8001 Hz
+    # repeats only every 40 -- and there the phosphor simply holds fewer, longer
+    # sweeps rather than misbehaving.
+    n_sweeps = max(1, round(_PHOSPHOR_PULSES / stride_pulses))
+    return SweepGeometry(
+        sample_rate=sample_rate,
+        pulse_rate=pulse_rate,
+        phase_period=phase_period,
+        sweep_samples=sweep_samples,
+        stride_samples=stride_samples,
+        n_sweeps=n_sweeps,
+        # A whole phase period of slack at the head, because the trigger offset can
+        # push the first sweep that far in before any of it is drawn.
+        capture_samples=phase_period + (n_sweeps - 1) * stride_samples + sweep_samples,
+        pretrigger=round(sweep_samples * _PRETRIGGER_DIVISIONS / _H_DIVISIONS),
+        ms_per_division=sweep_samples / sample_rate * 1000 / _H_DIVISIONS,
+    )
+
+
+def n_complete_sweeps(n_samples: int, start: int, sweep_samples: int,
+                      stride: int | None = None) -> int:
     """How many whole sweeps fit in a snapshot after skipping to `start`.
+
+    Sweeps begin every `stride` samples and are `sweep_samples` long; the two differ
+    once the trace shows a fixed number of pulse periods while sweeps step by a whole
+    phase period.  With stride == sweep_samples this tiles the capture, which is what
+    it did when they were necessarily equal.
 
     Partial sweeps are dropped rather than padded: a half-drawn trace running off
     into a flat line would read as signal that isn't there.
     """
-    if sweep_samples <= 0 or start >= n_samples:
+    stride = sweep_samples if stride is None else stride
+    if sweep_samples <= 0 or stride <= 0 or start >= n_samples:
         return 0
-    return max(0, (n_samples - start) // sweep_samples)
+    available = n_samples - start
+    if available < sweep_samples:
+        return 0
+    return (available - sweep_samples) // stride + 1
 
 
-def extract_sweeps(samples: np.ndarray, start: int, sweep_samples: int) -> np.ndarray:
-    """Reshape a snapshot into an (n_sweeps, sweep_samples) stack from `start`.
+def extract_sweeps(samples: np.ndarray, start: int, sweep_samples: int,
+                   stride: int | None = None, limit: int | None = None) -> np.ndarray:
+    """Stack up to `limit` sweeps of `sweep_samples`, each `stride` apart from `start`.
+
+    `stride` defaults to `sweep_samples`, which tiles the capture with no gaps and is
+    what the display did when the two were necessarily equal.  They are separate now:
+    the trace shows a fixed number of pulse periods, while successive sweeps must be a
+    whole phase period apart or they sample the pulse grid at different sub-sample
+    offsets and the traces no longer superimpose.  See sweep_geometry.
 
     Returns an empty (0, sweep_samples) array when not even one whole sweep fits,
     which every consumer below treats as "nothing to draw this frame".
     """
-    n = n_complete_sweeps(len(samples), start, sweep_samples)
+    stride = sweep_samples if stride is None else stride
+    n = n_complete_sweeps(len(samples), start, sweep_samples, stride)
+    if limit is not None:
+        n = min(n, limit)
     if n < 1:
         return np.empty((0, sweep_samples), dtype=samples.dtype)
-    return samples[start:start + n * sweep_samples].reshape(n, sweep_samples)
+    windows = np.lib.stride_tricks.sliding_window_view(samples[start:], sweep_samples)
+    return windows[::stride][:n]
 
 
 # ---------------------------------------------------------------------------
@@ -444,15 +554,15 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
         self._pipeline = pipeline
         self._analyzer = analyzer
         self._sample_rate = config.audio.sample_rate
-        # One sweep is exactly the pulse grid's repeat period, which is also the
-        # modulus the analyzer's phases are reduced by — see the module docstring.
-        self._sweep_samples = pulse_phase_period(config.audio.sample_rate,
-                                                 config.audio.pulse_rate)
-        self._pretrigger = round(
-            self._sweep_samples * _PRETRIGGER_DIVISIONS / _H_DIVISIONS)
-        self._capture_samples = self._sweep_samples * _CAPTURE_SWEEPS
-        self._ms_per_division = (self._sweep_samples / self._sample_rate
-                                 * 1000 / _H_DIVISIONS)
+        # The trace shows a fixed number of pulse periods at any sample rate, while
+        # sweeps step by a whole phase period so they superimpose exactly.  The two
+        # were necessarily the same length before, which made the sweep width -- and
+        # so the time base -- follow a gcd rather than the signal.
+        self._geometry = sweep_geometry(config.audio.sample_rate, config.audio.pulse_rate)
+        self._sweep_samples = self._geometry.sweep_samples
+        self._pretrigger = self._geometry.pretrigger
+        self._capture_samples = self._geometry.capture_samples
+        self._ms_per_division = self._geometry.ms_per_division
 
         self._width = width
         self._phosphor = np.zeros((_TRACE_H, width), dtype=np.float32)
@@ -490,8 +600,11 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
             return
         self._last_total_samples = total
 
-        raw = self._pipeline.get_snapshot(self._capture_samples,
-                                          align=self._sweep_samples).astype(np.float32)
+        raw = self._pipeline.get_snapshot(
+            self._capture_samples,
+            # Aligned on the phase period, which is the interval the analyzer's phases
+            # are reduced by and the only one after which the grid repeats exactly.
+            align=self._geometry.phase_period).astype(np.float32)
         # The sound card's DC offset would sit the whole trace off the centre line and,
         # in averaging mode, add a constant pedestal to the rectified envelope.  The
         # median rather than the mean, because the pulses themselves would drag a mean
@@ -502,8 +615,9 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
         self._clipping = bool(np.abs(raw).max() >= _CLIP_COUNTS)
 
         phase, self._sync = self._analyzer.trigger_phase()
-        start = sweep_start_offset(phase, self._pretrigger, self._sweep_samples)
-        sweeps = extract_sweeps(samples, start, self._sweep_samples)
+        start = sweep_start_offset(phase, self._pretrigger, self._geometry.phase_period)
+        sweeps = extract_sweeps(samples, start, self._sweep_samples,
+                                self._geometry.stride_samples, self._geometry.n_sweeps)
         if sweeps.size == 0:
             return
 

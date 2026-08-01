@@ -373,6 +373,24 @@ class EventRecorder:
 
     # ----------------------------------------------------------------- internal
 
+    def _max_lead_in_samples(self) -> int:
+        """The most lead-in this configuration can produce, for the metadata.
+
+        Recorded alongside lead_in_seconds because without it the figure is censored
+        data wearing the clothes of a measurement.  The buffer is a sliding window and
+        the wait for min_lock_seconds runs while it slides, so the lead-in can never
+        exceed the buffer's capacity less that wait.  A recording sitting exactly at
+        that bound is saying "everything there was", not "the analyzer took this long
+        to lock" -- and from the file alone the two are indistinguishable, since
+        neither the buffer size nor min_lock_seconds is otherwise recorded.
+
+        Observed across fourteen real recordings: eight clustered at 6.56-6.59 s with a
+        9.60 s buffer and min_lock_seconds of 3, which is this bound to within a poll.
+        The rest, from 0.0 to 3.26, are genuine measurements.  Nothing in the file said
+        which was which.
+        """
+        return max(0, self._pipeline.capacity_samples - self._min_lock_samples)
+
     def _qualifying_lock_samples(self, seconds: float) -> int:
         """How long a lock must hold before it is worth a file, in samples.
 
@@ -815,6 +833,7 @@ class EventRecorder:
             'pulse_rate': self._pulse_rate,
             'audio_rf_conversion_db': self._rf_conversion_db,
             'lead_in_seconds': round(self._lead_in / self._sample_rate, 2),
+            'lead_in_max_seconds': round(self._max_lead_in_samples() / self._sample_rate, 2),
             'ended': ended,
         })
         started = self._started_at.replace(microsecond=0).isoformat()

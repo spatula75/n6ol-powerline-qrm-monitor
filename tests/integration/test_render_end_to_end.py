@@ -22,6 +22,8 @@ from pathlib import Path
 import pytest
 from harness import RATE
 
+from buzz.loudness import CEILING_DBTP, TARGET_LUFS, measure
+
 FFMPEG = shutil.which('ffmpeg')
 FFPROBE = shutil.which('ffprobe')
 
@@ -167,12 +169,24 @@ class TestTheRecordingsIdentityTravelsWithIt:
     def test_the_tags_are_in_the_container(self, rendered, recorded_event):
         tags = probe(rendered)['format'].get('tags', {})
         source_tags = probe(recorded_event)['format'].get('tags', {})
-        for key in ('title', 'artist', 'comment'):
+        for key in ('title', 'artist'):
             assert tags.get(key) == source_tags.get(key), (
                 f'The {key!r} tag did not survive into the .mp4: the recording has '
                 f'{source_tags.get(key)!r} and the render has {tags.get(key)!r}. '
                 'Check that -map_metadata names the .wav\'s input index; input 0 is '
                 'the frame pipe, which has no metadata of its own to copy.')
+
+    def test_the_comment_is_the_recordings_plus_the_gain(self, rendered, recorded_event):
+        """Deliberately not identical to the source's: the render appends what it did
+        to the audio. Everything the recording said has to survive underneath it."""
+        rendered_comment = probe(rendered)['format'].get('tags', {}).get('comment', '')
+        source_comment = probe(recorded_event)['format'].get('tags', {}).get('comment', '')
+        assert source_comment, 'the recording carries no settings line to extend'
+        for setting in source_comment.split():
+            assert setting in rendered_comment, (
+                f'{setting!r} from the recording is missing from the rendered comment '
+                f'{rendered_comment!r}. The gain is meant to be added to the settings '
+                'line, not to replace it -- see rendered_comment() in buzz.render.')
 
     def test_there_is_no_third_stream(self, rendered):
         """The lock cue used to arrive as a chapter, and mp4 chapters are a *track* --
@@ -243,3 +257,159 @@ class TestAudioAndVideoLineUp:
         video = probe(rendered)['video']
         expected = round(float(video['duration']) * FRAME_RATE)
         assert abs(int(video['nb_frames']) - expected) <= 1
+
+
+class TestTheAudioIsNormalised:
+    """--render implies --playback-gain auto, and this is where that is proved.
+
+    The unit tests check the arithmetic against a measurement; only measuring the
+    finished .mp4 shows that the gain was computed, passed through the filter chain,
+    survived AAC encoding, and landed where it was aimed.
+    """
+
+    def test_it_lands_on_the_broadcast_target(self, rendered):
+        """Within a decibel and a half, which is the room AAC and the resample need.
+        A recording whose peaks bind first is allowed to come out quieter -- that is
+        the ceiling doing its job -- so this only bounds the loud side."""
+        measured = measure(rendered, FFMPEG)
+        assert measured.integrated_lufs <= TARGET_LUFS + 1.5, (
+            f'Rendered audio measures {measured.integrated_lufs:.1f} LUFS against a '
+            f'{TARGET_LUFS} LUFS target, so it is louder than intended. Check that '
+            'auto_gain_db() is taking the minimum of the two constraints rather than '
+            'the loudness one alone.')
+
+    def test_true_peak_stays_under_the_ceiling(self, rendered):
+        """The constraint that exists to stop a demo clipping on someone else's
+        speakers. A little overshoot is allowed: lossy encoding reconstructs samples
+        that were never in the input, which is why the ceiling is -2 and not 0."""
+        measured = measure(rendered, FFMPEG)
+        assert measured.true_peak_dbtp <= CEILING_DBTP + 1.0, (
+            f'Rendered true peak is {measured.true_peak_dbtp:.1f} dBTP against a '
+            f'{CEILING_DBTP} dBTP ceiling. Either the gain ignored the peak '
+            'constraint, or AAC overshot by more than the 1 dB allowed for here.')
+
+    def test_the_gain_was_actually_applied(self, rendered):
+        """Guards the case the two bounds above would both accept: no gain at all.
+        The source sits far below the target, so one of the two constraints has to
+        end up close to its limit -- that is what taking the minimum means."""
+        measured = measure(rendered, FFMPEG)
+        near_target = abs(measured.integrated_lufs - TARGET_LUFS) < 1.5
+        near_ceiling = abs(measured.true_peak_dbtp - CEILING_DBTP) < 1.5
+        assert near_target or near_ceiling, (
+            f'Rendered audio measures {measured.integrated_lufs:.1f} LUFS and '
+            f'{measured.true_peak_dbtp:.1f} dBTP, neither of which is near its limit '
+            f'({TARGET_LUFS} LUFS / {CEILING_DBTP} dBTP). That means gain was left on '
+            'the table -- the recording could have been made louder without breaching '
+            'either constraint, so auto gain did not run or did not reach the filter.')
+
+    def test_the_applied_gain_is_recorded_in_the_metadata(self, rendered):
+        """A demo raised by 20-odd dB should say so; nobody shown the video can tell
+        otherwise that its audio is not at the level it was recorded at."""
+        comment = probe(rendered)['format'].get('tags', {}).get('comment', '')
+        assert 'render_gain_db=' in comment, (
+            f'The rendered comment is {comment!r}, with no record of the gain applied. '
+            'See rendered_comment() in buzz.render -- and note the -metadata argument '
+            'has to come after -map_metadata or the copied comment overrides it.')
+
+
+# Rates a file from another operator is plausibly recorded at.  8000 is the floor the
+# program accepts -- twice the 4 kHz the display and analysis look at -- and 44100 is
+# what a ham with a sound card and no reason to think about it will send.
+FOREIGN_RATES = (8000, 11025, 22050, 44100)
+
+
+def write_pulse_train(path: Path, rate: int, seconds: float = 2.5) -> Path:
+    """A 120 pps burst train on noise, at whatever rate is asked for.
+
+    The burst is scaled in *time* rather than samples, because that is what the real
+    thing is: a gap fires for 2.5-6 ms regardless of how fast anything samples it.
+    """
+    import wave
+
+    import numpy as np
+    count = int(seconds * rate)
+    data = np.random.default_rng(1).integers(-300, 301, size=count).astype(np.int16)
+    spacing = rate / 120.0
+    width = max(3, int(0.003 * rate))
+    for index in range(int(count / spacing)):
+        at = round(index * spacing)
+        if at + width < count:
+            data[at:at + width] = 12000
+    with wave.open(str(path), 'wb') as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(rate)
+        handle.writeframes(data.tobytes())
+    return path
+
+
+@pytest.fixture(scope='module')
+def foreign_renders(tmp_path_factory):
+    """One render per sample rate, produced by running the program.
+
+    Module-scoped: each is a real-time render, so they are made once and read many
+    times.
+    """
+    directory = tmp_path_factory.mktemp('rates')
+    results = {}
+    for rate in FOREIGN_RATES:
+        source = write_pulse_train(directory / f'{rate}.wav', rate)
+        output = directory / f'{rate}.mp4'
+        environment = {**os.environ, 'QT_QPA_PLATFORM': 'offscreen',
+                       'PYTHONPATH': str(ROOT / 'lib'), 'NUMBA_DISABLE_JIT': '0'}
+        finished = subprocess.run(
+            [sys.executable, '-m', 'buzz.main', '--playback', str(source),
+             '--render', str(output), '--headless'],
+            capture_output=True, text=True, env=environment, cwd=str(ROOT), timeout=300)
+        results[rate] = (finished, output)
+    return results
+
+
+class TestForeignSampleRates:
+    """A .wav from somebody else, at whatever rate their sound card happened to use.
+
+    The display sizes itself from the sample rate — it shows 0-4 kHz, so the bin count
+    and therefore the window width follow the rate — which means rendering has to cope
+    with a frame size it did not choose.  That is not hypothetical: 11025 Hz lands on
+    185 bins and a 1019 px window, and yuv420p cannot encode an odd dimension.
+    """
+
+    @pytest.mark.parametrize('rate', FOREIGN_RATES)
+    def test_the_render_succeeds(self, foreign_renders, rate):
+        finished, output = foreign_renders[rate]
+        assert finished.returncode == 0, (
+            f'Rendering a {rate} Hz file exited {finished.returncode}.\n\n'
+            f'stderr:\n{finished.stderr[-2000:]}')
+        assert output.exists(), f'no .mp4 was written for {rate} Hz'
+
+    @pytest.mark.parametrize('rate', FOREIGN_RATES)
+    def test_the_frame_is_encodable(self, foreign_renders, rate):
+        """yuv420p subsamples chroma by two each way, so an odd dimension is refused
+        outright. 11025 Hz is the one common rate whose geometry lands odd."""
+        video = probe(foreign_renders[rate][1])['video']
+        width, height = int(video['width']), int(video['height'])
+        assert width % 2 == 0 and height % 2 == 0, (
+            f'A {rate} Hz file rendered {width}x{height}, which yuv420p cannot encode. '
+            'The pad filter in ffmpeg_command() is what rounds the captured frame up '
+            'to even; check it fired.')
+
+    @pytest.mark.parametrize('rate', FOREIGN_RATES)
+    def test_audio_and_video_still_agree(self, foreign_renders, rate):
+        streams = probe(foreign_renders[rate][1])
+        video = float(streams['video']['duration'])
+        audio = float(streams['audio']['duration'])
+        assert abs(video - audio) < 0.05, (
+            f'At {rate} Hz the video runs {video:.3f}s and the audio {audio:.3f}s.')
+
+    def test_the_frame_is_the_same_size_at_every_rate(self, foreign_renders):
+        """The FFT window is a fixed span of time, so the bin count -- and therefore
+        the window width -- does not depend on the sample rate. This used to vary from
+        1374 px at 8 kHz down to 324 px at 44.1 kHz, and 11025 Hz landed on an odd
+        width that yuv420p refused outright."""
+        sizes = {rate: (int(probe(output)['video']['width']),
+                        int(probe(output)['video']['height']))
+                 for rate, (_, output) in foreign_renders.items()}
+        assert set(sizes.values()) == {EXPECTED_SIZE}, (
+            f'Frame sizes by rate came out {sizes}, expected {EXPECTED_SIZE} for all '
+            'of them. The display geometry has gone back to depending on the sample '
+            'rate -- see spectrum_geometry in buzz.waterfall.')

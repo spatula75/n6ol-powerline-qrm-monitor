@@ -19,15 +19,41 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   handed to ffmpeg as a second input and never piped, which removes it from the sync
   problem altogether. `--playback-gain` applies to the rendered audio, unlike live
   playback where gain reaches the speakers alone; nothing measured is involved in a
-  rendered file, and a demo nobody can hear is useless.
+  rendered file, and a recording set deliberately low for measurement is awkward to
+  show anyone at the level it was captured.
 - Recordings keep their identity in the video. The `.wav`'s LIST/INFO tags — the event,
   the station, the moment, and the calibration behind the numbers — are carried into the
   MP4 container. Its cue marker is not: ffmpeg reads that as a chapter and MP4 chapters
   are a *track*, so a single marker arrived as a third data stream. The lock offset
   survives in the comment as `lead_in_seconds`.
+- `--playback-gain auto` measures the recording and works the figure out, instead of
+  the operator guessing and trying again. It takes whichever is smaller of the gain
+  that reaches −23 LUFS (the EBU R128 broadcast reference) and the gain that leaves
+  true peak at −2 dBTP, so it gets as close to a standard listening level as it can
+  without letting anything clip; a recording whose bursts sit high above its noise
+  floor reaches the peak ceiling first and comes out slightly quieter, which is the
+  right way round. The result is one fixed gain, applied as a plain volume change.
+  Nothing is compressed and nothing is limited: both reshape the pulse envelope that
+  carries how bad the interference is, and ffmpeg's own `loudnorm` was observed
+  choosing exactly that on these recordings, which is why it measures here but does
+  not apply. `--render` implies `auto`, because a recorded event sits around −45 LUFS,
+  well below a normal listening level — the calibration process keeps it deliberately
+  there, which suits measuring impulsive noise and not showing it to anyone. Passing a
+  figure, including `0`, overrides that; watching a replay does not imply it at all.
+  The gain used is written into the video's metadata as `render_gain_db`, so the file
+  says how far its audio was raised.
 - `[render] ffmpeg_path` for installs that do not land on PATH. ffmpeg is needed for
-  `--render` and for nothing else; a monitor that never renders never looks for it, so
-  leaving this empty costs nothing.
+  `--render` and the loudness probe that feeds it, and for nothing else; a monitor
+  that never renders never looks for it, so leaving this empty costs nothing.
+
+- Recordings now note `lead_in_max_seconds` beside `lead_in_seconds`, so the latter can
+  be read honestly. The ring buffer keeps sliding while `min_lock_seconds` is waited
+  out, so the lead-in can never exceed the buffer's capacity less that wait — and a
+  recording sitting at that bound is saying "everything there was", not "the lock took
+  this long". The two were indistinguishable from the file, since neither the buffer
+  size nor `min_lock_seconds` was recorded anywhere in it. Noticed while checking a
+  rendered video: eight of fourteen recordings clustered at 6.56–6.59 s against a 9.6 s
+  buffer and a 3 s wait, which is the bound to within a poll, and nothing said so.
 
 ### Fixed
 - Playback no longer sprints through the opening of a recording. The deadline schedule
@@ -44,6 +70,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   as an empty box. The face is now loaded from a file into the application's own font
   database, where neither the platform nor the machine's installed fonts can reach it.
   DejaVu Sans Mono comes with matplotlib, already a dependency, so nothing new ships.
+
+- The waterfall keeps its size and its frequency resolution at any sample rate. Its FFT
+  window is a fixed span of *time* now — 32 ms, which is what 512 samples meant at
+  16 kHz — rather than a fixed number of samples, so the bin count works out at
+  `4000 Hz × 32 ms = 128` whatever the audio arrives at and the rate cancels out
+  entirely. Before this a 44.1 kHz file was analysed 512 samples at a time, which is
+  86 Hz per bin against 16 kHz's 31, and covered 0–4 kHz in 46 bins — a waterfall 230 px
+  wide instead of 640. The dB references move with the window, as they always did:
+  both had the window length in their formulas already, so this changes where N comes
+  from rather than the arithmetic. Verified at every rate from 8 to 48 kHz — a
+  full-scale tone still reads 0 dBFS and broadband noise still lands on its anchor.
+- Sample rates outside **8–48 kHz** are refused with an explanation rather than
+  analysed. 8 kHz is exactly Nyquist for the 4 kHz the display and the analysis look
+  at, so below it the top of the waterfall is empty band; far above it the fixed-size
+  ring buffer holds too little history to acquire the way the analyzer was tuned to,
+  and a powerline arc has nothing to say up there anyway.
+- A stereo file now says in the log that only channel 0 is being analysed. It always
+  was — matching what the live monitor does with a stereo input device, since mixing
+  would average the arc against whatever the other channel holds — but "half of what
+  you sent was ignored" should not have to be inferred from a reading that came out
+  low. A render takes channel 0 too, so the video's audio is the audio that was
+  measured rather than both channels beside a picture of one.
 
 ### Changed
 - The JIT-compiled DSP helpers declare their signatures, so Numba compiles them at

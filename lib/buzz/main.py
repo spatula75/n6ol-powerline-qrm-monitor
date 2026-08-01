@@ -27,6 +27,7 @@ import argparse
 import faulthandler
 import logging
 import logging.config
+import os
 import signal
 import sys
 import threading
@@ -37,7 +38,7 @@ from typing import TypeVar
 from buzz import wavmeta
 from buzz.analyzer import ContinuousAnalyzer
 from buzz.collector import Collector
-from buzz.config import CONFIG_PATH, BuzzConfig
+from buzz.config import CONFIG_PATH, BuzzConfig, validate_sample_rate
 from buzz.csv_store import CsvStore
 from buzz.playback import FilePlaybackPipeline, resolve_playback_path
 from buzz.plotter import Plotter
@@ -54,7 +55,15 @@ from buzz.weather import (
 faulthandler.enable()
 
 ROOT_PACKAGE = 'buzz'
-logger = logging.getLogger(__name__)
+# Named explicitly rather than from __name__, which is what every other module here
+# does and would be wrong in this one.  This module is the entry point: run as
+# `python -m buzz.main`, its __name__ is '__main__', so getLogger(__name__) returns a
+# logger outside the buzz hierarchy — and configure_logging() attaches the console
+# handler to `buzz` while leaving root at CRITICAL with no handlers.  Every log line in
+# this file was therefore discarded in the one invocation the README documents,
+# including _adopt()'s warnings that a recording disagrees with the config, which exist
+# precisely so that difference cannot pass unseen.
+logger = logging.getLogger(f'{ROOT_PACKAGE}.main')
 
 _T = TypeVar('_T')
 
@@ -159,6 +168,14 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
     except (OSError, wave.Error, ValueError) as exc:
         raise SystemExit(f'Cannot play back {path}: {exc}') from exc
 
+    # Checked here rather than deeper down: this is where a file from outside becomes
+    # something the analyzer and display will be asked to work on, and the only place
+    # that knows it came from a person rather than from a test.
+    try:
+        validate_sample_rate(pipeline.sample_rate, path.name)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
     settings = wavmeta.read_settings(path)
     pulse_rate = wavmeta.setting(settings, 'pulse_rate', int)
     calibration = wavmeta.setting(settings, 'audio_rf_conversion_db', float)
@@ -244,10 +261,24 @@ def _start_render(args, config: BuzzConfig, window, pipeline: FilePlaybackPipeli
     from buzz.render import RenderError, RenderSession
     from buzz.waterfall import DisplayRecorder
 
+    # Said before anything starts, because a render takes as long as the recording and
+    # otherwise looks like a hang -- particularly headless, where there is not even a
+    # window moving to show it is alive.
+    #
+    # The length comes from the pipeline, which read it out of the .wav header when it
+    # opened the file.  Not from the loudness probe: --playback-gain 0 skips that
+    # entirely, and the operator still deserves to know what they have committed to.
+    logger.info('Rendering in real time: this will take about %s, the length of the '
+                'recording. The display is drawn as it plays.',
+                _describe_duration(pipeline.duration))
+
     try:
         session = RenderSession(Path(args.render), pipeline.path,
                                 window.width(), window.height(),
-                                gain_db=args.playback_gain,
+                                # The gain the pipeline was actually built with, which
+                                # is the resolved figure -- args.playback_gain may still
+                                # be the word "auto" or None for "decide for me".
+                                gain_db=pipeline.gain_db,
                                 ffmpeg=config.render.ffmpeg_path or None)
     except RenderError as exc:
         # Before the event loop starts, so this is a clean exit with a message rather
@@ -275,6 +306,70 @@ def _start_render(args, config: BuzzConfig, window, pipeline: FilePlaybackPipeli
     return recorder
 
 
+AUTO_GAIN = 'auto'
+
+
+def _gain_argument(value: str) -> float | str:
+    """Parse --playback-gain, which takes a number of dB or the word "auto"."""
+    if value.strip().lower() == AUTO_GAIN:
+        return AUTO_GAIN
+    try:
+        return float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f'{value!r} is neither a number of dB nor "auto". Pass a figure such as '
+            '12 or -6 to set the gain yourself, or "auto" to have the recording '
+            'measured and the gain chosen for you.') from None
+
+
+def _describe_duration(seconds: float) -> str:
+    """A duration a person can act on: "45 s", or "2 min 10 s" once that reads better."""
+    if seconds < 120:
+        return f'{seconds:.0f} s'
+    minutes, remainder = divmod(int(round(seconds)), 60)
+    return f'{minutes} min {remainder} s' if remainder else f'{minutes} min'
+
+
+def _check_render_output(output: Path) -> None:
+    """Refuse an existing output before anything expensive happens.
+
+    RenderSession checks this too, but not until it is built -- by which time the
+    loudness probe has read the whole recording for nothing.  One stat here saves that,
+    and gives the operator the message before a window opens.
+    """
+    if output.exists():
+        raise RuntimeError(
+            f'Cannot render: {output} already exists. Renders never overwrite, because '
+            'one takes as long as the recording it replays and silently destroying a '
+            'previous one would be an expensive mistake. Delete it or pass a different '
+            '--render filename.')
+
+
+def _resolve_gain(args, config: BuzzConfig, source: Path) -> float:  # pragma: no cover
+    """Settle on a playback gain before anything is built that depends on it.
+
+    Deliberately early.  The gain is a constructor argument to the playback pipeline
+    and is baked into the ffmpeg command as a filter, so it has to be known before
+    either exists -- and doing the measurement here means every way a render can be
+    refused happens before a window opens or an output file is created.
+
+    Rendering defaults to measuring, because a rendered event sits around -45 LUFS and
+    well below a normal listening level -- the calibration deliberately keeps them
+    there -- and a video somebody has to strain at is not worth making. Watching
+    does not, because that is a different job: the operator is listening live, has the
+    volume control to hand, and did not ask to wait for a measurement.
+    """
+    requested = args.playback_gain
+    if requested is None:
+        requested = AUTO_GAIN if args.render else 0.0
+    if requested != AUTO_GAIN:
+        return float(requested)
+
+    from buzz.ffmpeg import find_ffmpeg
+    from buzz.loudness import resolve_gain
+    return resolve_gain(source, find_ffmpeg(config.render.ffmpeg_path or None))
+
+
 def main() -> None:  # pragma: no cover
     parser = argparse.ArgumentParser(description='N6OL Powerline QRM Monitor')
     parser.add_argument('--headless', action='store_true',
@@ -289,10 +384,15 @@ def main() -> None:  # pragma: no cover
                              'directory. Suppresses CSV, plots, uploads and recording.')
     parser.add_argument('--mute', action='store_true',
                         help='Start playback silent, opening no audio output device')
-    parser.add_argument('--playback-gain', type=float, default=0.0, metavar='DB',
+    parser.add_argument('--playback-gain', type=_gain_argument, default=None,
+                        metavar='DB|auto',
                         help='dB of gain for the playback audio only, to make a quiet '
                              'recording audible on small speakers. Does not affect '
-                             'the analysis or anything it reports.')
+                             'the analysis or anything it reports. "auto" measures the '
+                             'recording and picks the gain that reaches -23 LUFS '
+                             'without letting true peak past -2 dBTP; it needs ffmpeg. '
+                             '--render implies auto, so pass a number there (0 for '
+                             'none) to override it.')
     parser.add_argument('--render', metavar='FILE.mp4',
                         help='Render the --playback session to an .mp4 instead of just '
                              'watching it: H.264 video of the display with the '
@@ -305,11 +405,19 @@ def main() -> None:  # pragma: no cover
         parser.error('--render needs --playback: it records a replay of a recording, '
                      'and there is nothing to replay without one.')
     if args.render and args.headless:
-        # Rendering draws the real widgets, so it needs the display stack even though
-        # nobody is watching.  Faster-than-realtime headless rendering is a later
-        # thing, and it needs the analyzer driven by an injected clock first.
-        parser.error('--render cannot be combined with --headless yet; it captures the '
-                     'display window, so there has to be one.')
+        # Not a contradiction: rendering always draws the real widgets, and --headless
+        # asks only that nothing appear on screen.  Qt's offscreen platform paints into
+        # memory instead of a window, and since the display font is loaded from a file
+        # rather than borrowed from the platform, an offscreen render comes out
+        # identical to a windowed one.
+        #
+        # setdefault, so an operator who has chosen a platform themselves keeps it.
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        # Nobody is watching, so nobody is listening either, and opening an output
+        # device achieves nothing -- it can fail outright on a machine that has none.
+        # The rendered audio is unaffected either way: ffmpeg reads the recording from
+        # disk, so muting only ever decided whether the operator heard it being made.
+        args.mute = True
 
     configure_logging()
 
@@ -319,12 +427,29 @@ def main() -> None:  # pragma: no cover
     if args.playback:
         if args.enable_recording:
             logger.warning('--enable-recording is ignored during playback.')
+        source = resolve_playback_path(
+            args.playback, config.recording.directory_path(config.station))
+        # Everything that can refuse a render happens here, before a window opens or a
+        # file is created, cheapest check first: is ffmpeg there, would we overwrite
+        # something, and only then the measurement that has to read the whole file.
+        # A failure now costs a message; the same failure later costs a half-written
+        # .mp4 and a window that appears and dies.
+        try:
+            if args.render:
+                _check_render_output(Path(args.render))
+            gain_db = _resolve_gain(args, config, source)
+        except RuntimeError as exc:
+            logger.error('%s', exc)
+            sys.exit(2)
         pipeline = open_playback_pipeline(config, args.playback, muted=args.mute,
-                                          gain_db=args.playback_gain)
+                                          gain_db=gain_db)
         analyzer = ContinuousAnalyzer(pipeline, config)
         analyzer.start()
     else:
-        if args.mute or args.playback_gain != 0.0:
+        # `is not None` rather than `!= 0.0`: the default is None so that "the
+        # operator said nothing" can be told apart from "the operator said zero", and
+        # None compares unequal to 0.0, which would warn on every live run.
+        if args.mute or args.playback_gain is not None:
             logger.warning('--mute and --playback-gain are ignored outside playback; '
                            'the monitor never sends live audio to an output device.')
         pipeline = AudioSampler(config).pipeline
@@ -339,7 +464,9 @@ def main() -> None:  # pragma: no cover
         recorder.start()
         _start_collector(config, analyzer)
 
-    if args.headless:
+    # A headless *render* still goes down the Qt path: it has widgets to paint, it just
+    # paints them offscreen.  Only a headless run with nothing to render skips it.
+    if args.headless and not args.render:
         _start_playback(pipeline, args.playback)
         _wait_until_interrupted(pipeline, analyzer, recorder)
         return

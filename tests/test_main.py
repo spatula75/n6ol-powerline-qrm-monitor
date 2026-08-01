@@ -1,5 +1,6 @@
 """Tests for buzz.main: configure_logging(), weather client factory, playback wiring,
 and headless wait."""
+import argparse
 import logging
 import time
 import wave
@@ -444,3 +445,89 @@ class TestPlaybackAdoptsRecordedSettings:
         with caplog.at_level(logging.WARNING, logger='buzz'):
             played = self._play(tmp_path, cfg, pulse_rate='ninety')
         assert played.audio.pulse_rate == BuzzConfig().audio.pulse_rate
+
+
+class TestGainArgument:
+    """--playback-gain takes a number of dB or the word "auto"."""
+
+    def test_a_number_is_a_number(self):
+        assert main_module._gain_argument('12') == 12.0
+        assert main_module._gain_argument('-6.5') == -6.5
+
+    def test_auto_is_recognised_however_it_is_typed(self):
+        for spelling in ('auto', 'AUTO', ' Auto '):
+            assert main_module._gain_argument(spelling) == main_module.AUTO_GAIN
+
+    def test_anything_else_explains_both_forms(self):
+        """argparse prints this straight to the operator, so it has to name what is
+        acceptable rather than just rejecting what was typed."""
+        with pytest.raises(argparse.ArgumentTypeError, match='neither a number'):
+            main_module._gain_argument('loud')
+
+    def test_zero_is_a_number_and_not_a_missing_value(self):
+        """The default is None so that "said nothing" can be told from "said zero" --
+        which is how --render knows whether to measure."""
+        assert main_module._gain_argument('0') == 0.0
+
+
+class TestRenderOutputCheck:
+
+    def test_an_existing_output_is_refused(self, tmp_path):
+        output = tmp_path / 'demo.mp4'
+        output.write_bytes(b'')
+        with pytest.raises(RuntimeError, match='already exists'):
+            main_module._check_render_output(output)
+
+    def test_the_refusal_says_why_and_what_to_do(self, tmp_path):
+        """A render costs as long as the recording it replays, so silently destroying
+        one would be expensive; the operator needs to know that is deliberate."""
+        output = tmp_path / 'demo.mp4'
+        output.write_bytes(b'')
+        with pytest.raises(RuntimeError, match='never overwrite'):
+            main_module._check_render_output(output)
+
+    def test_a_free_path_passes_silently(self, tmp_path):
+        main_module._check_render_output(tmp_path / 'not-there.mp4')
+
+
+class TestDescribeDuration:
+    """How long a render will take, said so a person can act on it."""
+
+    def test_short_renders_are_seconds(self):
+        assert main_module._describe_duration(16.6) == '17 s'
+        assert main_module._describe_duration(45.0) == '45 s'
+
+    def test_long_renders_read_better_in_minutes(self):
+        """"130 s" is arithmetic; "2 min 10 s" is a decision about whether to wait."""
+        assert main_module._describe_duration(130.0) == '2 min 10 s'
+
+    def test_a_whole_number_of_minutes_drops_the_seconds(self):
+        assert main_module._describe_duration(180.0) == '3 min'
+
+    def test_the_boundary_does_not_produce_nonsense(self):
+        assert main_module._describe_duration(119.0) == '119 s'
+        assert main_module._describe_duration(120.0) == '2 min'
+
+
+class TestTheEntryPointLogsAtAll:
+    """main.py is the one module that must not name its logger from __name__.
+
+    Run as `python -m buzz.main` its __name__ is '__main__', which sits outside the
+    `buzz` hierarchy that configure_logging() attaches the console handler to — so
+    every message from this file went nowhere in the invocation the README documents.
+    """
+
+    def test_the_logger_is_inside_the_configured_hierarchy(self):
+        assert main_module.logger.name == f'{main_module.ROOT_PACKAGE}.main', (
+            f'main.py logs to {main_module.logger.name!r}. If that came from __name__ '
+            'it will be \'__main__\' when run as a module, and nothing it logs will '
+            'be printed.')
+
+    def test_a_main_logger_would_indeed_have_gone_nowhere(self, capsys):
+        """The trap itself, so the reason the name is hard-coded stays visible."""
+        main_module.configure_logging()
+        logging.getLogger('__main__').warning('this must not appear')
+        logging.getLogger(f'{main_module.ROOT_PACKAGE}.main').warning('this must appear')
+        captured = capsys.readouterr()
+        assert 'this must not appear' not in (captured.out + captured.err)
+        assert 'this must appear' in (captured.out + captured.err)

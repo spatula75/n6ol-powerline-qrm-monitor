@@ -589,6 +589,40 @@ class TestMetadata:
             recorder.stop()
         return _wav_files(tmp_path)[0]
 
+    def test_records_the_most_lead_in_this_config_could_give(self, tmp_path):
+        """Without it, lead_in_seconds is censored data dressed as a measurement.
+
+        The buffer slides while min_lock_seconds is waited out, so the lead-in can
+        never exceed capacity less that wait. A file sitting exactly at the bound is
+        saying "all there was"; one below it is reporting how long the lock took. From
+        the file alone those were indistinguishable, because neither the buffer size
+        nor min_lock_seconds is recorded anywhere else.
+        """
+        settings = wavmeta.read_settings(self._record(tmp_path))
+        assert 'lead_in_max_seconds' in settings
+
+    def test_the_bound_shrinks_by_the_min_lock_wait(self, tmp_path):
+        """Three seconds spent waiting is three seconds of lead-in lost, because the
+        buffer slides while the wait runs. The bound therefore has to move with the
+        setting rather than being the raw buffer size."""
+        plain, _, _ = _make_recorder(tmp_path)
+        delayed, _, _ = _make_recorder(tmp_path, min_lock_seconds=1.0)
+        lost = plain._max_lead_in_samples() - delayed._max_lead_in_samples()
+        assert lost == pytest.approx(SAMPLE_RATE, abs=CHUNK)
+
+    def test_the_bound_never_goes_negative(self, tmp_path):
+        """min_lock_seconds longer than the buffer is already clamped elsewhere; this
+        makes sure the arithmetic here cannot report a negative allowance if it ever
+        stops being."""
+        recorder, _, _ = _make_recorder(tmp_path, min_lock_seconds=3600.0)
+        assert recorder._max_lead_in_samples() >= 0
+
+    def test_a_saturated_lead_in_can_be_told_from_a_measured_one(self, tmp_path):
+        """The whole point: a reader compares the two numbers and knows which they
+        have. This recording locks almost immediately, so it is a measurement."""
+        settings = wavmeta.read_settings(self._record(tmp_path))
+        assert float(settings['lead_in_seconds']) < float(settings['lead_in_max_seconds'])
+
     def test_names_the_station(self, tmp_path):
         info = wavmeta.read_info(self._record(tmp_path))
         assert info['IART'] == BuzzConfig().station.callsign

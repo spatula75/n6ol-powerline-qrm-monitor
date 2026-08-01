@@ -45,13 +45,25 @@ _INT16_MIN, _INT16_MAX = -32768, 32767
 def load_wav(path: Path | str) -> tuple[np.ndarray, int]:
     """Read a 16-bit PCM .wav into (int16 samples, sample rate).
 
-    Multi-channel files are reduced to channel 0 rather than mixed down, matching
-    what the live pipeline does with a stereo input device.
+    Any .wav plays, not only ones this program recorded — somebody being sent a file
+    by another operator is exactly who this is for.  Two properties are refused rather
+    than coped with, because both would otherwise produce a display and a set of
+    numbers that look entirely plausible and are wrong:
 
-    Sample width is the one property worth refusing outright: the whole signal
-    chain is int16 end to end, and silently converting a 24- or 32-bit file would
-    invite a mismatch between what the analyzer measures here and what it measured
-    live.  Recordings this program produces are always 16-bit.
+    - **Sample width.**  The whole signal chain is int16 end to end, and silently
+      converting a 24- or 32-bit file would put what is measured here at odds with
+      what the same audio measured live.
+    The sample rate is *not* checked here, nor by the pipeline.  Reading a .wav and
+    deciding what rates this program will work at are different questions, and the
+    second belongs to main.open_playback_pipeline -- the function that takes a file
+    from outside and makes sense of it.  A caller that only wants the samples back,
+    which the tests do at rates chosen for speed, should not be subject to a policy
+    about the display's bandwidth.
+
+    Multi-channel files are reduced to channel 0 rather than mixed down, matching what
+    the live pipeline does with a stereo input device, and say so in the log — a file
+    from elsewhere is quite likely to be stereo, and "half of what you sent was
+    ignored" should not have to be inferred from a reading that came out low.
     """
     with wave.open(str(path), 'rb') as wav:
         if wav.getsampwidth() != _BYTES_PER_SAMPLE:
@@ -59,6 +71,20 @@ def load_wav(path: Path | str) -> tuple[np.ndarray, int]:
                 f'{path}: expected 16-bit PCM audio, got {wav.getsampwidth() * 8}-bit')
         channels = wav.getnchannels()
         sample_rate = wav.getframerate()
+        if channels > 1:
+            # Said out loud rather than left to the docstring.  A file from somebody
+            # else is quite likely to be stereo, and "we analysed half of what you
+            # sent" is not something anyone should have to infer from a number that
+            # came out lower than expected.  Channel 0 rather than a downmix, matching
+            # what the live pipeline does with a stereo input device -- mixing would
+            # average the arc against whatever the other channel happens to hold.
+            logger.warning(
+                '%s has %d channels; analysing channel 0 only. The other %s ignored, '
+                'not mixed in, which is what the live monitor does with a stereo input '
+                'device. If the interference is only on another channel, extract that '
+                'channel to a mono file first.',
+                Path(path).name, channels,
+                'channel is' if channels == 2 else 'channels are')
         frames = wav.readframes(wav.getnframes())
     samples = np.frombuffer(frames, dtype='<i2')[::channels]
     # astype() rather than the frombuffer view: that view is read-only and borrows
@@ -112,8 +138,11 @@ class FilePlaybackPipeline(RingBufferPipeline):
 
     def __init__(self, path: Path | str, muted: bool = True,
                  gain_db: float = 0.0) -> None:
-        super().__init__()
-        self._samples, self.sample_rate = load_wav(path)
+        # Loaded before the buffer is sized, because the buffer is sized in seconds
+        # and only the file knows what rate those seconds are at.
+        samples, sample_rate = load_wav(path)
+        super().__init__(sample_rate)
+        self._samples, self.sample_rate = samples, sample_rate
         self.path = Path(path)
         # Partial trailing chunks are dropped: consumers read whole chunks, and up
         # to 32 ms of audio at the very end of a file is not worth a special case.
