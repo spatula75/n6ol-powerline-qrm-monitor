@@ -16,6 +16,7 @@ import threading
 from collections import deque
 from dataclasses import dataclass
 from math import ceil
+from time import monotonic
 from typing import Self
 
 import numpy as np
@@ -41,6 +42,11 @@ _BUFFER_SECONDS = 9.6
 # 512 int16 samples, which is under a megabyte.  Sizing by duration is affordable
 # precisely because the audio is mono and narrow-band.
 _DEFAULT_SAMPLE_RATE = 16000
+
+# How often a continuing run of dropped audio is summarised.  A minute is chosen to
+# match the collector's cycle, so a log reporting dropouts lines up with the CSV rows
+# they affected.  The first one is always reported immediately; see DropoutReporter.
+_DROPOUT_REPORT_SECONDS = 60.0
 
 
 def buffer_chunks(sample_rate: int, chunk_size: int) -> int:
@@ -228,25 +234,78 @@ class RingBufferPipeline:
         self.close()
 
 
+class DropoutReporter:
+    """Rate-limits the warning for audio the input device dropped.
+
+    Separate from AudioPipeline so it can be tested without opening a device, and
+    because the decision of when to speak is worth stating on its own.
+
+    The first dropout is reported at once, since one on a machine that has never had
+    one is worth seeing immediately.  After that a continuing run costs a single line
+    per interval carrying the count, rather than one per callback: this is called from
+    the PortAudio callback, on PortAudio's own thread, where a warning per block would
+    both flood the log and spend time the audio path does not have -- and where the
+    logging could itself provoke the next dropout.
+    """
+
+    def __init__(self, report_interval_seconds: float = _DROPOUT_REPORT_SECONDS) -> None:
+        self._interval = report_interval_seconds
+        self._pending = 0
+        self._reported_at: float | None = None
+
+    def record(self, now: float) -> int | None:
+        """Count one dropout; return how many to report, or None to stay quiet.
+
+        `now` is passed in rather than read here so a test can drive the clock.
+        """
+        self._pending += 1
+        if self._reported_at is not None and now - self._reported_at < self._interval:
+            return None
+        self._reported_at = now
+        count, self._pending = self._pending, 0
+        return count
+
+
 class AudioPipeline(RingBufferPipeline):
     """Live audio input: a PortAudio callback filling the shared ring buffer."""
 
     def __init__(self, config: BuzzConfig, device_index: int) -> None:
         super().__init__(config.audio.sample_rate)
+        self._dropouts = DropoutReporter()
 
         def _callback(indata: np.ndarray, frames: int,
                       time: object, status: sd.CallbackFlags) -> None:
             if status:
-                # These flags mean the device and this callback got out of step --
-                # overflow being the one that matters, where audio arrived faster than
-                # it was collected and the driver dropped what it could not hold.  The
-                # gap is silent in the buffer, so it shows up as a stretch of analysis
-                # that measures low rather than as anything that looks like an error.
-                logger.warning(
-                    'The audio input reported %s, so some samples were dropped and the '
-                    'analysis covering them reads low. Usually transient load on the '
-                    'machine; if it persists, close other audio applications or raise '
-                    'chunk_size in the [audio] section of the config.', status)
+                # Overflow is the flag that matters here: the device captured faster
+                # than this callback collected, and the driver discarded the difference.
+                #
+                # Note what that does and does not do, because the obvious guess is
+                # wrong.  It leaves no gap and no silence -- this callback still gets a
+                # full block of current audio -- so nothing reads low.  What arrives is
+                # a *splice* of two runs that were never adjacent, and since
+                # _total_samples advances only by what is appended, the audio clock
+                # under-counts the time that really passed.  The pulse train did move
+                # through the discarded samples, so the next phase measurement jumps,
+                # and ContinuousAnalyzer's least-squares fit reads that step as drift.
+                # The grid frequency is therefore the reading to distrust, not the
+                # levels.
+                #
+                # Logged rather than raised.  This monitor runs unattended all day, and
+                # losing every later measurement to protect one polluted minute is the
+                # wrong trade; every other failure here degrades and carries on for the
+                # same reason.  The analyzer recovers by itself: a phase that stops
+                # making sense drops it to SEARCHING and it re-acquires.
+                dropped = self._dropouts.record(monotonic())
+                if dropped is not None:
+                    logger.warning(
+                        'The audio input reported %d dropout(s) (%s): the device '
+                        'captured faster than this program collected it, so the driver '
+                        'discarded the difference. Pulse phase jumps across the splice, '
+                        'so the grid frequency is unreliable until the analyzer '
+                        're-acquires, which it does on its own. Usually transient load; '
+                        'if it repeats, close other audio applications or raise '
+                        'chunk_size in the [audio] section of the config.',
+                        dropped, status)
             self._append(indata[:, 0].copy())
 
         self._stream = sd.InputStream(

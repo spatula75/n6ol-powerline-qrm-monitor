@@ -106,12 +106,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   about a second while audio carried on arriving. `cache=True` alongside means only the
   first run after a change pays at all.
 - The messages that report trouble say what to do about it. A file that is not 16-bit
-  now gives the ffmpeg command that converts it; a sound card that reports dropped
-  samples explains that the analysis covering them reads low, and names the setting to
-  raise; a failed weather fetch says which columns went blank and that the noise figures
-  did not; `configure.py` cancelled says the config was left alone. Each carries what was
-  being attempted, the likely cause, and a next step, which is the standard the newer
-  code was already written to.
+  now gives the ffmpeg command that converts it; a failed weather fetch says which
+  columns went blank and that the noise figures did not; `configure.py` cancelled says
+  the config was left alone. Each carries what was being attempted, the likely cause,
+  and a next step, which is the standard the newer code was already written to.
+- Dropped audio from the input device is reported accurately and at most once a minute.
+  The device captured faster than the monitor collected and the driver discarded the
+  difference, which leaves no gap and no silence: the callback still receives a full
+  block, so what arrives is a splice of two runs that were never adjacent. The audio
+  clock counts only what it was handed, so the pulse train moved through samples nobody
+  recorded and the phase jumps; the drift fit reads that step as drift, which makes the
+  grid frequency the reading to distrust rather than the levels. It is logged rather
+  than raised, because a monitor that exits on a transient overflow loses every later
+  measurement to protect one polluted minute, and the analyzer re-acquires by itself.
 
 ## [1.3.0] - 2026-07-30
 
