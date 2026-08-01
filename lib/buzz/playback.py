@@ -79,12 +79,10 @@ def load_wav(path: Path | str) -> tuple[np.ndarray, int]:
             # what the live pipeline does with a stereo input device -- mixing would
             # average the arc against whatever the other channel happens to hold.
             logger.warning(
-                '%s has %d channels; analysing channel 0 only. The other %s ignored, '
-                'not mixed in, which is what the live monitor does with a stereo input '
-                'device. If the interference is only on another channel, extract that '
-                'channel to a mono file first.',
-                Path(path).name, channels,
-                'channel is' if channels == 2 else 'channels are')
+                '%s has %d channels; analysing channel 0 only, not a downmix: the '
+                'same thing the live monitor does with a stereo input. Extract another '
+                'channel to mono first if the interference is not on this one.',
+                Path(path).name, channels)
         frames = wav.readframes(wav.getnframes())
     samples = np.frombuffer(frames, dtype='<i2')[::channels]
     # astype() rather than the frombuffer view: that view is read-only and borrows

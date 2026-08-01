@@ -140,7 +140,8 @@ def _adopt(name: str, filename: str, configured: _T, recorded: _T | None) -> _T:
 
 
 def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
-                           gain_db: float = 0.0) -> FilePlaybackPipeline:
+                           gain_db: float = 0.0,
+                           rf_conversion_db: float | None = None) -> FilePlaybackPipeline:
     """Open a .wav as the audio source, taking its recorded settings over the config.
 
     Three settings decide what the analysis of a replayed file means, and none can be
@@ -191,14 +192,39 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
     # analysed with any authority, and the operator is the only one who can judge
     # whether that matters — so say what is being assumed rather than fall back
     # silently and let a plausible-looking dBm reading speak for itself.
-    missing = [name for name, value in (('pulse rate', pulse_rate),
-                                        ('level calibration', calibration)) if value is None]
-    if missing:
-        logger.warning('%s does not record its %s — analysing with the configured '
-                       'pulse rate of %d Hz and calibration of %.1f dB, which may not '
-                       'be what it was recorded with.',
-                       path.name, ' or '.join(missing),
-                       audio.pulse_rate, station.audio_rf_conversion_db)
+    # An explicit figure from the command line beats both, because it is the only one
+    # anybody deliberately supplied.  Overriding a value the recording carries is
+    # unusual enough to say out loud: the file's own calibration is normally the right
+    # one, being the receiver's that made it.
+    if rf_conversion_db is not None:
+        if calibration is not None and calibration != rf_conversion_db:
+            logger.warning('%s records a calibration of %.1f dB; using %.1f dB from '
+                           '--audio-rf-conversion-db instead.',
+                           path.name, calibration, rf_conversion_db)
+        else:
+            logger.info('Using %.1f dB from --audio-rf-conversion-db to convert audio '
+                        'levels to signal levels for this replay.', rf_conversion_db)
+        station.audio_rf_conversion_db = rf_conversion_db
+
+    # Two separate warnings rather than one, because they have different consequences
+    # and different remedies.  A wrong pulse rate means nothing locks; a wrong
+    # calibration means everything locks and every level is wrong.
+    if pulse_rate is None:
+        # The other grid, not this one: 120 pps *is* 60 Hz, so warning about 60 Hz
+        # while configured for 120 would be telling the operator their own setting is
+        # the problem.
+        other_pps = 100 if audio.pulse_rate == 120 else 120
+        logger.warning(
+            '%s does not record its pulse rate; analysing at the configured %d pps. '
+            'If nothing locks it may be a %d Hz recording; set audio.pulse_rate to %d.',
+            path.name, audio.pulse_rate, other_pps // 2, other_pps)
+    if calibration is None and rf_conversion_db is None:
+        logger.warning(
+            '%s does not record its level calibration; using this station\'s %.1f dB. '
+            'dBm and S-unit readings may be wrong by any amount, though lock, phase '
+            'and burst shape do not depend on it. Pass --audio-rf-conversion-db if you '
+            'know the figure at which it was recorded.',
+            path.name, station.audio_rf_conversion_db)
     return pipeline
 
 
@@ -393,6 +419,15 @@ def main() -> None:  # pragma: no cover
                              'without letting true peak past -2 dBTP; it needs ffmpeg. '
                              '--render implies auto, so pass a number there (0 for '
                              'none) to override it.')
+    parser.add_argument('--audio-rf-conversion-db', type=float, default=None,
+                        metavar='DB',
+                        help='dB between audio amplitude and signal level at the '
+                             'receiver, for this replay only. Recordings this program '
+                             'made carry their own and need no help; a .wav from '
+                             'anywhere else is analysed with the figure configured for '
+                             'this station, which may be nothing like the one at '
+                             'which it was recorded. Supply it here if you know it. '
+                             'Playback only.')
     parser.add_argument('--render', metavar='FILE.mp4',
                         help='Render the --playback session to an .mp4 instead of just '
                              'watching it: H.264 video of the display with the '
@@ -442,7 +477,8 @@ def main() -> None:  # pragma: no cover
             logger.error('%s', exc)
             sys.exit(2)
         pipeline = open_playback_pipeline(config, args.playback, muted=args.mute,
-                                          gain_db=gain_db)
+                                          gain_db=gain_db,
+                                          rf_conversion_db=args.audio_rf_conversion_db)
         analyzer = ContinuousAnalyzer(pipeline, config)
         analyzer.start()
     else:
@@ -452,6 +488,11 @@ def main() -> None:  # pragma: no cover
         if args.mute or args.playback_gain is not None:
             logger.warning('--mute and --playback-gain are ignored outside playback; '
                            'the monitor never sends live audio to an output device.')
+        if args.audio_rf_conversion_db is not None:
+            logger.warning('--audio-rf-conversion-db is ignored outside playback; live '
+                           'audio is calibrated by station.audio_rf_conversion_db in '
+                           'the config, which is the figure this station was set up '
+                           'with. Change it there rather than per run.')
         pipeline = AudioSampler(config).pipeline
         analyzer = ContinuousAnalyzer(pipeline, config)
         # Built whether or not recording is enabled: `enabled` only decides whether it

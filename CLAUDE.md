@@ -496,6 +496,14 @@ that call rather than quietly compiling another variant mid-flight.
   `StateLog` in `tests/integration/harness.py`. Polling `analyzer.state` cannot see a
   lock that dropped and came back between two polls, and that is exactly what restart
   has to prove. Push, don't poll applies to tests too.
+- **Integration tests run muted and headless.** Anything that launches the monitor
+  passes `--mute` and `--headless` (or sets `QT_QPA_PLATFORM=offscreen`) unless the
+  thing under test is the audio device or the window itself. A suite that seizes the
+  speakers or throws a window in front of whoever is running it will not be run, and
+  neither adds anything to what is usually being tested. Note that `--headless` alone
+  does *not* imply `--mute` — only `--render --headless` does — and that headless
+  playback never exits on its own, so a test driving it must stop the process rather
+  than wait for it.
 - Integration tests complement running the program by hand; they don't replace it.
   A lit button or a timer starting at the wrong number needs a person looking.
 
@@ -571,6 +579,17 @@ carries three things:**
 3. **What to do about it.** A concrete next step — the command to run, the setting to
    change, the file to look in. If the failure is survivable, say what the program did
    instead, so nobody hunts a problem that has already been worked around.
+
+**Three things, not three paragraphs.** Two or three sentences carries all of it; past
+that the message stops being read, which costs more than leaving something out. Cut the
+reasoning and keep the facts — *why* it works this way belongs in a comment beside the
+code, where the person who needs it is already looking.
+
+**Don't end a sentence with a preposition** in anything the user sees — messages, log
+lines, `--help` text, README prose. "the figure at which it was recorded", not "the
+figure it was recorded at". A made-up rule, and this project follows it anyway; the
+house style is formal and the messages should match it. Comments and docstrings are
+not user-facing and need not bother.
 
 Precedents worth copying: `find_ffmpeg()` in `render.py` names the missing program, the
 one flag that needs it, the winget command that installs it, the config setting that

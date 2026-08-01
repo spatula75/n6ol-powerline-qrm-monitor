@@ -377,10 +377,11 @@ class TestPlaybackAdoptsRecordedSettings:
             wavmeta.append_metadata(path, {'ICMT': wavmeta.format_settings(settings)})
         return path
 
-    def _play(self, tmp_path, cfg, **settings):
+    def _play(self, tmp_path, cfg, rf_conversion_db=None, **settings):
         self._write_tagged(tmp_path, **settings)
         cfg.recording.directory = str(tmp_path)
-        with open_playback_pipeline(cfg, 'event.wav'):
+        with open_playback_pipeline(cfg, 'event.wav',
+                                    rf_conversion_db=rf_conversion_db):
             pass
         return cfg
 
@@ -420,10 +421,14 @@ class TestPlaybackAdoptsRecordedSettings:
         cfg.audio.pulse_rate = 120
         assert self._play(tmp_path, cfg, pulse_rate='ninety').audio.pulse_rate == 120
 
-    def test_untagged_file_warns(self, tmp_path, caplog):
+    def test_untagged_file_warns_about_both_settings(self, tmp_path, caplog):
+        """Two warnings rather than one: a wrong pulse rate means nothing locks, a
+        wrong calibration means everything locks and every level is wrong. Different
+        consequences, different remedies."""
         with caplog.at_level(logging.WARNING, logger='buzz'):
             self._play(tmp_path, BuzzConfig())
-        assert 'does not record its pulse rate or level calibration' in caplog.text
+        assert 'does not record its pulse rate' in caplog.text
+        assert 'does not record its level calibration' in caplog.text
 
     def test_warning_states_what_is_being_assumed(self, tmp_path, caplog):
         cfg = BuzzConfig()
@@ -431,7 +436,21 @@ class TestPlaybackAdoptsRecordedSettings:
         cfg.station.audio_rf_conversion_db = -25.0
         with caplog.at_level(logging.WARNING, logger='buzz'):
             self._play(tmp_path, cfg)
-        assert '100 Hz' in caplog.text and '-25.0 dB' in caplog.text
+        assert '100 pps' in caplog.text and '-25.0 dB' in caplog.text
+
+    def test_the_calibration_warning_names_its_remedy(self, tmp_path, caplog):
+        """Telling somebody a reading may be wrong is only useful alongside how to
+        put it right."""
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            self._play(tmp_path, BuzzConfig())
+        assert '--audio-rf-conversion-db' in caplog.text
+
+    def test_a_supplied_calibration_silences_that_warning(self, tmp_path, caplog):
+        """Advising the flag to somebody who just passed it would be noise."""
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            self._play(tmp_path, BuzzConfig(), rf_conversion_db=-28.5)
+        assert 'does not record its level calibration' not in caplog.text
+        assert 'does not record its pulse rate' in caplog.text
 
     def test_partially_tagged_file_warns_about_the_missing_setting(self, tmp_path, caplog):
         cfg = BuzzConfig()
@@ -531,3 +550,59 @@ class TestTheEntryPointLogsAtAll:
         captured = capsys.readouterr()
         assert 'this must not appear' not in (captured.out + captured.err)
         assert 'this must appear' in (captured.out + captured.err)
+
+
+class TestSuppliedCalibration:
+    """--audio-rf-conversion-db, for a .wav that arrived from another operator.
+
+    The pulse rate and the calibration live in metadata only this program writes, so a
+    file from elsewhere is analysed against this station's figures. Whether it locks
+    and what the burst looks like survive that; the dBm and S-unit readings do not.
+    This is how somebody who knows the sending station's calibration can supply it.
+    """
+
+    def _play(self, tmp_path, cfg, rf_conversion_db=None, **settings):
+        path = tmp_path / 'event.wav'
+        with wave.open(str(path), 'wb') as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(16000)
+            handle.writeframes(np.zeros(16000, dtype=np.int16).tobytes())
+        if settings:
+            wavmeta.append_metadata(path, {'ICMT': wavmeta.format_settings(settings)}, {})
+        cfg.recording.directory = str(tmp_path)
+        with open_playback_pipeline(cfg, 'event.wav',
+                                    rf_conversion_db=rf_conversion_db):
+            pass
+        return cfg
+
+    def test_it_is_used_when_the_file_says_nothing(self, tmp_path):
+        cfg = self._play(tmp_path, BuzzConfig(), rf_conversion_db=-28.5)
+        assert cfg.station.audio_rf_conversion_db == -28.5
+
+    def test_the_config_stands_when_nothing_is_supplied(self, tmp_path):
+        cfg = self._play(tmp_path, BuzzConfig())
+        assert cfg.station.audio_rf_conversion_db == BuzzConfig().station.audio_rf_conversion_db
+
+    def test_it_overrides_a_figure_the_recording_carries(self, tmp_path):
+        """An explicit flag is the only value anybody deliberately supplied, so it
+        wins -- but the recording's own is normally the right one, being the receiver
+        that made it, so the override is worth saying out loud."""
+        cfg = self._play(tmp_path, BuzzConfig(), rf_conversion_db=-28.5,
+                         audio_rf_conversion_db=-32.0)
+        assert cfg.station.audio_rf_conversion_db == -28.5
+
+    def test_overriding_the_recording_says_so(self, tmp_path, caplog):
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            self._play(tmp_path, BuzzConfig(), rf_conversion_db=-28.5,
+                       audio_rf_conversion_db=-32.0)
+        assert 'records a calibration of -32.0' in caplog.text
+        assert '-28.5' in caplog.text
+
+    def test_agreeing_with_the_recording_is_not_an_override(self, tmp_path, caplog):
+        """Supplying the figure the file already carries is not a disagreement, so it
+        should not be reported as one."""
+        with caplog.at_level(logging.WARNING, logger='buzz'):
+            self._play(tmp_path, BuzzConfig(), rf_conversion_db=-32.0,
+                       audio_rf_conversion_db=-32.0)
+        assert 'records a calibration of' not in caplog.text

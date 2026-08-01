@@ -51,8 +51,8 @@ def validate_sample_rate(sample_rate: int, source: str) -> None:
             f'at is above Nyquist, so there is nothing there to measure; above '
             f'{MAX_SAMPLE_RATE} Hz the fixed-size buffer holds too little history to '
             'acquire reliably, and a powerline arc has nothing to say up there '
-            'anyway. Resample the file to 16000 Hz, which is what this program '
-            'records at.')
+            'anyway. Resample the file to 16000 Hz, which is the rate at which this '
+            'program records.')
 
 
 @dataclass
