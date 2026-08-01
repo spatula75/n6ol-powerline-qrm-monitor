@@ -13,7 +13,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   something that can be shown to somebody. The transport controls are removed rather
   than hidden, since a render is a fixed pass over a file and there is nothing to
   operate. Frames are captured at the display's own 10 fps and placed on a 30 fps grid
-  by the position playback had reached when the pixels were read — so the video carries
+  by the position playback had reached when the pixels were read - so the video carries
   the analyzer's real lookback rather than an idealised version of it, and a slow frame
   makes the render slow rather than out of sync. The audio is the recording itself,
   handed to ffmpeg as a second input and never piped, which removes it from the sync
@@ -21,8 +21,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   playback where gain reaches the speakers alone; nothing measured is involved in a
   rendered file, and a recording set deliberately low for measurement is awkward to
   show anyone at the level it was captured.
-- Recordings keep their identity in the video. The `.wav`'s LIST/INFO tags — the event,
-  the station, the moment, and the calibration behind the numbers — are carried into the
+- Recordings keep their identity in the video. The `.wav`'s LIST/INFO tags - the event,
+  the station, the moment, and the calibration behind the numbers - are carried into the
   MP4 container. Its cue marker is not: ffmpeg reads that as a chapter and MP4 chapters
   are a *track*, so a single marker arrived as a third data stream. The lock offset
   survives in the comment as `lead_in_seconds`.
@@ -37,7 +37,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   carries how bad the interference is, and ffmpeg's own `loudnorm` was observed
   choosing exactly that on these recordings, which is why it measures here but does
   not apply. `--render` implies `auto`, because a recorded event sits around −45 LUFS,
-  well below a normal listening level — the calibration process keeps it deliberately
+  well below a normal listening level - the calibration process keeps it deliberately
   there, which suits measuring impulsive noise and not showing it to anyone. Passing a
   figure, including `0`, overrides that; watching a replay does not imply it at all.
   The gain used is written into the video's metadata as `render_gain_db`, so the file
@@ -45,17 +45,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `--audio-rf-conversion-db DB` supplies the level calibration for a replay, for the
   runs where the file cannot. A `.wav` this program recorded carries its own and needs
   no help; one from another operator is otherwise analysed with the figure configured
-  for this station, which may be nothing like the receiver that made it — so every dBm
+  for this station, which may be nothing like the receiver that made it - so every dBm
   and S-unit reading is wrong by an unknown amount while looking entirely plausible.
   Supply the sending station's figure and it is used for that run alone. It takes
   precedence over one recorded in the file, and says so when it does, since the
   recording's own is normally the right one.
-- `[render] ffmpeg_path` for installs that do not land on PATH. ffmpeg is needed for
+- `[render] ffmpeg_path` for installs that do not appear on PATH. ffmpeg is needed for
   `--render` and the loudness probe that feeds it, and for nothing else; a monitor
   that never renders never looks for it, so leaving this empty costs nothing.
 - Recordings now note `lead_in_max_seconds` beside `lead_in_seconds`, so the latter can
   be read honestly. The ring buffer keeps sliding while `min_lock_seconds` is waited
-  out, so the lead-in can never exceed the buffer's capacity less that wait — and a
+  out, so the lead-in can never exceed the buffer's capacity less that wait - and a
   recording sitting at that bound is saying "everything there was", not "the lock took
   this long". The two were indistinguishable from the file, since neither the buffer
   size nor `min_lock_seconds` was recorded anywhere in it. Noticed while checking a
@@ -65,8 +65,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Fixed
 - Playback no longer sprints through the opening of a recording. The deadline schedule
   took its origin when the pipeline was *built* rather than when it was started, so
-  everything in between — building the window, wiring the analyzer, compiling the DSP
-  kernels — became a backlog the feeder delivered as fast as it could. Measured at 1.5 s
+  everything in between - building the window, wiring the analyzer, compiling the DSP
+  kernels - became a backlog the feeder delivered as fast as it could. Measured at 1.5 s
   of startup putting the transport 1.6 s in within 100 ms of pressing play. The analyzer
   was being shown the first seconds of every replay at whatever speed the machine
   managed, and the deliberate wait for the window in `main.py` was itself the backlog.
@@ -78,23 +78,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   database, where neither the platform nor the machine's installed fonts can reach it.
   DejaVu Sans Mono comes with matplotlib, already a dependency, so nothing new ships.
 - The waterfall keeps its size and its frequency resolution at any sample rate. Its FFT
-  window is a fixed span of *time* now — 32 ms, which is what 512 samples meant at
-  16 kHz — rather than a fixed number of samples, so the bin count works out at
+  window is a fixed span of *time* now - 32 ms, which is what 512 samples meant at
+  16 kHz - rather than a fixed number of samples, so the bin count works out at
   `4000 Hz × 32 ms = 128` whatever the audio arrives at and the rate cancels out
   entirely. Before this a 44.1 kHz file was analysed 512 samples at a time, which is
-  86 Hz per bin against 16 kHz's 31, and covered 0–4 kHz in 46 bins — a waterfall 230 px
+  86 Hz per bin against 16 kHz's 31, and covered 0–4 kHz in 46 bins - a waterfall 230 px
   wide instead of 640. The dB references move with the window, as they always did:
   both had the window length in their formulas already, so this changes where N comes
-  from rather than the arithmetic. Verified at every rate from 8 to 48 kHz — a
-  full-scale tone still reads 0 dBFS and broadband noise still lands on its anchor.
+  from rather than the arithmetic. Verified at every rate from 8 to 48 kHz - a
+  full-scale tone still reads 0 dBFS and broadband noise still sits on its anchor.
 - Sample rates outside **8–48 kHz** are refused with an explanation rather than
   analysed. 8 kHz is exactly Nyquist for the 4 kHz the display and the analysis look
   at, so below it the top of the waterfall is empty band; far above it the fixed-size
   ring buffer holds too little history to acquire the way the analyzer was tuned to,
   and a powerline arc has nothing to say up there anyway.
 - A stereo file now says in the log that only channel 0 is being analysed. It always
-  was — matching what the live monitor does with a stereo input device, since mixing
-  would average the arc against whatever the other channel holds — but "half of what
+  was - matching what the live monitor does with a stereo input device, since mixing
+  would average the arc against whatever the other channel holds - but "half of what
   you sent was ignored" should not have to be inferred from a reading that came out
   low. A render takes channel 0 too, so the video's audio is the audio that was
   measured rather than both channels beside a picture of one.
@@ -102,11 +102,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Changed
 - The JIT-compiled DSP helpers declare their signatures, so Numba compiles them at
   import instead of on first call. Lazy compilation ran on whichever thread arrived
-  first — in the GUI, the Qt thread part-way through a paint, freezing the window for
+  first - in the GUI, the Qt thread part-way through a paint, freezing the window for
   about a second while audio carried on arriving. `cache=True` alongside means only the
   first run after a change pays at all.
+- The messages that report trouble say what to do about it. A file that is not 16-bit
+  now gives the ffmpeg command that converts it; a sound card that reports dropped
+  samples explains that the analysis covering them reads low, and names the setting to
+  raise; a failed weather fetch says which columns went blank and that the noise figures
+  did not; `configure.py` cancelled says the config was left alone. Each carries what was
+  being attempted, the likely cause, and a next step, which is the standard the newer
+  code was already written to.
 
-## [1.3.0] — 2026-07-30
+## [1.3.0] - 2026-07-30
 
 Event recording and playback arrive together: the monitor writes each locked event to
 its own `.wav` and can replay one back through the whole pipeline, so an arc heard at
@@ -134,8 +141,8 @@ reached a running program lived in exactly that gap.
   timeout expires. A signal returning inside that window continues the same
   recording rather than starting a second one.
 - Recordings are faded in and out over 5 ms, so every file starts and ends at
-  exactly zero and cannot click — including at the seams when files are played
-  back to back. Both ends can genuinely be a cut through full-scale audio: an arc
+  exactly zero and cannot click - including at the seams when files are played
+  back to back. Both ends can really be a cut through full-scale audio: an arc
   already buzzing when the monitor starts is locked onto within a second or two,
   making the lead-in a live pulse train from its first sample, and `max_seconds`
   ends a file mid-event the same way. A sound card's DC offset would step at both
@@ -148,8 +155,8 @@ reached a running program lived in exactly that gap.
   back a fade's worth of the newest audio so the fade-out can be applied to
   whichever samples turn out to be last, which is only known after the fact.
 - The recording directory is created when recording is armed rather than at the
-  first event — at startup when it is armed there, and otherwise when the Record
-  button is pressed — so a mistyped path or a permissions problem is reported while
+  first event - at startup when it is armed there, and otherwise when the Record
+  button is pressed - so a mistyped path or a permissions problem is reported while
   the operator is still watching, not discovered at the end of an unattended day
   from an empty folder that explains nothing. Recording that is off reaches for
   nothing at all, so a run without it leaves no stray directory behind and raises
@@ -159,8 +166,8 @@ reached a running program lived in exactly that gap.
   rather than the day's data. Arming re-checks, so fixing the path and pressing
   Record retries. Opening a file still copes with a directory that disappears
   mid-run, which no startup check can cover.
-- Each recording's length is now accounted for in the log when it closes — total,
-  lead-in, and seconds from the lock — because the total is not a number any
+- Each recording's length is now accounted for in the log when it closes - total,
+  lead-in, and seconds from the lock - because the total is not a number any
   setting names: `max_seconds` measures the event and the lead-in and trailer sit
   outside it, so a file is always somewhat longer than the cap. A lead-in cut short
   because the monitor had not yet filled its buffer says so too, rather than
@@ -169,14 +176,14 @@ reached a running program lived in exactly that gap.
   many seconds of file.
 - `min_lock_snr` keeps events too faint to hear off the disk, without making the
   monitor any less sensitive: it gates recording alone, never locking, measurement,
-  logging or the display. The analyzer locks at 6 dB SNR — a constant in the code,
-  not a setting — so anything at or below that is a no-op, and the documentation
+  logging or the display. The analyzer locks at 6 dB SNR - a constant in the code,
+  not a setting - so anything at or below that is a no-op, and the documentation
   says so. A signal that starts quiet and builds is not skipped but watched:
   recording begins the moment it crosses, which catches the event at the cost of
   its opening seconds, since the wait comes out of the lead-in. Judged over about a
   second of readings rather than one, both so a single loud tick cannot carry a weak
   event through and because levels read several dB low until the drift tracker
-  converges — thresholding on the first reading after a lock would reject events
+  converges - thresholding on the first reading after a lock would reject events
   that actually qualify. Time spent below the threshold is paid for out of the
   lead-in and the lead-in runs out, so a signal that loiters near the bar for longer
   than the buffer holds loses its onset entirely; that is documented, and is the one
@@ -195,13 +202,13 @@ reached a running program lived in exactly that gap.
   as anything delayed that start: a wait longer than the cap spent it before the
   file was opened, saving a real event as a nought-second recording that reported,
   wrongly, having fallen behind the ring buffer. Measuring instead from the first
-  buffered sample fixed that but traded it for a subtler fault — free lead-in ate
+  buffered sample fixed that but traded it for a subtler fault - free lead-in ate
   the cap, so a threshold crossing produced a file of exactly `max_seconds` that was
   almost entirely the quiet approach and barely any of the loud part it had been
   waiting for.
 - `min_lock_seconds` holds a recording off until the interference has been present
   that long, so a night of two-second blips no longer fills the directory with
-  files too short to be worth replaying — or spends the event budget on them. A
+  files too short to be worth replaying - or spends the event budget on them. A
   lock that drops and returns starts the count again rather than adding up, which
   needs the *loss* edge and not just the acquisition: no tick ever observes the
   gaps in a stream of blips, because the next one has set the flag again before the
@@ -218,13 +225,13 @@ reached a running program lived in exactly that gap.
   took to arrive; a missed cycle (a suspended machine) restarts from now rather
   than firing repeatedly to catch up on windows nothing could have been recorded
   in. Unused events are not carried forward. `0` never re-arms, and switching
-  recording off by hand cancels the cycle — off has to mean off. The toolbar shows
+  recording off by hand cancels the cycle - off has to mean off. The toolbar shows
   the countdown while the budget is spent.
 - Recordings carry RIFF metadata (`buzz.wavmeta`): LIST/INFO tags naming the
   station, software version and moment of lock, a comment holding the settings a
   replay needs, and a labelled cue marker at the exact sample where the analyzer
   locked, so an editor shows where the lead-in ends. The stdlib `wave` module has
-  no metadata API at all — `Wave_write.setmark()` raises — so the chunks are
+  no metadata API at all - `Wave_write.setmark()` raises - so the chunks are
   appended after it closes the file, which is safe because a `.wav` is a chain of
   independent chunks and the stdlib reader stops at `data`. Tagging can never fail
   a recording: the audio is closed and safe before it is attempted.
@@ -237,7 +244,7 @@ reached a running program lived in exactly that gap.
 - Playback starts with the window rather than with the process. Opening a file no
   longer starts it playing; `main` does that from the first pass of the Qt event
   loop, once the window is up. Audio started at construction was heard before there
-  was anything to see it in, and then broke up — the feeder was competing for the
+  was anything to see it in, and then broke up - the feeder was competing for the
   GIL with widget construction, so the sound card ran dry and the replay opened
   with a stutter that was not in the recording.
 - `--playback-gain DB` turns a quiet replay up for the speakers and for nothing
@@ -245,7 +252,7 @@ reached a running program lived in exactly that gap.
   to hear on a laptop; the gain is applied to the copy on its way to the sound card,
   so it cannot move a dB of what the analyzer measures or the meters read. Asking
   for more than the headroom allows clips at the int16 rails and distorts, which is
-  what turning something up too far should do — the clamp is there because int16
+  what turning something up too far should do - the clamp is there because int16
   *wraps* on overflow, and without it a passage a few dB too loud would come back as
   noise rather than as a loud passage.
 - Playback can be heard: unmuting sends the audio to the default output device, so
@@ -253,7 +260,7 @@ reached a running program lived in exactly that gap.
   a toolbar button toggle it, and the button greys out with a reason on a machine
   with no usable output. Muting is the absence of an output stream rather than a
   volume of zero, so silent replay runs exactly the code that ran before playback
-  could be heard — no device is opened, and the monotonic deadline paces it as
+  could be heard - no device is opened, and the monotonic deadline paces it as
   before. Pausing and reaching the end of the file release the device by the same
   route, since nothing is being written to it then either and a stream nobody
   writes to underruns for as long as it is left open. The end of the file drains
@@ -271,17 +278,17 @@ reached a running program lived in exactly that gap.
   behaviour in PortAudio.
 - Restarting playback resets the analyzer, so the second pass is a cold start
   rather than one that opens already locked at a drift rate learned from the pass
-  before — watching the monitor acquire a signal is usually the point of replaying
+  before - watching the monitor acquire a signal is usually the point of replaying
   an event. The ring buffer is emptied with it, since several seconds of the
   abandoned pass would otherwise be sitting there for a freshly-reset analyzer to
   lock onto immediately. `ContinuousAnalyzer.reset()` splits the work by deadline:
   tracker state (drift, fitted history, DC estimate, tier timers) is left for the
   analysis thread, which owns it, while the fields the displays read are cleared
-  synchronously under the lock `trigger_phase()` uses — a tick can sit in
+  synchronously under the lock `trigger_phase()` uses - a tick can sit in
   `wait_for_data` for a second, and a second is long enough for the replayed audio
   to re-lock and make the restart look like it did nothing.
 - Playback has a transport: play/pause and restart, with a running time index
-  (`▶ 00:12 / 00:39 — event-....wav`). The toolbar carries it instead of the record
+  (`▶ 00:12 / 00:39 - event-....wav`). The toolbar carries it instead of the record
   button, which means nothing when there is no live audio to record. `Space` pauses
   and resumes without moving the mouse across a window being screen-recorded, and
   restart replays the file from wherever it has got to, finished or not. Pausing
@@ -292,28 +299,28 @@ reached a running program lived in exactly that gap.
   (`buzz.playback`), at the file's own sample rate, so an event can be analysed
   again at real speed for a screen recording. A bare filename resolves against the
   recording directory. No audio device is opened, and the collector is not started
-  at all — no CSV rows, plots, uploads or recording, since reviewing an old event
+  at all - no CSV rows, plots, uploads or recording, since reviewing an old event
   must not add minutes to a day it did not happen on.
 - `ContinuousAnalyzer.add_state_listener()` publishes state changes to registered
   listeners from inside `_transition()`. Lock is an event, not a level: a consumer
   polling for it can only infer the event by watching for the level to differ from
-  last time, which makes a brief lock between two polls invisible — precisely the
+  last time, which makes a brief lock between two polls invisible - precisely the
   intermittent signals this monitor exists to catch. Listeners run on the analyzer
   thread and are isolated from each other, so a failing one cannot abort a
   transition or stop analysis.
 - Toolbar strip across the top of the display window, with a recording control that
-  names the state rather than the action — `Record` when off, `Armed` once on, dimmed
+  names the state rather than the action - `Record` when off, `Armed` once on, dimmed
   to match, since a lit button reading "Record" during a recording invites an action
   already taken. It stays clickable, being also the only way to switch recording off
   with the mouse. Beside it a status line (armed and events remaining, elapsed time
   and filename while recording, or the file being replayed during playback). The bar
   spans the full window
   width rather than sitting in the left-hand stack, which keeps the meter panel
-  aligned with the displays — its segment geometry is derived from the window
+  aligned with the displays - its segment geometry is derived from the window
   height and does not survive being stretched.
 - An integration suite under `tests/integration/`, run with `pytest -m integration
   --no-cov` and deselected from a plain `pytest` so the fast feedback loop stays
-  fast. It drives real components over real threads at real speed — the combination
+  fast. It drives real components over real threads at real speed - the combination
   every costly bug in this project has lived in, and the one thing the unit suite
   cannot exercise by construction. Three groups: recording an event whose level
   crosses `min_lock_snr` mid-arc; replaying one, including that Restart really does
@@ -344,7 +351,7 @@ reached a running program lived in exactly that gap.
   PySide6 was listed in `requirements.txt` but missing from the dependencies in
   `pyproject.toml`.
 
-## [1.2.0] — 2026-07-28
+## [1.2.0] - 2026-07-28
 
 A phase-synchronised oscilloscope display joins the waterfall, backed by a
 least-squares drift tracker precise enough to hold its trace still.
@@ -358,7 +365,7 @@ least-squares drift tracker precise enough to hold its trace still.
   bipolar view and a coherently-averaged rectified envelope. The vertical scale
   auto-ranges from the signal and is reported in dBFS; the trigger indicator
   reads `LOCK`, `HOLD` (extrapolating through a fade) or `FREE` (never locked).
-- `ContinuousAnalyzer.trigger_phase()` — thread-safe accessor returning the
+- `ContinuousAnalyzer.trigger_phase()` - thread-safe accessor returning the
   predicted pulse phase plus a `TriggerSync` confidence level, for display sync.
 
 ### Changed
@@ -368,14 +375,14 @@ least-squares drift tracker precise enough to hold its trace still.
   it regardless of how few cells needed touching. Measured on a 96×640 buffer at
   five sweeps per frame: 2088 µs → 50 µs, giving back ~1.8% of a core continuously.
 - Tests now run with `NUMBA_DISABLE_JIT=1` (set in `conftest.py`), so coverage can
-  see inside JIT-compiled functions — machine code executes no bytecode to trace,
+  see inside JIT-compiled functions - machine code executes no bytecode to trace,
   and `dsp.py` had been reporting 82% for that reason alone. CI additionally runs
   the whole suite a second time with the JIT enabled, since the two paths are not
   automatically equivalent.
 - `SIGNAL_LOST` now falls back to `SEARCHING` once the stored phase pair is older
   than `PHASE_HOLD_TIMEOUT` (60 s of captured audio), clearing `_phases_valid`.
   Beyond that age the extrapolated phase is far outside `PHASE_SEARCH_RADIUS`, so
-  the cheap re-acquisition tiers cannot succeed anyway — and it keeps the scope's
+  the cheap re-acquisition tiers cannot succeed anyway - and it keeps the scope's
   trigger indicator honest, since `HOLD` is reported purely on having a valid phase
   pair and would otherwise claim a synchronised sweep all night if the arc quit at
   dusk. Aged on the audio clock, so a stalled sound device doesn't expire phases
@@ -405,7 +412,7 @@ least-squares drift tracker precise enough to hold its trace still.
 - `average_pulse_amplitude()` accumulated at single precision when called from
   interpreted Python. Callers pass float32 audio, and under NumPy 2's NEP 50
   promotion `python_float + np.float32` yields `np.float32`, so the running total
-  degraded after its first addition — drifting ~1e-4 from the float64 result
+  degraded after its first addition - drifting ~1e-4 from the float64 result
   `calculate_pps_fit_array()` computes for the same data. Numba types the
   accumulator as float64 regardless, so the JIT'd and interpreted paths returned
   different answers for identical input. An explicit `float()` cast pins both to
@@ -415,7 +422,7 @@ least-squares drift tracker precise enough to hold its trace still.
   `trigger_phase()` on the Qt thread, where a read landing between the two writes
   would project a fresh phase across a stale interval and mis-place the trigger.
 
-## [1.1.0] — 2026-07-27
+## [1.1.0] - 2026-07-27
 
 Continuous live analysis and display replace the old once-a-minute sampling
 loop, plus a DSP correctness pass and utility-line drift tracking on top of it.
@@ -423,7 +430,7 @@ loop, plus a DSP correctness pass and utility-line drift tracking on top of it.
 ### Added
 - Continuously-running audio pipeline (`AudioPipeline`) and a
   `ContinuousAnalyzer` state machine (`SEARCHING` → `LOCKED` → `SIGNAL_LOST`,
-  with tiered re-acquisition) replacing per-minute FFT sampling — sub-second
+  with tiered re-acquisition) replacing per-minute FFT sampling - sub-second
   signal/noise readings instead of once-a-minute snapshots.
 - Live PySide6 waterfall display and S-band meter panel (run without
   `--headless` to open it); `--top` keeps the window always on top.
@@ -434,16 +441,16 @@ loop, plus a DSP correctness pass and utility-line drift tracking on top of it.
   `phase_drift_rate()` and `grid_frequency_hz()` expose the estimate; grid
   frequency and phase drift are now logged to the daily CSV (columns inserted
   after Signal Lock Status, so old files still parse unchanged).
-- `tools/pulse_probe.py` — diagnostic that measures the real pulse shape,
+- `tools/pulse_probe.py` - diagnostic that measures the real pulse shape,
   drift rate, and number of active mains phases from live audio, for future
   tuning of `PULSE_WIDTH_SAMPLES`.
-- `level_meter.py` — live text S-meter for receiver gain calibration.  Displays
+- `level_meter.py` - live text S-meter for receiver gain calibration.  Displays
   a continuously-updating 21-char bar (S1–S9 linear, then +20/+40/+60 sections
   with 3 ticks each) plus dBm and S-unit readout.  Uses a persistent
   callback-based PortAudio stream (DirectSound blocking I/O is unreliable on
   Windows) at 20 ms per frame.  Flicker-free: each refresh overwrites in place
   without an intermediate clear.
-- `AudioSampler.level_stream()` / `LevelStream` in `sampler.py` — persistent
+- `AudioSampler.level_stream()` / `LevelStream` in `sampler.py` - persistent
   callback-driven input stream; `.read()` blocks on a `threading.Event` until
   the next hardware buffer fires.
 
@@ -461,7 +468,7 @@ loop, plus a DSP correctness pass and utility-line drift tracking on top of it.
   fractional modulus that could misround near a period boundary.
 - DSP amplitudes and FFT fit scores kept as floating point instead of being
   floor-divided to integers, preserving resolution near the noise floor.
-- DC offset removal switched from mean to median before rectification — the
+- DC offset removal switched from mean to median before rectification - the
   receiver runs LSB, and a mean gets dragged by the pulse train itself,
   injecting an error that grows with signal strength.
 - `LOCK_LOSE_SNR` raised 2.0 → 3.0 dB and `FAST_SCAN_SNR` raised 4.0 → 8.0 dB,
@@ -472,7 +479,7 @@ loop, plus a DSP correctness pass and utility-line drift tracking on top of it.
   auto-ranges continuously off the live spectrum (10th/98th percentile floor
   and ceiling, with headroom reserved for transients) instead of a fixed
   calibration that goes stale with receiver or band conditions, floored at a
-  minimum dynamic range so a genuinely quiet band can't paint itself warm
+  minimum dynamic range so a truly quiet band can't paint itself warm
   from measurement noise alone.
 - Weather fetches now have a 10 s timeout, and a failed fetch degrades to
   blank weather fields instead of dropping the minute's CSV row.
@@ -482,7 +489,7 @@ loop, plus a DSP correctness pass and utility-line drift tracking on top of it.
   configured sample rate instead of a hardcoded 16 kHz.
 - SCP uploads now verify the server host key against known_hosts
   (`~/.ssh/known_hosts` plus optional `~/.buzz/known_hosts`) instead of
-  auto-accepting any key — closes a man-in-the-middle vector; add new hosts
+  auto-accepting any key - closes a man-in-the-middle vector; add new hosts
   with `ssh-keyscan <host> >> ~/.buzz/known_hosts`.
 - Collector uploads are gated on the publisher's presence rather than
   re-checking `server.enabled`.
@@ -520,7 +527,7 @@ loop, plus a DSP correctness pass and utility-line drift tracking on top of it.
   analyzer ring buffer) and the now-unused `duration` and
   `measurements_to_take` config fields.
 
-## [1.0.0] — 2026-06-10
+## [1.0.0] - 2026-06-10
 
 First stable, well-documented release.  The core detection algorithm has been
 in continuous operation at N6OL since 2024-05-15.
@@ -528,11 +535,11 @@ in continuous operation at N6OL since 2024-05-15.
 ### Added
 - Comprehensive unit test suite (228 tests, 93 % line coverage) with
   deterministic synthetic-audio golden files that lock in DSP behavior.
-- Python `logging` throughout — timestamped log lines replace bare `print()` calls.
+- Python `logging` throughout - timestamped log lines replace bare `print()` calls.
 - `pytest-cov` added to requirements; `pyproject.toml` enforces ≥ 90 % coverage.
 - Ruff lint configuration in `pyproject.toml`; all lint errors resolved.
 - Open-Meteo weather provider as an alternative to CumulusMX.
-- Optional server-upload mode — set `[server] enabled = false` to run locally.
+- Optional server-upload mode - set `[server] enabled = false` to run locally.
 
 ### Changed
 - Configuration migrated from flat key-value to nested TOML sections
@@ -557,7 +564,7 @@ in continuous operation at N6OL since 2024-05-15.
 
 ---
 
-## [0.4.0] — 2025 (approximate)
+## [0.4.0] - 2025 (approximate)
 
 ### Added
 - Full type annotations across all modules.
@@ -571,7 +578,7 @@ in continuous operation at N6OL since 2024-05-15.
 
 ---
 
-## [0.3.0] — 2025 (approximate)
+## [0.3.0] - 2025 (approximate)
 
 ### Added
 - Interactive audio device configurator (`configure.py`) with live signal-level
@@ -582,19 +589,19 @@ in continuous operation at N6OL since 2024-05-15.
 
 ---
 
-## [0.2.0] — 2024 (approximate)
+## [0.2.0] - 2024 (approximate)
 
 ### Added
 - Numba JIT-compiled `_average_pulse_amplitude` for ~10× faster pulse summation.
 - Pre-computed pulse kernel (built once at init, not per sample).
-- `pulse_rate` config parameter — supports both 60 Hz (120 pps) and 50 Hz (100 pps) grids.
+- `pulse_rate` config parameter - supports both 60 Hz (120 pps) and 50 Hz (100 pps) grids.
 - Probability summary graphs: all-time, 7-day, 30-day.
 - CumulusMX weather integration.
 - SCP upload via Paramiko.
 
 ---
 
-## [0.1.0] — 2024-05-15
+## [0.1.0] - 2024-05-15
 
 Initial working implementation deployed at N6OL.
 
@@ -604,7 +611,7 @@ Initial working implementation deployed at N6OL.
 - Per-minute CSV logging with timestamp, SNR, signal, and noise floor.
 - Daily signal-vs-noise-floor PNG plot with S9, threshold, and noise-floor
   reference lines.
-- Mean-absolute-amplitude measurement (not RMS) — deliberately chosen for
+- Mean-absolute-amplitude measurement (not RMS) - deliberately chosen for
   impulsive noise to avoid understating peak arc amplitude.
 - Minimum-correlation phase used as noise reference to exclude arc bursts from
   the floor measurement.

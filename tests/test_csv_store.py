@@ -47,7 +47,7 @@ class TestGridFrequencyColumns:
     """Grid frequency and phase drift are logged after Signal Lock Status.
 
     That position is chosen so the change is invisible to read_rows(), which stops
-    at index 4 — files written before and after the change parse identically.
+    at index 4 - files written before and after the change parse identically.
     """
 
     def _row(self, tmp_path, **kwargs) -> list[str]:

@@ -50,7 +50,7 @@ def _write_csv_with_lock(path: Path, lock_statuses: list[str]) -> None:
 
 
 class TestGcGuarded:
-    """_gc_guarded disables GC around the call (PySide6/shiboken crash workaround —
+    """_gc_guarded disables GC around the call (PySide6/shiboken crash workaround -
     see the decorator's docstring in plotter.py) and forces a collect() afterward
     (matplotlib leak workaround). These tests exercise the decorator directly rather
     than through Plotter, since the behavior has nothing to do with plotting."""

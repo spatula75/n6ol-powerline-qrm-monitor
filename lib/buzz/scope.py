@@ -15,14 +15,14 @@ lookup* rather than a search for an edge.  That is strictly better for this sign
 it cannot be fooled by a single loud noise spike, and it holds through fades
 because it is driven by the drift tracker rather than by any individual pulse.
 
-The sweep is exactly pulse_phase_period() samples wide — 400 samples, 3 pulse
+The sweep is exactly pulse_phase_period() samples wide - 400 samples, 3 pulse
 periods, 25 ms at the defaults.  That is the same modulus the analyzer reduces its
 phases by, which is what makes the mapping from phase to screen position exact:
 the trace wraps seamlessly, with no ambiguity about which period a phase refers to.
 
 The sweep is shorter than the frame interval, so each frame overlays several real
 sweeps (4 at 25 ms per sweep and _UPDATE_MS = 100).  That is both the authentic
-multi-trace look of an analogue scope and the reason no audio goes unrendered —
+multi-trace look of an analogue scope and the reason no audio goes unrendered -
 the same argument _mean_spectrum_db makes for averaging every FFT frame per
 waterfall row rather than rendering only the newest one.
 
@@ -63,7 +63,7 @@ from buzz.sampler import RingBufferPipeline
 # test_scope_math.py asserts the two stay equal.
 _HEADER_H = 24
 # Trace area height.  Divides evenly by _V_DIVISIONS, giving exactly 12 px per
-# division so the graticule lands on whole pixels rather than being rounded.
+# division so the graticule sits on whole pixels rather than being rounded.
 _TRACE_H = 96
 # Public because MainWindow (in waterfall.py) sizes the window around it.
 SCOPE_H = _HEADER_H + _TRACE_H           # 120 px, matching the waterfall panel
@@ -75,14 +75,14 @@ _V_DIVISIONS = 8                         # centre line at division 4
 #
 # The trigger is not the pulse's onset, it is its *peak*: peak_phase comes from the
 # argmax of average_pulse_amplitude, which scores a PULSE_WIDTH_SAMPLES-wide window,
-# so it lands where the pulse is brightest.  The pulse itself begins before that and
-# persists after it — the arc reaches us through the receiver's audio passband, which
+# so it sits where the pulse is brightest.  The pulse itself begins before that and
+# persists after it - the arc reaches us through the receiver's audio passband, which
 # rings, spreading a sharp impulse over milliseconds on both sides of its peak.  Give
 # the sweep too little lead-in and that leading flank simply falls off the left edge,
 # which looks like a pulse jammed against the frame.  1.5 divisions is 60 samples
 # (3.75 ms at 16 kHz) of room ahead of the peak.
 #
-# The half-division is deliberate too: a whole number of divisions would land the
+# The half-division is deliberate too: a whole number of divisions would put the
 # peak exactly on a graticule line, hiding the leading flank under it and reading as
 # pinned to the grid rather than placed on it.  x.5 sits midway between two lines.
 #
@@ -91,7 +91,7 @@ _V_DIVISIONS = 8                         # centre line at division 4
 # samples), so at its widest it extends ~48 samples = 77 px either side of the peak.
 # 1.5 divisions puts the first burst's leading edge 19 px inside the left rail and
 # still leaves 40 px past the third burst's tail.  Going to 2.0 divisions would trade
-# that for only 8 px at the right, and past ~2.1 the third burst wraps off screen —
+# that for only 8 px at the right, and past ~2.1 the third burst wraps off screen -
 # so this is near the middle of the usable range, not an arbitrary choice.
 #
 # tools/pulse_probe.py can quantify the burst, but note its MAX_PULSE_WIDTH = 20
@@ -106,14 +106,14 @@ _UPDATE_MS = 100                         # matches the waterfall's frame cadence
 #
 # The pulse period is the only length here with any physical meaning: it is the thing
 # being looked at.  Counting in it is what makes the display say the same thing at any
-# sample rate and at either grid frequency — three cycles across the screen, twenty-four
+# sample rate and at either grid frequency - three cycles across the screen, twenty-four
 # cycles of persistence, whether the audio arrives at 8 kHz or 48, and whether the grid
 # is 60 Hz (120 pps) or 50 Hz (100 pps).
 #
 # Time per division then follows the grid, which is the honest answer rather than a
 # compromise: 2.50 ms/div at 120 pps and 3.00 ms/div at 100 pps, because a 50 Hz grid
-# genuinely has a longer period.  Forcing both to 2.50 would show 2.5 cycles at 100 pps
-# — the same picture stretched, saying less about the waveform.
+# truly has a longer period.  Forcing both to 2.50 would show 2.5 cycles at 100 pps
+# - the same picture stretched, saying less about the waveform.
 #
 # 24 is chosen so the sweep count comes out whole everywhere: every phase period met in
 # practice is 1, 2, 3, 4 or 8 pulse periods, and 24 divides by all of them.  See
@@ -127,11 +127,11 @@ _PHOSPHOR_PULSES = 24
 
 # Intensity deposited by one sweep.  Below 1.0 so that a single sweep renders as
 # mid-scale on the colour ramp and only agreement between several sweeps drives the
-# trace to its hot white-green core — which is what makes the core/halo distinction
+# trace to its hot white-green core - which is what makes the core/halo distinction
 # carry information instead of everything saturating on the first sweep.
 _SWEEP_INTENSITY = 0.55
 # Fraction of the previous frame's phosphor retained each _UPDATE_MS.  0.72 per
-# 100 ms frame decays a trace to ~5% over nine frames, a little under a second —
+# 100 ms frame decays a trace to ~5% over nine frames, a little under a second -
 # long enough to see jitter accumulate as a visible halo, short enough that the
 # display still tracks a changing signal rather than smearing its whole history.
 _PHOSPHOR_DECAY = 0.72
@@ -144,7 +144,7 @@ _PHOSPHOR_DECAY = 0.72
 # s^2 * a/(2-a); pre-averaging k sweeps divides the input variance by k.  So the
 # scatter shrinks by sqrt(a/(2-a)/k) = sqrt(0.05/1.95/4) = 0.080, which is 21.9 dB.
 # Measured against Gaussian noise: single-sweep |x| scatter 0.6029, averaged 0.0483,
-# ratio 21.9 dB — theory and measurement agree.  That is what makes pulse shape
+# ratio 21.9 dB - theory and measurement agree.  That is what makes pulse shape
 # visible at low SNR.
 #
 # Kept as an EMA rather than a fixed-N block average so the display keeps tracking a
@@ -180,13 +180,13 @@ _GRATICULE_AXIS = 0.17                   # centre horizontal/vertical rules
 
 # The pulses are the point of the display, and they occupy only ~2% of samples (3
 # samples out of every 133), so the statistic has to reach well into the upper tail
-# to see them at all — a p90 would describe the noise between pulses and scale the
+# to see them at all - a p90 would describe the noise between pulses and scale the
 # pulses clean off the screen.  p99.5 sits above the pulse population while still
 # being a percentile rather than a bare max, so one sample of static crash can't
 # rescale the whole display on its own.
 _RANGE_PERCENTILE = 99.5
-# Full scale is set above the measured percentile so that routine peaks land around
-# 3 of the 4 available divisions, leaving the top division for a transient genuinely
+# Full scale is set above the measured percentile so that routine peaks sit around
+# 3 of the 4 available divisions, leaving the top division for a transient truly
 # louder than anything recent.  Same intent as the waterfall's _COLOR_HEADROOM.
 _RANGE_HEADROOM = 1.30
 # EMA weight per frame, matching the waterfall's _COLOR_RANGE_EMA_ALPHA and chosen
@@ -196,7 +196,7 @@ _RANGE_HEADROOM = 1.30
 _RANGE_EMA_ALPHA = 0.05
 # Smallest full-scale deflection allowed, in raw int16 counts.  This is the vertical
 # analogue of _MIN_DYNAMIC_RANGE_DB, and exists for the same failure mode: with a
-# genuinely silent input the percentile collapses toward zero and the auto-range
+# truly silent input the percentile collapses toward zero and the auto-range
 # would stretch quantisation dither across the entire screen, painting a dead
 # channel as a healthy full-amplitude noise trace.  32 counts is about -60 dBFS.
 _MIN_FULL_SCALE = 32.0
@@ -228,7 +228,7 @@ def sweep_start_offset(trigger_phase: int, pretrigger: int, sweep_samples: int) 
     """Index within a phase-aligned snapshot where the displayed sweep begins.
 
     Backing off by `pretrigger` puts the triggering pulse one division in from the
-    left edge rather than jammed against it, so its leading edge is visible — the
+    left edge rather than jammed against it, so its leading edge is visible - the
     same reason a bench scope offers pre-trigger.  The result is taken modulo the
     sweep width, which is legitimate precisely because the sweep width equals the
     analyzer's phase modulus: offsets one sweep apart address identical positions
@@ -383,7 +383,7 @@ def full_scale_dbfs(full_scale: float) -> float:
     Reported as the deflection at the top of the graticule rather than as a
     per-division figure, because the trace is linear: divisions are evenly spaced in
     amplitude, not in dB, so a "dB/div" number would not describe anything.  Read
-    this as headroom — at -24 dBFS the top of the screen is 24 dB below clipping.
+    this as headroom - at -24 dBFS the top of the screen is 24 dB below clipping.
 
     Deliberately dBFS rather than the dBm the meters and the CSV speak.
     amplitude_to_dbm() converts a *mean-absolute* amplitude, whereas this scale is
@@ -452,12 +452,12 @@ def accumulate_trace(phosphor: np.ndarray, rows: np.ndarray, intensity: float) -
 
     Each column is filled between its segment's two endpoints rather than having a
     single pixel set.  Without that the trace breaks into disconnected dots wherever
-    the signal moves faster than one row per column — which for a noisy pulse is
+    the signal moves faster than one row per column - which for a noisy pulse is
     most of the screen.
 
     JIT-compiled, because this is the display's hot path: it runs once per sweep,
-    about fifty times a second.  The obvious vectorised alternative — mark the span
-    ends in a difference array and cumulative-sum down each column — is what this
+    about fifty times a second.  The obvious vectorised alternative - mark the span
+    ends in a difference array and cumulative-sum down each column - is what this
     replaced, and it was 40x slower.  Not because the arithmetic was worse, but
     because it allocated a (height+1, width) float32 temporary every call (a quarter
     of a megabyte, fifty times a second) and then integrated all of it, whether a
@@ -483,7 +483,7 @@ def build_graticule(height: int, width: int) -> np.ndarray:
     """Etched-grid intensity mask, on the same 0-1 scale as the phosphor.
 
     Composited under the trace with a maximum rather than drawn over it, so the grid
-    sits on the CRT face and any real signal outranks it — a graticule painted on
+    sits on the CRT face and any real signal outranks it - a graticule painted on
     top of the trace would look like an overlay instead of glass.
     """
     grid = np.zeros((height, width), dtype=np.float32)
@@ -491,7 +491,7 @@ def build_graticule(height: int, width: int) -> np.ndarray:
         grid[:, round(i * width / _H_DIVISIONS)] = _GRATICULE_LINE
     for i in range(1, _V_DIVISIONS):
         grid[round(i * height / _V_DIVISIONS), :] = _GRATICULE_LINE
-    # Centre rules brighter.  Both division counts are even, so these land exactly on
+    # Centre rules brighter.  Both division counts are even, so these sit exactly on
     # an existing grid line and overwrite it rather than adding a neighbouring one.
     grid[:, round(width / 2)] = _GRATICULE_AXIS
     grid[round(height / 2), :] = _GRATICULE_AXIS
@@ -519,7 +519,7 @@ def update_running_average(average: np.ndarray | None, sweeps: np.ndarray,
     Averaging is done on the *rectified* sweep, never on the raw bipolar waveform.
     The arc is not phase-locked to the receiver's BFO, so the audio-frequency carrier
     inside each burst arrives with a random phase every sweep and averaging the raw
-    trace would cancel the pulses toward zero — erasing exactly the thing being
+    trace would cancel the pulses toward zero - erasing exactly the thing being
     measured.  The envelope has no such phase, so it adds coherently and the noise
     falls as 1/sqrt(N) around it.
 
@@ -542,9 +542,9 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
 
     Two modes, toggled by toggle_mode():
 
-      RAW — bipolar waveform with persistence.  The default, and what the display
+      RAW - bipolar waveform with persistence.  The default, and what the display
             is for: it shows the signal as it actually arrives, noise and all.
-      AVG — rectified envelope, coherently averaged.  Trades the live view for
+      AVG - rectified envelope, coherently averaged.  Trades the live view for
             sensitivity, resolving pulse shape that a single sweep buries in noise.
     """
 
@@ -594,7 +594,7 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
 
     def _tick(self) -> None:
         # A stalled stream freezes the display rather than redrawing the same audio
-        # as though it were new — same guard, and same reasoning, as WaterfallWidget.
+        # as though it were new - same guard, and same reasoning, as WaterfallWidget.
         total = self._pipeline.total_samples
         if total == self._last_total_samples:
             return
@@ -609,7 +609,7 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
         # in averaging mode, add a constant pedestal to the rectified envelope.  The
         # median rather than the mean, because the pulses themselves would drag a mean
         # (see ContinuousAnalyzer._capture).  No EMA smoothing is needed at this window
-        # size — 2400 samples is a stable estimate on its own, and unlike the analyzer
+        # size - 2400 samples is a stable estimate on its own, and unlike the analyzer
         # this value is never used for a measurement anyone reports.
         samples = raw - float(np.median(raw))
         self._clipping = bool(np.abs(raw).max() >= _CLIP_COUNTS)
@@ -637,7 +637,7 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
     def _draw(self, buffer: np.ndarray, values: np.ndarray, full_scale: float,
               intensity: float, bipolar: bool) -> None:
         """Rasterise one trace into `buffer`.  One extra column of row positions is
-        requested so that N+1 positions give N segments — see accumulate_trace."""
+        requested so that N+1 positions give N segments - see accumulate_trace."""
         columns = resample_to_columns(values, self._width + 1)
         rows = trace_rows(columns, full_scale, _TRACE_H, bipolar=bipolar)
         accumulate_trace(buffer, rows, intensity)

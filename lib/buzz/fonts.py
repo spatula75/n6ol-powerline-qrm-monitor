@@ -1,7 +1,7 @@
 """The display's typeface, carried with the program rather than borrowed from the OS.
 
-Every label on the display is tabular — frequencies up a frequency axis, S-units up a
-meter, a time base across a scope — so they want a monospace face, and they want the
+Every label on the display is tabular - frequencies up a frequency axis, S-units up a
+meter, a time base across a scope - so they want a monospace face, and they want the
 same one everywhere.  Asking the system for one delivers neither.
 
 `QFont('Monospace')` is a fontconfig generic.  It resolves on Linux and means nothing

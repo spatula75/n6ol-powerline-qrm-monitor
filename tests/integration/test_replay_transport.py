@@ -2,7 +2,7 @@
 
     pytest -m integration --no-cov
 
-Tier 1 — no audio device is opened.  Playback is muted throughout, which means the
+Tier 1 - no audio device is opened.  Playback is muted throughout, which means the
 feeder is paced by its internal deadline schedule rather than by a sound card's
 write().  Everything below is true of both clocks, but only the deadline one is
 exercised here; the switch between them happens when an output stream opens, so it
@@ -39,7 +39,7 @@ class TestRestartAcquiresCold:
 
     The bug this exists for got through twice.  The analyzer that has just watched an
     event through knows where the pulse train is and how fast it is drifting, so a
-    restart that fails to clear that opens the second pass already locked — at a
+    restart that fails to clear that opens the second pass already locked - at a
     drift rate learned from the pass before.  Watching the acquisition is usually the
     whole point of replaying an event, so a restart that skips it is a restart that
     silently did nothing, and it looks identical to one that worked.
@@ -80,7 +80,7 @@ class TestTransportPosition:
     """Pausing holds the position; resuming carries on from it rather than catching up.
 
     The deadline schedule accumulates from an origin, so a resume that failed to
-    re-base it would leave the feeder behind by however long the pause lasted — and
+    re-base it would leave the feeder behind by however long the pause lasted - and
     it would then dump chunks as fast as the loop could run until it caught up.  That
     is audible as a burst of fast-forward on resume, and it is invisible to a unit
     test, where nothing is paced by a clock in the first place.
@@ -107,7 +107,7 @@ class TestTransportPosition:
             while_playing = playback.position
 
             playback.pause()
-            # The feeder may be part-way through a chunk when the pause lands, and it
+            # The feeder may be part-way through a chunk when the pause arrives, and it
             # finishes that one before looking; sampling immediately would catch the
             # position still moving for reasons that have nothing to do with the test.
             time.sleep(0.2)
@@ -127,7 +127,7 @@ class TestTransportPosition:
 
     def test_it_plays_at_about_real_speed(self, transport):
         """A second of wall clock is a second of audio, give or take a chunk either
-        side — the whole reason replay has a feeder thread rather than a loop."""
+        side - the whole reason replay has a feeder thread rather than a loop."""
         played = transport['while_playing'] - transport['started_at']
         assert played == pytest.approx(1.0, abs=0.3)
 

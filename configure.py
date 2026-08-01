@@ -2,8 +2,8 @@
 Audio device configuration tool.
 
 Lists all available input devices with a live amplitude level bar so you can
-identify which device is connected to your radio.  Saves your selection —
-along with the full configuration — to ~/.buzz/config.toml.
+identify which device is connected to your radio.  Saves your selection -
+along with the full configuration - to ~/.buzz/config.toml.
 
 Usage:
     python configure.py
@@ -32,14 +32,15 @@ def main() -> None:
 
     Loads the existing config (or defaults), displays a table of available input
     devices with live amplitude bars, prompts for a selection, then writes the full
-    config — with the new device_index and input_device_name — back to
+    config - with the new device_index and input_device_name - back to
     ~/.buzz/config.toml.
     """
     config = BuzzConfig.from_toml() if CONFIG_PATH.exists() else BuzzConfig()
 
     new_index = select_device(config.audio.sample_rate, current_real_index=config.audio.device_index)
     if new_index is None:
-        print('No device selected.')
+        print(f'No device selected, so {CONFIG_PATH} is unchanged. Run this again and '
+              'choose a device by number to set the audio input.')
         return
 
     device = sd.query_devices(new_index)

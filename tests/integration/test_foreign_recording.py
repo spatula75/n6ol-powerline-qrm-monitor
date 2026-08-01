@@ -4,7 +4,7 @@
 
 The case this is written for: an operator is sent a capture by another ham and wants to
 know whether it locks at 120 pps.  It will not be 16 kHz mono with this program's
-metadata — it will be whatever their sound card produced, most likely 44.1 kHz stereo
+metadata - it will be whatever their sound card produced, most likely 44.1 kHz stereo
 with no tags at all.
 
 Tier 1 apart from the render, which needs ffmpeg and skips without it.  The monitor is

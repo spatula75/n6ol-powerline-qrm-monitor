@@ -35,35 +35,35 @@ class TestFormatRecorderStatus:
 
     def test_armed_with_a_budget(self):
         status = _status(armed=True, events_remaining=3)
-        assert format_recorder_status(status) == 'Armed — 3 event(s) to record'
+        assert format_recorder_status(status) == 'Armed - 3 event(s) to record'
 
     def test_armed_without_a_budget(self):
         status = _status(armed=True, events_remaining=None)
-        assert format_recorder_status(status) == 'Armed — recording every event'
+        assert format_recorder_status(status) == 'Armed - recording every event'
 
     def test_recording_shows_elapsed_time_and_file(self):
         status = _status(armed=True, recording=True, elapsed_seconds=72.4,
                          filename='event.wav')
-        assert format_recorder_status(status) == '● REC 01:12 — event.wav'
+        assert format_recorder_status(status) == '● REC 01:12 - event.wav'
 
     def test_elapsed_time_is_truncated_not_rounded(self):
         status = _status(armed=True, recording=True, elapsed_seconds=9.9,
                          filename='event.wav')
-        assert format_recorder_status(status) == '● REC 00:09 — event.wav'
+        assert format_recorder_status(status) == '● REC 00:09 - event.wav'
 
     def test_no_recorder_at_all(self):
         assert format_recorder_status(None) == 'Recording unavailable'
 
     def test_off_with_a_pending_rearm_says_when(self):
         status = _status(rearm_in_seconds=3600 * 23 + 60 * 47)
-        assert format_recorder_status(status) == 'Recording off — re-arms in 23h 47m'
+        assert format_recorder_status(status) == 'Recording off - re-arms in 23h 47m'
 
     def test_off_for_good_says_nothing_about_rearming(self):
         assert format_recorder_status(_status()) == 'Recording off'
 
     def test_armed_does_not_show_the_countdown(self):
         status = _status(armed=True, events_remaining=3, rearm_in_seconds=3600)
-        assert format_recorder_status(status) == 'Armed — 3 event(s) to record'
+        assert format_recorder_status(status) == 'Armed - 3 event(s) to record'
 
 
 class TestFormatRecordButton:
@@ -93,7 +93,7 @@ class TestFormatRecordButton:
 class TestFormatPlaybackStatus:
     def test_playing(self):
         assert (format_playback_status('event.wav', 12.0, 39.6, False, False)
-                == '▶ 00:12 / 00:39 — event.wav')
+                == '▶ 00:12 / 00:39 - event.wav')
 
     def test_paused(self):
         assert format_playback_status('event.wav', 12.0, 39.6, True, False).startswith('▮▮')
@@ -310,7 +310,7 @@ class TestMeanSpectrumDb:
     def test_impulse_energy_is_independent_of_position(self):
         """The reason for the 75% overlap.  Hann tapers to zero at the frame edges,
         so with non-overlapping frames an impulse landing on a boundary was
-        attenuated by >12 dB relative to one at a frame centre — on a display whose
+        attenuated by >12 dB relative to one at a frame centre - on a display whose
         subject is a 120 pps impulse train.
 
         The hop must satisfy COLA in power, since power is what gets averaged; the
@@ -325,7 +325,7 @@ class TestMeanSpectrumDb:
         assert max(levels) - min(levels) < 0.01
 
     def test_noise_floor_anchor_matches_measured_per_bin_level(self):
-        """Pins GEOMETRY.noise_correction.  Broadband noise of known RMS must land on the
+        """Pins GEOMETRY.noise_correction.  Broadband noise of known RMS must fall on the
         anchor the widget computes for db_min, within a fraction of a dB.  The old
         constant applied the Hann ENBW in the wrong direction and sat 4.4 dB low."""
         sigma = 800.0
@@ -364,7 +364,7 @@ class TestSpectrumPercentiles:
         assert floor < ceiling
 
     def test_percentiles_track_a_known_distribution(self):
-        """10th/98th percentile of a known linear ramp should land near their
+        """10th/98th percentile of a known linear ramp should fall near their
         textbook positions, confirming the arguments reach np.percentile correctly."""
         history = np.tile(np.linspace(-100.0, 0.0, 1000), (_N_ROWS, 1))
         floor, ceiling = _spectrum_percentiles(history, 10, 98)
@@ -375,7 +375,7 @@ class TestSpectrumPercentiles:
         """Cold-start regression: WaterfallWidget seeds every row of history_db with
         the same value at startup.  Because the seed sits below everything real, the
         floor percentile keeps selecting it until the stale rows shrink below that
-        percentile's share of the window — so convergence takes roughly
+        percentile's share of the window - so convergence takes roughly
         (100 - _COLOR_FLOOR_PERCENTILE)% of the history to scroll through, not the
         EMA settling time.  See _COLOR_RANGE_EMA_ALPHA for why that matters.
 
@@ -402,7 +402,7 @@ class TestSpectrumPercentiles:
     def test_a_few_loud_rows_move_the_ceiling(self):
         """The reason _update_color_range() smooths these rather than using them
         directly: at the 98th percentile only the top 2% of values count, which is
-        only a row or two of the history — so it takes just a couple of ticks of
+        only a row or two of the history - so it takes just a couple of ticks of
         new, louder content for the raw ceiling to start moving."""
         quiet = np.full((_N_ROWS, 128), -80.0)
         _, ceiling_quiet = _spectrum_percentiles(quiet, _COLOR_FLOOR_PERCENTILE,
@@ -425,20 +425,20 @@ class TestColorScaleRange:
         assert t == pytest.approx(1.0 - headroom)
 
     def test_headroom_reserves_room_above_the_ceiling(self):
-        """A value modestly hotter than the ceiling percentile must still land
+        """A value modestly hotter than the ceiling percentile must still fall
         below 1.0, so it can render as visibly hotter than the ceiling's own
         colour rather than clipping to the same solid red immediately."""
         floor, ceiling, headroom = -80.0, -50.0, 0.10
         rng = _color_scale_range(floor, ceiling, headroom)
         # Halfway into the reserved headroom band (whose full width is
-        # rng * headroom dB) should land partway between (1 - headroom) and 1.0.
+        # rng * headroom dB) should fall partway between (1 - headroom) and 1.0.
         spike = ceiling + (rng * headroom) / 2
         t = (spike - floor) / rng
         assert 1.0 - headroom < t < 1.0
 
     def test_spike_beyond_the_headroom_band_exceeds_one(self):
         """A spike louder than the reserved headroom clips to 1.0 in the caller
-        (paintEvent's np.clip) rather than being represented exactly — that's the
+        (paintEvent's np.clip) rather than being represented exactly - that's the
         expected trade-off of a bounded colour scale, not a bug in this function."""
         floor, ceiling, headroom = -80.0, -50.0, 0.10
         rng = _color_scale_range(floor, ceiling, headroom)
@@ -475,7 +475,7 @@ class TestColorScaleRange:
         assert rng == pytest.approx(30.0)
 
     def test_default_headroom_matches_module_constant(self):
-        """Sanity check that _COLOR_HEADROOM is still a fraction, not a dB value —
+        """Sanity check that _COLOR_HEADROOM is still a fraction, not a dB value -
         an easy unit mix-up given every other constant in this module is in dB."""
         assert 0.0 < _COLOR_HEADROOM < 1.0
 
@@ -483,7 +483,7 @@ class TestColorScaleRange:
 class TestQuietBandDoesNotPaintItselfHot:
     """End-to-end regression for the auto-range floor: runs actual noise-only
     audio through _mean_spectrum_db (not hand-picked dB numbers) to confirm a
-    genuinely idle band renders near the cool end rather than climbing warm
+    truly idle band renders near the cool end rather than climbing warm
     purely from the FFT estimator's own measurement scatter.
     """
 
@@ -552,7 +552,7 @@ class TestSpectrumGeometry:
         """The precondition rendering relies on, checked over the whole band.
 
         ffmpeg_command() pads nothing, because with the window pinned to time nothing
-        can arrive odd — and yuv420p subsamples chroma by two each way, so an odd
+        can arrive odd - and yuv420p subsamples chroma by two each way, so an odd
         dimension is refused outright.  Only the waterfall's width varies with the
         rate, so that claim reduces to the bin count being even at every rate
         validate_sample_rate admits.
@@ -585,7 +585,7 @@ class TestSpectrumGeometry:
         assert spectrum_geometry(rate).window == pytest.approx(rate * 0.032, abs=1)
 
     def test_eight_kilohertz_is_exactly_the_floor(self):
-        """N is 256 there and Nyquist lands on bin 128, so the display is the entire
+        """N is 256 there and Nyquist falls on bin 128, so the display is the entire
         spectrum up to 4 kHz with nothing to spare. Below it the top of the display
         would be above Nyquist, which is why config refuses it."""
         geometry = spectrum_geometry(8000)

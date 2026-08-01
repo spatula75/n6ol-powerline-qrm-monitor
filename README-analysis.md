@@ -13,7 +13,7 @@ and SIGNAL_LOST.
 Powerline arcing at 60 Hz produces RF impulses at 120 pps. At 16 kHz that's
 one pulse every 133.333... samples. Signal and noise levels are both measured
 by summing audio amplitude at expected pulse-phase positions across an analysis
-window and dividing — mean absolute amplitude over those sample positions. The
+window and dividing - mean absolute amplitude over those sample positions. The
 choice of mean absolute amplitude rather than RMS reflects the impulsive nature
 of arcing: the arc fires near the AC voltage peak and is quiet the rest of the
 time, so RMS would spread the burst energy across the full cycle and understate
@@ -21,7 +21,7 @@ the interference amplitude by a large factor.
 
 The signal phase is whichever sample offset within the 133.333-sample period
 gives the highest correlation with the 120 pps pulse pattern. The noise phase
-is whichever offset gave the *lowest* correlation — the quietest window in the
+is whichever offset gave the *lowest* correlation - the quietest window in the
 period, which ideally represents the receiver noise floor with no powerline
 component mixed in.
 
@@ -29,7 +29,7 @@ Finding phases initially uses FFT cross-correlation against a pulse-train
 kernel. The kernel must be a palindrome so that `fftconvolve` (convolution)
 gives the same result as cross-correlation; this requires placing kernel
 coefficients at `int(i × spp)` positions. Amplitude averaging at those stored
-phases uses `round(i × spp)` instead — this halves the maximum per-pulse
+phases uses `round(i × spp)` instead - this halves the maximum per-pulse
 positional error from ⅔ to ⅓ of a sample and removes the systematic bias
 toward the early side of each pulse. The two rounding schemes coexist because
 the palindrome property only holds with truncation.
@@ -59,7 +59,7 @@ moves to LOCKED. It never returns to SEARCHING.
 ### LOCKED
 
 We know where the signal is. Every 200 ms `_quick_check()` measures the
-amplitude at both stored phases using a direct Numba amplitude average — fast
+amplitude at both stored phases using a direct Numba amplitude average - fast
 enough to run continuously without noticeable CPU load. SNR is allowed to drop
 below 2 dB for up to three consecutive checks before declaring signal loss.
 A single noisy frame doesn't cause a state change; three consecutive failures
@@ -77,15 +77,15 @@ Tier 3b.
 Each scan keeps the incumbent phase unless a challenger beats its amplitude
 by `PHASE_MOVE_MARGIN` (~0.4 dB), so measurement noise doesn't random-walk
 the stored phases (or dance the correction indicators) when nothing real
-moved — this matters most for the noise phase, which is chosen as the
+moved - this matters most for the noise phase, which is chosen as the
 *quietest* of 21 noisy measurements and would otherwise move nearly every
 scan.
 
 **Lock is acquired at SNR ≥ 6 dB and lost after three checks below 2 dB.**
 The hysteresis gap between those thresholds prevents a signal right at the
 margin from flipping back and forth. While LOCKED, `_phase_search()` updates
-the phases at the lower 2 dB bar — the same bar `_quick_check()` holds lock
-at — so a weak signal that can keep its lock can also follow drift; requiring
+the phases at the lower 2 dB bar - the same bar `_quick_check()` holds lock
+at - so a weak signal that can keep its lock can also follow drift; requiring
 6 dB to re-point would strand signals in the 2–6 dB band at a stale phase.
 
 ### SIGNAL_LOST
@@ -93,37 +93,37 @@ at — so a weak signal that can keep its lock can also follow drift; requiring
 The stored phases from the last lock are still valid. Re-acquisition runs in
 tiers, cheapest first.
 
-**Tier 1 — every 200 ms: `_noise_check()`**
+**Tier 1 - every 200 ms: `_noise_check()`**
 
 Sample both stored phases. If SNR ≥ 6 dB, re-lock immediately and publish. If
 not, publish a noise-only result with the noise floor sampled live at the stored
 noise phase. The noise floor stays current during signal loss rather than
 holding whatever it was when we last locked.
 
-**Tier 2 — every 1 s: `_phase_search()`**
+**Tier 2 - every 1 s: `_phase_search()`**
 
 Scan ±10 samples around `_peak_phase` for the highest amplitude, and scan ±10
 samples around `_noise_phase` *independently* for the lowest amplitude. These
 two scans are kept separate because the signal phase and the quiet inter-pulse
 window don't necessarily drift together. With multiple arcing sources on the
-power line, the quiet window is wherever none of them happen to land — it can
+power line, the quiet window is wherever none of them happen to fall - it can
 move at a completely different rate from any one source's phase, or disappear
 and reappear elsewhere if a source fires up near the old quiet window. Shifting
 `_noise_phase` by the same delta as `_peak_phase` would be the wrong move in
 that environment. If the best signal candidate clears 6 dB SNR against the
 best independently-found noise floor, both phases are updated and we re-lock.
 
-**Tier 3a — every 5 s: `_fast_scan()`**
+**Tier 3a - every 5 s: `_fast_scan()`**
 
 Run an FFT cross-correlation with a short kernel: 15 pulses instead of 60,
 against 0.25 s of audio instead of 1 s. The shorter input keeps the FFT at
 ~8192 points rather than ~32768, making this roughly 6× cheaper than the full
 analysis. If the ratio of peak fit score to minimum fit score clears 4 dB,
-something is probably there and Tier 3b runs to confirm. If nothing shows up —
-which is the typical case when the environment is genuinely quiet — we skip the
+something is probably there and Tier 3b runs to confirm. If nothing shows up -
+which is the typical case when the environment is truly quiet - we skip the
 expensive FFT entirely. This is the main point of the two-stage design.
 
-**Tier 3b — on a Tier 3a hit, or every 120 s unconditionally: `_full_analysis()`**
+**Tier 3b - on a Tier 3a hit, or every 120 s unconditionally: `_full_analysis()`**
 
 The full 1-second, 60-pulse FFT analysis, identical to what SEARCHING runs.
 Refreshes both phases from the FFT argmax and argmin when it locks. The

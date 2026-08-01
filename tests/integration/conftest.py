@@ -43,7 +43,7 @@ def qt_app():
     Offscreen is a real raster paint device with no window server behind it: widgets
     lay out and paint exactly as they would on a desktop, and grab() returns the
     pixels they painted.  That is what makes the display testable on a headless
-    runner at all — and both display bugs this suite is answering for (a toolbar that
+    runner at all - and both display bugs this suite is answering for (a toolbar that
     drew in the desktop's grey, a Record button that stayed lit once armed) were
     visible in nothing but those pixels.
 

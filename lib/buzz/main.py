@@ -68,7 +68,7 @@ ROOT_PACKAGE = 'buzz'
 # Named explicitly rather than from __name__, which is what every other module here
 # does and would be wrong in this one.  This module is the entry point: run as
 # `python -m buzz.main`, its __name__ is '__main__', so getLogger(__name__) returns a
-# logger outside the buzz hierarchy — and configure_logging() attaches the console
+# logger outside the buzz hierarchy - and configure_logging() attaches the console
 # handler to `buzz` while leaving root at CRITICAL with no handlers.  Every log line in
 # this file was therefore discarded in the one invocation the README documents,
 # including _adopt()'s warnings that a recording disagrees with the config, which exist
@@ -130,7 +130,7 @@ def make_weather_client(config: BuzzConfig) -> WeatherClient:
         return CumulusMXWeatherClient(weather_config.url)
     if weather_config.source != 'none':
         logger.warning(
-            "Unknown weather source %r — expected 'cumulusmx', 'openmeteo', or 'none'; "
+            "Unknown weather source %r - expected 'cumulusmx', 'openmeteo', or 'none'; "
             'weather data disabled.', weather_config.source)
     return NullWeatherClient()
 
@@ -144,7 +144,7 @@ def _adopt(name: str, filename: str, configured: _T, recorded: _T | None) -> _T:
     """
     if recorded is None or recorded == configured:
         return configured
-    logger.warning('%s was recorded with %s %s rather than the configured %s — '
+    logger.warning('%s was recorded with %s %s rather than the configured %s - '
                    'using the value from the file.', filename, name, recorded, configured)
     return recorded
 
@@ -178,7 +178,7 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
     Three settings decide what the analysis of a replayed file means, and none can be
     recovered from the audio: the sample rate (from the format header), the grid's
     pulse rate, and the dB calibration between audio amplitude and level at the
-    receiver (both from the file's metadata — see buzz.wavmeta).
+    receiver (both from the file's metadata - see buzz.wavmeta).
 
     Trusting the file is the only correct choice for all three.  A mismatched sample
     rate resamples nothing and merely mislabels the audio, putting the pulse grid at
@@ -192,7 +192,7 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
     not a bug in the monitor.
 
     Returns a pipeline that is not yet playing.  The caller starts it once there is
-    somewhere to watch it — see FilePlaybackPipeline.start().
+    somewhere to watch it - see FilePlaybackPipeline.start().
     """
     path = resolve_playback_path(name, config.recording.directory_path(config.station))
     check_playback_source(path, config)
@@ -214,7 +214,7 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
 
     # Any .wav plays, including one this monitor never made.  It just cannot be
     # analysed with any authority, and the operator is the only one who can judge
-    # whether that matters — so say what is being assumed rather than fall back
+    # whether that matters - so say what is being assumed rather than fall back
     # silently and let a plausible-looking dBm reading speak for itself.
     # An explicit figure from the command line beats both, because it is the only one
     # anybody deliberately supplied.  Overriding a value the recording carries is
@@ -261,8 +261,8 @@ def _start_playback(pipeline: RingBufferPipeline, playing_back: str | None) -> N
 def _start_collector(config: BuzzConfig, analyzer: ContinuousAnalyzer) -> None:
     """Wire up the measurement side of the monitor and run it on a daemon thread.
 
-    Only live audio gets one.  Everything here writes something durable — a CSV row,
-    a plot, an upload — and a replayed recording must not add minutes to a day it did
+    Only live audio gets one.  Everything here writes something durable - a CSV row,
+    a plot, an upload - and a replayed recording must not add minutes to a day it did
     not happen on.
     """
     store = CsvStore(config)
@@ -279,7 +279,7 @@ def _wait_until_interrupted(pipeline: RingBufferPipeline, analyzer: ContinuousAn
                             recorder: EventRecorder | None = None) -> None:
     """Headless main loop: block until ^C, then stop the analyzer and the audio pipeline.
 
-    Stops the analyzer first, mirroring MainWindow.closeEvent() — otherwise the
+    Stops the analyzer first, mirroring MainWindow.closeEvent() - otherwise the
     analyzer thread's in-flight tick can end up calling into an already-closed
     audio stream during shutdown.  The recorder is stopped in between, so a
     recording in progress is closed while its audio source is still open.
@@ -301,7 +301,7 @@ def _start_render(args: argparse.Namespace, config: BuzzConfig, window: 'MainWin
     """Wire an .mp4 render onto a playback session, and quit when it finishes.
 
     Imported here rather than at module scope so that a monitor run without --render
-    never loads the render code and never looks for ffmpeg — the same shape as the
+    never loads the render code and never looks for ffmpeg - the same shape as the
     PySide6 import below, and for the same reason: a feature nobody asked for should
     not be able to fail.
 
@@ -544,7 +544,7 @@ def main() -> None:  # pragma: no cover
         from buzz.waterfall import MainWindow
     except ImportError:
         logger.warning(
-            'PySide6 not installed — falling back to headless mode. '
+            'PySide6 not installed - falling back to headless mode. '
             'Install PySide6 or run with --headless to suppress this warning.'
         )
         _start_playback(pipeline, args.playback)
@@ -562,14 +562,14 @@ def main() -> None:  # pragma: no cover
         if args.render else None
     # Not before now, and not merely after show() either: show() returns before Qt
     # has finished creating and laying out the window, and audio started in that gap
-    # plays to a screen that is not there yet — then breaks up as widget construction
+    # plays to a screen that is not there yet - then breaks up as widget construction
     # holds the GIL away from the feeder.  A zero-delay timer fires on the first pass
     # of the event loop, by which time the window is up and the interpreter is idle.
     if args.playback and recording_display is None:
         QTimer.singleShot(0, pipeline.start)
     if recording_display is not None:
         # The transport is started by the recorder rather than here, so that the
-        # opening frame is captured before playback moves — see DisplayRecorder.start.
+        # opening frame is captured before playback moves - see DisplayRecorder.start.
         QTimer.singleShot(0, recording_display.start)
 
     # Allow Ctrl+C to close the window cleanly from the console

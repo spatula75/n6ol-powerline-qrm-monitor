@@ -165,7 +165,7 @@ class TestMatchedWidthSweep:
         assert abs(best - true_width) <= 2
 
     def test_score_turns_over_rather_than_growing_forever(self):
-        """A resolved pulse has an interior optimum — that is what makes the
+        """A resolved pulse has an interior optimum - that is what makes the
         answer meaningful.  Monotonic growth means the pulse was not resolved."""
         scores = [fom for _, _, fom in matched_width_sweep(self._profile_for(3))]
         assert scores.index(max(scores)) < len(scores) - 1

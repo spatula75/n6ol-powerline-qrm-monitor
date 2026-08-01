@@ -1,7 +1,7 @@
 """
 Tests for the pure display/formatting functions in device_setup.
 Hardware-dependent functions (_probe, _enumerate_input_devices, select_device)
-are not tested here — they require real PortAudio devices.
+are not tested here - they require real PortAudio devices.
 """
 
 import pytest

@@ -41,7 +41,7 @@ def _corrupt_list_size(path: Path) -> Path:
     """Overwrite the LIST chunk's declared length with the largest a 32-bit field holds.
 
     The LIST chunk specifically, because that is the one read_info reads the payload of
-    — a bogus length on a chunk it only seeks past costs nothing.
+    - a bogus length on a chunk it only seeks past costs nothing.
     """
     data = bytearray(path.read_bytes())
     at = data.index(b'LIST')
@@ -118,8 +118,8 @@ class TestReadInfo:
     def test_an_absurd_chunk_length_is_not_allocated(self, tmp_path):
         """A chunk declares its own length in 32 bits, so a truncated transfer or one
         corrupt byte can claim four gigabytes.  read(size) on that really does try to
-        allocate all four before finding out the file is two kilobytes — measured here
-        rather than assumed — and MemoryError is not the "no metadata" this module
+        allocate all four before finding out the file is two kilobytes - measured here
+        rather than assumed - and MemoryError is not the "no metadata" this module
         promises to degrade to.  Sizes are clamped to what is left in the file.
         """
         path = _corrupt_list_size(_tagged(tmp_path))

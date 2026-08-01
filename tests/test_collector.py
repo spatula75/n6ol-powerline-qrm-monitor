@@ -140,7 +140,7 @@ class TestRunCollectionGridFrequency:
         assert self._run(collector, tmp_path)['grid_frequency'] == '60.000'
 
     def test_blank_when_no_lock_was_held(self, tmp_path):
-        """With no lock the tracker's rate is stale — a number here would be a lie."""
+        """With no lock the tracker's rate is stale - a number here would be a lie."""
         collector = _make_collector(_make_config(tmp_path))
         collector._analyzer.drain_results.return_value = [_UNLOCKED_RESULT] * 60
         collector._analyzer.grid_frequency_hz.return_value = 60.0234

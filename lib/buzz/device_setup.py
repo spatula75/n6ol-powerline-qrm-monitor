@@ -6,7 +6,7 @@ compatibility, then samples 100 ms of audio to measure ambient amplitude.
 Results are displayed as a logarithmic ASCII level bar so the user can
 visually identify which device is carrying the RF signal.
 
-On Windows the same physical input is often listed three times — once each
+On Windows the same physical input is often listed three times - once each
 under MME, DirectSound, and WASAPI.  The deduplication logic in _best_api_devices()
 collapses these to a single entry, preferring WASAPI (which routes through the
 Windows audio engine and respects system input level controls).  On Linux, macOS,
@@ -141,7 +141,7 @@ def _enumerate_input_devices(sample_rate: int) -> list[DeviceInfo]:
 
 def _print_device_table(devices: list[DeviceInfo], current_real_index: int | None = None) -> None:
     print()
-    print('  Audio level is logarithmic — each █ ≈ 6 dB above silence (16-bit)')
+    print('  Audio level is logarithmic - each █ ≈ 6 dB above silence (16-bit)')
     print()
     idx_w = len(str(len(devices)))
     print(f"  {'#':>{idx_w}}  [{'LEVEL'.center(_BAR_WIDTH)}]  DEVICE")

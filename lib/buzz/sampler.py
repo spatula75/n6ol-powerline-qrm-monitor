@@ -1,7 +1,7 @@
 """
 Audio input for the powerline QRM monitor.
 
-Pure audio I/O — the pulse-train analysis lives in buzz.dsp and buzz.analyzer.
+Pure audio I/O - the pulse-train analysis lives in buzz.dsp and buzz.analyzer.
 RingBufferPipeline holds the buffering all audio sources share; AudioPipeline
 adds a PortAudio callback that fills it live, and buzz.playback adds a
 file-backed source that replays a recorded .wav through the same interface.
@@ -212,8 +212,8 @@ class RingBufferPipeline:
     def start(self) -> None:
         """Begin producing audio, for a source that does not start on construction.
 
-        Live capture has no use for this — its device is running by the time the
-        constructor returns — but a file-backed replay must not begin before the
+        Live capture has no use for this - its device is running by the time the
+        constructor returns - but a file-backed replay must not begin before the
         caller has somewhere to show it (see FilePlaybackPipeline.start), and a
         consumer holding a pipeline should not have to know which kind it has.
         """
@@ -237,7 +237,16 @@ class AudioPipeline(RingBufferPipeline):
         def _callback(indata: np.ndarray, frames: int,
                       time: object, status: sd.CallbackFlags) -> None:
             if status:
-                logger.warning('PortAudio callback status: %s', status)
+                # These flags mean the device and this callback got out of step --
+                # overflow being the one that matters, where audio arrived faster than
+                # it was collected and the driver dropped what it could not hold.  The
+                # gap is silent in the buffer, so it shows up as a stretch of analysis
+                # that measures low rather than as anything that looks like an error.
+                logger.warning(
+                    'The audio input reported %s, so some samples were dropped and the '
+                    'analysis covering them reads low. Usually transient load on the '
+                    'machine; if it persists, close other audio applications or raise '
+                    'chunk_size in the [audio] section of the config.', status)
             self._append(indata[:, 0].copy())
 
         self._stream = sd.InputStream(
@@ -297,7 +306,7 @@ class LevelStream:
     for why the median rather than the mean).  It matters more here than anywhere
     else: this is the reading the operator calibrates audio_rf_conversion_db against,
     so an uncorrected offset would be baked into every measurement the monitor ever
-    reports.  Smoothing is what makes it viable at this block size — a 320-sample
+    reports.  Smoothing is what makes it viable at this block size - a 320-sample
     block is far too short to estimate an offset from on its own.
 
     Use as a context manager:

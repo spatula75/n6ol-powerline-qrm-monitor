@@ -308,7 +308,7 @@ class TestReadFrom:
 
     def test_a_read_starting_mid_chunk_begins_at_that_sample(self):
         """Only whole chunks are joined, so a position part-way into one has to be
-        trimmed off the front of the join rather than assumed to land on a seam."""
+        trimmed off the front of the join rather than assumed to fall on a seam."""
         pipeline = RingBufferPipeline()
         pipeline._append(np.arange(CHUNK, dtype=np.int16))
         span = pipeline.read_from(10)
@@ -320,8 +320,8 @@ class TestReadFrom:
         assert len(pipeline.read_from(10).samples) == CHUNK - 10
 
     def _uneven(self):
-        """Nothing promises every chunk is CHUNK_SIZE — only the live capture callback
-        is fixed-size — so a span is assembled by length, never by chunk count."""
+        """Nothing promises every chunk is CHUNK_SIZE - only the live capture callback
+        is fixed-size - so a span is assembled by length, never by chunk count."""
         pipeline = RingBufferPipeline()
         for value, length in ((1, 100), (2, 7), (3, 300)):
             pipeline._append(np.full(length, value, dtype=np.int16))

@@ -5,7 +5,7 @@ labels: enhancement
 ---
 
 **What problem does this solve?**
-Describe the use case — "I want to do X because Y" is more useful than "add feature Z".
+Describe the use case - "I want to do X because Y" is more useful than "add feature Z".
 
 **Proposed solution**
 If you have a specific idea for how to implement it, describe it here.

@@ -52,7 +52,7 @@ def _paced(stream, period: float = 0.01) -> None:
     """Make a mocked OutputStream block in write() the way a real one does.
 
     write() on a real device returns when the card has room, and that is what paces
-    the feeder whenever audio is being heard — the deadline schedule stands down and
+    the feeder whenever audio is being heard - the deadline schedule stands down and
     the sound card becomes the clock.  A bare MagicMock returns instantly, so an
     unmuted replay reaches the end of the file in microseconds and any test meaning
     to ask what happens *during* playback is quietly asking about afterwards instead.
@@ -201,7 +201,7 @@ class TestTransport:
         with self._slow(tmp_path) as pipeline:
             time.sleep(0.15)
             pipeline.pause()
-            time.sleep(0.05)                 # let any in-flight chunk land
+            time.sleep(0.05)                 # let any in-flight chunk arrive
             settled = pipeline.total_samples
             time.sleep(0.3)
             assert pipeline.total_samples == settled
@@ -323,7 +323,7 @@ class TestTransport:
 
         process_time() counts every thread in the process, so this reads as near zero
         only because nothing else here is working while it sleeps.  Running the suite
-        in parallel — pytest-xdist and friends — would make it measure the machine
+        in parallel - pytest-xdist and friends - would make it measure the machine
         rather than the feeder.
         """
         with self._slow(tmp_path) as pipeline:
@@ -348,8 +348,8 @@ class TestTransport:
         assert pipeline._thread.is_alive() is False
 
     def test_no_output_device_is_opened_by_default(self, tmp_path):
-        """Muted is the default so that building a pipeline — in a test, on a
-        headless box — never reaches for a sound card nobody asked for."""
+        """Muted is the default so that building a pipeline - in a test, on a
+        headless box - never reaches for a sound card nobody asked for."""
         with patch('buzz.playback.sd.OutputStream') as stream:
             with self._slow(tmp_path):
                 time.sleep(0.15)

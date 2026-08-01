@@ -5,7 +5,7 @@ helpers: the display should say the same thing whatever the audio arrives at, an
 everything here is a consequence of that.
 
 Before this, one sweep was the pulse grid's *phase* period -- rate // gcd(rate,
-pulse_rate) -- which is number-theoretic rather than proportional.  It landed on 1 pulse
+pulse_rate) -- which is number-theoretic rather than proportional.  It came out at 1 pulse
 period at 48 kHz and 8 at 11.025 kHz, so the time base followed a gcd instead of the
 signal: the same interference read 0.83 ms/div in one file and 6.67 in another.
 """

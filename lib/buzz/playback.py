@@ -3,14 +3,14 @@ File-backed audio source: replays a recorded .wav through the live pipeline.
 
 FilePlaybackPipeline fills the same ring buffer AudioPipeline does, from a thread
 that feeds chunks at the file's own sample rate instead of a PortAudio callback.
-Everything downstream — analyzer, scope, waterfall, meters — is unchanged and
+Everything downstream - analyzer, scope, waterfall, meters - is unchanged and
 cannot tell the difference, which is the point: an event captured by the recorder
 can be replayed later and analysed exactly as it was live, with the display
 running at real speed for a screen recording.
 
 No input device is opened, so a recording can be reviewed on a machine with no
 receiver attached.  An output device is opened only while audio is actually being
-written to it — not while muted, paused, or stopped at the end of the file — so
+written to it - not while muted, paused, or stopped at the end of the file - so
 muted playback, which is what --mute asks for and what this class does unless told
 otherwise, runs exactly the code that ran before playback could be heard at all,
 paced by a monotonic deadline rather than by a sound card that nobody is listening
@@ -56,11 +56,11 @@ def sample_rate_of(path: Path | str) -> int:
 def load_wav(path: Path | str) -> tuple[np.ndarray, int]:
     """Read a 16-bit PCM .wav into (int16 samples, sample rate).
 
-    Any .wav plays, not only ones this program recorded — somebody being sent a file
+    Any .wav plays, not only ones this program recorded - somebody being sent a file
     by another operator is exactly who this is for.  One property is refused rather
     than coped with: the **sample width**.  The whole signal chain is int16 end to end,
     and silently converting a 24- or 32-bit file would put what is measured here at
-    odds with what the same audio measured live — a display and a set of numbers that
+    odds with what the same audio measured live - a display and a set of numbers that
     look entirely plausible and are wrong.
 
     The sample rate is *not* checked here, nor by the pipeline.  Reading a .wav and
@@ -71,14 +71,17 @@ def load_wav(path: Path | str) -> tuple[np.ndarray, int]:
     to a policy about the display's bandwidth.
 
     Multi-channel files are reduced to channel 0 rather than mixed down, matching what
-    the live pipeline does with a stereo input device, and say so in the log — a file
+    the live pipeline does with a stereo input device, and say so in the log - a file
     from elsewhere is quite likely to be stereo, and "half of what you sent was
     ignored" should not have to be inferred from a reading that came out low.
     """
     with wave.open(str(path), 'rb') as wav:
         if wav.getsampwidth() != _BYTES_PER_SAMPLE:
             raise ValueError(
-                f'{path}: expected 16-bit PCM audio, got {wav.getsampwidth() * 8}-bit')
+                f'{path} is {wav.getsampwidth() * 8}-bit audio, and this program reads '
+                '16-bit PCM only, since the signal chain is int16 from the sound card '
+                'onward. Convert it first: '
+                f'ffmpeg -i "{path}" -c:a pcm_s16le converted.wav')
         channels = wav.getnchannels()
         sample_rate = wav.getframerate()
         if channels > 1:
@@ -172,7 +175,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
         self._rebase()
 
         # Silent unless asked otherwise, so that building a pipeline never opens an
-        # audio device the caller did not ask for — tests and headless replays have
+        # audio device the caller did not ask for - tests and headless replays have
         # no use for one, and some machines have none to open.
         self._muted = muted
         self._output: sd.OutputStream | None = None
@@ -180,7 +183,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
         self._flush_requested = False
         # Gain is for the speakers alone.  Recordings sit at -24 to -34 dBFS, which
         # is quiet on the sort of speakers a laptop has, but the analyzer's whole job
-        # is to report the level that was actually there — so this is applied to the
+        # is to report the level that was actually there - so this is applied to the
         # copy on its way to the sound card and to nothing else.
         self.gain_db = gain_db
         self._gain = 10 ** (gain_db / 20)
@@ -195,7 +198,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
 
         Constructing a pipeline does not start one.  The caller has a display to
         build first, and starting in the constructor means the opening moments of
-        the event are heard before there is a window to see them in — and, worse,
+        the event are heard before there is a window to see them in - and, worse,
         are fed while widget construction still holds the GIL, so the sound card
         runs dry and the replay opens with a stutter that is not in the recording.
         Opening the file and playing it are separate acts, and only the caller knows
@@ -205,8 +208,8 @@ class FilePlaybackPipeline(RingBufferPipeline):
             self._started = True
             # The deadline schedule starts here, not at construction.  _rebase() in
             # __init__ sets an origin, and everything between building the pipeline
-            # and starting it — building the window, wiring the analyzer, compiling
-            # the FFT kernels on first use — is time the schedule counts as already
+            # and starting it - building the window, wiring the analyzer, compiling
+            # the FFT kernels on first use - is time the schedule counts as already
             # spent.  The feeder then finds every early chunk overdue and delivers
             # them as fast as the loop runs.
             #
@@ -257,7 +260,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
         Logged here rather than where the stream is actually opened and closed: the
         stream now comes and goes with pausing too, so its lifecycle no longer tracks
         anything the operator asked for.  This is the request, which is the part worth
-        a line — and a device that then refuses to open says so itself.
+        a line - and a device that then refuses to open says so itself.
         """
         with self._state:
             self._muted = muted
@@ -272,7 +275,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
     def pause(self) -> None:
         """Stop feeding, and release the sound card until playback resumes.
 
-        The stream closes rather than idling — see _sync_output — so a pause left
+        The stream closes rather than idling - see _sync_output - so a pause left
         running over lunch is not an open device underrunning the whole time.
         """
         with self._state:
@@ -291,7 +294,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
     def toggle_pause(self) -> None:
         """Pause, or carry on.  Does nothing once the file has finished.
 
-        Without that guard the space bar can pause a replay that has already ended —
+        Without that guard the space bar can pause a replay that has already ended -
         leaving the transport paused at a position it cannot be resumed from, since
         resume() rightly refuses there, and disagreeing with a Play button that is
         greyed out for exactly this reason.  Restart is the way back from the end.
@@ -308,13 +311,13 @@ class FilePlaybackPipeline(RingBufferPipeline):
 
         The ring buffer is emptied too.  It still holds the last several seconds of
         the pass just abandoned, and leaving that in place would hand an analyzer
-        that has just been reset a locked-on pulse train to find immediately —
+        that has just been reset a locked-on pulse train to find immediately -
         producing a second pass that opens already locked, which is precisely what
         restarting is meant to avoid.  The cost is a few seconds of empty display
         while the new pass refills it, the same as at startup.
 
         Audio queued to the sound card is thrown away for the same reason, on the
-        feeder thread — see _flush_output.
+        feeder thread - see _flush_output.
         """
         with self._state:
             self._index = 0
@@ -349,7 +352,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
     def _sync_output(self) -> None:
         """Open or close the output stream to match what the transport is doing.
 
-        Feeder thread only — see set_muted.  A stream is wanted only while audio is
+        Feeder thread only - see set_muted.  A stream is wanted only while audio is
         actually being written to it, which muting, pausing and reaching the end of
         the file each stop being true of.  A stream nobody writes to underruns for as
         long as it is left open, so all three close it: mute already meant the absence
@@ -377,7 +380,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
 
         A restart rewinds the file, but an output buffer's worth of the pass being
         abandoned is already sitting in the card's queue.  Left there it plays out
-        after the click — the old position, heard over the new one — and every later
+        after the click - the old position, heard over the new one - and every later
         chunk trails the display by that same buffer for the rest of the run.
 
         Aborting and restarting the same stream rather than reopening the device:
@@ -393,8 +396,11 @@ class FilePlaybackPipeline(RingBufferPipeline):
                                      dtype='int16', latency='low')
             stream.start()
         except Exception:
-            logger.warning('Could not open the audio output — replay stays silent.',
-                           exc_info=True)
+            logger.warning(
+                'Could not open an audio output device; the replay carries on without '
+                'sound, and nothing measured or displayed is affected. Usually there is '
+                'no output device configured, or another application holds it '
+                'exclusively. Pass --mute to skip opening one at all.', exc_info=True)
             with self._state:
                 self._output_failed = True
             return
@@ -409,7 +415,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
         abort() rather than stop() wherever somebody asked for silence *now*: stop()
         plays the queue out first, and a mute or pause button that takes a fifth of a
         second to go quiet is a broken one.  The queued audio was already fed to the
-        ring buffer, so nothing is lost from the replay itself — only from the speaker.
+        ring buffer, so nothing is lost from the replay itself - only from the speaker.
 
         The end of the file is the one place that reverses.  Nobody asked for silence
         there, the queue holds the last of the recording, and cutting it off mid-sample
@@ -427,8 +433,8 @@ class FilePlaybackPipeline(RingBufferPipeline):
         """Block while paused or sitting at the end; False once stopping.
 
         Reconciles the output stream on every pass, including each time it wakes.
-        Being parked here is itself a reason to have no stream — nothing is being
-        written while the feeder waits — and it is also the only moment a mute
+        Being parked here is itself a reason to have no stream - nothing is being
+        written while the feeder waits - and it is also the only moment a mute
         arriving during a pause could otherwise be noticed.  Either way the device
         does not sit open and starving while the transport is stopped.
         """
@@ -441,7 +447,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
         return False
 
     def _feed(self) -> None:
-        logger.info('Playing back %s — %.1f s at %d Hz',
+        logger.info('Playing back %s - %.1f s at %d Hz',
                     self.path.name, self.duration, self.sample_rate)
         while self._wait_until_playable():
             with self._state:
@@ -450,8 +456,8 @@ class FilePlaybackPipeline(RingBufferPipeline):
             chunk = self._samples[index * self.CHUNK_SIZE:(index + 1) * self.CHUNK_SIZE]
 
             # Whichever clock is available paces the loop.  With a stream open the
-            # sound card is it — write() returns once the card has room, which is by
-            # definition real time — and without one the deadline schedule is, exactly
+            # sound card is it - write() returns once the card has room, which is by
+            # definition real time - and without one the deadline schedule is, exactly
             # as it was before playback could be heard at all.
             if self._output is not None:
                 # The only place gain is applied.  What goes into the ring buffer
@@ -482,7 +488,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
             self._thread.join(timeout=1.0)
         # Only once the feeder has actually stopped.  The join above has a timeout,
         # and a feeder still blocked inside write() on a device that stopped draining
-        # — one unplugged mid-replay — would outlive it; closing the stream from
+        # - one unplugged mid-replay - would outlive it; closing the stream from
         # under that write is the undefined behaviour the rest of this class takes
         # care to avoid.  Leaking a stream on a device that is already misbehaving is
         # the better of the two outcomes, and the process is on its way out anyway.

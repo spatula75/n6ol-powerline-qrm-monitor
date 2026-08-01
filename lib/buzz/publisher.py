@@ -70,7 +70,7 @@ class Publisher:
                 sftp.put(str(local_file), f'{server.remote_path}{file_prefix}{destination_name}')
         except Exception:
             logger.exception(
-                'Uploading output files to %s failed — check SSH key (%s), '
+                'Uploading output files to %s failed - check SSH key (%s), '
                 'remote path (%s), and host reachability.  If the error is an '
                 'unknown host key, add it with: ssh-keyscan %s >> %s . '
                 'Files will be re-uploaded next cycle.',
