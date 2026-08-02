@@ -92,7 +92,21 @@ Deciding what to release is still done by hand; publishing it is not.
 2. Move the `[Unreleased]` entries in `CHANGELOG.md` under a new `## [x.y.z] - date`
    heading.  This section becomes the release notes verbatim, so write it for the
    person reading the release page.
-3. Merge that as a PR, then tag the merge commit and push the tag:
+3. Run the release render check against a recent recording:
+
+   ```
+   python tools/release_render_check.py
+   ```
+
+   This renders a real capture at every sample rate the monitor supports and checks
+   that each result actually holds a picture and a sound, not just a well-formed
+   container - see the tool's own docstring for exactly what it checks.  It asks
+   which recording to use when nothing recent is on hand rather than picking
+   silently or skipping the check, so answer at the prompt instead of routing
+   around it.  Not wired into CI: CI has no live radio and cannot produce a
+   recording that means anything, so this stays a manual step for the same reason
+   "Hands-on verification" in `CLAUDE.md` does.
+4. Merge that as a PR, then tag the merge commit and push the tag:
 
    ```
    git tag 1.3.0 && git push origin 1.3.0

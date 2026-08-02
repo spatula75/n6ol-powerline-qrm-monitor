@@ -155,7 +155,12 @@ initiative, not even when the work is obviously finished and tests pass.
 2. Move the `[Unreleased]` entries in `CHANGELOG.md` under a new `## [x.y.z] - date`
    heading. That section is lifted verbatim as the release notes, so write it for
    whoever arrives at the release page.
-3. Merge as a PR, then tag the merge commit and push the tag: `git tag 1.3.0 &&
+3. Run `python tools/release_render_check.py` against a recent recording before
+   merging. It is not in CI - CI has no live radio, so it cannot produce a recording
+   that means anything - which is exactly why skipping it is easy to justify and
+   wrong to do: it is the one check that renders a real, current capture rather than
+   a synthetic one, at every sample rate the monitor supports.
+4. Merge as a PR, then tag the merge commit and push the tag: `git tag 1.3.0 &&
    git push origin 1.3.0`. Plain semver, **no leading `v`** - the workflow's tag filter
    won't match one.
 
