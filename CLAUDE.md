@@ -150,6 +150,21 @@ initiative, not even when the work is obviously finished and tests pass.
   name the tooling. Nobody cheers themselves on in their own commits, and Claude Code
   is a tool used to write them, not a byline.
 
+### Commit messages
+
+**A sentence or two per significant change, and nothing at all for the insignificant
+ones.** Say what changed and why it was worth doing, then stop. The blow-by-blow
+belongs in `CHANGELOG.md`, which is where a reader goes looking for it; repeating it
+in the commit buries the one line that mattered.
+
+The cost compounds at the merge, because GitHub's squash stacks every branch commit
+message into a single body underneath the PR description. Two commits on `main` run
+to 707 and 570 lines against a median of 10. Nobody reads those, so the reasoning in
+them was written for nobody.
+
+Where a decision truly needs justifying, the comment beside the code outlives the
+commit message and sits where the next reader is already looking. Put it there.
+
 ### Releasing
 
 `CONTRIBUTING.md` has the procedure for humans; this is what not to get wrong.
@@ -263,8 +278,10 @@ where to spend their attention, so point at the few things that matter: the cent
 of the change, the critical fix, the one decision worth arguing about. Whatever a
 reviewer would regret skimming past.
 
-Not a changelog and not a file listing - the diff already says what changed. The PR
-says what to *look at* and why it is the important part.
+Not a changelog and not a file listing - the diff already says what changed and
+`CHANGELOG.md` carries the detail. Same budget as a commit message: a sentence or two
+per significant change. The PR says what to *look at* and why it is the important
+part.
 
 **Then annotate the diff itself.** Prose in the description is not the same as a note
 sitting on the line it is about. After opening a PR, leave **inline review comments**
