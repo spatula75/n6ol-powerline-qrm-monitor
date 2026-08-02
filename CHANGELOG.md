@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-08-01
+
+A recorded event can now be rendered to video with `--render FILE.mp4`: the display
+and the recording's own audio, muxed together, so an arc heard at two in the morning
+can be shown to somebody instead of just described to them. The waterfall stopped
+depending on the sample rate along the way, so the display reads the same at 8 kHz and
+48 kHz rather than only at the 16 kHz it was tuned against.
+
+The rest is groundwork underneath that: shared constants replace six modules' worth of
+copied numbers, error messages were audited to say what to do rather than just what
+went wrong, and every docstring was checked against the code it describes rather than
+trusted on sight.
+
 ### Added
 - `--render FILE.mp4` renders a `--playback` session to video: H.264 of the display
   with the recording as its soundtrack, so an arc heard at two in the morning becomes
