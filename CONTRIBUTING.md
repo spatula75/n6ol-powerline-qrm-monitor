@@ -88,6 +88,10 @@ functions and methods.
 
 Deciding what to release is still done by hand; publishing it is not.
 
+Do the following on a branch named `prepare-release-<version>` - `prepare-release-1.4.0`
+for this release - so the branch name says which release it prepares without having
+to open the PR to find out.
+
 1. Bump the version in **both** `lib/buzz/__init__.py` and `pyproject.toml`.
 2. Move the `[Unreleased]` entries in `CHANGELOG.md` under a new `## [x.y.z] - date`
    heading.  This section becomes the release notes verbatim, so write it for the

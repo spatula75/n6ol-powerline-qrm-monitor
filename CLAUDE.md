@@ -144,10 +144,22 @@ initiative, not even when the work is obviously finished and tests pass.
 - Commit granularity varies - sometimes one commit per unit of work, sometimes a single
   sweep for a batch of PR fixes. Ask which is wanted.
 - Note `CHANGELOG.md` under `[Unreleased]` as part of the work, not at release time.
+- **No self-attribution in anything that ships to GitHub** - a commit message, a PR
+  title or body, a review comment, an issue. No `Co-Authored-By` trailer, no session
+  link, no mention of Claude or Claude Code at all, unless there is a real reason to
+  name the tooling. Nobody cheers themselves on in their own commits, and Claude Code
+  is a tool used to write them, not a byline.
 
 ### Releasing
 
 `CONTRIBUTING.md` has the procedure for humans; this is what not to get wrong.
+
+Branch name is `prepare-release-<version>` - `prepare-release-1.4.0`, not
+`prepare-release` bare. Get this wrong and either rename the GitHub branch through
+its own web UI (Settings > Branches, or the branch list's rename action) so the open
+PR migrates with it, or just open a fresh PR against the correctly-named branch -
+renaming via `gh api .../branches/{branch}/rename` deleted the old ref and
+auto-closed the PR outright instead of migrating it, despite what its docs suggest.
 
 1. **Bump the version in both `lib/buzz/__init__.py` and `pyproject.toml`.** Two files,
    easy to half-do, and the release workflow fails the release if they and the tag
