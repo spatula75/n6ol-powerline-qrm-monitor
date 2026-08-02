@@ -5,4 +5,4 @@ pyproject.toml, and refuses the release if the three disagree; see CONTRIBUTING.
 Bumping it here alone is therefore never enough.
 """
 
-__version__ = '1.3.0'
+__version__ = '1.4.0'
