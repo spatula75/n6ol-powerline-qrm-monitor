@@ -421,7 +421,7 @@ def main() -> int:
     return 0 if all(c.ok for c in checks) else 1
 
 
-if __name__ == '__main__':
+if __name__ == '__main__':  # pragma: no cover
     try:
         sys.exit(main())
     except KeyboardInterrupt:

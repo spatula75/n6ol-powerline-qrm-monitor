@@ -18,6 +18,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   recordings directory is recent enough rather than validating against a stale
   file or skipping the check silently.
 
+### Changed
+- Coverage measurement now covers `tools/` as well as `lib/buzz` and `configure`.
+  The release check is part of the release procedure now, so leaving it outside the
+  gate meant 429 lines of it counted for nothing. Both tools reach 100%, and the
+  total moved 99.19% → 99.29%.
+
 ## [1.4.0] - 2026-08-01
 
 A recorded event can now be rendered to video with `--render FILE.mp4`: the display
