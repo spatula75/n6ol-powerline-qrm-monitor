@@ -1,17 +1,17 @@
 """
-Generating `config.example.toml` from the schema.
+Generate `config.example.toml` from the schema.
 
-The sample config is documentation in its own right, and it used to be a third place
-every setting was described - after the dataclass comments in `buzz.config` and the
-wizard's own field labels.  Three copies of the same prose is three chances to
-disagree, and this project has already had a shared constant drift that way.  So the
-sample is rendered from `schema.json` instead, and a test fails if the committed file
-stops matching what the schema would produce.
+The sample config is documentation in its own right.  It used to be a third place that
+described every setting, after the dataclass comments in `buzz.config` and the wizard's
+own field labels.  Three copies of one piece of prose give it three chances to
+disagree, and a shared constant in this project has already drifted that way.  So the
+schema renders the sample now, and a test fails when the committed file stops matching
+what the schema produces.
 
-Values are written commented-out where the effective default cannot be stated in a
-static file: a home-directory path, or a setting whose real default is "work it out"
-(the recording directory).  `x-example` supplies something to edit in that case,
-which is more use than a blank.
+Some settings go in commented out, because a static file cannot state their real
+default.  A home-directory path is one case.  A setting whose default is "work it out"
+is the other, such as the recording directory.  `x-example` then supplies something to
+edit, which serves a reader better than a blank.
 """
 
 from pathlib import Path
@@ -46,7 +46,7 @@ _COMMENT_WIDTH = 76
 
 
 def _wrap(text: str, prefix: str = '# ') -> list[str]:
-    """`text` as comment lines, wrapped, without breaking mid-word."""
+    """`text` as wrapped comment lines. No word breaks across a line."""
     words = text.split()
     lines: list[str] = []
     current = prefix
@@ -63,10 +63,10 @@ def _wrap(text: str, prefix: str = '# ') -> list[str]:
 
 
 def _format_value(value: Any) -> str:
-    """One TOML scalar. Backslashes are doubled, as TOML reads a single one as an escape.
+    """One TOML scalar, with backslashes doubled.  TOML reads one as an escape.
 
-    Never called with None: a setting with no value is written commented-out by
-    _field_lines() before it gets here, because TOML has no way to spell "unset".
+    Nothing calls this with None.  TOML cannot spell "unset", so _field_lines() writes
+    a setting that has no value as a comment before it reaches here.
     """
     if isinstance(value, bool):
         return 'true' if value else 'false'
@@ -76,11 +76,11 @@ def _format_value(value: Any) -> str:
 
 
 def _field_lines(spec: dict[str, Any], name: str, value: Any) -> list[str]:
-    """One setting: its description, its choices and notes, then the assignment."""
+    """One setting: the description, the choices, the notes, then the assignment."""
     lines = _wrap(spec['description'])
 
-    # An enum's options are the most useful thing a reader of the sample file can be
-    # told, so they go directly under the description rather than into the notes.
+    # An enum's options are the most useful thing the sample file can tell a reader, so
+    # they go directly under the description instead of into the notes.
     titles = spec.get('x-enum-titles')
     if titles:
         lines.append('#')
@@ -91,12 +91,11 @@ def _field_lines(spec: dict[str, Any], name: str, value: Any) -> list[str]:
         lines.append('#')
         lines.extend(_wrap(note))
 
-    # Three reasons a setting is written commented-out rather than assigned: its real
-    # default is derived at runtime and a literal would be wrong on every other
-    # machine; it has no value at all; or it has one that should not be copied as-is,
-    # which is what x-sample-commented marks.  The last covers the audio device, whose
-    # default names one particular sound card - shipping that as an active setting in
-    # the sample would put somebody else's hardware in every new operator's config.
+    # A setting goes in commented out for one of three reasons.  Its real default comes
+    # from the runtime, so a literal would be wrong on every other machine.  It has no
+    # value at all.  Or it has one that nobody should copy, which x-sample-commented
+    # marks.  The last covers the audio device, whose default names one sound card.  As
+    # an active setting, that would put somebody else's hardware in every new config.
     reason = spec.get('x-default-from-runtime') or spec.get('x-sample-commented')
     if reason or value is None:
         lines.append('#')
@@ -115,8 +114,8 @@ def _field_lines(spec: dict[str, Any], name: str, value: Any) -> list[str]:
 def render(values: ConfigValues | None = None) -> str:
     """The whole of `config.example.toml` as text.
 
-    `values` overrides what is written for each setting; the schema's own defaults
-    are used when it is omitted, which is what the committed sample file holds.
+    `values` overrides what each setting gets.  Leave it out and the schema's own
+    defaults apply, which is what the committed sample file holds.
     """
     schema = load_schema()
     if values is None:
@@ -142,7 +141,7 @@ def write(path: Path) -> None:
     """Regenerate the sample config at `path`.
 
     Written with explicit newline='\\n' so a checkout on Windows produces the same
-    bytes as one on Linux; otherwise the staleness test fails on whichever platform
+    bytes as one on Linux.  Without it, the staleness test fails on whichever platform
     did not generate the committed copy.
     """
     with open(path, 'w', encoding='utf-8', newline='\n') as handle:
