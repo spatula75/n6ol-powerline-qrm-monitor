@@ -8,7 +8,7 @@ Properties under test:
 2. Reversing the kernel is what turns convolution into correlation.  The kernel is
    not a palindrome, so skipping the reversal gives a different - wrong - answer.
 3. fftconvolve(x, kernel[::-1]) == np.correlate(x, kernel) within float tolerance.
-4. The optimisation produces the same argmax and argmin as a direct correlation on
+4. The optimization produces the same argmax and argmin as a direct correlation on
    synthetic pulse data.
 
 The kernel used to be built with truncated positions, which happened to make it an

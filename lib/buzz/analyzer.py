@@ -62,10 +62,10 @@ a sample off.  Going below that would need sub-sample interpolation of the audio
 
 Fitting a line through several measurements, rather than dividing one prediction
 error by one refine interval, is what keeps the *rate* itself away from that same
-quantisation floor: the per-measurement errors are zero-mean and the fit spans a
+quantization floor: the per-measurement errors are zero-mean and the fit spans a
 baseline several times longer than a single interval.  Against synthetic audio at
 known drift rates this holds the rate to under 0.01 samples/s where the previous
-estimator sat at 0.38 - the difference between a synchronised display creeping
+estimator sat at 0.38 - the difference between a synchronized display creeping
 about a division a minute and one that truly stands still.
 
 The estimate starts at zero and needs DRIFT_FIT_MIN_POINTS measurements before it
@@ -116,7 +116,7 @@ class TriggerSync(StrEnum):
     """How much a display should trust the phase returned by trigger_phase().
 
     This is a coarser view of the state machine than AnalyzerState, because a
-    synchronised display cares about a different question than the analyzer does:
+    synchronized display cares about a different question than the analyzer does:
     not "what am I doing" but "is the phase I am about to draw with real".
 
       LOCK - measured from live audio; the pulse train is present and tracked.
@@ -148,7 +148,7 @@ def fit_drift_rate(history: Sequence[tuple[float, float]],
 
     Why a fit rather than the obvious rise-over-run between the last two points:
     phases are measured to the nearest whole sample, so every point carries up to
-    half a sample of quantisation error.  Dividing one such error by one short
+    half a sample of quantization error.  Dividing one such error by one short
     refine interval puts it straight into the answer - at a 0.6 s interval that is
     0.5 / 0.6 = 0.83 samples/s of error with nothing to average against.  Fitting a
     line through many points beats that twice over: the individual errors are
@@ -173,11 +173,11 @@ def fit_drift_rate(history: Sequence[tuple[float, float]],
         return None
     times  = np.fromiter((t for t, _ in history), dtype=np.float64, count=n)
     phases = np.fromiter((p for _, p in history), dtype=np.float64, count=n)
-    centred_times = times - times.mean()
-    spread = float(centred_times @ centred_times)
+    centered_times = times - times.mean()
+    spread = float(centered_times @ centered_times)
     if spread <= 0.0:
         return None
-    return float(centred_times @ (phases - phases.mean()) / spread)
+    return float(centered_times @ (phases - phases.mean()) / spread)
 
 
 @dataclass(frozen=True)
@@ -230,7 +230,7 @@ class ContinuousAnalyzer:
     #
     # Returning to SEARCHING also keeps the displays honest: trigger_phase() reports
     # HOLD purely on the strength of a valid phase pair, so without this it would go on
-    # claiming a synchronised sweep for as long as the signal stayed away - overnight,
+    # claiming a synchronized sweep for as long as the signal stayed away - overnight,
     # if the arc quits at dusk.  One state machine, one answer.
     #
     # Measured against the audio clock rather than the wall clock, for the same reason
@@ -279,7 +279,7 @@ class ContinuousAnalyzer:
     # replaced while leaving a single bad measurement outvoted nine to one.
     DRIFT_FIT_POINTS = 10
     # Fewest points that define a slope worth trusting.  Two points would fit exactly
-    # and reproduce the old rise-over-run behaviour, quantisation error and all.
+    # and reproduce the old rise-over-run behavior, quantization error and all.
     DRIFT_FIT_MIN_POINTS = 3
     # Largest gap between consecutive measurements the history can be trusted across.
     # Unwrapping in _record_phase_measurement folds each step to the shortest
@@ -440,7 +440,7 @@ class ContinuousAnalyzer:
         disk from one would stall analysis; the event recorder's listener therefore
         only sets a flag, and its own thread does the work.
 
-        Register before start().  The list is not synchronised, and everything is
+        Register before start().  The list is not synchronized, and everything is
         wired up before the analyzer thread exists.
         """
         self._state_listeners.append(listener)
@@ -652,7 +652,7 @@ class ContinuousAnalyzer:
         through samples that were never recorded.  Predicting against wall time
         would then extrapolate straight past the real position.  Counting captured
         samples instead makes a stalled stream simply freeze the prediction, which
-        is the correct behaviour.
+        is the correct behavior.
         """
         return self._pipeline.total_samples / self._sample_rate
 
@@ -799,7 +799,7 @@ class ContinuousAnalyzer:
         return true_pulse_rate / 2
 
     def trigger_phase(self) -> tuple[int, TriggerSync]:
-        """Where the pulse train is right now, for a display to synchronise its sweep to.
+        """Where the pulse train is right now, for a display to synchronize its sweep to.
 
         Returns (phase in samples within pulse_phase_period, how much to trust it).
         Safe to call from the Qt thread: the four pieces of tracker state are read as
@@ -1079,8 +1079,8 @@ class ContinuousAnalyzer:
         the pulse train actually is now, and it uses the gap between that and where
         drift predicted it would be to refine the drift estimate itself.  Scanning
         around the *prediction* rather than the last measurement is what keeps the
-        search centred - under steady drift the pulse has already moved by the time
-        we look again, so a search centred on the old position starts off-target and
+        search centered - under steady drift the pulse has already moved by the time
+        we look again, so a search centered on the old position starts off-target and
         has to spend its radius catching up.
 
         ~40× cheaper than _full_analysis() - evaluates average_pulse_amplitude at
@@ -1119,7 +1119,7 @@ class ContinuousAnalyzer:
             return self._state
 
         # Stamp the audio clock after the capture, so it refers to the audio we
-        # actually just analysed rather than to whatever had arrived before we waited.
+        # actually just analyzed rather than to whatever had arrived before we waited.
         measured_at = self._audio_clock_seconds()
         predicted_peak, predicted_noise = self._predicted_phases(measured_at)
         signal_phase, noise_phase = self._scan_signal_and_noise_phases(

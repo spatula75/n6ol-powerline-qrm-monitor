@@ -218,7 +218,7 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
         'level calibration', path.name, station.audio_rf_conversion_db, calibration)
 
     # Any .wav plays, including one this monitor never made.  It just cannot be
-    # analysed with any authority, and the operator is the only one who can judge
+    # analyzed with any authority, and the operator is the only one who can judge
     # whether that matters - so say what is being assumed rather than fall back
     # silently and let a plausible-looking dBm reading speak for itself.
     # An explicit figure from the command line beats both, because it is the only one
@@ -244,7 +244,7 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
         # the problem.
         other_pps = 100 if audio.pulse_rate == 120 else 120
         logger.warning(
-            '%s does not record its pulse rate; analysing at the configured %d pps. '
+            '%s does not record its pulse rate; analyzing at the configured %d pps. '
             'If nothing locks it may be a %d Hz recording; set audio.pulse_rate to %d.',
             path.name, audio.pulse_rate, other_pps // 2, other_pps)
     if calibration is None and rf_conversion_db is None:
@@ -459,7 +459,7 @@ def main() -> None:  # pragma: no cover
                         help='dB between audio amplitude and signal level at the '
                              'receiver, for this replay only. Recordings this program '
                              'made carry their own and need no help; a .wav from '
-                             'anywhere else is analysed with the figure configured for '
+                             'anywhere else is analyzed with the figure configured for '
                              'this station, which may be nothing like the one at '
                              'which it was recorded. Supply it here if you know it. '
                              'Playback only.')

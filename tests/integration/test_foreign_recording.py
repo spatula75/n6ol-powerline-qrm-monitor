@@ -113,7 +113,7 @@ class TestItPlaysAtAll:
 
     def test_it_adopts_the_files_sample_rate(self, played):
         """44.1 kHz is not this program's rate, and the file's own is authoritative --
-        analysing it as 16 kHz would put the pulse grid at the wrong spacing."""
+        analyzing it as 16 kHz would put the pulse grid at the wrong spacing."""
         assert 'sample rate 44100' in played
 
 
@@ -122,8 +122,8 @@ class TestItSaysWhatItIsAssuming:
     gets read off the display as a real one."""
 
     def test_it_says_only_one_channel_is_analysed(self, played):
-        assert 'analysing channel 0 only' in played, (
-            'A stereo file was analysed without saying half of it was ignored.')
+        assert 'analyzing channel 0 only' in played, (
+            'A stereo file was analyzed without saying half of it was ignored.')
 
     def test_it_says_which_pulse_rate_it_assumed(self, played):
         assert 'does not record its pulse rate' in played
@@ -156,7 +156,7 @@ class TestASuppliedCalibration:
 
 
 class TestRejections:
-    """Refused rather than analysed into plausible nonsense."""
+    """Refused rather than analyzed into plausible nonsense."""
 
     def test_a_rate_below_the_floor_is_refused(self, tmp_path):
         source = tmp_path / 'slow.wav'

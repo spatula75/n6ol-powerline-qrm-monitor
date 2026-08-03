@@ -43,7 +43,7 @@ _BUFFER_SECONDS = 9.6
 # precisely because the audio is mono and narrow-band.
 _DEFAULT_SAMPLE_RATE = 16000
 
-# How often a continuing run of dropped audio is summarised.  A minute is chosen to
+# How often a continuing run of dropped audio is summarized.  A minute is chosen to
 # match the collector's cycle, so a log reporting dropouts lines up with the CSV rows
 # they affected.  The first one is always reported immediately; see DropoutReporter.
 _DROPOUT_REPORT_SECONDS = 60.0

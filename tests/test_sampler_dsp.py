@@ -59,7 +59,7 @@ class TestBuildPulseKernel:
 
         Both use round(); truncating in either place would put a third of the
         positions one sample off, costing a third of each affected pulse's energy
-        and making the FFT optimise a phase the averager never samples.
+        and making the FFT optimize a phase the averager never samples.
         """
         k = build_pulse_kernel(SAMPLE_RATE, PULSE_RATE)
         spp = SAMPLE_RATE / PULSE_RATE

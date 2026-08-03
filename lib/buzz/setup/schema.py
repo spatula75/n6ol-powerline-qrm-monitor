@@ -8,7 +8,7 @@ means the arithmetic and the merge rules are testable without one.
 The schema carries three custom keywords.  JSON Schema ignores unknown keywords, so
 the document stays a valid schema while saying things a validator has no opinion on:
 
-  * `x-visible-when` - which field this one depends on, for the wizard to grey it out.
+  * `x-visible-when` - which field this one depends on, for the wizard to gray it out.
     Visibility and validity are different questions and are kept apart deliberately:
     `if`/`then` states what must be true of a *saved* config, which is what
     `validate()` enforces, while this states what is worth *showing* while editing.

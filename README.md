@@ -504,7 +504,7 @@ watching continuously, so a `min_lock_seconds` wait is noticed up to one poll af
 it has actually elapsed, and only the configured value is charged against the
 allowance - the remainder sits on top.  A 10 s setting can therefore produce
 10.1 s of event.  The audio itself is trimmed to the sample; it is the moment the
-allowance starts from that is quantised.
+allowance starts from that is quantized.
 
 The log spells the sum out when each recording closes, because the total is not a
 number any setting names:
@@ -543,7 +543,7 @@ exactly the case this handles.  A file from a random sound card is likely to be
   the analyzer always has the same 9.6 seconds of history to work with, and the
   scope always shows the same three pulse periods.  8 kHz is the floor because the
   display shows 0–4 kHz and that is exactly Nyquist there; anything outside the
-  range is refused with a message rather than analysed into plausible nonsense.
+  range is refused with a message rather than analyzed into plausible nonsense.
 - **Stereo** is reduced to **channel 0**, not mixed down - the same thing the live
   monitor does with a stereo input device - and it says so in the log.  Mixing
   would average the arc against whatever the other channel happens to hold.  If
@@ -660,9 +660,9 @@ finding it the first time would open the second pass already locked.
 It also takes the pulse rate and level calibration from the file's metadata, so a
 recording measures the same wherever it is replayed - the sample rate is in the
 `.wav` header, but nothing else about how to read the audio is, and a 100 pps
-recording analysed as 120 pps simply never locks.  Any mismatch with your own
+recording analyzed as 120 pps simply never locks.  Any mismatch with your own
 config is logged.  A `.wav` from anywhere else still plays; it just warns that it
-is being analysed with your settings, which may not be the ones with which it was
+is being analyzed with your settings, which may not be the ones with which it was
 made.
 
 ### Rendering a replay to video
@@ -692,7 +692,7 @@ frames in three are duplicates; they cost almost nothing, and the finer grid is
 what keeps picture and sound together.  Each frame is timed by where playback had
 reached when its pixels were read, which means the analyzer's normal lag is
 preserved rather than quietly corrected - the video shows what the monitor showed,
-not an idealised version of it.
+not an idealized version of it.
 
 The recording's own metadata travels with it: what the event was, which station
 heard it, when, and the calibration behind the numbers.
@@ -718,8 +718,8 @@ terminal.
 
 ### Short or weak recordings may not lock on replay
 
-A replay is analysed exactly as live audio is, so it is subject to the same
-acquisition behaviour - and a short file gives that behaviour very few chances.
+A replay is analyzed exactly as live audio is, so it is subject to the same
+acquisition behavior - and a short file gives that behavior very few chances.
 
 While searching, the analyzer examines one second of audio at a time, once a
 second.  Since the window and the interval are the same length, that is very nearly
@@ -822,7 +822,7 @@ regardless of receiver gain.
 |---|---|
 | **◆ LOCK** (green) | Sweep is synchronized to a live, tracked pulse train. |
 | **◇ HOLD** (amber) | Signal has faded, but the sweep is still synchronized using the last known phase and drift rate.  A returning signal often becomes visible here before the analyzer formally re-locks. |
-| **○ FREE** (grey) | No pulse train to synchronize to.  The sweep free-runs and its horizontal position is arbitrary. |
+| **○ FREE** (gray) | No pulse train to synchronize to.  The sweep free-runs and its horizontal position is arbitrary. |
 | `59.98 Hz` | Measured utility line frequency, derived from how fast the pulse phase is drifting.  Shown only when there is a phase to measure. |
 | `RAW` / `AVG` | Which view is active - see `A` above. |
 | `2.50 ms/div` | Horizontal timebase.  The trace is always three pulse periods wide, so this reads 2.50 ms/div on a 60 Hz grid and 3.00 on a 50 Hz one, whatever the sample rate. |

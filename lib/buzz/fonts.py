@@ -17,7 +17,7 @@ failure announces itself until you look at the output.
 So the font is loaded from a file, into the application's own database, where neither
 the platform nor the machine's installed fonts can affect it.  DejaVu Sans Mono comes
 with matplotlib, which is already a hard dependency, so this adds no asset to ship and
-no licence to think about.  Measured both ways, the same string draws the identical
+no license to think about.  Measured both ways, the same string draws the identical
 number of lit pixels under the native platform and under offscreen.
 """
 

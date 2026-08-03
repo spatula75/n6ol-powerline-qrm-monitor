@@ -3,7 +3,7 @@ Automatic .wav capture of interference events.
 
 EventRecorder watches the analyzer's state machine and writes each event it sees
 to its own file, so an interesting burst can be replayed through buzz.playback
-later - analysed again on the same displays, at real speed, with no receiver
+later - analyzed again on the same displays, at real speed, with no receiver
 attached and no chance of missing it live.
 
 A recording spans more than the event itself:
@@ -199,7 +199,7 @@ class EventRecorder:
         self._pulse_rate       = config.audio.pulse_rate
         self._rf_conversion_db = config.station.audio_rf_conversion_db
         # Both limits in samples, on the audio clock, and both clamped: a nonsensical
-        # setting should degrade to the nearest sensible behaviour rather than into
+        # setting should degrade to the nearest sensible behavior rather than into
         # something surprising.  A negative cap would drive the write position back
         # behind itself and re-read audio already written, so anything at or below
         # zero means uncapped.  A zero timeout would end every recording on the tick

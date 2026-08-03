@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 # The output grid.  Deliberately 30 and not 29.97: a 1001/1000 rational timebase would
 # put every frame time permanently off a round number against an audio timeline
-# measured in exact 48000ths, and the NTSC colour-subcarrier problem that produced
+# measured in exact 48000ths, and the NTSC color-subcarrier problem that produced
 # 29.97 in 1953 is not one this file has.
 FRAME_RATE = 30
 
@@ -159,7 +159,7 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
     # command an operator is meant to be able to paste into a terminal.  0.01 dB is
     # far below anything audible or measurable here.
     # Channel 0 rather than a downmix, so the video's audio is the audio that was
-    # analysed.  ffmpeg reads the recording from disk while the display was drawn from
+    # analyzed.  ffmpeg reads the recording from disk while the display was drawn from
     # channel 0 alone, so without this a stereo source would produce a video whose
     # sound carries both channels beside a picture that measured one -- the same class
     # of quiet mismatch the sample-width check exists to prevent.  A no-op for anything

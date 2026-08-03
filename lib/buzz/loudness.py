@@ -25,7 +25,7 @@ from buzz.ffmpeg import FfmpegError, run
 logger = logging.getLogger(__name__)
 
 # EBU R128's broadcast reference.  Chosen because it is a standard rather than a taste:
-# a demo normalised to it sits at the same loudness as anything else made to R128.
+# a demo normalized to it sits at the same loudness as anything else made to R128.
 TARGET_LUFS = -23.0
 # Ceiling for true peak, in dBTP.  2 dB below full scale leaves room for the
 # overshoot that inter-sample peaks and lossy encoding both produce, so nothing
@@ -61,7 +61,7 @@ def measure(path: Path | str, ffmpeg: str) -> Loudness:
 
     `ebur128` rather than `loudnorm`, although loudnorm prints JSON and would be less
     work to read.  ebur128 is ffmpeg's implementation of the ITU-R BS.1770 standard
-    meter; loudnorm's analysis is tuned for its own normalisation and does not agree
+    meter; loudnorm's analysis is tuned for its own normalization and does not agree
     with it on this material.  Measured across six real recordings:
 
         duration   LRA    ebur128   loudnorm     diff
@@ -95,7 +95,7 @@ def measure(path: Path | str, ffmpeg: str) -> Loudness:
     expressed as a broadcast standard should be measured by the standard's meter.
 
     The whole file is measured, including the lead-in and the trailer.  What is being
-    normalised is the viewer's experience of the video, not the event in isolation --
+    normalized is the viewer's experience of the video, not the event in isolation --
     and R128's own relative gate already discards the quiet passages, so the number
     reflects the part worth hearing without anyone having to trim to it.
 
@@ -108,7 +108,7 @@ def measure(path: Path | str, ffmpeg: str) -> Loudness:
     return _parse(output, path)
 
 
-# ebur128 prints a labelled summary; these pick the three values out of it.  Anchored
+# ebur128 prints a labeled summary; these pick the three values out of it.  Anchored
 # to the line start and to the unit, because "Threshold:" appears twice and "LRA low"
 # and "LRA high" sit directly beneath "LRA".
 _INTEGRATED = re.compile(r'^\s+I:\s+(-?[\d.]+|-inf)\s+LUFS\s*$', re.MULTILINE)
@@ -119,7 +119,7 @@ _RANGE = re.compile(r'^\s+LRA:\s+(-?[\d.]+)\s+LU\s*$', re.MULTILINE)
 def _parse(output: str, path: Path | str) -> Loudness:
     """Read the three numbers out of ebur128's summary.
 
-    ebur128 has no JSON mode, so this is a text parse -- but of a labelled, stable
+    ebur128 has no JSON mode, so this is a text parse -- but of a labeled, stable
     summary rather than of arbitrary output, and it fails loudly with everything
     ffmpeg said if the format ever moves.
     """
@@ -163,7 +163,7 @@ def auto_gain_db(loudness: Loudness, target_lufs: float = TARGET_LUFS,
     quieter than the target, which is the right way round.
 
     A single number, applied as `volume=`, so the waveform is multiplied by a constant
-    and nothing else happens to it.  loudnorm can apply its own normalisation and is
+    and nothing else happens to it.  loudnorm can apply its own normalization and is
     not asked to: it switches to a dynamic mode that varies gain over time, which was
     observed on these very recordings even at a loudness range well inside its
     threshold.  Time-varying gain on a 2.5-6 ms burst train compresses the envelope

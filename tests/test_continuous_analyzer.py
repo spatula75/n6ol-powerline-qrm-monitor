@@ -871,8 +871,8 @@ class TestScanPhaseHysteresis:
 
 class _AlignedStreamPipeline:
     """Reproduces AudioPipeline snapshot semantics over a synthetic stream: the
-    window ends at the chunk-quantised tail, adjusted down to a multiple of
-    `align`.  Honouring `align` is the behaviour under test - with align=1 the
+    window ends at the chunk-quantized tail, adjusted down to a multiple of
+    `align`.  Honouring `align` is the behavior under test - with align=1 the
     window's phase origin moves with the tail and stored phases go stale."""
 
     CHUNK = 512
@@ -975,7 +975,7 @@ class TestPhaseHoldTimeout:
     """SIGNAL_LOST gives up and returns to SEARCHING once the stored phases go stale.
 
     Keeps the state machine and the display in step: trigger_phase() reports HOLD
-    purely on _phases_valid, so an unbounded SIGNAL_LOST would claim a synchronised
+    purely on _phases_valid, so an unbounded SIGNAL_LOST would claim a synchronized
     sweep indefinitely - all night, if the arc quits at dusk.
     """
 
@@ -1063,12 +1063,12 @@ class TestFitDriftRate:
         assert fit_drift_rate(noisy, MIN_FIT) == pytest.approx(9.0, abs=0.35)
 
     def test_beats_the_two_point_slope_it_replaced(self):
-        """Same quantised points, both estimators: the fit must be closer to truth."""
+        """Same quantized points, both estimators: the fit must be closer to truth."""
         true_rate = 9.0
         times = np.arange(10) * 0.6
-        quantised = [(t, float(round(50.0 + true_rate * t))) for t in times]
-        two_point = (quantised[-1][1] - quantised[-2][1]) / (times[-1] - times[-2])
-        fitted = fit_drift_rate(quantised, MIN_FIT)
+        quantized = [(t, float(round(50.0 + true_rate * t))) for t in times]
+        two_point = (quantized[-1][1] - quantized[-2][1]) / (times[-1] - times[-2])
+        fitted = fit_drift_rate(quantized, MIN_FIT)
         assert abs(fitted - true_rate) < abs(two_point - true_rate)
 
 
@@ -1112,7 +1112,7 @@ class TestDriftRateLearning:
         """Both directions, through whole-sample phases.
 
         The old per-refine estimator was bounded by 0.5 / REFINE_INTERVAL ~= 0.83
-        samples/s, because it divided one quantisation error by one interval.  The fit
+        samples/s, because it divided one quantization error by one interval.  The fit
         spans (DRIFT_FIT_POINTS - 1) intervals = 5.4 s, over which a half-sample error
         at each end implies at most 1.0 / 5.4 = 0.185 samples/s.
 
@@ -1255,7 +1255,7 @@ class TestSnapshotPhaseAlignment:
         Mirrors production timing: two _quick_check ticks then a _phase_search per
         REFINE_INTERVAL, with the pipeline advanced ~200 ms of audio each tick.
         With track_drift=False the analyzer never learns a rate, which reproduces
-        the behaviour before drift tracking existed and gives the comparisons below
+        the behavior before drift tracking existed and gives the comparisons below
         a control to measure against.
 
         Returns (analyzer, mean published level per refine cycle).
@@ -1265,7 +1265,7 @@ class TestSnapshotPhaseAlignment:
         if not track_drift:
             # Demand more points than the history can ever hold, so no fit is ever
             # produced and the rate stays at its initial zero - reproducing the
-            # behaviour from before drift tracking existed.
+            # behavior from before drift tracking existed.
             az.DRIFT_FIT_MIN_POINTS = 10 ** 9
         _step(az, az._full_analysis)
         assert az._state == 'LOCKED'

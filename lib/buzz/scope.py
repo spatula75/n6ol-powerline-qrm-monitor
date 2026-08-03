@@ -1,5 +1,5 @@
 """
-Phase-synchronised oscilloscope display for the powerline pulse train.
+Phase-synchronized oscilloscope display for the powerline pulse train.
 
 ScopeWidget draws a repeating sweep of raw audio with the pulse train pinned to
 a fixed horizontal position, so a 120 pps arc renders as a standing wave rather
@@ -37,7 +37,7 @@ its horizontal width is a readout of timing jitter.
 
 ScopeWidget carries `# pragma: no cover` for the same reason the widgets in
 waterfall.py do: it needs a live Qt display.  The sweep extraction, auto-ranging,
-rasterisation and colour maths below it are plain functions with no Qt dependency
+rasterisation and color maths below it are plain functions with no Qt dependency
 and are unit tested in test_scope_math.py.
 """
 
@@ -74,7 +74,7 @@ _TRACE_H = 96
 SCOPE_H = _HEADER_H + _TRACE_H           # 120 px, matching the waterfall panel
 
 _H_DIVISIONS = 10                        # 2.5 ms/div across a 25 ms sweep
-_V_DIVISIONS = 8                         # centre line at division 4
+_V_DIVISIONS = 8                         # center line at division 4
 
 # How far in from the left edge the triggering pulse sits, in divisions.
 #
@@ -131,7 +131,7 @@ _PHOSPHOR_PULSES = 24
 # ---------------------------------------------------------------------------
 
 # Intensity deposited by one sweep.  Below 1.0 so that a single sweep renders as
-# mid-scale on the colour ramp and only agreement between several sweeps drives the
+# mid-scale on the color ramp and only agreement between several sweeps drives the
 # trace to its hot white-green core - which is what makes the core/halo distinction
 # carry information instead of everything saturating on the first sweep.
 _SWEEP_INTENSITY = 0.55
@@ -156,7 +156,7 @@ _PHOSPHOR_DECAY = 0.72
 # changing signal instead of freezing once its bucket fills.
 _AVERAGE_ALPHA = 0.05
 
-# Colour ramp for the phosphor, as (intensity, (R, G, B)) stops.  The blue-green
+# Color ramp for the phosphor, as (intensity, (R, G, B)) stops.  The blue-green
 # cast of a P31-type CRT: a near-black face with a faint teal bias, through the
 # saturated cyan-green of a normally-driven trace, to a white-hot core where many
 # sweeps overlap.
@@ -171,13 +171,13 @@ _PHOSPHOR_STOPS = (
 # Graticule intensities, on the same 0–1 scale as the phosphor, so the etched
 # grid glows like part of the CRT face and any real trace outranks it.
 _GRATICULE_LINE = 0.10
-_GRATICULE_AXIS = 0.17                   # centre horizontal/vertical rules
+_GRATICULE_AXIS = 0.17                   # center horizontal/vertical rules
 
 # ---------------------------------------------------------------------------
 # Auto-ranging vertical scale
 # ---------------------------------------------------------------------------
 #
-# The same problem the waterfall's colour scale has, on the vertical axis: a fixed
+# The same problem the waterfall's color scale has, on the vertical axis: a fixed
 # volts-per-division calibrated once against the station's gain goes stale as soon
 # as the receiver, band, or sound-card setup drifts, and then the trace is either a
 # flat line or permanently slammed into the top and bottom rails.  So the deflection
@@ -202,7 +202,7 @@ _RANGE_EMA_ALPHA = 0.05
 # Smallest full-scale deflection allowed, in raw int16 counts.  This is the vertical
 # analogue of _MIN_DYNAMIC_RANGE_DB, and exists for the same failure mode: with a
 # truly silent input the percentile collapses toward zero and the auto-range
-# would stretch quantisation dither across the entire screen, painting a dead
+# would stretch quantization dither across the entire screen, painting a dead
 # channel as a healthy full-amplitude noise trace.  32 counts is about -60 dBFS.
 _MIN_FULL_SCALE = 32.0
 # Initial guess, used only until the EMA has real data to converge from.
@@ -213,7 +213,7 @@ _INITIAL_FULL_SCALE = 2048.0
 _CLIP_COUNTS = 32000
 
 # ---------------------------------------------------------------------------
-# Status bar colours, by trigger sync state
+# Status bar colors, by trigger sync state
 # ---------------------------------------------------------------------------
 
 _SYNC_STYLE = {
@@ -433,7 +433,7 @@ def trace_rows(values: np.ndarray, full_scale: float, height: int,
                bipolar: bool = True) -> np.ndarray:
     """Map sample values to row indices, 0 = top of the trace area.
 
-    Bipolar values are centred on the middle row and deflect either way, which is
+    Bipolar values are centered on the middle row and deflect either way, which is
     how the raw audio is drawn.  Unipolar values (a rectified envelope) run from the
     bottom edge upward instead, because a rectified signal has a hard floor at zero
     and centring it would waste the lower half of the screen on territory it can
@@ -467,13 +467,13 @@ def accumulate_trace(phosphor: np.ndarray, rows: np.ndarray, intensity: float) -
     most of the screen.
 
     JIT-compiled, because this is the display's hot path: it runs once per sweep,
-    about fifty times a second.  The obvious vectorised alternative - mark the span
+    about fifty times a second.  The obvious vectorized alternative - mark the span
     ends in a difference array and cumulative-sum down each column - is what this
     replaced, and it was 40x slower.  Not because the arithmetic was worse, but
     because it allocated a (height+1, width) float32 temporary every call (a quarter
     of a megabyte, fifty times a second) and then integrated all of it, whether a
     given cell needed touching or not.  Measured on a 96x640 buffer with five sweeps
-    per frame: 2088 us per frame vectorised, 50 us here, output identical to within
+    per frame: 2088 us per frame vectorized, 50 us here, output identical to within
     float32 rounding.  That is 1.8% of a core given back, continuously, on a monitor
     designed to run for months at a time.
 
@@ -502,7 +502,7 @@ def build_graticule(height: int, width: int) -> np.ndarray:
         grid[:, round(i * width / _H_DIVISIONS)] = _GRATICULE_LINE
     for i in range(1, _V_DIVISIONS):
         grid[round(i * height / _V_DIVISIONS), :] = _GRATICULE_LINE
-    # Centre rules brighter.  Both division counts are even, so these sit exactly on
+    # Center rules brighter.  Both division counts are even, so these sit exactly on
     # an existing grid line and overwrite it rather than adding a neighbouring one.
     grid[:, round(width / 2)] = _GRATICULE_AXIS
     grid[round(height / 2), :] = _GRATICULE_AXIS
@@ -549,7 +549,7 @@ def update_running_average(average: np.ndarray | None, sweeps: np.ndarray,
 # ---------------------------------------------------------------------------
 
 class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
-    """Phase-synchronised sweep of the pulse train, with CRT phosphor persistence.
+    """Phase-synchronized sweep of the pulse train, with CRT phosphor persistence.
 
     Two modes, toggled by toggle_mode():
 
@@ -616,7 +616,7 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
             # Aligned on the phase period, which is the interval the analyzer's phases
             # are reduced by and the only one after which the grid repeats exactly.
             align=self._geometry.phase_period).astype(np.float32)
-        # The sound card's DC offset would sit the whole trace off the centre line and,
+        # The sound card's DC offset would sit the whole trace off the center line and,
         # in averaging mode, add a constant pedestal to the rectified envelope.  The
         # median rather than the mean, because the pulses themselves would drag a mean
         # (see ContinuousAnalyzer._capture).  No EMA smoothing is needed at this window
@@ -654,7 +654,7 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
         accumulate_trace(buffer, rows, intensity)
 
     def _intensity_field(self) -> np.ndarray:
-        """The 0-1 intensity image to colour-map, graticule composited underneath."""
+        """The 0-1 intensity image to color-map, graticule composited underneath."""
         if self._averaging:
             field = np.zeros((_TRACE_H, self._width), dtype=np.float32)
             if self._average is not None:

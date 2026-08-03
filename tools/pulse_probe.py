@@ -81,7 +81,7 @@ def fold_pulses(rectified: np.ndarray, sample_rate: int, pulse_rate: int,
     reinforce instead of blurring.
 
     Returns (profile, n_pulses).  The profile spans half_width samples either side
-    of each pulse position, so index half_width is the nominal pulse centre.
+    of each pulse position, so index half_width is the nominal pulse center.
     """
     samples_per_pulse = sample_rate / pulse_rate
     max_pulses = int((len(rectified) - 2 * half_width) / samples_per_pulse) - 1
@@ -89,14 +89,14 @@ def fold_pulses(rectified: np.ndarray, sample_rate: int, pulse_rate: int,
         return np.zeros(2 * half_width + 1), 0
 
     pulse_index = np.arange(max_pulses)
-    centres = (np.round(pulse_index * samples_per_pulse).astype(np.int64)
+    centers = (np.round(pulse_index * samples_per_pulse).astype(np.int64)
                + np.round(drift_rate * pulse_index / pulse_rate).astype(np.int64))
-    centres = centres[(centres - half_width >= 0) & (centres + half_width < len(rectified))]
-    if len(centres) == 0:
+    centers = centers[(centers - half_width >= 0) & (centers + half_width < len(rectified))]
+    if len(centers) == 0:
         return np.zeros(2 * half_width + 1), 0
 
     window = np.arange(-half_width, half_width + 1)
-    return rectified[centres[:, None] + window[None, :]].mean(axis=0), len(centres)
+    return rectified[centers[:, None] + window[None, :]].mean(axis=0), len(centers)
 
 
 def profile_sharpness(profile: np.ndarray) -> float:

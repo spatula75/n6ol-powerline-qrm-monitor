@@ -3,7 +3,7 @@ Plot generation for daily noise traces and time-of-day probability summaries.
 
 Plotter.generate_graph_from_csv() renders a daily signal-vs-noise-floor line chart
 from a CSV file.  Plotter.generate_summary_graph() renders a bar chart showing the
-normalised probability of interference at each 15-minute interval of the day,
+normalized probability of interference at each 15-minute interval of the day,
 aggregated across a configurable date range.
 
 All output is saved as PNG.  The _gc_guarded decorator does two things: forces a
@@ -64,7 +64,7 @@ _M_RIGHT  = 24
 _M_TOP    = 43
 _M_BOTTOM = 66   # room for x-axis label + tick labels
 
-# Summary-bar intensity thresholds (normalized 0–100) and their colours.
+# Summary-bar intensity thresholds (normalized 0–100) and their colors.
 # Shared by _bar_color and the summary graph's legend so the two can't drift apart.
 _PCT_MAX      = 100
 _PCT_HIGH     = 92
@@ -77,7 +77,7 @@ _COLOR_ELEVATED = 'lightcoral'
 def _bar_color(val: int) -> str:
     """Map a normalized 0–100 bar value to a matplotlib color string.
 
-    Values above _PCT_ELEVATED use the fixed threshold colours; at or below it,
+    Values above _PCT_ELEVATED use the fixed threshold colors; at or below it,
     a gradient from skyblue (#87ceeb) at the threshold fading to near-white
     (#fefefe) at val=0.
     """
@@ -232,7 +232,7 @@ class Plotter:
 
     def _style_dual_axes(self, axes: Axes, noise_twin: Axes,
                          plot_signal: Line2D, plot_noise: Line2D) -> None:
-        """Label the shared x/y axes, colour each y-axis to match its trace, and
+        """Label the shared x/y axes, color each y-axis to match its trace, and
         hide the twin axis's own tick labels since it shares its scale with the
         primary axis.
         """
@@ -304,8 +304,8 @@ class Plotter:
 
     def _summary_bar_data(self, start_date: datetime, end_date: datetime
                           ) -> tuple[list[datetime], list[int], list[str]] | None:
-        """Aggregate scores into 15-minute buckets across the date range, normalise
-        to the peak bucket (= 100%), and pick each bar's colour by intensity.
+        """Aggregate scores into 15-minute buckets across the date range, normalize
+        to the peak bucket (= 100%), and pick each bar's color by intensity.
 
         Deciding whether there is anything to draw happens here, before the caller
         creates a figure, so a no-data result can't leak an unclosed figure.
@@ -333,7 +333,7 @@ class Plotter:
         """Render a time-of-day interference probability bar chart and save it as a PNG.
 
         Aggregates scores from all CSV files between start_date and now, buckets them
-        into 15-minute intervals, normalises to the peak bucket (= 100%), and colours
+        into 15-minute intervals, normalises to the peak bucket (= 100%), and colors
         each bar by intensity.  Returns early without writing output if there is no
         data in the date range.
         """

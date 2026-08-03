@@ -8,7 +8,7 @@ MainWindow composes both widgets side-by-side and handles clean shutdown.
 
 These three classes carry `# pragma: no cover`: they need a live Qt display to
 exercise, which the test suite doesn't have.  Everything else in this module -
-the colour math, percentile logic, and meter-aggregation helpers the widgets
+the color math, percentile logic, and meter-aggregation helpers the widgets
 call into - is plain functions with no Qt dependency, and is unit tested in
 test_waterfall_math.py.  Keeping the exclusion at the class level rather than
 omitting the whole file from coverage.run means that testable code actually
@@ -66,7 +66,7 @@ _N_ROWS = 48                                # history rows (~4.8 s at 100 ms/fra
 _PIXELS_PER_ROW = 2                         # vertical scale; _WINDOW_H is derived from this
 _UPDATE_MS = 100
 # Initial guess for the floor-to-ceiling span (8 S-units), used only until the
-# colour scale has real data to auto-range from - see _update_color_range().
+# color scale has real data to auto-range from - see _update_color_range().
 _DB_RANGE = 48.0
 _AXIS_H = 24                                # pixels reserved for frequency axis / header
 
@@ -91,7 +91,7 @@ _WINDOW_SECONDS = 512 / 16000
 # spectrum up to 4 kHz with nothing to spare.  Below that the top of the display would
 # be above Nyquist; see config.MIN_SAMPLE_RATE.
 DISPLAY_BINS = round(_MAX_HZ * _WINDOW_SECONDS)   # 128
-# How much of each FFT frame is re-analysed in the next one.  Hann tapers to zero at
+# How much of each FFT frame is re-analyzed in the next one.  Hann tapers to zero at
 # both edges, so without overlap an impulse's contribution depends entirely on where
 # it happens to fall: a third of arrival positions are attenuated by more than 12 dB,
 # on a display whose whole subject is a 120 pps impulse train.
@@ -122,7 +122,7 @@ class SpectrumGeometry:
     hz_per_bin: float
     hann: np.ndarray
     # FFT magnitude corresponding to 0 dBFS: a full-scale (amplitude 32768) sinusoid
-    # centred on a bin peaks at 32768 × N/4.  The /4 is two factors of 1/2: the Hann
+    # centered on a bin peaks at 32768 × N/4.  The /4 is two factors of 1/2: the Hann
     # window attenuates the average sample to half (its coherent gain, sum(w)/N = 1/2),
     # and a real sinusoid's FFT splits its magnitude equally between the +f and −f bins.
     db_ref: float
@@ -164,13 +164,13 @@ def spectrum_geometry(sample_rate: int) -> SpectrumGeometry:
     )
 
 # ---------------------------------------------------------------------------
-# Auto-ranging colour scale
+# Auto-ranging color scale
 # ---------------------------------------------------------------------------
 #
 # A fixed dB range calibrated once against the station config goes stale the
 # moment receiver gain, band conditions, or the sound card setup drift from
 # whatever they were when it was set - and then the whole picture floods into
-# one colour with no contrast, because nothing in the live signal maps near
+# one color with no contrast, because nothing in the live signal maps near
 # the black end any more.  So instead the floor and ceiling are read off the
 # spectrum history itself, continuously, and drift with actual conditions.
 
@@ -180,10 +180,10 @@ def spectrum_geometry(sample_rate: int) -> SpectrumGeometry:
 _COLOR_FLOOR_PERCENTILE = 10
 # "Generally loud": the top 2% of what's currently on screen.
 _COLOR_CEILING_PERCENTILE = 98
-# Fraction of the colour scale reserved above the ceiling percentile.  The
+# Fraction of the color scale reserved above the ceiling percentile.  The
 # ceiling percentile is mapped to (1 - _COLOR_HEADROOM) rather than 1.0, so a
 # transient louder than anything in the recent window still has room to render
-# visibly hotter than the routine "loud" colour, instead of every merely-strong
+# visibly hotter than the routine "loud" color, instead of every merely-strong
 # reading clipping to solid red and looking identical to a real spike.  At the
 # colormap's cutover points (see build_colormap), 1 - 0.10 = 0.90 falls on
 # orange rather than red, which is exactly the point.
@@ -193,7 +193,7 @@ _COLOR_HEADROOM = 0.10
 #
 # Auto-ranging has a failure mode when there's nothing going on: floor and
 # ceiling both track down together, and whatever residual scatter is left in
-# the noise gets stretched across the *entire* colour range, painting routine
+# the noise gets stretched across the *entire* color range, painting routine
 # statistical wobble as yellow/orange "activity".  Measured directly: folding
 # pure Gaussian noise through _mean_spectrum_db with no signal at all still
 # produces about 5.4 dB of p10-to-p98 spread, consistently, regardless of
@@ -303,7 +303,7 @@ _SMOOTH_N        = 5                      # recent results averaged for meter di
 # for a standard push button and no taller - the displays are the point of the
 # window, and the bar is deliberately the least interesting thing in it.
 # The window's own background, which is only ever seen in the gaps between panels.
-# Matches the toolbar strip so the whole window is one colour behind its contents.
+# Matches the toolbar strip so the whole window is one color behind its contents.
 _WINDOW_BG   = '#141414'
 _BAR_H       = 28
 _BAR_BG      = '#141414'                  # slightly darker than the panels below it
@@ -487,9 +487,9 @@ def _color_scale_range(floor: float, ceiling: float, headroom: float) -> float:
     """dB span such that `ceiling` maps to (1 - headroom) rather than 1.0.
 
     Callers use the result as: t = clip((value - floor) / range, 0, 1), then index
-    the colour map with t.  Reserving `headroom` above the ceiling is what leaves
+    the color map with t.  Reserving `headroom` above the ceiling is what leaves
     room for a spike louder than anything in the recent window to still read as
-    hotter than the routine "loud" colour - see _COLOR_HEADROOM.
+    hotter than the routine "loud" color - see _COLOR_HEADROOM.
 
     The span is floored at _MIN_DYNAMIC_RANGE_DB so a truly quiet window can't
     collapse the range down to whatever residual noise-estimator scatter is left in
@@ -543,7 +543,7 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         self._geometry = spectrum_geometry(sample_rate)
         self._hz_per_bin = self._geometry.hz_per_bin
         self._display_bins = self._geometry.display_bins
-        # First guess for the colour floor, from the station's configured
+        # First guess for the color floor, from the station's configured
         # calibration.  It only has to hold up for the first couple of seconds -
         # _update_color_range() replaces it with the real, live level once actual
         # data starts arriving.
@@ -564,7 +564,7 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
                                  ceil(self._geometry.window / _BUFFER_CHUNK))
         self._last_total_samples = 0
         self._history_db = np.full((_N_ROWS, self._display_bins), floor_seed, dtype=np.float32)
-        # Smoothed colour floor/ceiling that paintEvent renders with; see
+        # Smoothed color floor/ceiling that paintEvent renders with; see
         # _update_color_range(), which is what actually keeps these current.
         self._color_floor = floor_seed
         self._color_ceiling = floor_seed + _DB_RANGE
@@ -616,7 +616,7 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         painter.setFont(display_font(8))
         bin_px = w / self._display_bins
         # Ticks at round frequencies, placed at whichever bin is nearest - rather than
-        # at every Nth bin, labelled with that bin's own centre frequency.  A bin is
+        # at every Nth bin, labeled with that bin's own center frequency.  A bin is
         # only 31.25 Hz wide at 16 kHz because the rate divides neatly; at 11025 it is
         # 31.232 Hz, so every sixteenth bin fell at 499.7, 999.4, 1499.2 and the axis
         # read "499 Hz  999 Hz  1499 Hz".  The tick moves by under half a bin - less
@@ -625,7 +625,7 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         # Stop short of the last bin: a tick placed there sits at x == width, which puts
         # its line on the edge and its label wholly outside the widget.  The bound is
         # the frequency at which the rounding above would first reach that bin, half a
-        # bin below its centre - so at every supported rate the axis ends at 3500 rather
+        # bin below its center - so at every supported rate the axis ends at 3500 rather
         # than drawing a 4000 nobody can see.
         last_placeable_hz = (self._display_bins - 0.5) * self._hz_per_bin
         for step in range(ceil(last_placeable_hz / _FREQ_LABEL_HZ)):
@@ -707,7 +707,7 @@ class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt displ
         # the noise and signal phases are searched (and can drift) independently -
         # see ContinuousAnalyzer._phase_search().  Range: ±PHASE_SEARCH_RADIUS
         # (10 samples) each.  0 → one-pixel dot at center.
-        grey       = QColor(160, 160, 160)
+        gray       = QColor(160, 160, 160)
         half_w     = _BAR_W // 2
         max_corr   = ContinuousAnalyzer.PHASE_SEARCH_RADIUS
         line_y     = _CORR_TOP + _CORR_H // 2
@@ -715,8 +715,8 @@ class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt displ
             self._analyzer.latest_noise_correction(), half_w, max_corr)
         signal_px, signal_offset = _correction_offset(
             self._analyzer.latest_signal_correction(), half_w, max_corr)
-        painter.fillRect(nf_x + half_w + noise_offset, line_y, noise_px, 1, grey)
-        painter.fillRect(sig_x + half_w + signal_offset, line_y, signal_px, 1, grey)
+        painter.fillRect(nf_x + half_w + noise_offset, line_y, noise_px, 1, gray)
+        painter.fillRect(sig_x + half_w + signal_offset, line_y, signal_px, 1, gray)
 
         # Integer layout: anchor each bar from the bottom so the leftover pixels
         # from the integer gap division fall above the top bar, not below S1.
@@ -782,7 +782,7 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
         self._analyzer = analyzer
         self.setFixedHeight(_BAR_H)
         # A plain QWidget draws its palette background and ignores the stylesheet's,
-        # which would leave the strip in the desktop's default grey with only the
+        # which would leave the strip in the desktop's default gray with only the
         # button and label dark.
         self.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         # The same face the panels below are drawn in.  A stylesheet that sets a size
@@ -956,7 +956,7 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
 
         container = QWidget()
         # The gaps between panels are this widget showing through, and without an
-        # explicit colour they are whatever the platform's palette happens to be:
+        # explicit color they are whatever the platform's palette happens to be:
         # measured at (30,30,30) under a dark Windows theme and (239,239,239) under
         # Qt's offscreen platform, which has no desktop theme to read.  So the same
         # recording rendered windowed and headless came out with dark and near-white
@@ -1010,7 +1010,7 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         """A toggles the scope's display mode; R records; Space and M drive playback.
 
         Space matters more than it looks during a screen recording: pausing on an
-        interesting moment without the mouse travelling across the captured window
+        interesting moment without the mouse traveling across the captured window
         keeps the recording about the signal rather than about the cursor.
 
         A key whose subject this run does not have reaches Qt rather than stopping
@@ -1080,7 +1080,7 @@ class DisplayRecorder(QObject):  # pragma: no cover -- requires a live Qt displa
     Each capture is stamped with where playback had reached, and the two are read
     together on purpose.  The display is always showing analysis of audio slightly
     past, and reading position alongside the pixels carries that lag into the file
-    unchanged, so the video matches the program rather than an idealised version of
+    unchanged, so the video matches the program rather than an idealized version of
     it.  Correcting the lag would mean measuring it and subtracting, which is work
     nobody asked for and would make the render stop being a record of what happened.
     """

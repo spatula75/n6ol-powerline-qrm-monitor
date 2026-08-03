@@ -5,7 +5,7 @@ FilePlaybackPipeline fills the same ring buffer AudioPipeline does, from a threa
 that feeds chunks at the file's own sample rate instead of a PortAudio callback.
 Everything downstream - analyzer, scope, waterfall, meters - is unchanged and
 cannot tell the difference, which is the point: an event captured by the recorder
-can be replayed later and analysed exactly as it was live, with the display
+can be replayed later and analyzed exactly as it was live, with the display
 running at real speed for a screen recording.
 
 No input device is opened, so a recording can be reviewed on a machine with no
@@ -86,13 +86,13 @@ def load_wav(path: Path | str) -> tuple[np.ndarray, int]:
         sample_rate = wav.getframerate()
         if channels > 1:
             # Said out loud rather than left to the docstring.  A file from somebody
-            # else is quite likely to be stereo, and "we analysed half of what you
+            # else is quite likely to be stereo, and "we analyzed half of what you
             # sent" is not something anyone should have to infer from a number that
             # came out lower than expected.  Channel 0 rather than a downmix, matching
             # what the live pipeline does with a stereo input device -- mixing would
             # average the arc against whatever the other channel happens to hold.
             logger.warning(
-                '%s has %d channels; analysing channel 0 only, not a downmix: the '
+                '%s has %d channels; analyzing channel 0 only, not a downmix: the '
                 'same thing the live monitor does with a stereo input. Extract another '
                 'channel to mono first if the interference is not on this one.',
                 Path(path).name, channels)
@@ -162,7 +162,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
         self._chunks = len(self._samples) // self.CHUNK_SIZE
         self._chunk_period = self.CHUNK_SIZE / self.sample_rate
         # What will actually be played, rather than what the file holds, so that the
-        # transport's time index can reach its own total.  position is quantised to
+        # transport's time index can reach its own total.  position is quantized to
         # whole chunks, so measuring it against the file's full length would leave a
         # finished replay reading 00:39 / 00:40 for the sake of the dropped fraction.
         self.duration = self._chunks * self._chunk_period
@@ -253,7 +253,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
 
         Only records the wish.  The feeder thread is the one that opens and closes
         the stream, because it is also the one writing to it, and closing a stream
-        from another thread while a write is in flight is undefined behaviour in
+        from another thread while a write is in flight is undefined behavior in
         PortAudio.  Takes effect within one chunk.
 
         Unmuting clears a previous failure to open the device, so asking again after
@@ -299,7 +299,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
         Without that guard the space bar can pause a replay that has already ended -
         leaving the transport paused at a position it cannot be resumed from, since
         resume() rightly refuses there, and disagreeing with a Play button that is
-        greyed out for exactly this reason.  Restart is the way back from the end.
+        grayed out for exactly this reason.  Restart is the way back from the end.
         """
         if self.finished:
             return
@@ -339,7 +339,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
     def _can_open_output(self) -> bool:
         """Whether this machine could play the file, asked once at startup.
 
-        Only so the toolbar can grey its mute button out with a reason, rather than
+        Only so the toolbar can gray its mute button out with a reason, rather than
         offering a control that silently does nothing.
         """
         try:
@@ -492,7 +492,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
         # Only once the feeder has actually stopped.  The join above has a timeout,
         # and a feeder still blocked inside write() on a device that stopped draining
         # - one unplugged mid-replay - would outlive it; closing the stream from
-        # under that write is the undefined behaviour the rest of this class takes
+        # under that write is the undefined behavior the rest of this class takes
         # care to avoid.  Leaking a stream on a device that is already misbehaving is
         # the better of the two outcomes, and the process is on its way out anyway.
         if self._output is not None and not self._thread.is_alive():
