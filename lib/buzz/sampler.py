@@ -29,11 +29,12 @@ logger = logging.getLogger(__name__)
 
 # Ring buffer capacity, in seconds of audio rather than in samples.
 #
-# 9.6 s is exactly what 300 chunks of 512 came to at 16 kHz, so nothing changes at the
-# rate this program records at.  Expressing it as a duration is what makes it mean the
-# same thing at any other rate: a fixed sample count held 9.6 s at 16 kHz but only 3.5 s
-# at 44.1 kHz, silently shrinking both the analyzer's history and the lead-in an event
-# recording opens with, in proportion to a setting nobody would connect to either.
+# 9.6 s is exactly what 300 chunks of 512 came to at 16 kHz, so nothing changes at
+# the rate this program records at.  Expressing it as a duration is what makes it
+# mean the same thing at any other rate.  A fixed sample count held 9.6 s at 16 kHz
+# but only 3.5 s at 44.1 kHz, silently shrinking both the analyzer's history and the
+# lead-in an event recording opens with, in proportion to a setting nobody would
+# connect to either.
 #
 # Ample headroom for the continuous analyzer's 1 s aligned windows and the waterfall's
 # per-frame reads, and it doubles as the lead-in an event recording opens with.
@@ -128,7 +129,7 @@ class RingBufferPipeline:
         window's phase origin moves with the tail (512-sample chunks are not a
         whole number of pulse periods), silently invalidating stored phases.
 
-        Caller should ensure wait_for_data(n_samples + align) has returned True.
+        The caller should ensure wait_for_data(n_samples + align) has returned True.
         """
         n_chunks = ceil((n_samples + align - 1) / self.CHUNK_SIZE)
         with self._condition:
@@ -281,8 +282,8 @@ class AudioPipeline(RingBufferPipeline):
         def _callback(indata: np.ndarray, frames: int,
                       time: object, status: sd.CallbackFlags) -> None:
             if status:
-                # PortAudio reports every input fault through `status`, and they are
-                # all handled the same way because the recovery is the same.  On a
+                # PortAudio reports every input fault through `status`, and all of
+                # them get the same handling, because the recovery is the same.  On a
                 # capture stream it is in practice an overflow: the device captured
                 # faster than this callback collected, and the driver discarded the
                 # difference.
@@ -298,11 +299,12 @@ class AudioPipeline(RingBufferPipeline):
                 # The grid frequency is therefore the reading to distrust, not the
                 # levels.
                 #
-                # Logged rather than raised.  This monitor runs unattended all day, and
-                # losing every later measurement to protect one polluted minute is the
-                # wrong trade; every other failure here degrades and carries on for the
-                # same reason.  The analyzer recovers by itself: a phase that stops
-                # making sense drops it to SEARCHING and it re-acquires.
+                # This is logged rather than raised.  The monitor runs unattended all
+                # day, and losing every later measurement to protect one polluted
+                # minute is the wrong trade; every other failure here degrades and
+                # carries on for the same reason.  The analyzer recovers on its own: a
+                # phase that stops making sense drops it to SEARCHING and it
+                # re-acquires.
                 dropped = self._dropouts.record(monotonic())
                 if dropped is not None:
                     logger.warning(
@@ -336,8 +338,9 @@ class AudioSampler:
     def __init__(self, config: BuzzConfig) -> None:
         """Resolve the PortAudio device to record from and start the pipeline.
 
-        Always resolves the device by name, not by the stored index.  PortAudio
-        device indices are reassigned by Windows on every reboot; the name is stable.
+        This always resolves the device by name, not by the stored index.
+        PortAudio device indices are reassigned by Windows on every reboot; the name
+        is stable.
         """
         self._config = config
         device = sd.query_devices(config.audio.input_device_name, 'input')
@@ -364,10 +367,11 @@ class AudioSampler:
 class LevelStream:
     """Persistent input stream for real-time level monitoring.
 
-    Uses a PortAudio callback rather than blocking read() because DirectSound on
-    Windows does not support PortAudio's blocking I/O reliably.  The callback fires
-    whenever the hardware delivers a new buffer; read() blocks on a threading.Event
-    until that happens, then returns immediately with the latest dBm level.
+    This uses a PortAudio callback rather than blocking read(), because DirectSound
+    on Windows does not support PortAudio's blocking I/O reliably.  The callback
+    fires whenever the hardware delivers a new buffer; read() blocks on a
+    threading.Event until that happens, then returns immediately with the latest
+    dBm level.
 
     The sound card's DC offset is removed before rectification, using the same
     EMA-smoothed median estimate the analyzer applies (see ContinuousAnalyzer._capture

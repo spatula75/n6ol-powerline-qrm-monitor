@@ -4,9 +4,9 @@ that each result actually holds a picture and a sound - not merely a
 well-formed container.
 
 Run this as part of preparing a release (see CONTRIBUTING.md's release
-procedure). It is deliberately not wired into CI: CI has no live radio and
+procedure). It is deliberately not wired into CI. CI has no live radio and
 cannot produce a recording that means anything, so this stays a manual,
-hands-on check like the release procedure's other verification against real
+hands-on check, like the release procedure's other verification against real
 hardware.
 
 Usage:
@@ -21,7 +21,7 @@ What "recent" is for
 The point of this check is confidence about what the current build does with a
 real capture, not with an arbitrary one. A recording from months ago says
 nothing about whether today's receiver, band conditions, or config still
-produce something the renderer handles correctly - and its mere existence begs
+produce something the renderer handles correctly. Its mere existence also begs
 the question of whether the monitor has actually been recording lately at all,
 which is itself worth knowing before a release goes out. So rather than pick
 silently, this asks the release engineer when nothing recent enough is on hand,
@@ -38,10 +38,10 @@ plausibly arrives at. Not every rate in the band: it is a continuous range of
 40,001 of them, and the ends are where a rate-dependent bug shows up first.
 Each variant is rendered exactly as --render does it, and the result is
 checked four ways, all via ffmpeg/ffprobe filters rather than pixel-by-pixel
-inspection - cursory, deliberately: this catches "nothing was painted" and
+inspection. This is deliberately cursory: it catches "nothing was painted" and
 "the render silently produced a blank or frozen file", not "the waterfall is a
-pixel off". Seeing the picture is right still wants a person watching a real
-render; see CLAUDE.md's "Don't overdrive your headlights".
+pixel off". Confirming the picture is right still needs a person watching a
+real render; see CLAUDE.md's "Don't overdrive your headlights".
 
   1. blackdetect  - flags a sustained black frame: a blank or frozen render.
   2. volumedetect - flags a silent or near-silent audio track.
@@ -83,38 +83,38 @@ from buzz.ffmpeg import FfmpegError, find_ffmpeg, run  # noqa: E402
 _FOREIGN_RATES = (8000, 11025, 22050, 44100)
 
 # What actually gets rendered: the foreign rates bracketed by the two ends of the
-# band validate_sample_rate admits.  The ends are the point of the exercise -- a
+# band validate_sample_rate admits. The ends are the point of the exercise. A
 # rate-dependent bug surfaces at a boundary long before it surfaces in the middle,
 # and MAX_SAMPLE_RATE is where the fixed-size ring buffer holds the least history.
-# Derived from the constants rather than written out as 8000 and 48000, so moving
-# the admitted band moves what gets checked instead of quietly leaving the new
-# boundary untested; tests/test_release_render_check.py pins that coupling.
+# This is derived from the constants rather than written out as 8000 and 48000, so
+# moving the admitted band moves what gets checked instead of quietly leaving the
+# new boundary untested. tests/test_release_render_check.py pins that coupling.
 #
-# MIN_SAMPLE_RATE currently repeats 8000 from the foreign rates.  Left as it is:
-# make_rate_variants dedupes through a set anyway, the same way it does for a
-# recording whose own rate is already in the list, and trimming the overlap by hand
-# would break the one useful property each tuple has -- that _FOREIGN_RATES still
+# MIN_SAMPLE_RATE currently repeats 8000 from the foreign rates. This is left as it
+# is: make_rate_variants dedupes through a set anyway, the same way it does for a
+# recording whose own rate is already in the list. Trimming the overlap by hand
+# would break the one useful property each tuple has: that _FOREIGN_RATES still
 # names exactly what the integration test names, and this one still says the band
 # ends are covered without the reader checking whether they happen to be listed.
 _RATES_UNDER_TEST = (MIN_SAMPLE_RATE, *_FOREIGN_RATES, MAX_SAMPLE_RATE)
 
 _DEFAULT_MAX_AGE_DAYS = 7.0
 _DEFAULT_CLIP_SECONDS = 16.0
-# Near-silence threshold for volumedetect's mean_volume, in dB.  Well below any
-# recorded event -- these average around -30 dB in practice -- so this only
+# Near-silence threshold for volumedetect's mean_volume, in dB. Well below any
+# recorded event - these average around -30 dB in practice - so this only
 # flags a track that is effectively dead, not merely a quiet one.
 _SILENCE_FLOOR_DB = -60.0
 # Minimum acceptable spread in per-frame mean luma (signalstats YAVG) across a
-# whole clip.  A real render's waterfall, scope, and meter bars all move over
-# 16 s; anything under this is a static or duplicated picture.
+# whole clip. A real render's waterfall, scope, and meter bars all move over
+# 16 s, so anything under this is a static or duplicated picture.
 #
-# Range and not standard deviation, though the standard deviation is reported
-# beside it.  A low stddev with an acceptable range means the variation is
+# This checks range and not standard deviation, though the standard deviation is
+# reported beside it. A low stddev with an acceptable range means the variation is
 # concentrated in a few frames, which sounds like the frozen-picture case and is
 # also what a legitimate capture of a band that stays quiet until a burst arrives
-# late in the clip looks like.  Nothing here can tell those apart, and there is no
+# late in the clip looks like. Nothing here can tell those apart, and there is no
 # measured baseline to set a floor from that would not also flag the second, so
-# the figure is printed for the person reading the report to judge rather than
+# the figure is printed for the person reading the report to judge, rather than
 # turned into a threshold that fails good renders.
 _MIN_LUMA_RANGE = 0.5
 
@@ -152,11 +152,11 @@ def resolve_source(directory: Path, max_age_days: float, explicit: Path | None) 
 
     An explicit path always wins, matching --audio-rf-conversion-db and the rest of
     this program's convention that something named on the command line beats
-    anything guessed from the filesystem.  Otherwise the newest recording is used if
-    it is fresh enough; if not, the release engineer is asked rather than the check
+    anything guessed from the filesystem. Otherwise this uses the newest recording
+    if it is fresh enough. If not, it asks the release engineer rather than
     proceeding silently against a recording that may no longer represent anything.
 
-    Returns None if the operator chooses to abort - the caller should exit without
+    Returns None if the operator chooses to abort. The caller should exit without
     rendering anything in that case.
     """
     if explicit is not None:
@@ -206,9 +206,9 @@ def make_rate_variants(source: Path, clip_seconds: float, output_dir: Path,
     """Trim `source` to `clip_seconds` and resample it to every rate under test.
 
     The recording's own rate is included, trimmed but not resampled, alongside the
-    rates under test - a regression that only shows up at the native rate would
-    otherwise go unchecked.  Every output stays RIFF/WAVE PCM: this feeds
-    --playback next, which only reads .wav.
+    rates under test, so a regression that only shows up at the native rate does
+    not go unchecked. Every output stays RIFF/WAVE PCM: this feeds --playback next,
+    which only reads .wav.
     """
     rates = sorted({native_sample_rate(source), *_RATES_UNDER_TEST})
     variants = {}
@@ -228,7 +228,7 @@ class RenderAttempt:
     """What came of running --render on one variant, and where it left its evidence.
 
     The log path travels with the mp4 rather than being rebuilt from the same naming
-    rule by whoever wants it next: two places constructing it independently is how
+    rule by whoever wants it next. Two places constructing it independently is how
     the frame-count check would come to read a file that is never there and report
     nothing wrong about it.
     """
@@ -239,14 +239,14 @@ class RenderAttempt:
     error: str = ''
 
 
-# How long to allow a render, given the clip it is rendering.  A render plays the clip
-# through in real time - that is what --playback does - so its duration tracks
-# --clip-seconds directly rather than being some fixed cost, and a timeout that does not
-# move with it turns a longer clip into five identical "did not finish" failures whose
-# cause is the flag the operator just changed.  The allowance covers what does not scale
-# (interpreter start, numba compiling the DSP kernels, Qt bringing up an offscreen
-# surface, ffmpeg opening its encoder); the factor covers a machine rendering slower
-# than real time under load.
+# How long to allow a render, given the clip it is rendering. A render plays the
+# clip through in real time - that is what --playback does - so its duration
+# tracks --clip-seconds directly rather than being some fixed cost. A timeout that
+# does not move with it would turn a longer clip into five identical "did not
+# finish" failures whose cause is the flag the operator just changed. The allowance
+# covers what does not scale (interpreter start, numba compiling the DSP kernels,
+# Qt bringing up an offscreen surface, ffmpeg opening its encoder); the factor
+# covers a machine rendering slower than real time under load.
 _RENDER_STARTUP_ALLOWANCE_SECONDS = 60.0
 _RENDER_SLOWDOWN_FACTOR = 2.0
 
@@ -263,8 +263,8 @@ def render_variant(wav_path: Path, output_dir: Path,
                    timeout: float = _DEFAULT_RENDER_TIMEOUT) -> RenderAttempt:
     """Run --render on `wav_path` exactly as an operator would, headless.
 
-    Not wrapped in buzz.ffmpeg.run: this shells out to `python -m buzz.main`, a
-    second process of this program, not to ffmpeg directly.
+    This is not wrapped in buzz.ffmpeg.run: it shells out to `python -m buzz.main`,
+    a second process of this program, not to ffmpeg directly.
     """
     mp4 = output_dir / f'{wav_path.stem}.mp4'
     log = output_dir / f'{wav_path.stem}.log'
@@ -288,10 +288,11 @@ def render_variant(wav_path: Path, output_dir: Path,
 def logged_frame_count(log_path: Path) -> int | None:
     """The frame count buzz.render itself reported, parsed back out of its log.
 
-    None means the line was not there.  After a render that succeeded that is itself
-    a finding rather than a shrug: finish() logs it on every completed render, so its
-    absence means the wording moved, the log went somewhere else, or the render did
-    not finish the way its exit code claimed.  flags_for() treats it as one.
+    None means the line was not there. After a render that succeeded, that is
+    itself a finding rather than a shrug: finish() logs it on every completed
+    render, so its absence means the wording moved, the log went somewhere else, or
+    the render did not finish the way its exit code claimed. flags_for() treats it
+    as one.
     """
     if not log_path.exists():
         return None
@@ -337,12 +338,12 @@ def audio_levels(mp4: Path, ffmpeg: str) -> tuple[float | None, float | None]:
 def decoded_frame_count(mp4: Path, ffprobe: str) -> int | None:
     """How many video frames the file really decodes to, or None if that cannot be read.
 
-    None is returned rather than raised because the inputs that break this are exactly
-    the ones this tool exists to catch: ffprobe exits non-zero on a container it cannot
-    parse, and prints nothing (or 'N/A') for one carrying no decodable video stream.
-    Letting either escape would end the run in a traceback on the worst render instead
-    of reporting it, and would take the other rates down with it.  flags_for() turns
-    the None into a finding.
+    This returns None rather than raising, because the inputs that break it are
+    exactly the ones this tool exists to catch: ffprobe exits non-zero on a
+    container it cannot parse, and prints nothing (or 'N/A') for one carrying no
+    decodable video stream. Letting either escape would end the run in a traceback
+    on the worst render instead of reporting it, and would take the other rates
+    down with it. flags_for() turns the None into a finding.
     """
     try:
         output = subprocess.run(
@@ -386,10 +387,10 @@ def flags_for(black_segments: int, mean_db: float | None, frames_logged: int | N
               frames_decoded: int | None, luma_lo: float, luma_hi: float) -> list[str]:
     """Which of the four content checks this render fails, in order of severity.
 
-    Only ever called for a render that succeeded, which is why a missing
+    This is only ever called for a render that succeeded, which is why a missing
     `frames_logged` is a flag rather than a check quietly skipped: see
-    logged_frame_count().  A missing `frames_decoded` is a flag for the same reason
-    and a louder one - ffprobe declining to count a file that --render claimed to
+    logged_frame_count(). A missing `frames_decoded` is a flag for the same reason,
+    and a louder one: ffprobe declining to count a file that --render claimed to
     write successfully is a finding about the file, not about ffprobe.
     """
     flags = []
@@ -445,11 +446,12 @@ def _report_cells(check: RenderCheck) -> list[str]:
     rate = f'{check.rate} Hz'
     if not check.render_ok:
         return [rate, f'FAILED: {check.render_error}']
-    # '?' rather than a number wherever a probe came back with nothing.  audio_levels()
-    # returns None for a track it could not measure and flags_for() is careful to treat
-    # that as unknown rather than as silence, so this has to render it as something -
-    # formatting None as a float raises, and the report is the last thing standing
-    # between an unmeasurable render and a release engineer who thinks it passed.
+    # '?' rather than a number wherever a probe came back with nothing. audio_levels()
+    # returns None for a track it could not measure, and flags_for() is careful to
+    # treat that as unknown rather than as silence, so this has to render it as
+    # something: formatting None as a float raises, and the report is the last thing
+    # standing between an unmeasurable render and a release engineer who thinks it
+    # passed.
     logged = check.frames_logged if check.frames_logged is not None else '?'
     decoded = check.frames_decoded if check.frames_decoded is not None else '?'
     mean = f'{check.mean_db:.1f}' if check.mean_db is not None else '?'
@@ -537,7 +539,7 @@ def main() -> int:
         return 1
     except (wave.Error, OSError) as exc:
         # native_sample_rate() reads the source's own header before anything is
-        # resampled.  A file that is not RIFF/WAVE at all reaches here, which is what
+        # resampled. A file that is not RIFF/WAVE at all reaches here, which is what
         # --source pointing at an .mp3 or a truncated capture looks like.
         print(f'{source} could not be read as a .wav: {exc}. This check needs the '
               'recordings the monitor itself writes, which are RIFF/WAVE PCM.')
