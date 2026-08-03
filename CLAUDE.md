@@ -687,6 +687,30 @@ disagreed with the ones already here, the disagreement was settled deliberately 
 than by whichever file was read last, and `docs/ste-writing.md` records which won and
 why. Its self-lint list is the thing to run over any prose before returning it.
 
+**Verifying a wording-only pass.** A rewrite that touches every docstring and comment
+in a file is exactly the kind of change that is easy to get subtly wrong - a dropped
+number, a fact that quietly changed, a paren that landed in the wrong place and broke
+the code underneath it. Prove it did not, the same way every time, before committing:
+
+1. **AST-diff with docstrings zeroed.** Parse the file before and after with `ast`,
+   blank out every module/class/function docstring (`ast.get_docstring(node,
+   clean=False)`, then null the string), and compare `ast.dump()` of the two trees.
+   Identical means every line of code is provably unchanged; comments are not part of
+   the AST at all, so read the diff by eye to confirm those too.
+2. **A figure-preservation scan.** Regex out every `dB`, `Hz`, `ms`, `%`, sample count,
+   and similar quantity from the prose on both sides and diff the two as multisets.
+   Nothing dropped, added, or changed, or the diff says exactly what moved.
+3. **`ruff check .` and the full suite with coverage,** as before every commit.
+4. For Markdown, where there is no AST, check structure instead: heading count, table
+   row count, code-fence count, and line count identical, plus the same figure scan.
+
+One case the AST diff will correctly flag: a user-facing string in a `raise` or a
+`logger.*` call is code, not a docstring, so tightening its wording (dropping a
+semicolon banned in strict mode, say) shows up as a real AST difference. That is not a
+false alarm - confirm by hand that only wording moved, no interpolated value or
+control flow, and say so in the commit message. `buzz.config.validate_sample_rate`
+and `Publisher.scp_to_server`'s failure log are worked examples.
+
 **Banned words and punctuation.** These are assistant tells rather than house voice, and
 they are banned outright in files and comments:
 
