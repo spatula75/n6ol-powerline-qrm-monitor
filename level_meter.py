@@ -2,7 +2,7 @@
 Real-time RF level meter for calibrating receiver gain settings.
 
 Continuously reads from the configured audio input via a persistent stream and
-displays a live text S-meter.  Use this to match your radio's S-meter reading
+displays a live text S-meter. Use this to match your radio's S-meter reading
 against what the monitor will report before starting a monitoring run.
 
 Usage:

@@ -2,8 +2,8 @@
 Audio device configuration tool.
 
 Lists all available input devices with a live amplitude level bar so you can
-identify which device is connected to your radio.  Saves your selection -
-along with the full configuration - to ~/.buzz/config.toml.
+identify which device is connected to your radio. Saves your selection,
+along with the full configuration, to ~/.buzz/config.toml.
 
 Usage:
     python configure.py
@@ -29,9 +29,9 @@ from buzz.config import (
 )
 from buzz.device_setup import select_device
 
-# Every section BuzzConfig is composed of.  Named because the alternative is a
+# Every section BuzzConfig is composed of. Named because the alternative is a
 # six-way union inline, and because a section added to BuzzConfig has to be added
-# here and to the table main() writes -- omitting it from that table is the bug
+# here and to the table main() writes. Omitting it from that table is the bug
 # that silently reverted [recording] and [render] on every save.
 _Section = AudioConfig | StationConfig | WeatherConfig | ServerConfig | RecordingConfig | RenderConfig
 
@@ -45,7 +45,7 @@ def main() -> None:
 
     Loads the existing config (or defaults), displays a table of available input
     devices with live amplitude bars, prompts for a selection, then writes the full
-    config - with the new input_device_name - back to ~/.buzz/config.toml.
+    config, with the new input_device_name, back to ~/.buzz/config.toml.
     """
     config = BuzzConfig.from_toml() if CONFIG_PATH.exists() else BuzzConfig()
 

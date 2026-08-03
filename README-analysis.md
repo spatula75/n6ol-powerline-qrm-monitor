@@ -27,9 +27,9 @@ component mixed in.
 
 Finding phases initially uses FFT cross-correlation against a pulse-train
 kernel. The kernel must be a palindrome so that `fftconvolve` (convolution)
-gives the same result as cross-correlation; this requires placing kernel
+gives the same result as cross-correlation. This requires placing kernel
 coefficients at `int(i × spp)` positions. Amplitude averaging at those stored
-phases uses `round(i × spp)` instead - this halves the maximum per-pulse
+phases uses `round(i × spp)` instead. That halves the maximum per-pulse
 positional error from ⅔ to ⅓ of a sample and removes the systematic bias
 toward the early side of each pulse. The two rounding schemes coexist because
 the palindrome property only holds with truncation.
@@ -62,7 +62,7 @@ We know where the signal is. Every 200 ms `_quick_check()` measures the
 amplitude at both stored phases using a direct Numba amplitude average - fast
 enough to run continuously without noticeable CPU load. SNR is allowed to drop
 below 2 dB for up to three consecutive checks before declaring signal loss.
-A single noisy frame doesn't cause a state change; three consecutive failures
+A single noisy frame doesn't cause a state change. Three consecutive failures
 are required.
 
 Every 0.6 seconds `_phase_search()` runs to correct for mains frequency
@@ -85,7 +85,7 @@ scan.
 The hysteresis gap between those thresholds prevents a signal right at the
 margin from flipping back and forth. While LOCKED, `_phase_search()` updates
 the phases at the lower 2 dB bar - the same bar `_quick_check()` holds lock
-at - so a weak signal that can keep its lock can also follow drift; requiring
+at - so a weak signal that can keep its lock can also follow drift. Requiring
 6 dB to re-point would strand signals in the 2–6 dB band at a stale phase.
 
 ### SIGNAL_LOST
@@ -141,11 +141,11 @@ even if Tier 3a's threshold is too conservative to fire on a weak signal.
 | `LOSE_LOCK_COUNT` | 3 | Consecutive failures before SIGNAL_LOST |
 | `FAST_TICK_INTERVAL` | 0.2 s | Tick cadence in LOCKED and SIGNAL_LOST |
 | `REFINE_INTERVAL` | 0.6 s | Phase-search refinement cadence while LOCKED |
-| `SEARCH_INTERVAL` | 1 s | Full-FFT cadence in SEARCHING; narrow-scan cadence in SIGNAL_LOST |
+| `SEARCH_INTERVAL` | 1 s | Full-FFT cadence in SEARCHING, narrow-scan cadence in SIGNAL_LOST |
 | `PHASE_SEARCH_RADIUS` | 10 samples | Scan radius for Tier 2 in each direction |
 | `PHASE_MOVE_MARGIN` | ×1.05 | Amplitude ratio a challenger phase must beat the incumbent by |
 | `FAST_SCAN_INTERVAL` | 5 s | Tier 3a cadence in SIGNAL_LOST |
 | `FAST_SCAN_PULSES` | 15 | Pulses in the short Tier 3a kernel |
 | `FAST_SCAN_SAMPLES` | 4000 | Audio window for Tier 3a (~0.25 s at 16 kHz) |
-| `FAST_SCAN_SNR` | 4 dB | Tier 3a hit threshold; triggers Tier 3b |
+| `FAST_SCAN_SNR` | 4 dB | Tier 3a hit threshold, triggers Tier 3b |
 | `SIGNAL_LOST_REFINE` | 120 s | Unconditional Tier 3b in SIGNAL_LOST |
