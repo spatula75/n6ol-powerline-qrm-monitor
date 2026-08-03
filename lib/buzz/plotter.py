@@ -2,15 +2,15 @@
 Plot generation for daily noise traces and time-of-day probability summaries.
 
 Plotter.generate_graph_from_csv() renders a daily signal-vs-noise-floor line chart
-from a CSV file.  Plotter.generate_summary_graph() renders a bar chart showing the
+from a CSV file. Plotter.generate_summary_graph() renders a bar chart showing the
 normalized probability of interference at each 15-minute interval of the day,
 aggregated across a configurable date range.
 
-All output is saved as PNG.  The _gc_guarded decorator does two things: forces a
-gc.collect() after each render (working around a matplotlib memory-leak bug that
-causes handles to accumulate across repeated savefig calls), and disables the
-cyclic GC for the duration of the render itself (working around a PySide6/shiboken
-crash - see the decorator's docstring for the full story).
+All output is saved as PNG. The _gc_guarded decorator does two things. It forces a
+gc.collect() after each render. That works around a matplotlib memory-leak bug that
+causes handles to accumulate across repeated savefig calls. It also disables the
+cyclic GC for the duration of the render itself, working around a PySide6/shiboken
+crash - see the decorator's docstring for the full story.
 """
 
 import gc  # noqa: I001
@@ -35,12 +35,12 @@ from buzz.config import BuzzConfig
 from buzz.constants import S9_DBM
 from buzz.csv_store import BUCKET_MINUTES, CsvStore
 
-# One day's values for a single trace.  A plain list as read from the CSV, and a NumPy
+# One day's values for a single trace. A plain list as read from the CSV, and a NumPy
 # array once _smooth() has run over it, so anything holding a series has to accept both.
 Series = list[float] | np.ndarray
 
 # _gc_guarded wraps plot methods without changing their signatures, so it is generic
-# over the function it decorates.  Callable[..., Any] would compile but erase the
+# over the function it decorates. Callable[..., Any] would compile but erase the
 # argument types of every method it is applied to.
 _P = ParamSpec('_P')
 _R = TypeVar('_R')
@@ -64,7 +64,7 @@ _M_RIGHT  = 24
 _M_TOP    = 43
 _M_BOTTOM = 66   # room for x-axis label + tick labels
 
-# Summary-bar intensity thresholds (normalized 0–100) and their colors.
+# Summary-bar intensity thresholds (normalized 0-100) and their colors.
 # Shared by _bar_color and the summary graph's legend so the two can't drift apart.
 _PCT_MAX      = 100
 _PCT_HIGH     = 92
@@ -75,10 +75,10 @@ _COLOR_ELEVATED = 'lightcoral'
 
 
 def _bar_color(val: int) -> str:
-    """Map a normalized 0–100 bar value to a matplotlib color string.
+    """Map a normalized 0-100 bar value to a matplotlib color string.
 
-    Values above _PCT_ELEVATED use the fixed threshold colors; at or below it,
-    a gradient from skyblue (#87ceeb) at the threshold fading to near-white
+    Values above _PCT_ELEVATED use the fixed threshold colors. At or below it, this
+    uses a gradient from skyblue (#87ceeb) at the threshold, fading to near-white
     (#fefefe) at val=0.
     """
     if val == _PCT_MAX:
@@ -95,9 +95,9 @@ def _bar_color(val: int) -> str:
 
 
 def _smooth(data: list[float], points: int) -> np.ndarray:
-    """Simple moving average of the given window length; output is shorter by points-1.
+    """Simple moving average of the given window length. Output is shorter by points-1.
 
-    Uses the cumulative-sum trick: the difference between cumsum values `points`
+    This uses the cumulative-sum trick: the difference between cumsum values `points`
     apart is the sum of each sliding window, computed in O(n) instead of O(n·points).
     """
     ret = np.cumsum(data, dtype=float)
@@ -109,40 +109,39 @@ def _gc_guarded(func: Callable[_P, _R]) -> Callable[_P, _R]:
     # ------------------------------------------------------------------------
     # WHY THIS DECORATOR DISABLES THE GC DURING THE CALL - READ BEFORE REMOVING
     #
-    # We have hit a real, reproducible crash in production: a Windows access
-    # violation (0xC0000005) that took the whole process down. faulthandler
-    # caught it and the traceback showed the collector thread mid-gc.collect(),
-    # inside matplotlib's Artist.set() -> cbook.normalize_kwargs(), which had
-    # called into shibokensupport/signature/loader.py - that's PySide6/shiboken
-    # internals, not matplotlib's.
+    # This has hit a reproducible crash in production: a Windows access violation
+    # (0xC0000005) that took the whole process down. faulthandler caught it, and
+    # the traceback showed the collector thread mid-gc.collect(), inside
+    # matplotlib's Artist.set() -> cbook.normalize_kwargs(), which had called into
+    # shibokensupport/signature/loader.py - that is PySide6/shiboken internals, not
+    # matplotlib's.
     #
-    # The mechanism: importing PySide6 anywhere in the process (this app does,
-    # for the GUI waterfall window) makes shiboken globally replace
-    # builtins.__import__ for every thread, not just the Qt thread. That hook
-    # supports a Qt-for-Python feature (__feature__ snake_case/true_property)
-    # this codebase never uses, but it installs unconditionally regardless.
-    # When matplotlib's kwarg-normalization internals do an import in the
-    # course of rendering - on this, the collector thread, which has nothing
-    # to do with Qt - it gets routed through that hook. Qt for Python has a
-    # documented history of reference-counting bugs in this exact module
-    # (see PYSIDE-2660, "Crash on deallocating None triggered via Shiboken" -
-    # fixed for that specific repro, but the crash we hit is a new one on a
-    # newer Python/PySide6 combination). Our crash happened when the cyclic GC
+    # The mechanism: importing PySide6 anywhere in the process (this app does, for
+    # the GUI waterfall window) makes shiboken globally replace builtins.__import__
+    # for every thread, not just the Qt thread. That hook supports a Qt-for-Python
+    # feature (__feature__ snake_case/true_property) this codebase never uses, but
+    # it installs unconditionally regardless. When matplotlib's kwarg-normalization
+    # internals do an import in the course of rendering, on this collector thread,
+    # which has nothing to do with Qt, the import gets routed through that hook.
+    # Qt for Python has a documented history of reference-counting bugs in this
+    # exact module (see PYSIDE-2660, "Crash on deallocating None triggered via
+    # Shiboken", fixed for that specific repro, but the crash here is a new one on
+    # a newer Python/PySide6 combination). The crash happened when the cyclic GC
     # ran *while* that hook's C-level bookkeeping was mid-flight, and walked a
     # corrupted object graph.
     #
-    # A threading.Lock cannot fix this: shiboken's internals don't know our
-    # lock exists and have no reason to respect it, and the PySIDE-2660 repro
-    # crashed with no second thread involved at all, so this isn't purely a
-    # race we could serialize away. The one thing that actually protects every
-    # thread - ours and Qt's - is disabling the GC itself for the narrow
-    # window where matplotlib is exercising this code path, since gc.disable()
-    # is a single interpreter-wide switch with authority over all of them.
+    # A threading.Lock cannot fix this: shiboken's internals don't know this lock
+    # exists and have no reason to respect it. The PySIDE-2660 repro also crashed
+    # with no second thread involved at all, so this is not purely a race that
+    # could be serialized away. The one thing that actually protects every thread,
+    # this program's and Qt's, is disabling the GC itself for the narrow window
+    # where matplotlib is exercising this code path, since gc.disable() is a
+    # single interpreter-wide switch with authority over all of them.
     # ------------------------------------------------------------------------
     # The gc.collect() afterward is unrelated: a workaround for a separate
     # matplotlib memory leak (https://github.com/matplotlib/matplotlib/issues/27713)
     # that causes handles to accumulate across repeated savefig calls. It runs
-    # after re-enabling GC, once we're past the risky window.
+    # after re-enabling GC, once the render is past the risky window.
     @wraps(func)
     def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
         was_enabled = gc.isenabled()
@@ -201,15 +200,16 @@ class Plotter:
                             title=title)
 
     def _daily_chart_y_bounds(self, series: '_DailySeries') -> tuple[float, float]:
-        """Y-axis (dBm) bounds that fit the signal and noise traces, always including
-        the configured audio-level anchor so a quiet or flat trace still gets a
-        sensible scale.
+        """Y-axis (dBm) bounds that fit the signal and noise traces.
 
-        1.33 is a margin factor: since dBm values are negative, multiplying the
-        most-negative value by 1.33 pushes the lower axis edge further down,
-        while dividing the least-negative value by 1.33 pushes the upper edge
-        further up - both moving away from the data, which is what keeps
-        reference lines (noise floor, threshold, S9) off the plot borders.
+        This always includes the configured audio-level anchor, so a quiet or flat
+        trace still gets a sensible scale.
+
+        1.33 is a margin factor. Since dBm values are negative, multiplying the
+        most-negative value by 1.33 pushes the lower axis edge further down, while
+        dividing the least-negative value by 1.33 pushes the upper edge further up.
+        Both moves go away from the data, which is what keeps reference lines
+        (noise floor, threshold, S9) off the plot borders.
         """
         station = self._config.station
         anchor = _AXIS_ANCHOR_DBFS + station.audio_rf_conversion_db
@@ -219,7 +219,7 @@ class Plotter:
 
     def _draw_reference_lines(self, axes: Axes) -> list[Line2D]:
         """Draw the S9, detection-threshold, and typical-noise-floor reference
-        lines on the daily chart, returning their handles for the legend.
+        lines on the daily chart, and return their handles for the legend.
         """
         station = self._config.station
         plot_s9 = axes.axhline(y=S9_DBM, color='tan', linestyle='dashed',
@@ -232,9 +232,10 @@ class Plotter:
 
     def _style_dual_axes(self, axes: Axes, noise_twin: Axes,
                          plot_signal: Line2D, plot_noise: Line2D) -> None:
-        """Label the shared x/y axes, color each y-axis to match its trace, and
-        hide the twin axis's own tick labels since it shares its scale with the
-        primary axis.
+        """Label the shared x/y axes, and color each y-axis to match its trace.
+
+        This also hides the twin axis's own tick labels, since it shares its scale
+        with the primary axis.
         """
         axes.set_xlabel('Time')
         axes.set_ylabel('dBm')
@@ -250,13 +251,13 @@ class Plotter:
     def generate_graph_from_csv(self, input_filename: Path | str, output_filename: Path | str, smooth: int = 0) -> None:
         """Render a daily noise trace and save it as a PNG.
 
-        Reads signal and noise floor values from input_filename and plots them on a
-        shared y-axis (dBm) against time-of-day.  Reference lines are drawn for S9,
-        the detection threshold, and the typical noise floor.
+        This reads signal and noise floor values from input_filename and plots them
+        on a shared y-axis (dBm) against time-of-day. Reference lines are drawn for
+        S9, the detection threshold, and the typical noise floor.
 
         If smooth > 0, a simple moving average of that many points is applied before
-        plotting.  Returns early without writing output if the file has too few rows
-        for the requested smoothing window.
+        plotting. This returns early without writing output if the file has too few
+        rows for the requested smoothing window.
         """
         station = self._config.station
         audio = self._config.audio
@@ -284,8 +285,8 @@ class Plotter:
             # zorder makes green paint on top there, so an unlocked stretch reads as a
             # single clean green trace instead of a gap. NaN-masking red instead used
             # to fragment it into dozens of disconnected dashes whenever lock flickered
-            # on and off for a minute or two - worse than useless once smoothed, since
-            # the moving average blended real signal readings with unlocked rows'
+            # on and off for a minute or two. That was worse than useless once smoothed,
+            # since the moving average blended real signal readings with unlocked rows'
             # noise-floor stand-in before the mask was even applied.
             plot_signal, = axes.plot(series.timestamps, series.signals, 'r-',
                                      label=f'{audio.pulse_rate}pps dBm', zorder=2)
@@ -304,8 +305,10 @@ class Plotter:
 
     def _summary_bar_data(self, start_date: datetime, end_date: datetime
                           ) -> tuple[list[datetime], list[int], list[str]] | None:
-        """Aggregate scores into 15-minute buckets across the date range, normalize
-        to the peak bucket (= 100%), and pick each bar's color by intensity.
+        """Aggregate scores into 15-minute buckets across the date range.
+
+        This normalizes to the peak bucket (= 100%), and picks each bar's color by
+        intensity.
 
         Deciding whether there is anything to draw happens here, before the caller
         creates a figure, so a no-data result can't leak an unclosed figure.
@@ -332,10 +335,10 @@ class Plotter:
     def generate_summary_graph(self, output_filename: Path | str, start_date: datetime) -> None:
         """Render a time-of-day interference probability bar chart and save it as a PNG.
 
-        Aggregates scores from all CSV files between start_date and now, buckets them
-        into 15-minute intervals, normalises to the peak bucket (= 100%), and colors
-        each bar by intensity.  Returns early without writing output if there is no
-        data in the date range.
+        This aggregates scores from all CSV files between start_date and now, buckets
+        them into 15-minute intervals, normalizes to the peak bucket (= 100%), and
+        colors each bar by intensity. It returns early without writing output if
+        there is no data in the date range.
         """
         station = self._config.station
         audio = self._config.audio
