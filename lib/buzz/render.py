@@ -1,22 +1,23 @@
 """Render a playback session to an .mp4 file, through ffmpeg.
 
-Only reached when `--render` is passed.  Nothing here is imported otherwise and the
-ffmpeg binary is never looked for, so a monitor that never renders cannot fail - or
-even complain - about a program it was never going to run.  The same reasoning as the
-recorder's, which creates its directory when recording is armed rather than at
+This only runs when `--render` is passed.  Nothing here is imported otherwise, and
+the ffmpeg binary is never looked for, so a monitor that never renders cannot fail,
+or even complain, about a program it was never going to run.  The same reasoning as
+the recorder's, which creates its directory when recording is armed rather than at
 startup.
 
-ffmpeg is driven as a subprocess rather than through a wrapper package.  There is one
-command line here, of fixed shape, and a literal argument list can be logged and
-pasted straight into a terminal when a render comes out wrong - which is worth more
-than any ergonomics a builder API offers.  It also keeps the whole feature free of
-install-time weight: `subprocess` and `shutil` are the standard library, so a user
-who does not render adds nothing to their environment.
+ffmpeg is driven as a subprocess rather than through a wrapper package.  There is
+one command line here, of fixed shape, and a literal argument list can be logged
+and pasted straight into a terminal when a render comes out wrong, which is worth
+more than any ergonomics a builder API offers.  It also keeps the whole feature
+free of install-time weight: `subprocess` and `shutil` are the standard library, so
+a user who does not render adds nothing to their environment.
 
-Only the video is piped.  The audio ffmpeg needs is already a file on disk - the .wav
-being replayed - so it is passed as a second input and laid on its own timeline.  That
-removes the audio path from the sync problem altogether: there is no second stream to
-keep aligned, only frames to place correctly against a clock that is already right.
+Only the video is piped.  The audio ffmpeg needs is already a file on disk, the
+.wav being replayed, so it is passed as a second input and laid on its own
+timeline.  That removes the audio path from the sync problem altogether: there is
+no second stream to keep aligned, only frames to place correctly against a clock
+that is already right.
 """
 
 import logging
@@ -72,13 +73,14 @@ def rendered_comment(source: Path, gain_db: float) -> str | None:
     """The recording's settings line with the gain this render applied added to it.
 
     A demo raised by 20-odd dB should say so.  The comment already carries the
-    calibration the numbers were measured against, and someone shown the video has no
-    other way to know the audio is not at the level it was recorded at.
+    calibration the numbers were measured against, and someone shown the video has
+    no other way to know the audio is not at the level it was recorded at.
 
-    Round-tripped through wavmeta's own parse and format rather than string-appended,
-    so the line keeps the shape everything else reads it with.  Returns None when the
-    recording has no settings to extend -- one made by other software, or by a version
-    that predates them -- and the caller then leaves the copied tags alone.
+    This round-trips through wavmeta's own parse and format rather than
+    string-appending, so the line keeps the shape everything else reads it with.  It
+    returns None when the recording has no settings to extend, such as one made by
+    other software, or by a version that predates them, and the caller then leaves
+    the copied tags alone.
     """
     try:
         settings = wavmeta.read_settings(source)
@@ -111,10 +113,11 @@ def refuse_existing_output(output: Path) -> None:
 def _source_channels(source: Path) -> int:
     """How many channels the recording has, for the audio filter and the layout.
 
-    Read straight from the header rather than asked of ffmpeg: it is one small read
-    and it happens before the encoder is started.  An unreadable file falls back to
-    mono, which is what this program records and the safe assumption -- the caller is
-    about to open the same file for playback and will report the real problem.
+    This reads straight from the header rather than asking ffmpeg: it is one small
+    read and it happens before the encoder is started.  An unreadable file falls
+    back to mono, which is what this program records and the safe assumption, since
+    the caller is about to open the same file for playback and will report the real
+    problem.
     """
     try:
         with wave.open(str(source), 'rb') as handle:
@@ -146,13 +149,14 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
       the file appearing in between.
 
     Nothing pads the frame to an even size, which yuv420p needs, because nothing can
-    arrive odd: the only rate-dependent term in the window is the waterfall's width,
-    and the FFT window is a fixed span of time, so the bin count is 4000 Hz x 32 ms =
-    128 at every rate config.validate_sample_rate admits.  The window is therefore
-    734x248 always.  This did once vary -- a fixed 512-sample window gave 185 bins at
-    11025 Hz and a 1019 px window that x264 refused outright -- and the integration
-    tier renders at four rates and asserts both dimensions, so a layout change that
-    brought it back would fail there rather than here.
+    arrive odd.  The only rate-dependent term in the window is the waterfall's
+    width, and the FFT window is a fixed span of time, so the bin count is
+    4000 Hz x 32 ms = 128 at every rate config.validate_sample_rate admits.  The
+    window is therefore 734x248 always.  This did once vary: a fixed 512-sample
+    window gave 185 bins at 11025 Hz and a 1019 px window that x264 refused
+    outright.  The integration tier renders at four rates and asserts both
+    dimensions, so a layout change that brought that back would fail there rather
+    than here.
     """
     # Two decimals rather than repr: a measured gain is a float like
     # 18.990000000000002, and that appears both in the filter argument and in the logged
@@ -160,7 +164,7 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
     # far below anything audible or measurable here.
     # Channel 0 rather than a downmix, so the video's audio is the audio that was
     # analyzed.  ffmpeg reads the recording from disk while the display was drawn from
-    # channel 0 alone, so without this a stereo source would produce a video whose
+    # channel 0 alone.  Without this a stereo source would produce a video whose
     # sound carries both channels beside a picture that measured one -- the same class
     # of quiet mismatch the sample-width check exists to prevent.  A no-op for anything
     # this program recorded, which is always mono.
@@ -193,7 +197,7 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
         # rendered file arrives at whoever is shown it with no idea what it is.
         '-map_metadata', '1',
         # ...but not its chapters.  buzz.wavmeta marks the moment of lock with a `cue`
-        # chunk, ffmpeg reads that as a chapter, and the mp4 muxer writes chapters as
+        # chunk, and ffmpeg reads that as a chapter.  The mp4 muxer writes chapters as
         # a *track* -- so a single marker became a third stream of type bin_data
         # sitting alongside the video and audio.  The lock offset is already in the
         # comment tag as lead_in_seconds, so nothing is lost by dropping it.
@@ -212,22 +216,22 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
 def _nearest_slot(seconds: float, frame_rate: int) -> int:
     """Which grid slot a moment belongs to: nearest, and not banker's rounding.
 
-    Truncating instead would be the obvious thing and is wrong twice over.  It biases
-    every frame early by half a slot on average - a systematic 17 ms of video leading
-    audio, which is precisely the kind of constant offset this design went to trouble
-    to avoid - and it is at the mercy of binary representation.  Most decimal
-    fractions, chunk_period among them, have no exact binary form, so a position that
-    is mathematically a whole number of slots can land a hair under one: a playback
-    position of 32.8 s (chunk 1025 of the 16 kHz default) times 30 comes out
-    983.9999999999999 rather than 984, and truncates to 983, dropping a frame from a
-    perfectly ordinary position - not a contrived one, just an unlucky one.  Nearest
-    halves the worst-case error to half a slot, leaves it unbiased, and is immune to
-    this failure specifically: adding 0.5 before flooring clears a near-miss like
-    this one by a wide margin.
+    Truncating instead would be the obvious thing and is wrong twice over.  It
+    biases every frame early by half a slot on average, a systematic 17 ms of video
+    leading audio, which is precisely the kind of constant offset this design went
+    to trouble to avoid.  It is also at the mercy of binary representation.  Most
+    decimal fractions, chunk_period among them, have no exact binary form.  A
+    position that is mathematically a whole number of slots can therefore land a
+    hair under one: a playback position of 32.8 s (chunk 1025 of the 16 kHz
+    default) times 30 comes out 983.9999999999999 rather than 984, and truncates
+    to 983, dropping a frame from a perfectly ordinary position, not a contrived
+    one, just an unlucky one.  Nearest halves the worst-case error to half a slot,
+    leaves it unbiased, and is immune to this failure specifically: adding 0.5
+    before flooring clears a near-miss like this one by a wide margin.
 
-    `floor(x + 0.5)` rather than `round()` because round() rounds half to even, so
-    round(0.5) is 0 and round(1.5) is 2 - the same reason the analyzer avoids it when
-    staying in phase.
+    This uses `floor(x + 0.5)` rather than `round()`, because round() rounds half to
+    even, so round(0.5) is 0 and round(1.5) is 2 - the same reason the analyzer
+    avoids it when staying in phase.
     """
     return math.floor(seconds * frame_rate + 0.5)
 
@@ -236,10 +240,10 @@ class _FrameGrid:
     """Places captured frames onto the constant-rate output grid.
 
     The display paints when its timer fires, which is neither exactly 10 fps nor
-    aligned to anything; the file needs frames at exact multiples of 1/30 s.  Something
-    has to reconcile the two, and doing it here rather than handing ffmpeg timestamped
-    frames keeps the arithmetic somewhere it can be read and tested - rawvideo over a
-    pipe has no timestamps to hand it anyway.
+    aligned to anything, but the file needs frames at exact multiples of 1/30 s.
+    Something has to reconcile the two, and doing it here rather than handing
+    ffmpeg timestamped frames keeps the arithmetic somewhere it can be read and
+    tested - rawvideo over a pipe has no timestamps to hand it anyway.
 
     The rule is that a frame captured at audio position `t` shows what was on screen
     up to `t`, so every grid slot before `t` is filled with the frame *before* it.  A
@@ -278,9 +282,10 @@ class _FrameGrid:
         The last captured frame is held for whatever is left.  Without this the video
         stops at the final capture and ends slightly short of its own audio.
 
-        Consumes rather than reports, exactly as slots_before() does - the count is
-        being written by the caller, so the grid has to know it has been.  Leaving
-        `filled` behind here would understate the finished file by its whole tail.
+        This consumes rather than reports, exactly as slots_before() does: the count
+        is being written by the caller, so the grid has to know it has been.
+        Leaving `filled` behind here would understate the finished file by its
+        whole tail.
         """
         target = _nearest_slot(duration, self._frame_rate)
         if target <= self._filled:
@@ -359,7 +364,7 @@ class RenderSession:
             # can hold the event loop for over a second -- and the choice there is
             # between a still opening frame and a video that begins late while its
             # audio begins on time.  Silently losing the first second and desynching
-            # everything after it is the worse of the two, and it is exactly what
+            # everything after it is the worse of the two.  It is exactly what
             # happened before this existed.
             self._previous = pixels
         self._write(self._grid.slots_before(position))
@@ -368,9 +373,9 @@ class RenderSession:
     def finish(self, duration: float) -> None:
         """Hold the last frame out to `duration`, then close the pipe and wait.
 
-        Waits for ffmpeg rather than abandoning it: the moov atom is written at the
-        end, and +faststart then rewrites the file to move it to the front, so a
-        process killed here leaves an .mp4 that no player will open.
+        This waits for ffmpeg rather than abandoning it: the moov atom is written
+        at the end, and +faststart then rewrites the file to move it to the front,
+        so a process killed here leaves an .mp4 that no player will open.
         """
         if self._process is None:
             return
@@ -394,15 +399,15 @@ class RenderSession:
     def abort(self) -> None:
         """Give up on the render, leaving no ffmpeg behind.  Idempotent, never raises.
 
-        finish() is the orderly close and reports what ffmpeg made of it.  This is for
-        the path where a frame could not be captured at all: the render is already
-        lost, so there is nothing left to report, and the only thing still worth doing
-        is not walking away from a subprocess holding an open pipe.  Python does not
-        reap children at exit, so without this an abandoned ffmpeg outlives the monitor
-        and goes on writing a file nobody wants.
+        finish() is the orderly close and reports what ffmpeg made of it.  This is
+        for the path where a frame could not be captured at all: the render is
+        already lost, so there is nothing left to report, and the only thing still
+        worth doing is not walking away from a subprocess holding an open pipe.
+        Python does not reap children at exit, so without this an abandoned ffmpeg
+        outlives the monitor and goes on writing a file nobody wants.
 
-        The .mp4 it leaves has no moov atom and will not open.  That is expected - the
-        caller's message already says the partial file should be deleted.
+        The .mp4 it leaves has no moov atom and will not open.  That is expected -
+        the caller's message already says the partial file should be deleted.
         """
         if self._process is None:
             return

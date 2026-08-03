@@ -143,9 +143,9 @@ def make_weather_client(config: BuzzConfig) -> WeatherClient:
 def _adopt(name: str, filename: str, configured: _T, recorded: _T | None) -> _T:
     """Prefer a value the recording carries over the configured one, saying so.
 
-    Silence would be the dangerous option: every one of these changes what the replay
-    measures, and a difference the operator never sees is a difference they will
-    read straight off the display as a real one.
+    Silence would be the dangerous option: every one of these changes what the
+    replay measures, and a difference the operator never sees is a difference they
+    will read straight off the display as a real one.
     """
     if recorded is None or recorded == configured:
         return configured
@@ -161,11 +161,12 @@ def check_playback_source(path: Path, config: BuzzConfig) -> None:
     something the analyzer and display will be asked to work on, and the only place
     that knows it came from a person rather than from a test.
 
-    Called twice on the way to a render, and deliberately.  main() calls it first, so
-    that a rate this program does not work at is refused before the loudness probe has
-    read the whole recording for nothing; open_playback_pipeline calls it as well, so
-    the guarantee belongs to the function rather than to the order main happens to do
-    things in.  Two header reads is not a cost worth reasoning about.
+    This runs twice on the way to a render, and deliberately.  main() calls it
+    first, so that a rate this program does not work at is refused before the
+    loudness probe has read the whole recording for nothing.
+    open_playback_pipeline calls it as well, so the guarantee belongs to the
+    function rather than to the order main happens to do things in.  Two header
+    reads is not a cost worth reasoning about.
     """
     try:
         validate_sample_rate(sample_rate_of(path), path.name, config.audio.sample_rate)
@@ -180,17 +181,17 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
                            rf_conversion_db: float | None = None) -> FilePlaybackPipeline:
     """Open a .wav as the audio source, taking its recorded settings over the config.
 
-    Three settings decide what the analysis of a replayed file means, and none can be
+    Three settings decide what the analysis of a replayed file means.  None can be
     recovered from the audio: the sample rate (from the format header), the grid's
     pulse rate, and the dB calibration between audio amplitude and level at the
     receiver (both from the file's metadata - see buzz.wavmeta).
 
-    Trusting the file is the only correct choice for all three.  A mismatched sample
-    rate resamples nothing and merely mislabels the audio, putting the pulse grid at
-    the wrong spacing and quietly costing several dB; a mismatched pulse rate looks
-    for a 120 pps train in a 100 pps recording and finds nothing; a mismatched
-    calibration reports the whole event at the wrong absolute level.  A recording
-    should measure the same wherever it is replayed.
+    Trusting the file is the only correct choice for all three.  A mismatched
+    sample rate resamples nothing and merely mislabels the audio, putting the pulse
+    grid at the wrong spacing and quietly costing several dB.  A mismatched pulse
+    rate looks for a 120 pps train in a 100 pps recording and finds nothing.  A
+    mismatched calibration reports the whole event at the wrong absolute level.  A
+    recording should measure the same wherever it is replayed.
 
     A file that cannot be played exits with a one-line message rather than a
     traceback: a mistyped filename is an ordinary thing to do from a command line,
@@ -266,9 +267,9 @@ def _start_playback(pipeline: RingBufferPipeline, playing_back: str | None) -> N
 def _start_collector(config: BuzzConfig, analyzer: ContinuousAnalyzer) -> None:
     """Wire up the measurement side of the monitor and run it on a daemon thread.
 
-    Only live audio gets one.  Everything here writes something durable - a CSV row,
-    a plot, an upload - and a replayed recording must not add minutes to a day it did
-    not happen on.
+    Only live audio gets one.  Everything here writes something durable, a CSV row,
+    a plot, an upload, and a replayed recording must not add minutes to a day it
+    did not happen on.
     """
     store = CsvStore(config)
     collector = Collector(
@@ -284,7 +285,7 @@ def _wait_until_interrupted(pipeline: RingBufferPipeline, analyzer: ContinuousAn
                             recorder: EventRecorder | None = None) -> None:
     """Headless main loop: block until ^C, then stop the analyzer and the audio pipeline.
 
-    Stops the analyzer first, mirroring MainWindow.closeEvent() - otherwise the
+    This stops the analyzer first, mirroring MainWindow.closeEvent(), otherwise the
     analyzer thread's in-flight tick can end up calling into an already-closed
     audio stream during shutdown.  The recorder is stopped in between, so a
     recording in progress is closed while its audio source is still open.
@@ -305,10 +306,10 @@ def _start_render(args: argparse.Namespace, config: BuzzConfig, window: 'MainWin
                   app: 'QApplication') -> 'DisplayRecorder':  # pragma: no cover -- needs a live Qt display
     """Wire an .mp4 render onto a playback session, and quit when it finishes.
 
-    Imported here rather than at module scope so that a monitor run without --render
-    never loads the render code and never looks for ffmpeg - the same shape as the
-    PySide6 import below, and for the same reason: a feature nobody asked for should
-    not be able to fail.
+    This imports here rather than at module scope, so that a monitor run without
+    --render never loads the render code and never looks for ffmpeg.  Same shape
+    as the PySide6 import below, and for the same reason: a feature nobody asked
+    for should not be able to fail.
 
     The window is measured rather than told its size.  It was built without the
     control strip, so it is 734x248 instead of 734x284, and a hard-coded frame size
@@ -389,13 +390,13 @@ def _describe_duration(seconds: float) -> str:
 def _check_render_output(output: Path) -> None:
     """Refuse an existing output before anything expensive happens.
 
-    RenderSession checks this too, but not until it is built -- by which time the
-    loudness probe has read the whole recording for nothing.  One stat here saves that,
-    and gives the operator the message before a window opens.
+    RenderSession checks this too, but not until it is built, by which time the
+    loudness probe has read the whole recording for nothing.  One stat here saves
+    that, and gives the operator the message before a window opens.
 
-    The refusal itself comes from buzz.render so that both checks say the same thing;
-    imported here rather than at module scope for the usual reason, that a run without
-    --render should never load the render code at all.
+    The refusal itself comes from buzz.render so that both checks say the same
+    thing; this imports it here rather than at module scope for the usual reason,
+    that a run without --render should never load the render code at all.
     """
     from buzz.render import refuse_existing_output
     refuse_existing_output(output)
@@ -404,14 +405,15 @@ def _check_render_output(output: Path) -> None:
 def _resolve_gain(args: argparse.Namespace, config: BuzzConfig, source: Path) -> float:
     """Settle on a playback gain before anything is built that depends on it.
 
-    Deliberately early.  The gain is a constructor argument to the playback pipeline
-    and is baked into the ffmpeg command as a filter, so it has to be known before
-    either exists -- and doing the measurement here means every way a render can be
-    refused happens before a window opens or an output file is created.
+    Deliberately early.  The gain is a constructor argument to the playback
+    pipeline and is baked into the ffmpeg command as a filter, so it has to be
+    known before either exists.  Doing the measurement here means every way a
+    render can be refused happens before a window opens or an output file is
+    created.
 
     Rendering defaults to measuring, because a rendered event sits around -45 LUFS,
-    well below a normal listening level -- the calibration process keeps it there
-    deliberately -- and a video somebody has to strain at is not worth making.
+    well below a normal listening level - the calibration process keeps it there
+    deliberately - and a video somebody has to strain at is not worth making.
     Watching does not, because that is a different job: the operator is listening
     live, has the volume control to hand, and did not ask to wait for a measurement.
     """
@@ -572,7 +574,7 @@ def main() -> None:  # pragma: no cover
         if args.render else None
     # Not before now, and not merely after show() either: show() returns before Qt
     # has finished creating and laying out the window, and audio started in that gap
-    # plays to a screen that is not there yet - then breaks up as widget construction
+    # plays to a screen that is not there yet, then breaks up as widget construction
     # holds the GIL away from the feeder.  A zero-delay timer fires on the first pass
     # of the event loop, by which time the window is up and the interpreter is idle.
     if args.playback and recording_display is None:

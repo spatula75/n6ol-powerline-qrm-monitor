@@ -10,11 +10,11 @@ running at real speed for a screen recording.
 
 No input device is opened, so a recording can be reviewed on a machine with no
 receiver attached.  An output device is opened only while audio is actually being
-written to it - not while muted, paused, or stopped at the end of the file - so
-muted playback, which is what --mute asks for and what this class does unless told
-otherwise, runs exactly the code that ran before playback could be heard at all,
-paced by a monotonic deadline rather than by a sound card that nobody is listening
-to and that some machines do not have.
+written to it, not while muted, paused, or stopped at the end of the file.
+Muted playback is what --mute asks for and what this class does unless told
+otherwise.  It runs exactly the code that ran before playback could be heard at
+all, paced by a monotonic deadline rather than by a sound card that nobody is
+listening to and that some machines do not have.
 
 Note that the class defaults to muted and the command line does not: building a
 pipeline must never open a device the caller did not ask for, but somebody who
@@ -45,9 +45,10 @@ _INT16_MIN, _INT16_MAX = -32768, 32767
 def sample_rate_of(path: Path | str) -> int:
     """The sample rate from a .wav's header, without reading its audio.
 
-    Exists so that a rate this program cannot work at is refused before anything
-    expensive runs -- the loudness probe reads the whole recording, and being turned
-    away after that has happened is a poor experience.  A header read is a few bytes.
+    This exists so that a rate this program cannot work at is refused before
+    anything expensive runs.  The loudness probe reads the whole recording, and
+    being turned away after that has happened is a poor experience.  A header read
+    is a few bytes.
     """
     with wave.open(str(path), 'rb') as wav:
         return wav.getframerate()
@@ -56,24 +57,25 @@ def sample_rate_of(path: Path | str) -> int:
 def load_wav(path: Path | str) -> tuple[np.ndarray, int]:
     """Read a 16-bit PCM .wav into (int16 samples, sample rate).
 
-    Any .wav plays, not only ones this program recorded - somebody being sent a file
-    by another operator is exactly who this is for.  One property is refused rather
-    than coped with: the **sample width**.  The whole signal chain is int16 end to end,
-    and silently converting a 24- or 32-bit file would put what is measured here at
-    odds with what the same audio measured live - a display and a set of numbers that
-    look entirely plausible and are wrong.
+    Any .wav plays, not only ones this program recorded.  Somebody being sent a
+    file by another operator is exactly who this is for.  One property is refused
+    rather than coped with: the **sample width**.  The whole signal chain is int16
+    end to end, and silently converting a 24- or 32-bit file would put what is
+    measured here at odds with what the same audio measured live: a display and a
+    set of numbers that look entirely plausible and are wrong.
 
     The sample rate is *not* checked here, nor by the pipeline.  Reading a .wav and
     deciding what rates this program will work at are different questions, and the
-    second belongs to main -- which is where a file from outside becomes something the
+    second belongs to main, which is where a file from outside becomes something the
     analyzer and display will be asked to work on.  A caller that only wants the
     samples back, which the tests do at rates chosen for speed, should not be subject
     to a policy about the display's bandwidth.
 
-    Multi-channel files are reduced to channel 0 rather than mixed down, matching what
-    the live pipeline does with a stereo input device, and say so in the log - a file
-    from elsewhere is quite likely to be stereo, and "half of what you sent was
-    ignored" should not have to be inferred from a reading that came out low.
+    Multi-channel files are reduced to channel 0 rather than mixed down, matching
+    what the live pipeline does with a stereo input device, and this says so in the
+    log.  A file from elsewhere is quite likely to be stereo, and "half of what you
+    sent was ignored" should not have to be inferred from a reading that came out
+    low.
     """
     with wave.open(str(path), 'rb') as wav:
         if wav.getsampwidth() != _BYTES_PER_SAMPLE:
@@ -107,11 +109,11 @@ def apply_gain(samples: np.ndarray, factor: float) -> np.ndarray:
     """Scale samples by `factor`, stopping at the int16 rails.
 
     Too much gain therefore distorts, which is what anyone turning something up too
-    far expects.  It is worth the clamp to get that: int16 *wraps* on overflow, so
-    without one an overflowed sample changes sign, and a passage a few dB too loud
-    comes back as noise rather than as a loud passage.  Scaling through float32 keeps
-    the multiply out of int16 entirely, where that wrap would happen before anything
-    could be clamped.
+    far expects.  The clamp is worth having to get that: int16 *wraps* on overflow,
+    so without one an overflowed sample changes sign, and a passage a few dB too
+    loud comes back as noise rather than as a loud passage.  Scaling through
+    float32 keeps the multiply out of int16 entirely, where that wrap would happen
+    before anything could be clamped.
     """
     if factor == 1.0:
         return samples
@@ -123,7 +125,7 @@ def resolve_playback_path(name: Path | str, directory: Path) -> Path:
     """Resolve a --playback argument to a file path.
 
     A bare filename is looked up in the recordings directory, so replaying a
-    capture is just `--playback event-20260729-143307-0700.wav`; anything with a
+    capture is just `--playback event-20260729-143307-0700.wav`.  Anything with a
     directory component in it is used as given.
     """
     path = Path(name)
@@ -155,7 +157,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
         super().__init__(sample_rate)
         self._samples, self.sample_rate = samples, sample_rate
         self.path = Path(path)
-        # Partial trailing chunks are dropped: consumers read whole chunks, and less
+        # Partial trailing chunks are dropped: consumers read whole chunks.  Less
         # than one chunk of audio at the very end of a file - up to 32 ms at the
         # 16 kHz default, more at a lower rate and less at a higher one - is not
         # worth a special case.
@@ -199,10 +201,10 @@ class FilePlaybackPipeline(RingBufferPipeline):
         """Begin feeding audio.  Idempotent.
 
         Constructing a pipeline does not start one.  The caller has a display to
-        build first, and starting in the constructor means the opening moments of
-        the event are heard before there is a window to see them in - and, worse,
-        are fed while widget construction still holds the GIL, so the sound card
-        runs dry and the replay opens with a stutter that is not in the recording.
+        build first.  Starting in the constructor means the opening moments of the
+        event are heard before there is a window to see them in, and, worse, are
+        fed while widget construction still holds the GIL, so the sound card runs
+        dry and the replay opens with a stutter that is not in the recording.
         Opening the file and playing it are separate acts, and only the caller knows
         when the second one should happen.
         """
@@ -251,18 +253,18 @@ class FilePlaybackPipeline(RingBufferPipeline):
     def set_muted(self, muted: bool) -> None:
         """Ask for playback audio to be switched off or on.
 
-        Only records the wish.  The feeder thread is the one that opens and closes
-        the stream, because it is also the one writing to it, and closing a stream
-        from another thread while a write is in flight is undefined behavior in
-        PortAudio.  Takes effect within one chunk.
+        This only records the wish.  The feeder thread is the one that opens and
+        closes the stream, because it is also the one writing to it, and closing a
+        stream from another thread while a write is in flight is undefined behavior
+        in PortAudio.  It takes effect within one chunk.
 
         Unmuting clears a previous failure to open the device, so asking again after
         plugging something in is worth a retry; muting never fails.
 
-        Logged here rather than where the stream is actually opened and closed: the
-        stream now comes and goes with pausing too, so its lifecycle no longer tracks
-        anything the operator asked for.  This is the request, which is the part worth
-        a line - and a device that then refuses to open says so itself.
+        This logs here rather than where the stream is actually opened and closed:
+        the stream now comes and goes with pausing too, so its lifecycle no longer
+        tracks anything the operator asked for.  This is the request, which is the
+        part worth a line, and a device that then refuses to open says so itself.
         """
         with self._state:
             self._muted = muted
@@ -296,7 +298,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
     def toggle_pause(self) -> None:
         """Pause, or carry on.  Does nothing once the file has finished.
 
-        Without that guard the space bar can pause a replay that has already ended -
+        Without that guard the space bar can pause a replay that has already ended,
         leaving the transport paused at a position it cannot be resumed from, since
         resume() rightly refuses there, and disagreeing with a Play button that is
         grayed out for exactly this reason.  Restart is the way back from the end.
@@ -312,10 +314,10 @@ class FilePlaybackPipeline(RingBufferPipeline):
         a paused file paused at zero looks like it did nothing at all.
 
         The ring buffer is emptied too.  It still holds the last several seconds of
-        the pass just abandoned, and leaving that in place would hand an analyzer
-        that has just been reset a locked-on pulse train to find immediately -
-        producing a second pass that opens already locked, which is precisely what
-        restarting is meant to avoid.  The cost is a few seconds of empty display
+        the pass just abandoned.  Leaving that in place would hand an analyzer that
+        has just been reset a locked-on pulse train to find immediately, producing
+        a second pass that opens already locked, which is precisely what restarting
+        is meant to avoid.  The cost is a few seconds of empty display
         while the new pass refills it, the same as at startup.
 
         Audio queued to the sound card is thrown away for the same reason, on the
@@ -355,16 +357,17 @@ class FilePlaybackPipeline(RingBufferPipeline):
         """Open or close the output stream to match what the transport is doing.
 
         Feeder thread only - see set_muted.  A stream is wanted only while audio is
-        actually being written to it, which muting, pausing and reaching the end of
-        the file each stop being true of.  A stream nobody writes to underruns for as
-        long as it is left open, so all three close it: mute already meant the absence
-        of a stream rather than a volume of zero, and pausing reaches the device by
-        exactly the same route rather than by a second mechanism of its own.
+        actually being written to it, and muting, pausing, and reaching the end of
+        the file each stop being true of it.  A stream nobody writes to underruns
+        for as long as it is left open, so all three close it.  Mute already meant
+        the absence of a stream rather than a volume of zero, and pausing reaches
+        the device by exactly the same route rather than by a second mechanism of
+        its own.
 
         Both transitions re-base the deadline schedule, which matters most in the
-        direction nobody thinks about: on closing, an origin left over from before the
-        stream opened is minutes in the past, and the loop would race through the rest
-        of the file trying to catch up to it.
+        direction nobody thinks about.  On closing, an origin left over from before
+        the stream opened is minutes in the past, and the loop would race through
+        the rest of the file trying to catch up to it.
         """
         with self._state:
             at_end = self._index >= self._chunks
@@ -382,12 +385,12 @@ class FilePlaybackPipeline(RingBufferPipeline):
 
         A restart rewinds the file, but an output buffer's worth of the pass being
         abandoned is already sitting in the card's queue.  Left there it plays out
-        after the click - the old position, heard over the new one - and every later
-        chunk trails the display by that same buffer for the rest of the run.
+        after the click - the old position, heard over the new one - and every
+        later chunk trails the display by that same buffer for the rest of the run.
 
-        Aborting and restarting the same stream rather than reopening the device:
-        it is faster, and it cannot fail with the device busy and leave the replay
-        silent for the sake of a button press.
+        This aborts and restarts the same stream rather than reopening the device.
+        That is faster, and it cannot fail with the device busy and leave the
+        replay silent for the sake of a button press.
         """
         self._output.abort()
         self._output.start()
@@ -414,15 +417,16 @@ class FilePlaybackPipeline(RingBufferPipeline):
     def _close_output(self, drain: bool = False) -> None:
         """Close the output stream, by default throwing away what is still queued.
 
-        abort() rather than stop() wherever somebody asked for silence *now*: stop()
-        plays the queue out first, and a mute or pause button that takes a fifth of a
-        second to go quiet is a broken one.  The queued audio was already fed to the
-        ring buffer, so nothing is lost from the replay itself - only from the speaker.
+        This calls abort() rather than stop() wherever somebody asked for silence
+        *now*: stop() plays the queue out first, and a mute or pause button that
+        takes a fifth of a second to go quiet is a broken one.  The queued audio was
+        already fed to the ring buffer, so nothing is lost from the replay itself,
+        only from the speaker.
 
-        The end of the file is the one place that reverses.  Nobody asked for silence
-        there, the queue holds the last of the recording, and cutting it off mid-sample
-        would end the replay on exactly the step the recorder's fade-out exists to
-        prevent.  So that one drains.
+        The end of the file is the one place that reverses.  Nobody asked for
+        silence there, the queue holds the last of the recording, and cutting it
+        off mid-sample would end the replay on exactly the step the recorder's
+        fade-out exists to prevent.  So that one drains.
         """
         self._output.stop() if drain else self._output.abort()
         self._output.close()
@@ -434,11 +438,12 @@ class FilePlaybackPipeline(RingBufferPipeline):
     def _wait_until_playable(self) -> bool:
         """Block while paused or sitting at the end; False once stopping.
 
-        Reconciles the output stream on every pass, including each time it wakes.
-        Being parked here is itself a reason to have no stream - nothing is being
-        written while the feeder waits - and it is also the only moment a mute
-        arriving during a pause could otherwise be noticed.  Either way the device
-        does not sit open and starving while the transport is stopped.
+        This reconciles the output stream on every pass, including each time it
+        wakes.  Being parked here is itself a reason to have no stream, since
+        nothing is being written while the feeder waits, and it is also the only
+        moment a mute arriving during a pause could otherwise be noticed.  Either
+        way the device does not sit open and starving while the transport is
+        stopped.
         """
         while not self._stop.is_set():
             self._sync_output()
