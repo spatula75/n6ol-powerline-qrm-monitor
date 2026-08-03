@@ -144,10 +144,37 @@ initiative, not even when the work is obviously finished and tests pass.
 - Commit granularity varies - sometimes one commit per unit of work, sometimes a single
   sweep for a batch of PR fixes. Ask which is wanted.
 - Note `CHANGELOG.md` under `[Unreleased]` as part of the work, not at release time.
+- **No self-attribution in anything that ships to GitHub** - a commit message, a PR
+  title or body, a review comment, an issue. No `Co-Authored-By` trailer, no session
+  link, no mention of Claude or Claude Code at all, unless there is a real reason to
+  name the tooling. Nobody cheers themselves on in their own commits, and Claude Code
+  is a tool used to write them, not a byline.
+
+### Commit messages
+
+**A sentence or two per significant change, and nothing at all for the insignificant
+ones.** Say what changed and why it was worth doing, then stop. The blow-by-blow
+belongs in `CHANGELOG.md`, which is where a reader goes looking for it; repeating it
+in the commit buries the one line that mattered.
+
+The cost compounds at the merge, because GitHub's squash stacks every branch commit
+message into a single body underneath the PR description. Two commits on `main` run
+to 707 and 570 lines against a median of 10. Nobody reads those, so the reasoning in
+them was written for nobody.
+
+Where a decision truly needs justifying, the comment beside the code outlives the
+commit message and sits where the next reader is already looking. Put it there.
 
 ### Releasing
 
 `CONTRIBUTING.md` has the procedure for humans; this is what not to get wrong.
+
+Branch name is `prepare-release-<version>` - `prepare-release-1.4.0`, not
+`prepare-release` bare. Get this wrong and either rename the GitHub branch through
+its own web UI (Settings > Branches, or the branch list's rename action) so the open
+PR migrates with it, or just open a fresh PR against the correctly-named branch -
+renaming via `gh api .../branches/{branch}/rename` deleted the old ref and
+auto-closed the PR outright instead of migrating it, despite what its docs suggest.
 
 1. **Bump the version in both `lib/buzz/__init__.py` and `pyproject.toml`.** Two files,
    easy to half-do, and the release workflow fails the release if they and the tag
@@ -155,7 +182,13 @@ initiative, not even when the work is obviously finished and tests pass.
 2. Move the `[Unreleased]` entries in `CHANGELOG.md` under a new `## [x.y.z] - date`
    heading. That section is lifted verbatim as the release notes, so write it for
    whoever arrives at the release page.
-3. Merge as a PR, then tag the merge commit and push the tag: `git tag 1.3.0 &&
+3. Run `python tools/release_render_check.py` against a recent recording before
+   merging. It is not in CI - CI has no live radio, so it cannot produce a recording
+   that means anything - which is exactly why skipping it is easy to justify and
+   wrong to do: it is the one check that renders a real, current capture rather than
+   a synthetic one, at both ends of the sample-rate band and several rates in
+   between.
+4. Merge as a PR, then tag the merge commit and push the tag: `git tag 1.3.0 &&
    git push origin 1.3.0`. Plain semver, **no leading `v`** - the workflow's tag filter
    won't match one.
 
@@ -246,8 +279,10 @@ where to spend their attention, so point at the few things that matter: the cent
 of the change, the critical fix, the one decision worth arguing about. Whatever a
 reviewer would regret skimming past.
 
-Not a changelog and not a file listing - the diff already says what changed. The PR
-says what to *look at* and why it is the important part.
+Not a changelog and not a file listing - the diff already says what changed and
+`CHANGELOG.md` carries the detail. Same budget as a commit message: a sentence or two
+per significant change. The PR says what to *look at* and why it is the important
+part.
 
 **Then annotate the diff itself.** Prose in the description is not the same as a note
 sitting on the line it is about. After opening a PR, leave **inline review comments**

@@ -7,6 +7,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `tools/release_render_check.py`, a step in the release procedure (see
+  `CONTRIBUTING.md`) that renders a recent recording at both ends of the
+  sample-rate band the monitor admits, and at several rates in between, then
+  checks each result for a real picture and a real sound, not just a well-formed
+  container: no sustained black frame, audio above a near-silence floor, a
+  decoded frame count matching what the renderer itself logged, and enough
+  per-frame luma variation to rule out a static or duplicated picture. Asks the
+  release engineer what to do when nothing in the recordings directory is recent
+  enough rather than validating against a stale file or skipping the check
+  silently.
+
+### Changed
+- Coverage measurement now covers `tools/` as well as `lib/buzz` and `configure`.
+  The release check is part of the release procedure now, so leaving it outside the
+  gate meant 429 lines of it counted for nothing. Both tools reach 100%, and the
+  total moved 99.19% → 99.29%.
+
 ## [1.4.0] - 2026-08-01
 
 A recorded event can now be rendered to video with `--render FILE.mp4`: the display

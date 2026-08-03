@@ -341,5 +341,5 @@ def main() -> None:
     report(rectified, config, show_profile=not args.quiet)
 
 
-if __name__ == '__main__':
+if __name__ == '__main__':  # pragma: no cover
     main()
