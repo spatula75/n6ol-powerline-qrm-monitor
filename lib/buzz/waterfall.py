@@ -6,14 +6,13 @@ MeterPanelWidget draws a pair of vertical bar-graph S-meters (noise floor
 and signal level) updated by polling the ContinuousAnalyzer result slot.
 MainWindow composes both widgets side-by-side and handles clean shutdown.
 
-These three classes carry `# pragma: no cover`: they need a live Qt display to
-exercise, which the test suite doesn't have.  Everything else in this module -
-the color math, percentile logic, and meter-aggregation helpers the widgets
-call into - is plain functions with no Qt dependency, and is unit tested in
-test_waterfall_math.py.  Keeping the exclusion at the class level rather than
-omitting the whole file from coverage.run means that testable code actually
-counts, and a new untested helper added outside these three classes will still
-trip the coverage gate.
+These three classes carry `# pragma: no cover`.  They need a live Qt display to
+exercise, and the test suite has none.  Everything else in this module - the color
+math, percentile logic, and meter-aggregation helpers the widgets call into - is
+plain functions with no Qt dependency, and test_waterfall_math.py unit tests them.
+Keeping the exclusion at the class level, rather than omitting the whole file from
+coverage.run, means testable code actually counts, and a new untested helper added
+outside these three classes will still trip the coverage gate.
 """
 
 import logging
@@ -74,16 +73,16 @@ _AXIS_H = 24                                # pixels reserved for frequency axis
 # meant at the 16 kHz this program records at, so nothing about the display changes at
 # that rate.
 #
-# Fixing the duration rather than the sample count is what makes the display behave the
-# same at any sample rate, and the reason is one cancellation: the number of bins
+# Fixing the duration rather than the sample count is what makes the display behave
+# the same at any sample rate, and the reason is one cancellation.  The number of bins
 # covering 0-_MAX_HZ is _MAX_HZ * N / rate, and N is rate * _WINDOW_SECONDS, so the
 # rate cancels and the bin count is _MAX_HZ * _WINDOW_SECONDS at every rate.  Frequency
 # resolution comes out at 31.2 Hz per bin from 8 kHz to 48 kHz.
 #
-# Fixing the sample count instead - which is what this did - makes the window a shorter
-# slice of time as the rate rises, so resolution falls with it: at 44.1 kHz a 512-sample
-# window is 86 Hz per bin and covers 0-4 kHz in 46 bins, giving a waterfall 230 px wide
-# instead of 640.
+# Fixing the sample count instead - which is what this did - makes the window a
+# shorter slice of time as the rate rises, so resolution falls with it: at 44.1 kHz a
+# 512-sample window is 86 Hz per bin and covers 0-4 kHz in 46 bins, giving a waterfall
+# 230 px wide instead of 640.
 _WINDOW_SECONDS = 512 / 16000
 # Constant by the cancellation above, which is the point: the waterfall is the same
 # width whatever the audio arrives at.  8 kHz is the lowest rate that can supply it -
@@ -98,9 +97,9 @@ DISPLAY_BINS = round(_MAX_HZ * _WINDOW_SECONDS)   # 128
 #
 # The overlap has to satisfy COLA in *power*, because _mean_spectrum_db averages |X|².
 # That is stricter than the familiar 50% overlap-add rule, which is the COLA condition
-# for amplitude: at 50% the summed w² still ripples by 3.01 dB with impulse position
-# (over the two overlapping frames it is 0.5(1+cos²), not a constant).  Hann² has
-# harmonic content up to twice the fundamental, so it takes 75% to flatten - measured
+# for amplitude.  At 50% the summed w² still ripples by 3.01 dB with impulse position
+# (over the two overlapping frames it is 0.5(1+cos²), not a constant).  Hann² carries
+# harmonic content up to twice the fundamental, so it takes 75% to flatten it.  Measured
 # ripple there is exactly 0.00 dB.
 _FFT_OVERLAP = 0.75
 
@@ -142,8 +141,8 @@ class SpectrumGeometry:
 def spectrum_geometry(sample_rate: int) -> SpectrumGeometry:
     """Work out the FFT geometry for `sample_rate`.
 
-    A pure function of the rate, so the whole of it can be checked without a display -
-    which matters more than usual here, because getting it wrong moves every dB the
+    A pure function of the rate, so the whole of it can be checked without a display.
+    That matters more than usual here, because getting it wrong moves every dB the
     waterfall shows rather than breaking anything visibly.
     """
     window = round(sample_rate * _WINDOW_SECONDS)
@@ -167,12 +166,12 @@ def spectrum_geometry(sample_rate: int) -> SpectrumGeometry:
 # Auto-ranging color scale
 # ---------------------------------------------------------------------------
 #
-# A fixed dB range calibrated once against the station config goes stale the
-# moment receiver gain, band conditions, or the sound card setup drift from
-# whatever they were when it was set - and then the whole picture floods into
-# one color with no contrast, because nothing in the live signal maps near
-# the black end any more.  So instead the floor and ceiling are read off the
-# spectrum history itself, continuously, and drift with actual conditions.
+# A fixed dB range calibrated once against the station config goes stale the moment
+# receiver gain, band conditions, or the sound card setup drift from whatever they
+# were when it was set.  The whole picture then floods into one color with no
+# contrast, because nothing in the live signal maps near the black end any more.  So
+# instead the floor and ceiling are read off the spectrum history itself,
+# continuously, and drift with actual conditions.
 
 # "Quiet background": low enough to sit below the typical level, but a
 # percentile rather than the bare minimum, so one unusually silent bin can't
@@ -191,15 +190,15 @@ _COLOR_HEADROOM = 0.10
 # Smallest the ceiling-minus-floor span is allowed to compress to, in dB - this
 # is what keeps the display from reading "hot" when the band is truly quiet.
 #
-# Auto-ranging has a failure mode when there's nothing going on: floor and
-# ceiling both track down together, and whatever residual scatter is left in
-# the noise gets stretched across the *entire* color range, painting routine
-# statistical wobble as yellow/orange "activity".  Measured directly: folding
-# pure Gaussian noise through _mean_spectrum_db with no signal at all still
-# produces about 5.4 dB of p10-to-p98 spread, consistently, regardless of
-# level - that's just the estimator's own variance from averaging a handful of
-# overlapped FFT frames per row, nothing environmental. A span floor has to
-# clear that by a healthy margin or it does nothing.
+# Auto-ranging has a failure mode when there is nothing going on: floor and ceiling
+# both track down together, and whatever residual scatter is left in the noise gets
+# stretched across the *entire* color range, painting routine statistical wobble as
+# yellow/orange "activity".  Measured directly: folding pure Gaussian noise through
+# _mean_spectrum_db with no signal at all still produces about 5.4 dB of p10-to-p98
+# spread, consistently, regardless of level.  That is just the estimator's own
+# variance from averaging a handful of overlapped FFT frames per row, nothing
+# environmental.  A span floor has to clear that by a healthy margin or it does
+# nothing.
 #
 # Expressed in S-units (6 dB each, the IARU convention already used for the
 # meter panel below) rather than a bare dB number, so "how quiet can the
@@ -211,11 +210,11 @@ _MIN_DYNAMIC_RANGE_S_UNITS = 4
 _MIN_DYNAMIC_RANGE_DB = _MIN_DYNAMIC_RANGE_S_UNITS * 6.0   # 24 dB
 # EMA weight applied each tick (_UPDATE_MS = 100 ms) to the raw percentiles.
 # Without this, the ceiling can start moving after just a couple of ticks of
-# louder content - the top-2% tail is only ~123 values out of the window's 6144,
-# and each new row contributes 128 of them - which would make the picture's
-# contrast visibly shift within a few hundred milliseconds of any brief burst.
-# 0.05 gives the EMA itself a settling time of a couple of seconds, once the raw
-# percentile it's tracking is free to move.
+# louder content.  The top-2% tail is only ~123 values out of the window's 6144,
+# and each new row contributes 128 of them.  Left alone, that would make the
+# picture's contrast visibly shift within a few hundred milliseconds of any
+# brief burst.  0.05 gives the EMA itself a settling time of a couple of
+# seconds, once the raw percentile it is tracking is free to move.
 #
 # Note how tight that has become: at the current _N_ROWS the ceiling's 2% slice is
 # about *one row* of bins, so a single loud row can carry the whole raw percentile.
@@ -224,17 +223,16 @@ _MIN_DYNAMIC_RANGE_DB = _MIN_DYNAMIC_RANGE_S_UNITS * 6.0   # 24 dB
 # contrast shift.  Lengthening the history would relax that; lowering the alpha
 # would too, at the cost of tracking speed.
 #
-# On startup that takes longer than the EMA alone suggests: history_db starts
-# full of the seed value (see floor_seed below), and the 10th-percentile floor
-# in particular stays pinned to that stale seed until more than 90% of the rows
-# have been replaced with real data - about 4.3 s at one row per tick.  Verified
-# against live audio (at the 100-row history this display used before the scope
-# was added, where the same arithmetic gave ~10 s): the floor sat exactly on its
-# seed value for the first ~9 s, then converged within 0.6 dB of an
-# independently measured ground truth a few seconds later.  Shortening the
-# history scales that lag down proportionally; it has not been re-measured since.
-# Either way the one-time startup lag is a fine trade for a display that
-# self-corrects for the rest of the session.
+# On startup that takes longer than the EMA alone suggests.  history_db starts full
+# of the seed value (see floor_seed below), and the 10th-percentile floor in
+# particular stays pinned to that stale seed until more than 90% of the rows have
+# been replaced with real data, about 4.3 s at one row per tick.  Verified against
+# live audio (at the 100-row history this display used before the scope was added,
+# where the same arithmetic gave ~10 s): the floor sat exactly on its seed value for
+# the first ~9 s, then converged within 0.6 dB of an independently measured ground
+# truth a few seconds later.  Shortening the history scales that lag down
+# proportionally; nobody has re-measured it since.  Either way the one-time startup
+# lag is a fine trade for a display that self-corrects for the rest of the session.
 _COLOR_RANGE_EMA_ALPHA = 0.05
 
 # ---------------------------------------------------------------------------
@@ -343,9 +341,9 @@ def format_playback_status(name: str, position: float, duration: float,
 def format_playback_button(paused: bool, finished: bool) -> tuple[str, str, bool]:
     """(label, tooltip, enabled) for the play/pause button.
 
-    Named for what clicking does rather than for the state it is in, which is the
-    universal convention for a transport control and the opposite of the record
-    button's - that one dims to show its action is spent, where this one always has
+    Named for what clicking does rather than for the state it is in.  That is the
+    universal convention for a transport control, and the opposite of the record
+    button's: that one dims to show its action is spent, where this one always has
     an action to offer.  Except at the end of the file, where there is nothing left
     to play and Restart is the way back.
     """
@@ -359,9 +357,9 @@ def format_playback_button(paused: bool, finished: bool) -> tuple[str, str, bool
 def format_mute_button(muted: bool, available: bool) -> tuple[str, str, bool]:
     """(label, tooltip, enabled) for the playback mute button.
 
-    Named for the action, like the rest of the transport.  Disabled with a reason
-    when the machine has nothing to play through, rather than offered as a control
-    that quietly does nothing when clicked.
+    Named for the action, like the rest of the transport.  This disables the button
+    with a reason when the machine has nothing to play through, rather than offering
+    a control that quietly does nothing when clicked.
     """
     if not available:
         return 'Unmute', 'No audio output device available for this recording', False
@@ -375,7 +373,7 @@ def format_record_button(status: RecorderStatus | None) -> tuple[str, str]:
 
     The label names the state the recorder is in, not the action the button takes.
     "Record" on a button that is already recording is the one reading that cannot be
-    right, and the action is discoverable from the tooltip either way.
+    right, and the tooltip gives the action either way.
     """
     if status is None:
         return 'Record', 'Recording is not available during playback'
@@ -424,9 +422,9 @@ def _correction_offset(correction: int, half_w: int, max_corr: int) -> tuple[int
 def _aggregate_meter_history(history: Sequence[AnalysisResult]) -> tuple[float, float, bool]:
     """Average recent results into the (nf_dbm, sig_dbm, locked) triple the meters draw.
 
-    Noise averages over every result.  Signal averages only over locked results, so
-    unlocked readings (where signal == noise per AnalysisResult.unlocked) don't drag
-    the level down mid-window during an intermittent signal; with no locked results
+    Noise averages over every result.  Signal averages only over locked results, so an
+    unlocked reading (where signal == noise per AnalysisResult.unlocked) does not drag
+    the level down mid-window during an intermittent signal.  With no locked results
     the signal reading falls back to the noise floor.  An empty history reads as
     silence on both meters.
     """
@@ -444,10 +442,10 @@ def _mean_spectrum_db(samples: np.ndarray, geometry: SpectrumGeometry,
     """Mean FFT power in dB across overlapped frames of samples, or None if
     there isn't a single whole frame.
 
-    Averaging every frame captured since the previous display row - instead of
-    FFT'ing only the newest one - means no audio goes unrendered: a transient
-    shorter than the frame interval still contributes to its row instead of
-    falling in the ~68 ms gap a single-frame row would leave.
+    This averages every frame captured since the previous display row, instead of
+    FFT'ing only the newest one, so no audio goes unrendered: a transient shorter
+    than the frame interval still contributes to its row instead of falling in the
+    ~68 ms gap a single-frame row would leave.
 
     Frames advance by _FFT_ADVANCE_SAMPLES and are aligned so the last one ends on
     the newest sample.  Power (|X|^2) is averaged rather than magnitude: Welch
@@ -473,11 +471,10 @@ def _spectrum_percentiles(history_db: np.ndarray, floor_percentile: float,
                           ceiling_percentile: float) -> tuple[float, float]:
     """Raw (floor, ceiling) percentiles of the visible spectrum history, in dB.
 
-    "Raw" meaning unsmoothed - this reads straight off whatever is currently in
-    history_db.  The caller is expected to blend these into a slower-moving
-    estimate (see _COLOR_RANGE_EMA_ALPHA) rather than render with them directly,
-    since one new row of history can move a high percentile like the ceiling
-    noticeably on its own.
+    "Raw" meaning unsmoothed: this reads straight off whatever is currently in
+    history_db.  The caller is expected to blend these into a slower-moving estimate
+    (see _COLOR_RANGE_EMA_ALPHA) rather than render with them directly, since one new
+    row of history can move a high percentile like the ceiling noticeably on its own.
     """
     return (float(np.percentile(history_db, floor_percentile)),
             float(np.percentile(history_db, ceiling_percentile)))
@@ -491,7 +488,7 @@ def _color_scale_range(floor: float, ceiling: float, headroom: float) -> float:
     room for a spike louder than anything in the recent window to still read as
     hotter than the routine "loud" color - see _COLOR_HEADROOM.
 
-    The span is floored at _MIN_DYNAMIC_RANGE_DB so a truly quiet window can't
+    The span is floored at _MIN_DYNAMIC_RANGE_DB, so a truly quiet window cannot
     collapse the range down to whatever residual noise-estimator scatter is left in
     the signal - see that constant's comment for the measurement behind the number.
     """
@@ -555,10 +552,10 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         # 16 kHz) rather than leaving gaps.  _mean_spectrum_db then splits this into
         # overlapped FFT frames.
         #
-        # At least one whole FFT window, or there would be nothing to transform: the
-        # window grows with the sample rate while a display row stays 100 ms, and at
+        # At least one whole FFT window, or there would be nothing to transform.  The
+        # window grows with the sample rate while a display row stays 100 ms.  At
         # 8 kHz a row is 800 samples against a 256-sample window, so this only ever
-        # binds if either number is changed.
+        # binds if either number changes.
         row_chunks = ceil(_UPDATE_MS / 1000 * sample_rate / _BUFFER_CHUNK)
         self._frame_chunks = max(row_chunks,
                                  ceil(self._geometry.window / _BUFFER_CHUNK))
@@ -758,12 +755,12 @@ class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt displ
 class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt display
     """Toolbar strip, carrying whichever controls the run actually has.
 
-    Live audio gets a record button; a replayed file gets a transport - play/pause
+    Live audio gets a record button.  A replayed file gets a transport - play/pause
     and restart - because there is nothing to record and every reason to want to
     stop on an interesting moment or run the event again.  Both get a status line.
 
-    Polls its source rather than being driven by it, at the same cadence as the
-    meters.  The recorder disarms itself when its event budget runs out and playback
+    This polls its source rather than being driven by it, at the same cadence as the
+    meters.  The recorder disarms itself when its event budget runs out, and playback
     stops at the end of the file, so the buttons have to follow their subject rather
     than the other way round.
 
@@ -789,8 +786,8 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
         # but no family gets whatever Qt's default UI font is - Tahoma on Windows -
         # so the strip sat in a proportional face above two panels of monospace, and
         # its status line is a time index and a file name, which is exactly the sort
-        # of text that wants fixed advances.  Quoted because the family name has
-        # spaces in it, which a stylesheet otherwise reads as a list.
+        # of text that wants fixed advances.  Quoted, because a stylesheet otherwise
+        # reads the spaces in the family name as a list.
         family = display_family()
         self.setStyleSheet(
             f'QWidget {{ background: {_BAR_BG}; }}'
@@ -870,13 +867,13 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
 
         The analyzer is reset along with the audio.  Replaying an event to watch the
         monitor find it is pointless if the monitor still remembers finding it the
-        first time - the second pass would open already locked, at a drift rate it
+        first time: the second pass would open already locked, at a drift rate it
         learned from the pass before.
 
-        Reset first, before a single sample of the new pass exists.  A tick already
-        in flight then finishes against the audio being abandoned, where a stale
-        phase estimate is harmless, rather than against fresh audio where it would
-        briefly publish a lock the reset had just revoked.
+        This resets first, before a single sample of the new pass exists.  A tick
+        already in flight then finishes against the audio being abandoned, where a
+        stale phase estimate is harmless, rather than against fresh audio where it
+        would briefly publish a lock the reset had just revoked.
         """
         if self._playback is not None:
             if self._analyzer is not None:
@@ -936,7 +933,7 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         +-------------------------+--------+
 
     The bar spans the whole width rather than sitting inside the left-hand stack,
-    which keeps the meter panel aligned with the displays it belongs to - its
+    which keeps the meter panel aligned with the displays it belongs to.  Its
     segment geometry is derived from _WINDOW_H and does not survive being stretched
     (see the _WINDOW_H comment).
     """
@@ -955,14 +952,14 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         self._recorder = recorder
 
         container = QWidget()
-        # The gaps between panels are this widget showing through, and without an
-        # explicit color they are whatever the platform's palette happens to be:
-        # measured at (30,30,30) under a dark Windows theme and (239,239,239) under
-        # Qt's offscreen platform, which has no desktop theme to read.  So the same
-        # recording rendered windowed and headless came out with dark and near-white
-        # separators - and two operators with different Windows themes would get
-        # different videos of the same event.  Stating it makes a render depend on the
-        # program rather than on the machine it ran on.
+        # The gaps between panels are this widget showing through.  Without an explicit
+        # color they are whatever the platform's palette happens to be: measured at
+        # (30,30,30) under a dark Windows theme and (239,239,239) under Qt's offscreen
+        # platform, which has no desktop theme to read.  So the same recording rendered
+        # windowed and headless came out with dark and near-white separators, and two
+        # operators with different Windows themes would get different videos of the
+        # same event.  Stating the color here makes a render depend on the program
+        # rather than on the machine it ran on.
         container.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         container.setStyleSheet(f'background: {_WINDOW_BG};')
         outer = QVBoxLayout(container)
@@ -1014,9 +1011,9 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         keeps the recording about the signal rather than about the cursor.
 
         A key whose subject this run does not have reaches Qt rather than stopping
-        here: only one of the record button and the transport exists at a time, and a
-        window that quietly ate the other one's key would also be eating whatever Qt
-        would otherwise have done with it.
+        here.  Only one of the record button and the transport exists at a time, and
+        a window that quietly ate the other one's key would also be eating whatever
+        Qt would otherwise have done with it.
         """
         key = event.key()
         if key == Qt.Key.Key_A:
@@ -1036,15 +1033,15 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
     def frame_bytes(self) -> bytes:
         """The window's pixels, in the byte order buzz.render expects.
 
-        Format_RGBA8888 is asked for explicitly rather than taken as it comes: Qt's
-        native 32-bit format is byte-swapped between big- and little-endian machines,
-        and a raw pipe has no way to say which one produced it.  Naming the format
-        pins the byte order on both ends.
+        This asks for Format_RGBA8888 explicitly, rather than taking whatever comes:
+        Qt's native 32-bit format is byte-swapped between big- and little-endian
+        machines, and a raw pipe has no way to say which one produced it.  Naming the
+        format pins the byte order on both ends.
 
-        Scanlines can carry padding to a 4-byte boundary, which at this width they do
-        not, but a frame with padding left in would shift every subsequent row and
-        turn the video into diagonal mush -- a spectacular failure from a silent
-        cause, so it is handled rather than assumed away.
+        Scanlines can carry padding to a 4-byte boundary.  At this width they do not,
+        but a frame with padding left in would shift every subsequent row and turn
+        the video into diagonal mush, a spectacular failure from a silent cause, so
+        this handles it rather than assuming it away.
         """
         image = self.grab().toImage().convertToFormat(QImage.Format.Format_RGBA8888)
         row_bytes = image.width() * 4
@@ -1073,9 +1070,10 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
 class DisplayRecorder(QObject):  # pragma: no cover -- requires a live Qt display
     """Feeds the window's pixels to a render session, at the display's own cadence.
 
-    Ticks at _UPDATE_MS, the same 10 fps the waterfall and scope repaint at, because
-    capturing faster than the picture changes only produces duplicate frames - and the
-    output grid is where duplicates are added, deliberately and more cheaply.
+    This ticks at _UPDATE_MS, the same 10 fps the waterfall and scope repaint at,
+    because capturing faster than the picture changes only produces duplicate
+    frames, and the output grid is where duplicates are added, deliberately and
+    more cheaply.
 
     Each capture is stamped with where playback had reached, and the two are read
     together on purpose.  The display is always showing analysis of audio slightly
@@ -1101,14 +1099,15 @@ class DisplayRecorder(QObject):  # pragma: no cover -- requires a live Qt displa
     def start(self) -> None:
         """Capture the opening frame, then start the transport, then start ticking.
 
-        In that order, and the order is the whole point.  Starting playback first and
-        capturing whenever the event loop next got round to it lost the opening of
-        every render: a cold start compiles the FFT path and lays out the window,
-        which can hold the loop for over a second while the audio is already running.
+        In that order, and the order is the whole point.  Starting playback first
+        and capturing whenever the event loop next got round to it lost the opening
+        of every render: a cold start compiles the FFT path and lays out the window,
+        which can hold the loop for over a second while the audio is already
+        running.
 
-        Capturing once here forces that work to happen before the transport moves, so
-        the file begins at position zero - and the frame it begins with is a display
-        that has already been painted, rather than a blank one.
+        Capturing once here forces that work to happen before the transport moves,
+        so the file begins at position zero, and the frame it begins with is a
+        display that has already been painted, rather than a blank one.
         """
         self._session.start()
         self._session.submit(self._window.frame_bytes(), 0.0)
@@ -1149,8 +1148,8 @@ class DisplayRecorder(QObject):  # pragma: no cover -- requires a live Qt displa
     def _fail(self, exc: Exception) -> None:
         """Record the failure and stop, rather than letting it reach the event loop.
 
-        An exception raised inside a Qt slot does not propagate anywhere useful - it
-        is printed and swallowed, leaving a window that looks fine and a video that
+        An exception raised inside a Qt slot does not propagate anywhere useful.  Qt
+        prints and swallows it, leaving a window that looks fine and a video that
         silently stopped growing.  The caller checks `error` and reports it.
 
         The session is aborted rather than finished, and it has to be aborted here:
