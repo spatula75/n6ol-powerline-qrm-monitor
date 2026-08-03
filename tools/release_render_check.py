@@ -58,7 +58,6 @@ render; see CLAUDE.md's "Don't overdrive your headlights".
 """
 
 import argparse
-import logging
 import os
 import re
 import shutil
@@ -75,9 +74,6 @@ sys.path.insert(0, str(_REPO_ROOT / 'lib'))
 
 from buzz.config import CONFIG_PATH, MAX_SAMPLE_RATE, MIN_SAMPLE_RATE, BuzzConfig  # noqa: E402
 from buzz.ffmpeg import FfmpegError, find_ffmpeg, run  # noqa: E402
-
-logging.basicConfig(level=logging.WARNING)
-logger = logging.getLogger(__name__)
 
 # Rates a file from another operator's sound card is plausibly recorded at -
 # the same set tests/integration/test_render_end_to_end.py's FOREIGN_RATES
@@ -164,6 +160,13 @@ def resolve_source(directory: Path, max_age_days: float, explicit: Path | None) 
     rendering anything in that case.
     """
     if explicit is not None:
+        if not explicit.is_file():
+            # The interactive path already re-prompts on a path that is not a file, and
+            # a typo on the command line deserves the same answer rather than a
+            # traceback out of wave.open several steps later.
+            print(f'--source names {explicit}, which is not a file. Check the path, or '
+                  f'leave --source off to use the newest recording in {directory}.')
+            return None
         return explicit
 
     newest = newest_recording(directory)
@@ -236,7 +239,28 @@ class RenderAttempt:
     error: str = ''
 
 
-def render_variant(wav_path: Path, output_dir: Path, timeout: float = 120.0) -> RenderAttempt:
+# How long to allow a render, given the clip it is rendering.  A render plays the clip
+# through in real time - that is what --playback does - so its duration tracks
+# --clip-seconds directly rather than being some fixed cost, and a timeout that does not
+# move with it turns a longer clip into five identical "did not finish" failures whose
+# cause is the flag the operator just changed.  The allowance covers what does not scale
+# (interpreter start, numba compiling the DSP kernels, Qt bringing up an offscreen
+# surface, ffmpeg opening its encoder); the factor covers a machine rendering slower
+# than real time under load.
+_RENDER_STARTUP_ALLOWANCE_SECONDS = 60.0
+_RENDER_SLOWDOWN_FACTOR = 2.0
+
+
+def render_timeout_for(clip_seconds: float) -> float:
+    """How long one render of `clip_seconds` of audio is allowed to take."""
+    return clip_seconds * _RENDER_SLOWDOWN_FACTOR + _RENDER_STARTUP_ALLOWANCE_SECONDS
+
+
+_DEFAULT_RENDER_TIMEOUT = render_timeout_for(_DEFAULT_CLIP_SECONDS)
+
+
+def render_variant(wav_path: Path, output_dir: Path,
+                   timeout: float = _DEFAULT_RENDER_TIMEOUT) -> RenderAttempt:
     """Run --render on `wav_path` exactly as an operator would, headless.
 
     Not wrapped in buzz.ffmpeg.run: this shells out to `python -m buzz.main`, a
@@ -310,12 +334,24 @@ def audio_levels(mp4: Path, ffmpeg: str) -> tuple[float | None, float | None]:
             float(peak.group(1)) if peak else None)
 
 
-def decoded_frame_count(mp4: Path, ffprobe: str) -> int:
-    output = subprocess.run(
-        [ffprobe, '-v', 'error', '-count_frames', '-select_streams', 'v:0',
-         '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', str(mp4)],
-        capture_output=True, text=True, check=True).stdout.strip()
-    return int(output)
+def decoded_frame_count(mp4: Path, ffprobe: str) -> int | None:
+    """How many video frames the file really decodes to, or None if that cannot be read.
+
+    None is returned rather than raised because the inputs that break this are exactly
+    the ones this tool exists to catch: ffprobe exits non-zero on a container it cannot
+    parse, and prints nothing (or 'N/A') for one carrying no decodable video stream.
+    Letting either escape would end the run in a traceback on the worst render instead
+    of reporting it, and would take the other rates down with it.  flags_for() turns
+    the None into a finding.
+    """
+    try:
+        output = subprocess.run(
+            [ffprobe, '-v', 'error', '-count_frames', '-select_streams', 'v:0',
+             '-show_entries', 'stream=nb_read_frames', '-of', 'csv=p=0', str(mp4)],
+            capture_output=True, text=True, check=True).stdout.strip()
+        return int(output)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, ValueError):
+        return None
 
 
 def luma_series(mp4: Path, ffmpeg: str) -> list[float]:
@@ -347,19 +383,23 @@ class RenderCheck:
 
 
 def flags_for(black_segments: int, mean_db: float | None, frames_logged: int | None,
-              frames_decoded: int, luma_lo: float, luma_hi: float) -> list[str]:
+              frames_decoded: int | None, luma_lo: float, luma_hi: float) -> list[str]:
     """Which of the four content checks this render fails, in order of severity.
 
     Only ever called for a render that succeeded, which is why a missing
     `frames_logged` is a flag rather than a check quietly skipped: see
-    logged_frame_count().
+    logged_frame_count().  A missing `frames_decoded` is a flag for the same reason
+    and a louder one - ffprobe declining to count a file that --render claimed to
+    write successfully is a finding about the file, not about ffprobe.
     """
     flags = []
     if black_segments:
         flags.append(f'{black_segments} black segment(s)')
     if mean_db is not None and mean_db < _SILENCE_FLOOR_DB:
         flags.append(f'near-silent audio ({mean_db:.1f} dB mean)')
-    if frames_logged is None:
+    if frames_decoded is None:
+        flags.append('ffprobe could not count the frames in this file')
+    elif frames_logged is None:
         flags.append(f'no frame count in the render log (decoded {frames_decoded})')
     elif frames_decoded != frames_logged:
         flags.append(f'frame count mismatch (decoded {frames_decoded}, logged {frames_logged})')
@@ -369,8 +409,8 @@ def flags_for(black_segments: int, mean_db: float | None, frames_logged: int | N
 
 
 def check_render(rate: int, wav_path: Path, output_dir: Path, ffmpeg: str,
-                 ffprobe: str) -> RenderCheck:
-    attempt = render_variant(wav_path, output_dir)
+                 ffprobe: str, timeout: float = _DEFAULT_RENDER_TIMEOUT) -> RenderCheck:
+    attempt = render_variant(wav_path, output_dir, timeout)
     if not attempt.ok:
         return RenderCheck(rate=rate, render_ok=False, render_error=attempt.error,
                            flags=[f'render failed: {attempt.error}'])
@@ -411,11 +451,12 @@ def _report_cells(check: RenderCheck) -> list[str]:
     # formatting None as a float raises, and the report is the last thing standing
     # between an unmeasurable render and a release engineer who thinks it passed.
     logged = check.frames_logged if check.frames_logged is not None else '?'
+    decoded = check.frames_decoded if check.frames_decoded is not None else '?'
     mean = f'{check.mean_db:.1f}' if check.mean_db is not None else '?'
     peak = f'{check.peak_db:.1f}' if check.peak_db is not None else '?'
     return [
         rate,
-        f'{check.frames_decoded}/{logged}',
+        f'{decoded}/{logged}',
         f'{mean} / {peak}',
         f'{check.luma_lo:.2f}-{check.luma_hi:.2f} ({check.luma_stdev:.2f})',
         ', '.join(check.flags) or 'ok',
@@ -494,8 +535,16 @@ def main() -> int:
     except FfmpegError as exc:
         print(exc)
         return 1
+    except (wave.Error, OSError) as exc:
+        # native_sample_rate() reads the source's own header before anything is
+        # resampled.  A file that is not RIFF/WAVE at all reaches here, which is what
+        # --source pointing at an .mp3 or a truncated capture looks like.
+        print(f'{source} could not be read as a .wav: {exc}. This check needs the '
+              'recordings the monitor itself writes, which are RIFF/WAVE PCM.')
+        return 1
 
-    checks = [check_render(rate, wav, output_dir, ffmpeg, ffprobe)
+    timeout = render_timeout_for(args.clip_seconds)
+    checks = [check_render(rate, wav, output_dir, ffmpeg, ffprobe, timeout)
               for rate, wav in sorted(variants.items())]
 
     report = format_report(source, checks)

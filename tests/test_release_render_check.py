@@ -32,6 +32,7 @@ from tools.release_render_check import (
     make_rate_variants,
     native_sample_rate,
     newest_recording,
+    render_timeout_for,
     render_variant,
     resolve_source,
 )
@@ -100,8 +101,12 @@ class TestResolveSource:
     def test_an_explicit_source_always_wins(self, tmp_path):
         """Matches --audio-rf-conversion-db and the rest of this program's rule that
         something named on the command line beats anything guessed from disk -
-        the freshness check is not even consulted."""
-        explicit = tmp_path / 'anything.wav'
+        the freshness check is not even consulted.
+
+        The file has to exist: precedence over the freshness check is the claim here,
+        not that any string will do.  A path that is not a file is refused by name -
+        see TestBadExplicitSource."""
+        explicit = _write_wav(tmp_path / 'anything.wav')
         assert resolve_source(tmp_path, 7.0, explicit) == explicit
 
     def test_a_fresh_recording_is_used_without_asking(self, tmp_path):
@@ -691,3 +696,123 @@ class TestMain:
                                                    44100: tmp_path / 'c.wav'})
         assert harness.run(check_render=record) == 0
         assert seen == [8000, 16000, 44100], 'checked in rate order, one per variant'
+
+
+# ------------------------------------------------------- review findings 1-3
+
+class TestUnreadableFrameCount:
+    """ffprobe failing on a render is a finding about the render, not a crash.
+
+    These are the inputs the tool exists to catch - a container ffprobe cannot parse,
+    or one carrying no decodable video stream - so letting either raise would end the
+    run on the worst file instead of reporting it, taking the other rates with it.
+    """
+
+    def test_ffprobe_exiting_nonzero_reads_as_unknown(self, tmp_path):
+        import subprocess as sp
+        with patch('tools.release_render_check.subprocess.run',
+                   side_effect=sp.CalledProcessError(1, 'ffprobe')):
+            assert decoded_frame_count(tmp_path / 'x.mp4', 'ffprobe') is None
+
+    def test_a_file_with_no_video_stream_reads_as_unknown(self, tmp_path):
+        """ffprobe prints nothing at all when the stream selector matches nothing."""
+        with patch('tools.release_render_check.subprocess.run',
+                   return_value=_completed(stdout='\n')):
+            assert decoded_frame_count(tmp_path / 'x.mp4', 'ffprobe') is None
+
+    def test_a_non_numeric_answer_reads_as_unknown(self, tmp_path):
+        with patch('tools.release_render_check.subprocess.run',
+                   return_value=_completed(stdout='N/A\n')):
+            assert decoded_frame_count(tmp_path / 'x.mp4', 'ffprobe') is None
+
+    def test_an_unreadable_count_is_flagged_rather_than_passing_silently(self):
+        flags = flags_for(0, -29.0, 480, None, 28.0, 105.0)
+        assert any('could not count the frames' in f for f in flags)
+
+    def test_it_outranks_the_missing_log_flag(self):
+        """With no decoded count there is nothing to compare the log against, so
+        reporting a log mismatch as well would be two complaints about one unknown."""
+        flags = flags_for(0, -29.0, None, None, 28.0, 105.0)
+        assert len([f for f in flags if 'frame' in f]) == 1
+
+    def test_the_report_prints_a_placeholder_rather_than_the_word_none(self):
+        check = RenderCheck(rate=16000, render_ok=True, frames_logged=480,
+                            frames_decoded=None, mean_db=-29.0, peak_db=-11.0,
+                            luma_lo=28.0, luma_hi=105.0, luma_stdev=20.0,
+                            flags=['ffprobe could not count the frames in this file'])
+        report = format_report(Path('event.wav'), [check])
+        assert '?/480' in report
+        assert 'None' not in report
+
+
+class TestRenderTimeout:
+    """The timeout has to move with --clip-seconds, because a render plays the clip
+    through in real time.  A fixed one turns a longer clip into five identical
+    'did not finish' failures whose cause is the flag the operator just changed."""
+
+    def test_a_longer_clip_gets_a_longer_allowance(self):
+        assert render_timeout_for(60.0) > render_timeout_for(16.0)
+
+    def test_the_allowance_exceeds_real_time_by_a_margin(self):
+        """Rendering is real-time at minimum, so anything at or below the clip's own
+        duration would time out every render by construction."""
+        for clip_seconds in (8.0, 16.0, 60.0, 300.0):
+            assert render_timeout_for(clip_seconds) > clip_seconds
+
+    def test_even_a_zero_length_clip_allows_for_startup(self):
+        """Interpreter start, numba compiling the kernels, and Qt's offscreen surface
+        cost the same regardless of how much audio follows them."""
+        assert render_timeout_for(0.0) >= 60.0
+
+    def test_main_derives_it_from_the_clip_length_it_was_given(self, tmp_path):
+        seen = []
+
+        def record(rate, wav, out, ffmpeg, ffprobe, timeout):
+            seen.append(timeout)
+            return _clean_check(rate)
+
+        harness = _MainHarness(tmp_path)
+        assert harness.run(['--clip-seconds', '90'], check_render=record) == 0
+        assert seen == [render_timeout_for(90.0)], (
+            'a 90 s clip must not be rendered under the 16 s default allowance')
+
+
+class TestBadExplicitSource:
+    """--source is the path a script would use, so it deserves the same answer the
+    interactive prompt already gives a path that is not a file."""
+
+    def test_a_path_that_is_not_a_file_is_refused_by_name(self, tmp_path, capsys):
+        missing = tmp_path / 'typo.wav'
+        assert resolve_source(tmp_path, 7.0, missing) is None
+        out = capsys.readouterr().out
+        assert str(missing) in out
+        assert 'not a file' in out
+
+    def test_the_refusal_says_what_to_do_instead(self, tmp_path, capsys):
+        resolve_source(tmp_path, 7.0, tmp_path / 'typo.wav')
+        assert 'leave --source off' in capsys.readouterr().out
+
+    def test_a_directory_is_not_mistaken_for_a_recording(self, tmp_path):
+        assert resolve_source(tmp_path, 7.0, tmp_path) is None
+
+    def test_a_real_file_still_wins_over_the_freshness_check(self, tmp_path):
+        import os
+        stale = _write_wav(tmp_path / 'stale.wav')
+        os.utime(stale, (1_000_000, 1_000_000))
+        assert resolve_source(tmp_path, 7.0, stale) == stale
+
+    def test_a_file_that_is_not_a_wav_is_reported_not_raised(self, tmp_path, capsys):
+        """resolve_source only checks that something is a file; a .mp3 or a truncated
+        capture gets as far as wave.open inside make_rate_variants."""
+        import wave
+        not_a_wav = tmp_path / 'event.wav'
+        not_a_wav.write_text('this is not a RIFF header')
+
+        def explode(*args):
+            raise wave.Error('file does not start with RIFF id')
+
+        harness = _MainHarness(tmp_path, source=not_a_wav)
+        assert harness.run(make_rate_variants=explode) == 1
+        out = capsys.readouterr().out
+        assert 'could not be read as a .wav' in out
+        assert 'RIFF/WAVE PCM' in out
