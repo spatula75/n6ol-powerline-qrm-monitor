@@ -31,10 +31,11 @@ the same way the monitor asks rather than guesses when a setting is ambiguous.
 What gets checked
 -------------------------------------------------------------------------------
 
-The chosen recording is trimmed to a short clip and resampled to
-buzz.config.MIN_SAMPLE_RATE and MAX_SAMPLE_RATE plus a handful of rates in
-between - the same "what a file from another operator's sound card looks
-like" set tests/integration/test_render_end_to_end.py's FOREIGN_RATES uses.
+The chosen recording is trimmed to a short clip and resampled to both ends of
+the band buzz.config.validate_sample_rate admits - MIN_SAMPLE_RATE and
+MAX_SAMPLE_RATE - plus the rates a file from another operator's sound card
+plausibly arrives at. Not every rate in the band: it is a continuous range of
+40,001 of them, and the ends are where a rate-dependent bug shows up first.
 Each variant is rendered exactly as --render does it, and the result is
 checked four ways, all via ffmpeg/ffprobe filters rather than pixel-by-pixel
 inspection - cursory, deliberately: this catches "nothing was painted" and
@@ -47,11 +48,13 @@ render; see CLAUDE.md's "Don't overdrive your headlights".
   3. frame count  - the file's own decoded frame count against what
                     buzz.render itself logged, so an encoder that quietly
                     dropped or duplicated frames does not pass unnoticed.
-  4. signalstats  - per-frame mean luma (YAVG). Its range and stddev over the
-                    whole clip distinguish real motion (the waterfall
-                    scrolling, the scope tracing, the meter bars moving) from
-                    a static or duplicated picture - the specific "frozen
-                    opening frame" bug class this project has hit before.
+  4. signalstats  - per-frame mean luma (YAVG). Its range over the whole clip
+                    distinguishes real motion (the waterfall scrolling, the
+                    scope tracing, the meter bars moving) from a static or
+                    duplicated picture - the specific "frozen opening frame"
+                    bug class this project has hit before. The standard
+                    deviation is reported beside it but not checked; see
+                    _MIN_LUMA_RANGE for why.
 """
 
 import argparse
@@ -70,7 +73,7 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / 'lib'))
 
-from buzz.config import CONFIG_PATH, BuzzConfig  # noqa: E402
+from buzz.config import CONFIG_PATH, MAX_SAMPLE_RATE, MIN_SAMPLE_RATE, BuzzConfig  # noqa: E402
 from buzz.ffmpeg import FfmpegError, find_ffmpeg, run  # noqa: E402
 
 logging.basicConfig(level=logging.WARNING)
@@ -83,6 +86,22 @@ logger = logging.getLogger(__name__)
 # even though the number they need happens to agree.
 _FOREIGN_RATES = (8000, 11025, 22050, 44100)
 
+# What actually gets rendered: the foreign rates bracketed by the two ends of the
+# band validate_sample_rate admits.  The ends are the point of the exercise -- a
+# rate-dependent bug surfaces at a boundary long before it surfaces in the middle,
+# and MAX_SAMPLE_RATE is where the fixed-size ring buffer holds the least history.
+# Derived from the constants rather than written out as 8000 and 48000, so moving
+# the admitted band moves what gets checked instead of quietly leaving the new
+# boundary untested; tests/test_release_render_check.py pins that coupling.
+#
+# MIN_SAMPLE_RATE currently repeats 8000 from the foreign rates.  Left as it is:
+# make_rate_variants dedupes through a set anyway, the same way it does for a
+# recording whose own rate is already in the list, and trimming the overlap by hand
+# would break the one useful property each tuple has -- that _FOREIGN_RATES still
+# names exactly what the integration test names, and this one still says the band
+# ends are covered without the reader checking whether they happen to be listed.
+_RATES_UNDER_TEST = (MIN_SAMPLE_RATE, *_FOREIGN_RATES, MAX_SAMPLE_RATE)
+
 _DEFAULT_MAX_AGE_DAYS = 7.0
 _DEFAULT_CLIP_SECONDS = 16.0
 # Near-silence threshold for volumedetect's mean_volume, in dB.  Well below any
@@ -92,6 +111,15 @@ _SILENCE_FLOOR_DB = -60.0
 # Minimum acceptable spread in per-frame mean luma (signalstats YAVG) across a
 # whole clip.  A real render's waterfall, scope, and meter bars all move over
 # 16 s; anything under this is a static or duplicated picture.
+#
+# Range and not standard deviation, though the standard deviation is reported
+# beside it.  A low stddev with an acceptable range means the variation is
+# concentrated in a few frames, which sounds like the frozen-picture case and is
+# also what a legitimate capture of a band that stays quiet until a burst arrives
+# late in the clip looks like.  Nothing here can tell those apart, and there is no
+# measured baseline to set a floor from that would not also flag the second, so
+# the figure is printed for the person reading the report to judge rather than
+# turned into a threshold that fails good renders.
 _MIN_LUMA_RANGE = 0.5
 
 
@@ -123,8 +151,7 @@ def describe_staleness(directory: Path, newest: Path | None, max_age_days: float
             'something the renderer handles correctly.')
 
 
-def resolve_source(directory: Path, max_age_days: float, explicit: Path | None,
-                   prompt: bool = True) -> Path | None:
+def resolve_source(directory: Path, max_age_days: float, explicit: Path | None) -> Path | None:
     """Choose the recording to validate against.
 
     An explicit path always wins, matching --audio-rf-conversion-db and the rest of
@@ -134,9 +161,7 @@ def resolve_source(directory: Path, max_age_days: float, explicit: Path | None,
     proceeding silently against a recording that may no longer represent anything.
 
     Returns None if the operator chooses to abort - the caller should exit without
-    rendering anything in that case.  `prompt=False` is for tests: it skips input()
-    and treats "nothing recent enough" the same as "abort", so the interactive loop
-    itself is the only thing not covered by a unit test.
+    rendering anything in that case.
     """
     if explicit is not None:
         return explicit
@@ -148,8 +173,6 @@ def resolve_source(directory: Path, max_age_days: float, explicit: Path | None,
     print()
     print(describe_staleness(directory, newest, max_age_days))
     print()
-    if not prompt:
-        return None
 
     while True:
         offer_proceed = ', [P]roceed with it anyway' if newest else ''
@@ -180,11 +203,11 @@ def make_rate_variants(source: Path, clip_seconds: float, output_dir: Path,
     """Trim `source` to `clip_seconds` and resample it to every rate under test.
 
     The recording's own rate is included, trimmed but not resampled, alongside the
-    foreign rates - a regression that only shows up at the native rate would
+    rates under test - a regression that only shows up at the native rate would
     otherwise go unchecked.  Every output stays RIFF/WAVE PCM: this feeds
     --playback next, which only reads .wav.
     """
-    rates = sorted({native_sample_rate(source), *_FOREIGN_RATES})
+    rates = sorted({native_sample_rate(source), *_RATES_UNDER_TEST})
     variants = {}
     for rate in rates:
         out = output_dir / f'clip-{rate}hz.wav'
@@ -197,7 +220,23 @@ def make_rate_variants(source: Path, clip_seconds: float, output_dir: Path,
 
 # --------------------------------------------------------------------- rendering
 
-def render_variant(wav_path: Path, output_dir: Path, timeout: float = 120.0) -> tuple[Path, bool, str]:
+@dataclass(frozen=True)
+class RenderAttempt:
+    """What came of running --render on one variant, and where it left its evidence.
+
+    The log path travels with the mp4 rather than being rebuilt from the same naming
+    rule by whoever wants it next: two places constructing it independently is how
+    the frame-count check would come to read a file that is never there and report
+    nothing wrong about it.
+    """
+
+    mp4: Path
+    log: Path
+    ok: bool
+    error: str = ''
+
+
+def render_variant(wav_path: Path, output_dir: Path, timeout: float = 120.0) -> RenderAttempt:
     """Run --render on `wav_path` exactly as an operator would, headless.
 
     Not wrapped in buzz.ffmpeg.run: this shells out to `python -m buzz.main`, a
@@ -214,16 +253,22 @@ def render_variant(wav_path: Path, output_dir: Path, timeout: float = 120.0) -> 
             capture_output=True, text=True, env=environment, cwd=str(_REPO_ROOT),
             timeout=timeout)
     except subprocess.TimeoutExpired:
-        return mp4, False, f'did not finish within {timeout:g}s'
+        return RenderAttempt(mp4, log, False, f'did not finish within {timeout:g}s')
     log.write_text((finished.stdout or '') + (finished.stderr or ''))
     if finished.returncode != 0 or not mp4.exists():
         tail = (finished.stderr or finished.stdout or '')[-500:]
-        return mp4, False, f'exit code {finished.returncode}: {tail}'
-    return mp4, True, ''
+        return RenderAttempt(mp4, log, False, f'exit code {finished.returncode}: {tail}')
+    return RenderAttempt(mp4, log, True)
 
 
 def logged_frame_count(log_path: Path) -> int | None:
-    """The frame count buzz.render itself reported, parsed back out of its log."""
+    """The frame count buzz.render itself reported, parsed back out of its log.
+
+    None means the line was not there.  After a render that succeeded that is itself
+    a finding rather than a shrug: finish() logs it on every completed render, so its
+    absence means the wording moved, the log went somewhere else, or the render did
+    not finish the way its exit code claimed.  flags_for() treats it as one.
+    """
     if not log_path.exists():
         return None
     match = re.search(r'Rendered (\d+) frames', log_path.read_text())
@@ -302,14 +347,21 @@ class RenderCheck:
 
 
 def flags_for(black_segments: int, mean_db: float | None, frames_logged: int | None,
-             frames_decoded: int, luma_lo: float, luma_hi: float) -> list[str]:
-    """Which of the four content checks this render fails, in order of severity."""
+              frames_decoded: int, luma_lo: float, luma_hi: float) -> list[str]:
+    """Which of the four content checks this render fails, in order of severity.
+
+    Only ever called for a render that succeeded, which is why a missing
+    `frames_logged` is a flag rather than a check quietly skipped: see
+    logged_frame_count().
+    """
     flags = []
     if black_segments:
         flags.append(f'{black_segments} black segment(s)')
     if mean_db is not None and mean_db < _SILENCE_FLOOR_DB:
         flags.append(f'near-silent audio ({mean_db:.1f} dB mean)')
-    if frames_logged is not None and frames_decoded != frames_logged:
+    if frames_logged is None:
+        flags.append(f'no frame count in the render log (decoded {frames_decoded})')
+    elif frames_decoded != frames_logged:
         flags.append(f'frame count mismatch (decoded {frames_decoded}, logged {frames_logged})')
     if luma_hi - luma_lo < _MIN_LUMA_RANGE:
         flags.append(f'low motion (luma range {luma_hi - luma_lo:.3f})')
@@ -318,15 +370,16 @@ def flags_for(black_segments: int, mean_db: float | None, frames_logged: int | N
 
 def check_render(rate: int, wav_path: Path, output_dir: Path, ffmpeg: str,
                  ffprobe: str) -> RenderCheck:
-    mp4, render_ok, render_error = render_variant(wav_path, output_dir)
-    if not render_ok:
-        return RenderCheck(rate=rate, render_ok=False, render_error=render_error,
-                           flags=[f'render failed: {render_error}'])
+    attempt = render_variant(wav_path, output_dir)
+    if not attempt.ok:
+        return RenderCheck(rate=rate, render_ok=False, render_error=attempt.error,
+                           flags=[f'render failed: {attempt.error}'])
 
+    mp4 = attempt.mp4
     black = count_black_segments(mp4, ffmpeg)
     mean_db, peak_db = audio_levels(mp4, ffmpeg)
     decoded = decoded_frame_count(mp4, ffprobe)
-    logged = logged_frame_count(output_dir / f'{wav_path.stem}.log')
+    logged = logged_frame_count(attempt.log)
     luma = luma_series(mp4, ffmpeg)
     lo, hi = (min(luma), max(luma)) if luma else (0.0, 0.0)
     stdev = statistics.pstdev(luma) if luma else 0.0
@@ -340,24 +393,58 @@ def check_render(rate: int, wav_path: Path, output_dir: Path, ffmpeg: str,
 
 # --------------------------------------------------------------------- reporting
 
+_REPORT_COLUMNS = ('rate', 'frames', 'audio mean/peak dB', 'luma lo-hi (stdev)', 'flags')
+
+
+def _report_cells(check: RenderCheck) -> list[str]:
+    """One row of the report as unpadded cells, in _REPORT_COLUMNS order.
+
+    A render that failed has nothing to say in the measured columns, so it returns a
+    short row: rate, then the error where the rest of the numbers would have been.
+    """
+    rate = f'{check.rate} Hz'
+    if not check.render_ok:
+        return [rate, f'FAILED: {check.render_error}']
+    # '?' rather than a number wherever a probe came back with nothing.  audio_levels()
+    # returns None for a track it could not measure and flags_for() is careful to treat
+    # that as unknown rather than as silence, so this has to render it as something -
+    # formatting None as a float raises, and the report is the last thing standing
+    # between an unmeasurable render and a release engineer who thinks it passed.
+    logged = check.frames_logged if check.frames_logged is not None else '?'
+    mean = f'{check.mean_db:.1f}' if check.mean_db is not None else '?'
+    peak = f'{check.peak_db:.1f}' if check.peak_db is not None else '?'
+    return [
+        rate,
+        f'{check.frames_decoded}/{logged}',
+        f'{mean} / {peak}',
+        f'{check.luma_lo:.2f}-{check.luma_hi:.2f} ({check.luma_stdev:.2f})',
+        ', '.join(check.flags) or 'ok',
+    ]
+
+
 def format_report(source: Path, checks: list[RenderCheck]) -> str:
-    lines = [f'Source recording: {source}', '']
-    width = max(len(f'{c.rate} Hz') for c in checks)
-    header = f"{'rate':{width}}  frames       audio(mean/peak dB)   luma(lo-hi, stdev)      flags"
-    lines.append(header)
-    lines.append('-' * len(header))
-    for c in checks:
-        if not c.render_ok:
-            lines.append(f'{c.rate} Hz'.ljust(width) + f'  FAILED: {c.render_error}')
-            continue
-        lines.append(
-            f"{f'{c.rate} Hz':{width}}  "
-            f"{c.frames_decoded:>4}/{c.frames_logged if c.frames_logged is not None else '?'}"
-            f"      {c.mean_db:>6.1f} / {c.peak_db:>6.1f}      "
-            f"{c.luma_lo:5.2f}-{c.luma_hi:5.2f} ({c.luma_stdev:5.2f})   "
-            f"{', '.join(c.flags) or 'ok'}"
-        )
-    failed = [c for c in checks if not c.ok]
+    """The report as a table whose columns line up whatever the numbers came to.
+
+    Widths are measured from the cells rather than written into a format string, so a
+    six-digit sample rate or a five-digit frame count widens its own column instead of
+    running into the next one and pushing every heading out of register.
+    """
+    rows = [list(_REPORT_COLUMNS)] + [_report_cells(check) for check in checks]
+    # Short rows are excluded: a failed render's error sits under the 'frames' heading
+    # and would otherwise stretch that column by the length of an ffmpeg complaint.
+    full_rows = [row for row in rows if len(row) == len(_REPORT_COLUMNS)]
+    widths = [max(len(row[index]) for row in full_rows)
+              for index in range(len(_REPORT_COLUMNS))]
+
+    def rendered(row: list[str]) -> str:
+        # The last cell of a row is never padded, so no line carries trailing spaces.
+        return '  '.join(cell.ljust(widths[index]) if index < len(row) - 1 else cell
+                         for index, cell in enumerate(row))
+
+    heading = rendered(rows[0])
+    lines = [f'Source recording: {source}', '', heading, '-' * len(heading)]
+    lines.extend(rendered(row) for row in rows[1:])
+    failed = [check for check in checks if not check.ok]
     lines.append('')
     lines.append(f'{len(checks)} rate(s) checked, {len(failed)} flagged.')
     return '\n'.join(lines)
@@ -409,7 +496,7 @@ def main() -> int:
         return 1
 
     checks = [check_render(rate, wav, output_dir, ffmpeg, ffprobe)
-             for rate, wav in sorted(variants.items())]
+              for rate, wav in sorted(variants.items())]
 
     report = format_report(source, checks)
     print()

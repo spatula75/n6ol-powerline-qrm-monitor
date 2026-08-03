@@ -186,7 +186,8 @@ auto-closed the PR outright instead of migrating it, despite what its docs sugge
    merging. It is not in CI - CI has no live radio, so it cannot produce a recording
    that means anything - which is exactly why skipping it is easy to justify and
    wrong to do: it is the one check that renders a real, current capture rather than
-   a synthetic one, at every sample rate the monitor supports.
+   a synthetic one, at both ends of the sample-rate band and several rates in
+   between.
 4. Merge as a PR, then tag the merge commit and push the tag: `git tag 1.3.0 &&
    git push origin 1.3.0`. Plain semver, **no leading `v`** - the workflow's tag filter
    won't match one.

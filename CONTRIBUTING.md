@@ -102,14 +102,14 @@ to open the PR to find out.
    python tools/release_render_check.py
    ```
 
-   This renders a real capture at every sample rate the monitor supports and checks
-   that each result actually holds a picture and a sound, not just a well-formed
-   container - see the tool's own docstring for exactly what it checks.  It asks
-   which recording to use when nothing recent is on hand rather than picking
-   silently or skipping the check, so answer at the prompt instead of routing
-   around it.  Not wired into CI: CI has no live radio and cannot produce a
-   recording that means anything, so this stays a manual step for the same reason
-   "Hands-on verification" in `CLAUDE.md` does.
+   This renders a real capture at both ends of the sample-rate band the monitor
+   admits, and at several rates in between, then checks that each result actually
+   holds a picture and a sound, not just a well-formed container - see the tool's
+   own docstring for exactly what it checks.  It asks which recording to use when
+   nothing recent is on hand rather than picking silently or skipping the check, so
+   answer at the prompt instead of routing around it.  Not wired into CI: CI has no
+   live radio and cannot produce a recording that means anything, so this stays a
+   manual step for the same reason "Hands-on verification" in `CLAUDE.md` does.
 4. Merge that as a PR, then tag the merge commit and push the tag:
 
    ```

@@ -11,9 +11,11 @@ from unittest.mock import patch
 
 import pytest
 
+from buzz.config import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 from buzz.ffmpeg import FfmpegError
 
 from tools.release_render_check import (
+    RenderAttempt,
     RenderCheck,
     age_days,
     audio_levels,
@@ -106,18 +108,6 @@ class TestResolveSource:
         fresh = _write_wav(tmp_path / 'fresh.wav')
         with patch('builtins.input', side_effect=AssertionError('should not be asked')):
             assert resolve_source(tmp_path, 7.0, None) == fresh
-
-    def test_no_prompt_mode_treats_staleness_as_abort(self, tmp_path):
-        """prompt=False is what a non-interactive caller (this test file, or a future
-        scripted use) gets: no input() call, and staleness reads the same as the
-        operator choosing to abort."""
-        import os
-        stale = _write_wav(tmp_path / 'stale.wav')
-        os.utime(stale, (1_000_000, 1_000_000))
-        assert resolve_source(tmp_path, 7.0, None, prompt=False) is None
-
-    def test_no_recordings_and_no_prompt_is_also_abort(self, tmp_path):
-        assert resolve_source(tmp_path, 7.0, None, prompt=False) is None
 
     def test_operator_can_abort_a_stale_recording(self, tmp_path):
         import os
@@ -237,10 +227,22 @@ class TestFlagsFor:
         flags = flags_for(0, -29.0, 480, 475, 28.0, 105.0)
         assert any('frame count mismatch' in f for f in flags)
 
-    def test_no_logged_count_is_not_a_mismatch(self):
-        """A missing log (render_variant timed out, say) has nothing to compare
-        against, which is not the same claim as the counts disagreeing."""
-        assert flags_for(0, -29.0, None, 480, 28.0, 105.0) == []
+    def test_an_absent_logged_count_is_flagged_rather_than_skipped(self):
+        """flags_for only runs for a render that finished, and buzz.render logs its
+        frame count on every render that finishes.  So no count in the log means the
+        plumbing broke - the log went astray, or the wording moved and the regex now
+        matches nothing - and the check has stopped checking.  Reporting that as a
+        pass would leave the tool green while one of its four probes was dead."""
+        flags = flags_for(0, -29.0, None, 480, 28.0, 105.0)
+        assert any('no frame count' in f for f in flags), (
+            'A render log with no "Rendered N frames" line must be flagged. Left '
+            'unflagged, a change to that log line silently disables the frame-count '
+            'check and every release afterwards passes it without testing anything.')
+
+    def test_the_absent_count_flag_names_what_was_decoded(self):
+        """The reader still needs the one number that was measurable, or they cannot
+        tell a plumbing fault from a render that produced no frames at all."""
+        assert 'decoded 480' in flags_for(0, -29.0, None, 480, 28.0, 105.0)[0]
 
     def test_a_frozen_picture_is_flagged_as_low_motion(self):
         flags = flags_for(0, -29.0, 480, 480, 50.0, 50.1)
@@ -289,6 +291,34 @@ class TestFormatReport:
         report = format_report(Path('event.wav'), checks)
         assert '2 rate(s) checked, 1 flagged.' in report
 
+    def test_every_column_starts_where_its_heading_does(self):
+        """The table is read by eye down a column, so a heading that has drifted off
+        its own numbers costs the reader the thing the table was for.  The widths are
+        measured from the cells, which is what lets a wide value push its heading
+        along instead of shoving every later column out of register: 384000 Hz here
+        is nine characters against 'rate''s four.
+        """
+        checks = [_clean_check(8000), _clean_check(384000)]
+        lines = format_report(Path('event.wav'), checks).splitlines()
+        heading, rows = lines[2], lines[4:6]
+        starts = [heading.index(column) for column in ('frames', 'audio', 'luma', 'flags')]
+        for row in rows:
+            for column, start in zip(('frames', 'audio', 'luma', 'flags'), starts):
+                assert row[start] != ' ', (
+                    f'The {column!r} column starts at position {start} in the heading, '
+                    f'and this row has whitespace there:\n{heading}\n{row}\n'
+                    'Header and cells are padded to different widths.')
+
+    def test_an_unmeasurable_audio_track_prints_rather_than_raising(self):
+        """audio_levels() returns None for a track it could not measure, and
+        flags_for() deliberately does not call that silence.  So a render can reach
+        the report with no dB figures, and formatting None as a float raises - which
+        would lose the whole report, including the rates that were fine."""
+        unmeasured = RenderCheck(rate=16000, render_ok=True, frames_logged=480,
+                                 frames_decoded=480, mean_db=None, peak_db=None,
+                                 luma_lo=28.0, luma_hi=105.0, luma_stdev=20.0, flags=[])
+        assert '?' in format_report(Path('event.wav'), [unmeasured])
+
 
 # --------------------------------------------------------------------------- clip prep
 
@@ -300,8 +330,28 @@ class TestMakeRateVariants:
         source = _write_wav(tmp_path / 'event.wav', rate=16000)
         with patch('tools.release_render_check.run') as mocked:
             variants = make_rate_variants(source, 16.0, tmp_path, 'ffmpeg')
-        assert sorted(variants) == [8000, 11025, 16000, 22050, 44100]
-        assert mocked.call_count == 5
+        assert sorted(variants) == [8000, 11025, 16000, 22050, 44100, 48000]
+        assert mocked.call_count == 6
+
+    def test_both_ends_of_the_admitted_band_are_rendered(self, tmp_path):
+        """The reason this tool renders at more than one rate at all.
+
+        MIN_SAMPLE_RATE and MAX_SAMPLE_RATE are the boundaries buzz.config's
+        validate_sample_rate admits, and a rate-dependent bug shows up at a boundary
+        long before it shows up in the middle - MAX_SAMPLE_RATE especially, where the
+        fixed-size ring buffer holds the least history.  Both numbers come from
+        buzz.config rather than from this file, so widening the admitted band and
+        leaving the check rendering at the old edges fails here instead of shipping.
+        """
+        source = _write_wav(tmp_path / 'event.wav', rate=16000)
+        with patch('tools.release_render_check.run'):
+            variants = make_rate_variants(source, 16.0, tmp_path, 'ffmpeg')
+        for boundary in (MIN_SAMPLE_RATE, MAX_SAMPLE_RATE):
+            assert boundary in variants, (
+                f'{boundary} Hz is an end of the band validate_sample_rate admits, and '
+                f'the release check renders at {sorted(variants)}. Add it to '
+                '_RATES_UNDER_TEST in tools/release_render_check.py, or the release '
+                'goes out with that boundary never rendered.')
 
     def test_a_native_rate_already_in_the_set_is_not_duplicated(self, tmp_path):
         """44100 is both this recording's own rate and one of the foreign rates; it
@@ -309,8 +359,8 @@ class TestMakeRateVariants:
         source = _write_wav(tmp_path / 'event.wav', rate=44100)
         with patch('tools.release_render_check.run') as mocked:
             variants = make_rate_variants(source, 16.0, tmp_path, 'ffmpeg')
-        assert sorted(variants) == [8000, 11025, 22050, 44100]
-        assert mocked.call_count == 4
+        assert sorted(variants) == [8000, 11025, 22050, 44100, 48000]
+        assert mocked.call_count == 5
 
     def test_each_variant_asks_ffmpeg_for_its_own_rate_and_pcm_wav(self, tmp_path):
         """--playback only reads .wav, so every variant has to come back as PCM WAVE
@@ -339,9 +389,23 @@ class TestRenderVariant:
         wav.touch()
         (tmp_path / 'clip-16000hz.mp4').touch()     # stands in for what the render wrote
         with patch('tools.release_render_check.subprocess.run', return_value=_completed()):
-            mp4, ok, error = render_variant(wav, tmp_path)
-        assert ok is True and error == ''
-        assert mp4 == tmp_path / 'clip-16000hz.mp4'
+            attempt = render_variant(wav, tmp_path)
+        assert attempt.ok is True and attempt.error == ''
+        assert attempt.mp4 == tmp_path / 'clip-16000hz.mp4'
+
+    def test_the_attempt_carries_the_log_it_wrote(self, tmp_path):
+        """check_render reads the frame count back out of this file.  Returning the
+        path rather than letting the caller rebuild it from the same naming rule is
+        what stops the two drifting apart - and a frame-count check pointed at a file
+        that is not there reports nothing wrong, so the drift would be silent."""
+        wav = tmp_path / 'clip-16000hz.wav'
+        wav.touch()
+        (tmp_path / 'clip-16000hz.mp4').touch()
+        with patch('tools.release_render_check.subprocess.run',
+                   return_value=_completed(stderr='Rendered 497 frames\n')):
+            attempt = render_variant(wav, tmp_path)
+        assert attempt.log.exists(), 'the returned log path must be the file just written'
+        assert 'Rendered 497 frames' in attempt.log.read_text()
 
     def test_it_renders_headless_and_offscreen(self, tmp_path):
         """A release check that throws a window in front of whoever is running it
@@ -385,26 +449,26 @@ class TestRenderVariant:
         wav.touch()
         with patch('tools.release_render_check.subprocess.run',
                    side_effect=sp.TimeoutExpired(cmd='buzz.main', timeout=120.0)):
-            mp4, ok, error = render_variant(wav, tmp_path, timeout=120.0)
-        assert ok is False
-        assert 'did not finish within 120s' in error
+            attempt = render_variant(wav, tmp_path, timeout=120.0)
+        assert attempt.ok is False
+        assert 'did not finish within 120s' in attempt.error
 
     def test_a_nonzero_exit_reports_the_code_and_the_tail_of_the_output(self, tmp_path):
         wav = tmp_path / 'clip-16000hz.wav'
         wav.touch()
         with patch('tools.release_render_check.subprocess.run',
                    return_value=_completed(returncode=2, stderr='ffmpeg exploded')):
-            mp4, ok, error = render_variant(wav, tmp_path)
-        assert ok is False
-        assert 'exit code 2' in error and 'ffmpeg exploded' in error
+            attempt = render_variant(wav, tmp_path)
+        assert attempt.ok is False
+        assert 'exit code 2' in attempt.error and 'ffmpeg exploded' in attempt.error
 
     def test_a_clean_exit_that_produced_no_file_is_still_a_failure(self, tmp_path):
         """buzz.main can exit 0 having written nothing; the file is the real evidence."""
         wav = tmp_path / 'clip-16000hz.wav'
         wav.touch()
         with patch('tools.release_render_check.subprocess.run', return_value=_completed()):
-            mp4, ok, error = render_variant(wav, tmp_path)
-        assert ok is False
+            attempt = render_variant(wav, tmp_path)
+        assert attempt.ok is False
 
 
 # --------------------------------------------------------------------------- probes
@@ -471,7 +535,8 @@ class TestCheckRender:
         """Nothing was produced, so probing it would only add noise; the flag says
         what went wrong instead."""
         with patch('tools.release_render_check.render_variant',
-                   return_value=(tmp_path / 'x.mp4', False, 'exit code 1')):
+                   return_value=RenderAttempt(tmp_path / 'x.mp4', tmp_path / 'x.log',
+                                              False, 'exit code 1')):
             with patch('tools.release_render_check.count_black_segments',
                        side_effect=AssertionError('must not probe a file that was never made')):
                 check = check_render(16000, tmp_path / 'clip.wav', tmp_path, 'ffmpeg', 'ffprobe')
@@ -482,7 +547,8 @@ class TestCheckRender:
     def test_a_clean_render_fills_in_every_measured_field(self, tmp_path):
         (tmp_path / 'clip.log').write_text('Rendered 480 frames to clip.mp4\n')
         with patch('tools.release_render_check.render_variant',
-                   return_value=(tmp_path / 'clip.mp4', True, '')):
+                   return_value=RenderAttempt(tmp_path / 'clip.mp4', tmp_path / 'clip.log',
+                                              True)):
             with patch.multiple('tools.release_render_check',
                                 count_black_segments=lambda *a: 0,
                                 audio_levels=lambda *a: (-29.0, -11.0),
@@ -500,7 +566,8 @@ class TestCheckRender:
         never changes."""
         (tmp_path / 'clip.log').write_text('Rendered 480 frames\n')
         with patch('tools.release_render_check.render_variant',
-                   return_value=(tmp_path / 'clip.mp4', True, '')):
+                   return_value=RenderAttempt(tmp_path / 'clip.mp4', tmp_path / 'clip.log',
+                                              True)):
             with patch.multiple('tools.release_render_check',
                                 count_black_segments=lambda *a: 0,
                                 audio_levels=lambda *a: (-29.0, -11.0),
@@ -515,7 +582,8 @@ class TestCheckRender:
         the low-motion flag speak instead."""
         (tmp_path / 'clip.log').write_text('Rendered 480 frames\n')
         with patch('tools.release_render_check.render_variant',
-                   return_value=(tmp_path / 'clip.mp4', True, '')):
+                   return_value=RenderAttempt(tmp_path / 'clip.mp4', tmp_path / 'clip.log',
+                                              True)):
             with patch.multiple('tools.release_render_check',
                                 count_black_segments=lambda *a: 0,
                                 audio_levels=lambda *a: (-29.0, -11.0),
