@@ -7,7 +7,7 @@ Working notes for Claude Code on this project. Distilled from prior sessions.
 A continuous powerline QRM monitor for ham radio operators. It samples receiver audio,
 locks onto the 120 pps (60 Hz grid; 100 pps where mains is 50 Hz) impulse train from
 arcing hardware, and logs signal and noise-floor levels to CSV, charts, and optional
-`.wav` event recordings. There is a live Qt display: waterfall, phase-synchronised
+`.wav` event recordings. There is a live Qt display: waterfall, phase-synchronized
 oscilloscope, and S-unit bar graphs.
 
 It is a **field tool, not lab test equipment**. The goal is knowing when the utility is
@@ -221,7 +221,7 @@ after all of it. In that order:
 5. **Hands-on verification.** Changes to the audio path, the display, or the charts get
    checked against a live radio before being committed - green tests are not the finish
    line for those.
-6. **Documentation drift.** A code or behaviour change means checking `README.md`,
+6. **Documentation drift.** A code or behavior change means checking `README.md`,
    `README-analysis.md`, and `config.example.toml` for anything the change makes wrong -
    a described default that moved, a number that no longer holds, a flag or setting that
    changed shape. Docs go stale exactly like comments do, and nothing else catches it;
@@ -255,7 +255,7 @@ the interpreted one.
 
 ## Reporting finished work
 
-### Summarise structural changes
+### Summarize structural changes
 
 When a sizeable unit of work is done, **describe what changed structurally** before
 anything else: what was added, where it lives, and what it does. New modules, new
@@ -347,7 +347,7 @@ wrong the same way.
 
 **The counterweight matters as much as the rule.** A small gain does not justify churn,
 and *readability beats pattern purity* still stands. Refactor where the structure
-actually clarifies, not to make the code resemble a catalogue.
+actually clarifies, not to make the code resemble a catalog.
 
 ---
 
@@ -371,12 +371,12 @@ What that outranks, in practice:
   matters - and where it does, the comment should say so.
 
 **Tests express intent too, and are often the better place for it.** A test states what
-behaviour is supposed to hold, in a form that fails loudly when someone breaks the
+behavior is supposed to hold, in a form that fails loudly when someone breaks the
 assumption - where a comment making the same claim just goes quietly out of date. When
 the thing to convey is an identity, an equivalence, or a boundary condition, a test
 usually carries it better than prose: the equivalence tests behind the pulse-train
 summation don't merely check the optimization, they record the claim that makes it
-valid. Reach for a test whenever the explanation is really a claim about behaviour.
+valid. Reach for a test whenever the explanation is really a claim about behavior.
 
 ## Don't overdrive your headlights
 
@@ -527,7 +527,7 @@ leave an equivalence test behind.
 
 **Every `@njit` gets an explicit signature**, so numba compiles at import instead of on
 first call. Take the time to work out the right types; it is not optional and it is not
-a micro-optimisation.
+a micro-optimization.
 
 Lazy compilation runs on whichever thread reaches the function first. In this program
 that is the Qt thread, part-way through a paint, while audio keeps arriving on another
@@ -560,11 +560,11 @@ that call rather than quietly compiling another variant mid-flight.
 - Cover every method of any appreciable complexity. Separate tests into discrete files
   and classes by subject.
 - **Write tests to document, not only to catch regressions.** A test name and its
-  assertions should say what behaviour is intended and why it holds. Where a knowledge
+  assertions should say what behavior is intended and why it holds. Where a knowledge
   gap makes code hard to trust - a mathematical identity, an equivalence between a fast
   path and an obvious one, a boundary that must not move - a test is the durable way to
   state it. See "First principle: express the intention".
-- Golden files and generated sample audio in `tests/resources/` pin down DSP behaviour
+- Golden files and generated sample audio in `tests/resources/` pin down DSP behavior
   so later tweaks have to be deliberate.
 - **When a test stands in for a sound source, it uses the dtype the real source
   produces.** Synthetic audio is easy to build in whatever type is convenient, and the
@@ -672,6 +672,21 @@ different machines means nothing.
 Match the voice already in the codebase: concise, factual, plain. Avoid AI-assistant tics:
 no "X IS REAL", no "it isn't X, it's Y" constructions, no breathless framing.
 
+Prose here also follows a Simplified Technical English discipline, adapted under the MIT
+License from a skill by Ege Çelebi (@woosal1337), and through it from the ASD-STE100
+standard. It lives in its own file so the attribution and the license terms stay with
+the rules, and is imported here so it loads with this one:
+
+@docs/ste-writing.md
+
+Two modes, and the difference matters: **strict** for error messages, log lines and
+numbered procedures, where every extra word costs a reader who is already stuck;
+**flavored** for comments, docstrings and PR text, where the sentence and active-voice
+discipline applies but the length caps and vocabulary limits do not. Where those rules
+disagreed with the ones already here, the disagreement was settled deliberately rather
+than by whichever file was read last, and `docs/ste-writing.md` records which won and
+why. Its self-lint list is the thing to run over any prose before returning it.
+
 **Banned words and punctuation.** These are assistant tells rather than house voice, and
 they are banned outright in files and comments:
 
@@ -680,7 +695,9 @@ they are banned outright in files and comments:
   where the break really needs the weight, meaning a refinement that also wants a pause;
   the codebase already uses `--` that way in comments. A colon, semicolon, comma or full
   stop is often better than either, and a *paired* aside is nearly always clearer with
-  commas, since half of a `- ... -` pair at the start of a line reads as a bullet.
+  commas, since half of a `- ... -` pair at the start of a line reads as a bullet. The
+  semicolon is the one exception to that list in strict text: an error message or a
+  numbered step takes two sentences instead, per `docs/ste-writing.md`.
 - **These words:** *genuine*, *genuinely*, *load-bearing*, *is real*, *are real*, *land*,
   *lands*, *landed*.
 
@@ -722,7 +739,7 @@ load-bearing line" is the line that matters; "the value lands at 128" is the val
   trims prose that restates the obvious - it does not license leaving hard-to-verify
   code unexplained. See "Don't overdrive your headlights"; the two rules meet at
   whether a reader can confirm the code is correct.
-- Where a comment explains the physics or the radio behaviour behind a decision, the
+- Where a comment explains the physics or the radio behavior behind a decision, the
   reasoning is authoritative and the wording is not. Tighten the prose; don't quietly
   change what it claims.
 - **Never invent facts** - crash frequencies, dates, history, measurements. If it isn't
@@ -783,7 +800,7 @@ it in CI output months later.
   least-squares fitting, the correlation identities this code leans on. Radio knowledge
   is a different matter; see Domain reference.
 - Display work is tuned by eye against a real signal, in terms of pixel dimensions,
-  padding, and colour ranges. Expect iteration, and change one thing at a time so each
+  padding, and color ranges. Expect iteration, and change one thing at a time so each
   round of feedback is attributable.
 
 ## Domain reference
