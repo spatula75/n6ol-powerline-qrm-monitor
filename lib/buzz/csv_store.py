@@ -2,13 +2,13 @@
 CSV persistence layer for noise measurements.
 
 Each day's data lives in a separate file named noise_data.YYYY-MM-DD.csv in the
-configured output directory.  CsvStore owns the file format end to end: writing
+configured output directory. CsvStore owns the file format end to end: writing
 new rows, parsing files back into typed CsvRow records (including old-format
 files that predate the Signal Lock Status column), and aggregating a date range
 into the time-bucketed score dict the summary graphs consume.
 
 Column order is: timestamp, SNR, signal, noise floor, lock status, grid frequency,
-phase drift, then the six weather fields.  New columns belong immediately after
+phase drift, then the six weather fields. New columns belong immediately after
 lock status, because read_rows() stops reading at index 4 and every field past
 that point is written for humans and external tools rather than parsed here.
 """
@@ -25,7 +25,7 @@ from buzz.config import BuzzConfig
 
 CsvValue = str | float
 
-# Summary scores are bucketed to intervals of this many minutes.  The summary
+# Summary scores are bucketed to intervals of this many minutes. The summary
 # graph builds its time axis from the same constant so the two can't drift apart.
 BUCKET_MINUTES = 15
 
@@ -60,11 +60,11 @@ class CsvStore:
                *, grid_frequency: CsvValue = '', phase_drift: CsvValue = '') -> str:
         """Append one measurement row, writing the header first if the file is new.
 
-        grid_frequency and phase_drift are keyword-only and default to blank: they are
-        by-products of the analyzer's drift tracking rather than measurements the
+        grid_frequency and phase_drift are keyword-only and default to blank. They
+        are by-products of the analyzer's drift tracking rather than measurements the
         monitor depends on, and a row with no pulse-train lock has nothing to report
-        for them.  They are written after Signal Lock Status, ahead of the weather
-        fields - read_rows() only ever reads up to index 4, so inserting there leaves
+        for them. They are written after Signal Lock Status, ahead of the weather
+        fields: read_rows() only ever reads up to index 4, so inserting there leaves
         parsing of both older and newer files completely unaffected.
         """
         csv_filename = self.filename_for_date(now)
@@ -83,14 +83,14 @@ class CsvStore:
     def read_rows(self, input_filename: Path | str) -> list[CsvRow]:
         """Parse one CSV file into CsvRow records, skipping headers and malformed lines.
 
-        Timestamps are converted to the station timezone.  Old-format files without
+        Timestamps are converted to the station timezone. Old-format files without
         the Signal Lock Status column get a non-'none' value at index 4 (either the
-        temperature field or nothing), which correctly reads as locked; rows too
+        temperature field or nothing), which correctly reads as locked. Rows too
         short to hold the measurement fields default the status to 'full'.
 
-        Nothing beyond index 4 is read.  That is deliberate and is what lets columns
+        Nothing beyond index 4 is read. That is deliberate, and is what lets columns
         be added after Signal Lock Status without breaking files written by older
-        versions - the fields that shift are ones this parser never looks at.
+        versions: the fields that shift are ones this parser never looks at.
         """
         zone = ZoneInfo(self._config.station.timezone)
         rows: list[CsvRow] = []
@@ -114,8 +114,8 @@ class CsvStore:
         """Read one day's CSV file and return a {time: score} dict bucketed to 15-minute intervals.
 
         Only rows where the signal is at or above the noise threshold AND the SNR is at
-        or above snr_gate are counted.  Each qualifying row contributes log(snr, snr_gate)
-        to its bucket so stronger events weigh more than just-threshold events.  The
+        or above snr_gate are counted. Each qualifying row contributes log(snr, snr_gate)
+        to its bucket, so stronger events weigh more than just-threshold events. The
         returned dict maps datetime.time keys (minute is a multiple of 15) to integer scores.
         """
         time_to_score = defaultdict(int)
@@ -137,7 +137,7 @@ class CsvStore:
     def read_range_scores(self, start_date: datetime, end_date: datetime) -> dict[time, int]:
         """Aggregate scores across a date range into a single {time: score} dict.
 
-        Missing CSV files (days with no data) are silently skipped.  The returned
+        Missing CSV files (days with no data) are silently skipped. The returned
         dict is the sum of all per-day dicts, suitable for passing directly to the
         summary graph generator.
         """

@@ -6,10 +6,10 @@ compatibility, then samples 100 ms of audio to measure ambient amplitude.
 Results are displayed as a logarithmic ASCII level bar so the user can
 visually identify which device is carrying the RF signal.
 
-On Windows the same physical input is often listed three times - once each
-under MME, DirectSound, and WASAPI.  The deduplication logic in _best_api_devices()
-collapses these to a single entry, preferring WASAPI (which routes through the
-Windows audio engine and respects system input level controls).  On Linux, macOS,
+On Windows the same physical input is often listed three times, once each
+under MME, DirectSound, and WASAPI. The deduplication logic in _best_api_devices()
+collapses these to a single entry, preferring WASAPI, which routes through the
+Windows audio engine and respects system input level controls. On Linux, macOS,
 and BSD each device typically appears once, so the deduplication is a no-op.
 """
 
@@ -24,10 +24,10 @@ import sounddevice as sd
 from buzz.constants import DB_PER_S_UNIT, FULL_SCALE_COUNTS
 
 # Segments span 1 LSB to full scale, each one DB_PER_S_UNIT wide - matching what the
-# waterfall's S-meters call an S-unit, so the two displays read the same way.  Derived
-# rather than a literal count, so a change to either shared constant moves this with
-# it instead of silently drifting, which is exactly how this bar ended up at 4.75
-# dB/segment while the S-meters stayed at 6.
+# waterfall's S-meters call an S-unit, so the two displays read the same way. This is
+# derived rather than a literal count, so a change to either shared constant moves it
+# with this one instead of silently drifting, which is exactly how this bar ended up
+# at 4.75 dB/segment while the S-meters stayed at 6.
 _BAR_WIDTH = round(20 * log10(FULL_SCALE_COUNTS) / DB_PER_S_UNIT)
 _FILL = '█'
 _EMPTY = '░'
@@ -65,12 +65,12 @@ def _reason_bar(text: str) -> str:
 def _best_api_devices(sample_rate: int) -> list[tuple[int, dict[str, Any]]]:
     """Return one (real_index, device_dict) per physical device.
 
-    When the same device appears under multiple host APIs, prefer the
-    highest-priority API that is actually compatible with sample_rate.
-    Only fall back to an incompatible variant if no compatible one exists
-    (so the device still appears in the list with a reason rather than
-    silently disappearing).  Ordering follows the first appearance of each
-    device name in PortAudio's enumeration.
+    When the same device appears under multiple host APIs, this prefers the
+    highest-priority API that is actually compatible with sample_rate. It only
+    falls back to an incompatible variant if no compatible one exists, so the
+    device still appears in the list with a reason rather than silently
+    disappearing. Ordering follows the first appearance of each device name in
+    PortAudio's enumeration.
     """
     hostapis = sd.query_hostapis()
     all_input = [(i, d) for i, d in enumerate(sd.query_devices())
@@ -80,7 +80,7 @@ def _best_api_devices(sample_rate: int) -> list[tuple[int, dict[str, Any]]]:
     # Windows WAVE API (MME) caps names at 31 characters (MAXPNAMELEN=32 including
     # null terminator), so an MME entry and its DirectSound/WASAPI counterpart can
     # have different dict keys even though they refer to the same physical device.
-    # Truncating to 31 chars normalises both sides of that pair.
+    # Truncating to 31 chars normalizes both sides of that pair.
     groups: dict[str, list[tuple[int, dict, int, int]]] = {}
     for order, (real_idx, dev) in enumerate(all_input):
         key = dev['name'][:31]
@@ -149,11 +149,11 @@ def _enumerate_input_devices(sample_rate: int) -> list[DeviceInfo]:
 def _current_device(devices: list[DeviceInfo], current_name: str | None) -> DeviceInfo | None:
     """The entry matching the configured device name, if it is still present.
 
-    Matched by name rather than by a stored index because that is how the running
+    Matched by name rather than by a stored index, because that is how the running
     program resolves the device too: an index is only true until Windows next
     reassigns audio hardware, so one written into the config last month may now point
-    at something else entirely.  A device that has been unplugged simply does not
-    match, and the table then offers no current selection - which is honest.
+    at something else entirely. A device that has been unplugged simply does not
+    match, and the table then offers no current selection, which is honest.
     """
     if not current_name:
         return None
@@ -187,8 +187,8 @@ def _prompt_for_device_number(prompt: str, valid_set: set[int], selectable: list
                               current: DeviceInfo | None) -> int:
     """Read device numbers from stdin until the user picks a valid one.
 
-    Enter alone keeps the current device if one is still present; anything else that
-    isn't a valid number re-prompts rather than failing.
+    Enter alone keeps the current device if one is still present. Anything else
+    that isn't a valid number re-prompts rather than failing.
     """
     nums_str = ', '.join(str(n) for n in sorted(valid_set))
     while True:
@@ -208,7 +208,7 @@ def select_device(sample_rate: int, current_name: str | None = None) -> int | No
     """Display the device table and prompt for selection.
 
     Returns the real PortAudio index of the chosen device, or None if no compatible
-    devices are found.  `current_name` is the configured `input_device_name`; the
+    devices are found. `current_name` is the configured `input_device_name`. The
     device it names is marked in the table and kept if the user presses Enter.
     """
     print('Scanning audio input devices...')

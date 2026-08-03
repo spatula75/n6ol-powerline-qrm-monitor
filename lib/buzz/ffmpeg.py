@@ -1,11 +1,11 @@
 """Finding ffmpeg and running it.
 
 Everything in the monitor that shells out to ffmpeg comes through here, so that the
-question "where is ffmpeg and did it work" is answered once.  What each caller asks it
+question "where is ffmpeg and did it work" is answered once. What each caller asks it
 to *do* stays with the caller: buzz.render owns the encode, buzz.loudness owns the
 measurement, and neither knows how the other invokes it.
 
-ffmpeg is optional.  It is needed for rendering a replay to video and for the loudness
+ffmpeg is optional. It is needed for rendering a replay to video and for the loudness
 probe that feeds it, and for nothing else, so nothing here is imported and no binary is
 looked for unless one of those is asked for.
 """
@@ -25,20 +25,20 @@ class FfmpegError(RuntimeError):
 def find_ffmpeg(configured: str | None = None) -> str:
     """Locate the ffmpeg binary, or say clearly why the caller cannot proceed.
 
-    PATH first, then `render.ffmpeg_path` from the config.  That order means a normal
-    install needs no configuration at all, and the setting exists for the installs
-    that do not appear on PATH - a Windows build unzipped into a folder, or winget's
-    shim directory in a terminal that has not been restarted since.
+    This checks PATH first, then `render.ffmpeg_path` from the config. That order
+    means a normal install needs no configuration at all, and the setting exists for
+    the installs that do not appear on PATH: a Windows build unzipped into a folder,
+    or winget's shim directory in a terminal that has not been restarted since.
 
     The consequence worth knowing: a copy on PATH wins over a configured one, so the
-    setting cannot be used to override a working ffmpeg with a different build.  That
-    has not been needed; if it ever is, the order is one line.
+    setting cannot be used to override a working ffmpeg with a different build. That
+    has not been needed. If it ever is, the order is one line.
     """
     on_path = shutil.which('ffmpeg')
     if on_path:
         return on_path
     if configured:
-        # Accept a directory as well as the binary itself.  Pointing at the folder is
+        # Accept a directory as well as the binary itself. Pointing at the folder is
         # the more natural reading of "where ffmpeg is", and getting it wrong would
         # otherwise fail with a message about a file that is plainly right there.
         candidate = Path(configured)
@@ -62,10 +62,10 @@ def run(command: list[str], *, timeout: float = 300.0) -> str:
     """Run ffmpeg to completion and return everything it said.
 
     ffmpeg writes its filter summaries and its errors to stderr, so both streams are
-    captured and returned together - a caller parsing a measurement and a caller
+    captured and returned together: a caller parsing a measurement and a caller
     reporting a failure want the same text.
 
-    For invocations that produce a file, use subprocess directly: this waits for the
+    For invocations that produce a file, use subprocess directly. This waits for the
     process and buffers its output, which is wrong for anything being fed on a pipe.
     """
     try:
