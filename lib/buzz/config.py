@@ -63,11 +63,9 @@ def validate_sample_rate(sample_rate: int, source: str, configured_rate: int) ->
 @dataclass
 class AudioConfig:
     # Sounddevice name of the audio input recording the RF-to-audio converted signal.
+    # The device is always resolved by this name, never by a stored index: names
+    # survive a reboot, and indices change whenever Windows reassigns audio hardware.
     input_device_name: str = 'Line In (Realtek(R) Audio), Windows DirectSound'
-    # PortAudio device index written by configure.py for reference. Not used at
-    # runtime - the device is always resolved by input_device_name, which is stable
-    # across reboots. Indices change whenever Windows reassigns USB/audio devices.
-    device_index: int | None = None
     # Audio sample rate in Hz. Must match what the input device is configured to use,
     # and must lie between MIN_SAMPLE_RATE and MAX_SAMPLE_RATE -- see validate_sample_rate.
     sample_rate: int = 16000
@@ -91,9 +89,6 @@ class StationConfig:
     # dB offset applied to audio amplitude to approximate RF level at the receiver input.
     # Hardware-specific: derived by calibrating against a known signal level.
     audio_rf_conversion_db: float = -32.0
-    # Path loss in dB from the powerline to the monitoring location.
-    # Used to estimate source strength from the measured level.
-    distance_attenuation: float = 30.0
     # ISO 8601 start date for the all-time summary graph.
     summary_start_date_iso: str = '2024-01-01T00:00:00+0000'
 

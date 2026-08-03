@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import configure
-from buzz.config import AudioConfig, ServerConfig, StationConfig, WeatherConfig
+from buzz.config import AudioConfig, RecordingConfig, ServerConfig, StationConfig, WeatherConfig
 from configure import _section_dict, main
 
 
@@ -36,9 +36,12 @@ class TestSectionDict:
         assert d['enabled'] is False
 
     def test_includes_zero_numeric(self):
-        cfg = AudioConfig(device_index=0)
+        """Zero is a real setting, not an absent one: max_events = 0 means "record
+        every event". Filtering it the way None is filtered would silently restore
+        the default of 10."""
+        cfg = RecordingConfig(max_events=0)
         d = _section_dict(cfg)
-        assert d['device_index'] == 0
+        assert d['max_events'] == 0
 
     def test_a_section_with_no_none_fields_is_unfiltered(self):
         """StationConfig has no Optional fields, so nothing here should be dropped -
@@ -75,7 +78,10 @@ class TestMainDeviceSelected:
             main()
         assert config_path.exists()
 
-    def test_device_index_saved_to_toml(self, tmp_path):
+    def test_the_index_is_not_written_to_the_config(self, tmp_path):
+        """The chosen index is used to look the device up here and then discarded.
+        Writing it would create a second, staler answer to "which device": indices
+        move when Windows reassigns audio hardware, and the name does not."""
         config_path = tmp_path / 'config.toml'
         device = {'name': 'Test Mic', 'hostapi': 0}
         hostapis = [{'name': 'Windows DirectSound'}]
@@ -86,7 +92,7 @@ class TestMainDeviceSelected:
             main()
         with open(config_path, 'rb') as f:
             data = tomllib.load(f)
-        assert data['audio']['device_index'] == 5
+        assert 'device_index' not in data['audio']
 
     def test_device_name_saved_to_toml(self, tmp_path):
         config_path = tmp_path / 'config.toml'

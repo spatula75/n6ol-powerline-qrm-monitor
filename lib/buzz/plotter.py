@@ -163,7 +163,6 @@ class _DailySeries:
     timestamps: list[datetime]
     signals: Series
     noises: Series
-    source_power_estimate: list[float]
     title: str
 
 
@@ -183,7 +182,6 @@ class Plotter:
         if not rows:
             return None
         timestamps = [r.timestamp for r in rows]
-        snrs       = [r.snr for r in rows]
         signals    = [r.signal for r in rows]
         noises     = [r.noise for r in rows]
 
@@ -200,36 +198,12 @@ class Plotter:
                      f'{timestamps[0].strftime("%Y-%m-%d")} ({station.timezone} Timezone)')
 
         return _DailySeries(timestamps=timestamps, signals=signals, noises=noises,
-                            source_power_estimate=self._estimate_source_power(signals, snrs),
                             title=title)
 
-    def _estimate_source_power(self, signals: Series, snrs: list[float]) -> list[float]:
-        """Estimate the noise source's transmitted power by adding back the
-        measured path loss, for qualifying detections only.
-
-        Not plotted as a separate line, but included in the y-axis upper bound so
-        the scale accommodates the estimated source-power level alongside the
-        measured values.  (Adjusted values are always >= the originals, so they
-        have no effect on the lower bound.)
-
-        A row qualifies either by passing both the level threshold and the SNR
-        gate, or by exceeding the threshold by half the SNR margin on signal
-        level alone (catches strong events whose SNR was diluted by smoothing or
-        partial-minute lock).
-        """
-        station = self._config.station
-        return [
-            val + station.distance_attenuation
-            if ((val > station.noise_threshold and snrs[i] > station.noise_min_snr)
-                or val > station.noise_threshold + 0.5 * station.noise_min_snr)
-            else val
-            for i, val in enumerate(signals)
-        ]
-
     def _daily_chart_y_bounds(self, series: '_DailySeries') -> tuple[float, float]:
-        """Y-axis (dBm) bounds that fit the signal, noise, and estimated source
-        power traces, always including the configured audio-level anchor so a
-        quiet or flat trace still gets a sensible scale.
+        """Y-axis (dBm) bounds that fit the signal and noise traces, always including
+        the configured audio-level anchor so a quiet or flat trace still gets a
+        sensible scale.
 
         1.33 is a margin factor: since dBm values are negative, multiplying the
         most-negative value by 1.33 pushes the lower axis edge further down,
@@ -240,8 +214,7 @@ class Plotter:
         station = self._config.station
         anchor = _AXIS_ANCHOR_DBFS + station.audio_rf_conversion_db
         min_y = min(min(series.signals), min(series.noises), anchor) * 1.33
-        max_y = max(max(series.signals), max(series.noises),
-                   max(series.source_power_estimate), anchor) / 1.33
+        max_y = max(max(series.signals), max(series.noises), anchor) / 1.33
         return min_y, max_y
 
     def _draw_reference_lines(self, axes: Axes) -> list[Line2D]:

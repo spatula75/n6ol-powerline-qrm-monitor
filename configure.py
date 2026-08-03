@@ -45,12 +45,11 @@ def main() -> None:
 
     Loads the existing config (or defaults), displays a table of available input
     devices with live amplitude bars, prompts for a selection, then writes the full
-    config - with the new device_index and input_device_name - back to
-    ~/.buzz/config.toml.
+    config - with the new input_device_name - back to ~/.buzz/config.toml.
     """
     config = BuzzConfig.from_toml() if CONFIG_PATH.exists() else BuzzConfig()
 
-    new_index = select_device(config.audio.sample_rate, current_real_index=config.audio.device_index)
+    new_index = select_device(config.audio.sample_rate, current_name=config.audio.input_device_name)
     if new_index is None:
         print(f'No device selected, so {CONFIG_PATH} is unchanged. Run this again and '
               'choose a device by number to set the audio input.')
@@ -60,7 +59,6 @@ def main() -> None:
     hostapis = sd.query_hostapis()
     full_name = f"{device['name']}, {hostapis[device['hostapi']]['name']}"
 
-    config.audio.device_index = new_index
     config.audio.input_device_name = full_name
 
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)

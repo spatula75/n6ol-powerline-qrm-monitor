@@ -19,11 +19,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   enough rather than validating against a stale file or skipping the check
   silently.
 
+- `lib/buzz/setup/`, the beginnings of a guided setup path for operators who would
+  rather not hand-edit a TOML file. `schema.json` describes every setting the
+  monitor has - type, default, legal values, and what it is for - and is the single
+  source three things now read instead of repeating one another: validation of
+  `~/.buzz/config.toml`, the generator that writes `config.example.toml`, and (from
+  a later change) the terminal wizard's own screens. A test pins every schema
+  default against the dataclass default it describes, so the two cannot drift.
+
 ### Changed
 - Coverage measurement now covers `tools/` as well as `lib/buzz` and `configure`.
   The release check is part of the release procedure now, so leaving it outside the
   gate meant 429 lines of it counted for nothing. Both tools reach 100%, and the
   total moved 99.19% → 99.29%.
+- `config.example.toml` is generated from `lib/buzz/setup/schema.json` rather than
+  hand-maintained, and a test fails if the committed copy stops matching what the
+  schema would produce. It had been a third place every setting was described, after
+  the dataclass comments and the wizard's own labels; the sample now cannot disagree
+  with the code about a default, and six settings that had been showing example
+  values as though they were defaults no longer do.
+
+### Removed
+- `[station] distance_attenuation`. It was only ever added back onto qualifying
+  signal levels to pad the daily chart's y-axis upper bound, for an estimated
+  source-power series that was never drawn. Charts scale to the signal, noise, and
+  audio-level anchor now, so they will generally be a little tighter than before.
+- `[audio] device_index`. Nothing at runtime read it: the device is resolved by
+  `input_device_name` at every startup, deliberately, because names survive a reboot
+  and PortAudio indices do not. Its only remaining use was marking the current
+  device in the configurator's table, which now matches on the name instead - so an
+  index that has gone stale can no longer point the marker at the wrong device.
+- Both are simply ignored if present in an existing `~/.buzz/config.toml`; unknown
+  keys have always been dropped on load, so no config file needs editing.
 
 ## [1.4.0] - 2026-08-01
 

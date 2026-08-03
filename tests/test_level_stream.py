@@ -12,7 +12,6 @@ PULSE_RATE = 120
 
 def _make_config(offset_db: float = 0.0) -> BuzzConfig:
     cfg = BuzzConfig()
-    cfg.audio.device_index = 0
     cfg.audio.input_device_name = 'Test, DirectSound'
     cfg.audio.sample_rate = SAMPLE_RATE
     cfg.audio.pulse_rate = PULSE_RATE

@@ -14,7 +14,6 @@ CHUNK = AudioPipeline.CHUNK_SIZE
 
 def _make_config() -> BuzzConfig:
     cfg = BuzzConfig()
-    cfg.audio.device_index = 0
     cfg.audio.input_device_name = 'Test, DirectSound'
     cfg.audio.sample_rate = SAMPLE_RATE
     return cfg

@@ -41,9 +41,8 @@ def _make_pulse_signal(n: int = 48000, phase: int = 0, amplitude: int = 10000) -
     return data
 
 
-def _sampler_config(device_index: int | None = None, device_name: str = 'Test, DirectSound') -> BuzzConfig:
+def _sampler_config(device_name: str = 'Test, DirectSound') -> BuzzConfig:
     cfg = BuzzConfig()
-    cfg.audio.device_index = device_index
     cfg.audio.input_device_name = device_name
     cfg.audio.sample_rate = SAMPLE_RATE
     cfg.audio.pulse_rate = PULSE_RATE
@@ -299,13 +298,16 @@ class TestAudioSamplerInit:
             sampler = AudioSampler(cfg)
         assert sampler._device_index == 3
 
-    def test_init_always_uses_name_even_when_index_configured(self):
-        cfg = _sampler_config(device_index=2, device_name='Test, DirectSound')
+    def test_the_index_comes_from_the_lookup_not_from_the_config(self):
+        """There is nowhere in the config to put an index any more, and this is why:
+        the answer has to be whatever the name resolves to right now. The device the
+        name finds is at 7 here, and 7 is what the sampler must use."""
+        cfg = _sampler_config(device_name='Test, DirectSound')
         device = {'index': 7, 'name': 'Test', 'hostapi': 0}
         with patch('buzz.sampler.sd.query_devices', return_value=device), \
              patch('buzz.sampler.sd.InputStream', return_value=MagicMock()):
             sampler = AudioSampler(cfg)
-        assert sampler._device_index == 7  # index from name lookup, not the stored 2
+        assert sampler._device_index == 7
 
     def test_init_creates_pipeline(self):
         cfg = _sampler_config()
@@ -320,7 +322,7 @@ class TestAudioSamplerInit:
         assert sampler.pipeline is sampler._pipeline
 
     def test_close_stops_pipeline_stream(self):
-        cfg = _sampler_config(device_index=0, device_name='Test, DirectSound')
+        cfg = _sampler_config(device_name='Test, DirectSound')
         device = {'index': 0, 'name': 'Test', 'hostapi': 0}
         with patch('buzz.sampler.sd.query_devices', return_value=device), \
              patch('buzz.sampler.sd.InputStream') as mock_cls:
@@ -333,7 +335,7 @@ class TestAudioSamplerInit:
 
 
 def _make_sampler() -> AudioSampler:
-    cfg = _sampler_config(device_index=0, device_name='Test, DirectSound')
+    cfg = _sampler_config(device_name='Test, DirectSound')
     device = {'index': 0, 'name': 'Test', 'hostapi': 0}
     with patch('buzz.sampler.sd.query_devices', return_value=device), \
          patch('buzz.sampler.sd.InputStream', return_value=MagicMock()):

@@ -146,7 +146,21 @@ def _enumerate_input_devices(sample_rate: int) -> list[DeviceInfo]:
     return probed
 
 
-def _print_device_table(devices: list[DeviceInfo], current_real_index: int | None = None) -> None:
+def _current_device(devices: list[DeviceInfo], current_name: str | None) -> DeviceInfo | None:
+    """The entry matching the configured device name, if it is still present.
+
+    Matched by name rather than by a stored index because that is how the running
+    program resolves the device too: an index is only true until Windows next
+    reassigns audio hardware, so one written into the config last month may now point
+    at something else entirely.  A device that has been unplugged simply does not
+    match, and the table then offers no current selection - which is honest.
+    """
+    if not current_name:
+        return None
+    return next((d for d in devices if d.name == current_name), None)
+
+
+def _print_device_table(devices: list[DeviceInfo], current: DeviceInfo | None = None) -> None:
     print()
     print(f'  Audio level is logarithmic - each █ ≈ {DB_PER_S_UNIT:g} dB above silence (16-bit)')
     print()
@@ -154,37 +168,33 @@ def _print_device_table(devices: list[DeviceInfo], current_real_index: int | Non
     print(f"  {'#':>{idx_w}}  [{'LEVEL'.center(_BAR_WIDTH)}]  DEVICE")
     print(f"  {'-' * idx_w}  {'-' * (_BAR_WIDTH + 2)}  {'-' * 50}")
     for dev in devices:
-        marker = '  ← current' if dev.real_index == current_real_index else ''
+        marker = '  ← current' if current is not None and dev.name == current.name else ''
         print(f"  {dev.display_index:>{idx_w}}  [{dev.bar}]  {dev.name}{marker}")
     print()
 
 
-def _build_selection_prompt(devices: list[DeviceInfo], selectable: list[DeviceInfo],
-                            current_real_index: int | None) -> tuple[str, set[int]]:
+def _build_selection_prompt(selectable: list[DeviceInfo],
+                            current: DeviceInfo | None) -> tuple[str, set[int]]:
     """Build the "Select device (...)" prompt text and the set of valid numbers."""
     valid_nums = sorted(d.display_index for d in selectable)
-    current_display = next(
-        (d.display_index for d in devices if d.real_index == current_real_index),
-        None,
-    )
-    default_str = f', or Enter to keep current [{current_display}]' if current_display else ''
+    default_str = f', or Enter to keep current [{current.display_index}]' if current else ''
     nums_str = ', '.join(str(n) for n in valid_nums)
     prompt = f'Select device ({nums_str}{default_str}): '
     return prompt, set(valid_nums)
 
 
 def _prompt_for_device_number(prompt: str, valid_set: set[int], selectable: list[DeviceInfo],
-                              current_real_index: int | None) -> int:
+                              current: DeviceInfo | None) -> int:
     """Read device numbers from stdin until the user picks a valid one.
 
-    Enter alone keeps current_real_index if one was given; anything else that
+    Enter alone keeps the current device if one is still present; anything else that
     isn't a valid number re-prompts rather than failing.
     """
     nums_str = ', '.join(str(n) for n in sorted(valid_set))
     while True:
         raw = input(prompt).strip()
-        if not raw and current_real_index is not None:
-            return current_real_index
+        if not raw and current is not None:
+            return current.real_index
         try:
             n = int(raw)
             if n in valid_set:
@@ -194,21 +204,22 @@ def _prompt_for_device_number(prompt: str, valid_set: set[int], selectable: list
         print(f'  Please enter one of: {nums_str}')
 
 
-def select_device(sample_rate: int, current_real_index: int | None = None) -> int | None:
+def select_device(sample_rate: int, current_name: str | None = None) -> int | None:
     """Display the device table and prompt for selection.
 
-    Returns the real PortAudio index of the chosen device, or None if no
-    compatible devices are found.  Returns current_real_index unchanged if
-    the user presses Enter without a selection.
+    Returns the real PortAudio index of the chosen device, or None if no compatible
+    devices are found.  `current_name` is the configured `input_device_name`; the
+    device it names is marked in the table and kept if the user presses Enter.
     """
     print('Scanning audio input devices...')
     devices = _enumerate_input_devices(sample_rate)
-    _print_device_table(devices, current_real_index)
+    current = _current_device(devices, current_name)
+    _print_device_table(devices, current)
 
     selectable = [d for d in devices if d.selectable]
     if not selectable:
         print('No compatible input devices found.')
         return None
 
-    prompt, valid_set = _build_selection_prompt(devices, selectable, current_real_index)
-    return _prompt_for_device_number(prompt, valid_set, selectable, current_real_index)
+    prompt, valid_set = _build_selection_prompt(selectable, current)
+    return _prompt_for_device_number(prompt, valid_set, selectable, current)

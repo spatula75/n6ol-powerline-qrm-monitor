@@ -6,7 +6,8 @@ are not tested here - they require real PortAudio devices.
 
 import pytest
 from buzz.constants import FULL_SCALE_COUNTS
-from buzz.device_setup import _amplitude_bar, _reason_bar, _BAR_WIDTH, _FILL, _EMPTY
+from buzz.device_setup import (DeviceInfo, _amplitude_bar, _build_selection_prompt,
+                               _current_device, _reason_bar, _BAR_WIDTH, _FILL, _EMPTY)
 
 
 class TestAmplitudeBar:
@@ -87,3 +88,79 @@ class TestReasonBar:
             f'bar, so it is truncated to something misleading. Either shorten the '
             f'wording or widen the bar - but the width is derived from '
             f'DB_PER_S_UNIT, so widening it changes what a segment means.')
+
+
+class TestCurrentDevice:
+    """Which entry the table marks as the one already configured.
+
+    Matched on the device name rather than a stored PortAudio index, because an
+    index is only true until Windows next reassigns audio hardware - the same
+    reason the running program resolves by name at every startup.
+    """
+
+    def _devices(self) -> list[DeviceInfo]:
+        return [
+            DeviceInfo(real_index=7, name='Line In, WASAPI', selectable=True,
+                       amplitude=100.0, bar='', display_index=1),
+            DeviceInfo(real_index=3, name='USB Audio, DirectSound', selectable=True,
+                       amplitude=50.0, bar='', display_index=2),
+        ]
+
+    def test_it_finds_the_configured_device_by_name(self):
+        found = _current_device(self._devices(), 'USB Audio, DirectSound')
+        assert found is not None and found.real_index == 3
+
+    def test_the_index_it_reports_is_the_live_one(self):
+        """The point of matching by name: whatever index the device sits at now is
+        the answer, and no stale number from a config file can override it."""
+        found = _current_device(self._devices(), 'Line In, WASAPI')
+        assert found.real_index == 7
+
+    def test_a_device_that_is_no_longer_present_matches_nothing(self):
+        """Unplugged between runs. Marking nothing as current is honest; marking
+        whatever now sits at the old index would point at the wrong hardware."""
+        assert _current_device(self._devices(), 'Some Other Card, MME') is None
+
+    def test_no_configured_name_matches_nothing(self):
+        assert _current_device(self._devices(), None) is None
+
+    def test_an_empty_configured_name_matches_nothing(self):
+        """A fresh config has never had a device chosen. The list deliberately holds a
+        device whose own name came back empty - a driver reporting nothing is rare but
+        real - so that the guard is what makes this pass. Without a nameless device
+        present the assertion holds either way and tests nothing."""
+        devices = self._devices()
+        devices.append(DeviceInfo(real_index=9, name='', selectable=True,
+                                  amplitude=0.0, bar='', display_index=3))
+        assert _current_device(devices, '') is None
+
+    def test_matching_is_exact_not_partial(self):
+        """'Line In' is a prefix of a real entry. Accepting prefixes would mark the
+        wrong device whenever two cards share the start of their names."""
+        assert _current_device(self._devices(), 'Line In') is None
+
+
+class TestSelectionPrompt:
+    def _selectable(self) -> list[DeviceInfo]:
+        return [
+            DeviceInfo(real_index=7, name='Line In, WASAPI', selectable=True,
+                       amplitude=100.0, bar='', display_index=1),
+            DeviceInfo(real_index=3, name='USB Audio, DirectSound', selectable=True,
+                       amplitude=50.0, bar='', display_index=2),
+        ]
+
+    def test_it_offers_every_selectable_number(self):
+        prompt, valid = _build_selection_prompt(self._selectable(), None)
+        assert valid == {1, 2}
+        assert '1, 2' in prompt
+
+    def test_it_offers_to_keep_the_current_device(self):
+        devices = self._selectable()
+        prompt, _ = _build_selection_prompt(devices, devices[1])
+        assert 'Enter to keep current [2]' in prompt
+
+    def test_it_does_not_offer_to_keep_what_is_not_there(self):
+        """With no current device - first run, or one that has been unplugged -
+        pressing Enter has nothing to mean, so the prompt must not suggest it."""
+        prompt, _ = _build_selection_prompt(self._selectable(), None)
+        assert 'keep current' not in prompt
