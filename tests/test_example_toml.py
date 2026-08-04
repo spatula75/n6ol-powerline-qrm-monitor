@@ -1,7 +1,7 @@
 """Tests for lib/buzz/setup/example_toml.py and the file it generates.
 
 The point of generating `config.example.toml` is that the sample config and the
-wizard cannot describe a setting differently.  That only holds while the committed
+setup program cannot describe a setting differently.  That only holds while the committed
 file matches what the schema currently produces, which is what the staleness test
 here is for - nothing else in the suite would notice a schema edit that was never
 regenerated, and the sample config would quietly start lying.
@@ -137,5 +137,5 @@ class TestProse:
         for line in rendered.splitlines():
             assert len(line) <= 100, f'unwrapped line: {line[:60]}...'
 
-    def test_it_points_at_the_wizard_rather_than_hand_editing(self, rendered):
+    def test_it_points_at_the_setup_program_rather_than_hand_editing(self, rendered):
         assert 'setup.sh' in rendered or 'setup.bat' in rendered

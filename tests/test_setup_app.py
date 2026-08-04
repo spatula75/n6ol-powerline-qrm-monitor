@@ -1,0 +1,714 @@
+"""Tests for the setup program: pure helpers directly, screen behavior via Textual's Pilot."""
+
+import asyncio
+from datetime import datetime
+from pathlib import Path
+
+from textual.widgets import Button
+from buzz.setup.screens.field_dialogs import _kind, _parse_number
+from buzz.setup.screens.finish import backup_path, changed_fields, toml_ready
+from buzz.setup.screens.section_menu import display_value
+from buzz.setup.app import SetupApp
+
+
+def run(coro):
+    """Run an async test scenario without pulling in a pytest-asyncio dependency."""
+    return asyncio.run(coro)
+
+
+class TestKind:
+    def test_boolean(self):
+        assert _kind({'type': 'boolean'}) == 'boolean'
+
+    def test_enum_wins_over_type(self):
+        assert _kind({'type': 'integer', 'enum': [120, 100]}) == 'enum'
+
+    def test_integer(self):
+        assert _kind({'type': 'integer'}) == 'number'
+
+    def test_nullable_number(self):
+        assert _kind({'type': ['number', 'null']}) == 'number'
+
+    def test_string(self):
+        assert _kind({'type': 'string'}) == 'text'
+
+
+class TestParseNumber:
+    def test_integer(self):
+        assert _parse_number({'type': 'integer'}, '10') == (True, 10)
+
+    def test_float(self):
+        assert _parse_number({'type': 'number'}, '-98.5') == (True, -98.5)
+
+    def test_blank_nullable_is_none(self):
+        assert _parse_number({'type': ['number', 'null']}, '  ') == (True, None)
+
+    def test_blank_non_nullable_fails(self):
+        ok, _ = _parse_number({'type': 'number'}, '')
+        assert ok is False
+
+    def test_unparsable_reports_the_offending_text(self):
+        assert _parse_number({'type': 'integer'}, 'abc') == (False, 'abc')
+
+
+class TestDisplayValue:
+    def test_unset(self):
+        assert display_value({'type': 'string'}, None) == '(unset)'
+
+    def test_boolean_on(self):
+        assert display_value({'type': 'boolean'}, True) == 'On'
+
+    def test_boolean_off(self):
+        assert display_value({'type': 'boolean'}, False) == 'Off'
+
+    def test_plain_value(self):
+        assert display_value({'type': 'string'}, 'N0CALL') == 'N0CALL'
+
+    def test_enum_shows_the_raw_value_not_the_title(self):
+        spec = {'type': 'integer', 'enum': [120, 100], 'x-enum-titles': {'120': 'x', '100': 'y'}}
+        assert display_value(spec, 120) == '120'
+
+
+class TestChangedFields:
+    def test_no_changes(self):
+        values = {'station': {'callsign': 'N0CALL'}}
+        assert changed_fields({'properties': {'station': {'properties': {'callsign': {}}}}},
+                              values, {'station': {'callsign': 'N0CALL'}}) == []
+
+    def test_one_change_reported_in_schema_order(self):
+        schema = {'properties': {'station': {'properties': {'callsign': {}, 'path': {}}}}}
+        original = {'station': {'callsign': 'N0CALL', 'path': '/a'}}
+        current = {'station': {'callsign': 'N6OL', 'path': '/a'}}
+        assert changed_fields(schema, original, current) == [('station', 'callsign', 'N0CALL', 'N6OL')]
+
+
+class TestBackupPath:
+    def test_names_a_sibling_bak_file(self):
+        path = backup_path(Path('/home/x/.buzz/config.toml'), datetime(2026, 8, 3, 14, 5, 9))
+        assert path == Path('/home/x/.buzz/config-20260803-140509.toml.bak')
+
+
+class TestTomlReady:
+    def test_drops_none_values(self):
+        values = {'weather': {'latitude': None, 'longitude': 47.6}}
+        assert toml_ready(values) == {'weather': {'longitude': 47.6}}
+
+
+class TestSetupAppWalkthrough:
+    """End-to-end screen behavior, driven headless through Textual's Pilot."""
+
+    def test_main_menu_has_something_highlighted_without_pressing_an_arrow_key(self, tmp_path):
+        """Enter must do something the instant the screen appears, not only after Up/Down."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                assert app.screen.query_one('#sections').highlighted == 0
+                await pilot.press('enter')
+                await pilot.pause()
+                # Row 0 is a section (never the Finish row or the separator), so
+                # Enter with nothing touched must have opened a section screen.
+                assert app.visited != set()
+
+        run(scenario())
+
+    def test_section_menu_has_something_highlighted_without_pressing_an_arrow_key(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                await pilot.press('enter')  # into whichever section row 0 is
+                await pilot.pause()
+                assert app.screen.query_one('#fields').highlighted == 0
+
+        run(scenario())
+
+    def test_fresh_config_walkthrough_edits_and_saves(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                assert app.had_existing_config is False
+                assert app.visited == set()
+
+                main_menu = app.screen
+                option_list = main_menu.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                section_screen = app.screen
+                assert app.visited == {'station'}
+                fields = section_screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('callsign')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                dialog_input = app.screen.query_one('#value')
+                dialog_input.value = 'N6OL'
+                await pilot.press('enter')
+                await pilot.pause()
+
+                assert app.values['station']['callsign'] == 'N6OL'
+
+                await pilot.press('escape')
+                await pilot.pause()
+
+                option_list = app.screen.query_one('#sections')
+                station_row = option_list.get_option_at_index(option_list.get_option_index('station'))
+                assert str(station_row.prompt).startswith('[*]')
+
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                await pilot.click('#save')
+                await pilot.pause()
+
+            return app
+
+        app = run(scenario())
+        assert config_path.exists()
+        assert 'N6OL' in config_path.read_text(encoding='utf-8')
+        assert list(config_path.parent.glob('*.toml.bak')) == []
+
+    def test_reconfigure_seeds_from_existing_file_and_backs_it_up(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+        config_path.write_text('[station]\ncallsign = "N0CALL"\n', encoding='utf-8')
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                assert app.had_existing_config is True
+                assert app.values['station']['callsign'] == 'N0CALL'
+
+                main_menu = app.screen
+                option_list = main_menu.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('callsign')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                app.screen.query_one('#value').value = 'N6OL'
+                await pilot.press('enter')
+                await pilot.pause()
+                await pilot.press('escape')
+                await pilot.pause()
+
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                await pilot.click('#save')
+                await pilot.pause()
+
+        run(scenario())
+        assert 'N6OL' in config_path.read_text(encoding='utf-8')
+        backups = list(config_path.parent.glob('config-*.toml.bak'))
+        assert len(backups) == 1
+        assert 'N0CALL' in backups[0].read_text(encoding='utf-8')
+
+    def test_backup_failure_leaves_the_config_untouched(self, tmp_path, monkeypatch):
+        config_path = tmp_path / 'config.toml'
+        original_text = '[station]\ncallsign = "N0CALL"\n'
+        config_path.write_text(original_text, encoding='utf-8')
+
+        def _boom(*_args, **_kwargs):
+            raise OSError('disk full')
+
+        monkeypatch.setattr('shutil.copy2', _boom)
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('callsign')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                app.screen.query_one('#value').value = 'N6OL'
+                await pilot.press('enter')
+                await pilot.pause()
+                await pilot.press('escape')
+                await pilot.pause()
+
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                await pilot.click('#save')
+                await pilot.pause()
+
+                assert 'disk full' in app.screen.query_one('#error').content
+                # The app is still running: a failed backup must not have exited it
+                # the way a successful save does.
+                assert app.is_running
+
+        run(scenario())
+        assert config_path.read_text(encoding='utf-8') == original_text
+        assert list(config_path.parent.glob('*.toml.bak')) == []
+
+    def test_no_changes_skips_backup_and_write(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                assert 'No changes' in app.screen.query_one('#intro').content
+                # Nothing to save means no Save button - only a way back.
+                assert len(app.screen.query('#save')) == 0
+
+        run(scenario())
+        assert not config_path.exists()
+
+    def test_enum_field_round_trips_a_non_string_value(self, tmp_path):
+        """pulse_rate's enum values are integers; the dialog must not turn 120 into "120"."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('audio')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('pulse_rate')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                enum_list = app.screen.query_one('#value')
+                enum_list.highlighted = enum_list.get_option_index('100')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                assert app.values['audio']['pulse_rate'] == 100
+                assert isinstance(app.values['audio']['pulse_rate'], int)
+
+        run(scenario())
+
+    def test_enum_dialog_highlights_the_current_value_without_an_arrow_key(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('audio')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('pulse_rate')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                # pulse_rate defaults to 120, which is the first enum choice - so this
+                # would pass even with no highlight-on-mount logic at all. What it
+                # actually guards is that *something* is highlighted the instant the
+                # dialog opens, whatever the value; Enter here must confirm 120, not
+                # do nothing.
+                enum_list = app.screen.query_one('#value')
+                assert enum_list.highlighted is not None
+                await pilot.press('enter')
+                await pilot.pause()
+                assert app.values['audio']['pulse_rate'] == 120
+
+        run(scenario())
+
+    def test_cancel_leaves_the_value_unchanged(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('callsign')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                before = app.values['station']['callsign']
+                await pilot.press('escape')
+                await pilot.pause()
+
+                assert app.values['station']['callsign'] == before
+
+        run(scenario())
+
+    def test_text_field_dialog_ok_and_cancel_buttons(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('callsign')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                # Cancel via the button (not Escape) must leave the value untouched.
+                before = app.values['station']['callsign']
+                await pilot.click('#cancel')
+                await pilot.pause()
+                assert app.values['station']['callsign'] == before
+
+                fields.highlighted = fields.get_option_index('callsign')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                app.screen.query_one('#value').value = 'N6OL'
+                await pilot.click('#ok')
+                await pilot.pause()
+                assert app.values['station']['callsign'] == 'N6OL'
+
+        run(scenario())
+
+    def test_text_field_dialog_box_does_not_fill_the_screen(self, tmp_path):
+        """A Vertical/Horizontal defaults to height: 1fr, not auto - regression
+        coverage for a dialog box that once expanded to the full screen height."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test(size=(100, 30)) as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('callsign')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                # Before the fix this was 26-30, essentially the whole 30-row screen.
+                # This dialog's real content (title, description, input, error line,
+                # button row, padding, border) comes to well under 20.
+                dialog_box = app.screen.query_one('#dialog')
+                assert dialog_box.region.height < 20
+
+        run(scenario())
+
+    def test_left_right_arrows_move_focus_between_dialog_buttons(self, tmp_path):
+        """Tab already cycles a dialog's buttons; the arrow keys did not until this
+        was bound explicitly - regression coverage for that gap."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('callsign')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                app.screen.query_one('#ok', Button).focus()
+                await pilot.pause()
+                assert app.focused.id == 'ok'
+                await pilot.press('right')
+                await pilot.pause()
+                assert app.focused.id == 'cancel'
+                await pilot.press('left')
+                await pilot.pause()
+                assert app.focused.id == 'ok'
+
+        run(scenario())
+
+    def test_number_field_parse_failure_shows_error_and_stays_open(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('noise_floor')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                before = app.values['station']['noise_floor']
+                app.screen.query_one('#value').value = 'not a number'
+                await pilot.press('enter')
+                await pilot.pause()
+
+                # The dialog is still open, the value unchanged, and it says why.
+                assert app.values['station']['noise_floor'] == before
+                assert 'not a number' in app.screen.query_one('#error').content
+
+                app.screen.query_one('#value').value = '-95'
+                await pilot.press('enter')
+                await pilot.pause()
+                assert app.values['station']['noise_floor'] == -95.0
+
+        run(scenario())
+
+    def test_boolean_field_dialog_ok_and_cancel(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('server')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('enabled')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                # Cancel leaves it off.
+                await pilot.click('#cancel')
+                await pilot.pause()
+                assert app.values['server']['enabled'] is False
+
+                fields.highlighted = fields.get_option_index('enabled')
+                await pilot.press('enter')
+                await pilot.pause()
+                app.screen.query_one('#value').toggle()
+                await pilot.click('#ok')
+                await pilot.pause()
+                assert app.values['server']['enabled'] is True
+
+                # host, username, etc. only appear now that publishing is on.
+                fields = app.screen.query_one('#fields')
+                assert fields.get_option_index('host') is not None
+
+        run(scenario())
+
+    def test_enum_field_escape_cancels(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('weather')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('source')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                before = app.values['weather']['source']
+                await pilot.press('escape')
+                await pilot.pause()
+                assert app.values['weather']['source'] == before
+
+        run(scenario())
+
+    def test_boolean_field_escape_cancels(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('server')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('enabled')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                await pilot.press('escape')
+                await pilot.pause()
+                assert app.values['server']['enabled'] is False
+
+        run(scenario())
+
+    def test_finish_screen_back_button_and_escape_save_nothing(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('callsign')
+                await pilot.press('enter')
+                await pilot.pause()
+                app.screen.query_one('#value').value = 'N6OL'
+                await pilot.press('enter')
+                await pilot.pause()
+                await pilot.press('escape')
+                await pilot.pause()
+
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                # Back button: no write, edit is still staged.
+                await pilot.click('#back')
+                await pilot.pause()
+                assert not config_path.exists()
+                assert app.values['station']['callsign'] == 'N6OL'
+
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                # Escape does the same as Back.
+                await pilot.press('escape')
+                await pilot.pause()
+                assert not config_path.exists()
+
+        run(scenario())
+
+    def test_escape_on_main_menu_always_confirms_even_with_nothing_changed(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                await pilot.press('escape')
+                await pilot.pause()
+
+                # Still running: Escape must never exit without asking, even when
+                # there is nothing to lose.
+                assert app.is_running
+                assert 'Exit the setup program?' in app.screen.query_one('#question').content
+
+                # Escape on the confirmation itself means "do not exit".
+                await pilot.press('escape')
+                await pilot.pause()
+                assert app.is_running
+
+        run(scenario())
+
+    def test_confirming_exit_with_nothing_changed_exits(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                await pilot.press('escape')
+                await pilot.pause()
+                await pilot.click('#confirm')
+                await pilot.pause()
+                assert not app.is_running
+
+        run(scenario())
+
+    def test_escape_on_main_menu_asks_first_when_something_changed(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('callsign')
+                await pilot.press('enter')
+                await pilot.pause()
+                app.screen.query_one('#value').value = 'N6OL'
+                await pilot.press('enter')
+                await pilot.pause()
+                # Back to the main menu - one Escape backs out of the section screen,
+                # it does not yet ask about exiting.
+                await pilot.press('escape')
+                await pilot.pause()
+
+                await pilot.press('escape')
+                await pilot.pause()
+
+                # Still running: pressing Escape must not have exited by itself.
+                assert app.is_running
+                assert 'unsaved change' in app.screen.query_one('#question').content
+
+                # "Keep editing" (Escape, the safe default) leaves the app running
+                # and the edit intact.
+                await pilot.press('escape')
+                await pilot.pause()
+                assert app.is_running
+                assert app.values['station']['callsign'] == 'N6OL'
+
+        run(scenario())
+
+    def test_discarding_from_the_confirm_dialog_exits_without_saving(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('callsign')
+                await pilot.press('enter')
+                await pilot.pause()
+                app.screen.query_one('#value').value = 'N6OL'
+                await pilot.press('enter')
+                await pilot.pause()
+                await pilot.press('escape')  # section screen -> main menu
+                await pilot.pause()
+                await pilot.press('escape')  # main menu -> confirm dialog
+                await pilot.pause()
+
+                await pilot.click('#confirm')
+                await pilot.pause()
+                assert not app.is_running
+
+        run(scenario())
+        assert not config_path.exists()
+
+
+class TestMainEntryPoint:
+    """`python -m buzz.setup` resolves to this module; importing it must not run the app."""
+
+    def test_importing_does_not_launch_the_app(self):
+        import buzz.setup.__main__ as entry_point
+        assert entry_point.SetupApp is SetupApp

@@ -1,14 +1,14 @@
 # N6OL Powerline QRM Monitor - example configuration
 #
 # Copy this file to ~/.buzz/config.toml and edit to suit your setup, or let the
-# setup wizard write it for you:
+# setup program write it for you:
 #
 #     setup.bat                (Windows)
 #     ./setup.sh               (Linux / macOS / BSD)
 #
 # Every option the monitor understands appears here, with the value shown being the
 # default. Options that are commented out have no useful default: either the monitor
-# works it out, the feature is off, or the wizard fills them in.
+# works it out, the feature is off, or the setup program fills them in.
 #
 # GENERATED FILE - edit lib/buzz/setup/schema.json and regenerate, do not edit here.
 
@@ -17,14 +17,14 @@
 [audio]
 # The sound card that carries the RF-to-audio converted signal.
 #
-# Choose this in the wizard's Audio step. Do not type it. The wizard probes
-# every input, shows a live level bar for each, and writes the name for you.
+# Choose this in Setup's Audio step. Do not type it. Setup probes every
+# input, shows a live level bar for each, and writes the name for you.
 #
 # The monitor finds the device by this name at every start. It never uses a
 # stored index. Names survive a reboot. Indices do not.
 #
-# Default: Whatever the wizard finds on your machine. The value shown names
-# Default: one sound card and is only an example.
+# Default: Whatever Setup finds on your machine. The value shown names one
+# Default: sound card and is only an example.
 # input_device_name = "Line In (Realtek(R) Audio), Windows DirectSound"
 
 # The audio sample rate. It must match the rate the input device uses.
@@ -80,9 +80,9 @@ noise_min_snr = 12.0
 # This number depends on your hardware. Every dBm and S-unit reading rests
 # on it.
 #
-# Calibrate it in the wizard's Calibration step. Adjust the RF and AF gain
-# until the reading there matches your own S-meter. S9 is -73 dBm, and one
-# S-unit is 6 dB.
+# Calibrate it in Setup's Calibration step. Adjust the RF and AF gain until
+# the reading there matches your own S-meter. S9 is -73 dBm, and one S-unit
+# is 6 dB.
 #
 # Set the radio up for measurement first: AGC off, widest filter, SSB,
 # preamp and attenuator off. Tune where the antenna is resonant and bypass

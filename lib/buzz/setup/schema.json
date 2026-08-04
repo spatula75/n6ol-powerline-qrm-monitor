@@ -14,9 +14,9 @@
           "title": "Input device",
           "description": "The sound card that carries the RF-to-audio converted signal.",
           "default": "Line In (Realtek(R) Audio), Windows DirectSound",
-          "x-sample-commented": "Whatever the wizard finds on your machine. The value shown names one sound card and is only an example.",
+          "x-sample-commented": "Whatever Setup finds on your machine. The value shown names one sound card and is only an example.",
           "x-notes": [
-            "Choose this in the wizard's Audio step. Do not type it. The wizard probes every input, shows a live level bar for each, and writes the name for you.",
+            "Choose this in Setup's Audio step. Do not type it. Setup probes every input, shows a live level bar for each, and writes the name for you.",
             "The monitor finds the device by this name at every start. It never uses a stored index. Names survive a reboot. Indices do not."
           ]
         },
@@ -94,7 +94,7 @@
           "default": -32.0,
           "x-notes": [
             "This number depends on your hardware. Every dBm and S-unit reading rests on it.",
-            "Calibrate it in the wizard's Calibration step. Adjust the RF and AF gain until the reading there matches your own S-meter. S9 is -73 dBm, and one S-unit is 6 dB.",
+            "Calibrate it in Setup's Calibration step. Adjust the RF and AF gain until the reading there matches your own S-meter. S9 is -73 dBm, and one S-unit is 6 dB.",
             "Set the radio up for measurement first: AGC off, widest filter, SSB, preamp and attenuator off. Tune where the antenna is resonant and bypass the tuner."
           ]
         },

@@ -130,7 +130,7 @@ more than the slop it removes.
 
 ## Where this project overrides the source
 
-Three rules from the source skill are changed here. Each was a considered decision, so
+Four rules from the source skill are changed here. Each was a considered decision, so
 that the disagreement does not have to be settled again every time somebody notices it.
 
 1. **Semicolons are banned in strict mode only.** The source bans them everywhere.
@@ -151,6 +151,10 @@ that the disagreement does not have to be settled again every time somebody noti
    `CHANGELOG` sections are left alone: they describe what shipped, and the published
    release notes were lifted from them verbatim.
 
+4. **Two spaces follow a period, in both modes.** Not an STE rule at all, but a house
+   style `CLAUDE.md` states directly: the extra space is what makes prose easy to scan
+   sentence by sentence. Applies everywhere this file's rules apply.
+
 ## Self-lint
 
 Run through this before returning any prose.
@@ -163,6 +167,9 @@ Run through this before returning any prose.
    phrasal verb such as "spin up", with a plain verb.
 6. Pick one name where the same thing is named two ways.
 7. Check for em dashes and for the banned words listed in `CLAUDE.md`.
+8. Check for sentence fragments - a clause with no verb, punctuated as though it
+   were a complete sentence.
+9. Check for one space after a period where two belong.
 
 The rules above fix the form of slop. They cannot make a hollow paragraph true, and
 they are not a substitute for knowing what the code does.

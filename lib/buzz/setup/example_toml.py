@@ -2,8 +2,8 @@
 Generate `config.example.toml` from the schema.
 
 The sample config is documentation in its own right.  It used to be a third place that
-described every setting, after the dataclass comments in `buzz.config` and the wizard's
-own field labels.  Three copies of one piece of prose give it three chances to
+described every setting, after the dataclass comments in `buzz.config` and the setup
+program's own field labels.  Three copies of one piece of prose give it three chances to
 disagree, and a shared constant in this project has already drifted that way.  So the
 schema renders the sample now, and a test fails when the committed file stops matching
 what the schema produces.
@@ -29,14 +29,14 @@ HEADER = """\
 # N6OL Powerline QRM Monitor - example configuration
 #
 # Copy this file to ~/.buzz/config.toml and edit to suit your setup, or let the
-# setup wizard write it for you:
+# setup program write it for you:
 #
 #     setup.bat                (Windows)
 #     ./setup.sh               (Linux / macOS / BSD)
 #
 # Every option the monitor understands appears here, with the value shown being the
 # default. Options that are commented out have no useful default: either the monitor
-# works it out, the feature is off, or the wizard fills them in.
+# works it out, the feature is off, or the setup program fills them in.
 #
 # GENERATED FILE - edit lib/buzz/setup/schema.json and regenerate, do not edit here.\
 """

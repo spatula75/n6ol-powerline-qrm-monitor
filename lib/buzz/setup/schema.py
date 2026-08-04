@@ -1,30 +1,31 @@
 """
 Load `schema.json`, validate a config against it, and fill a form from one.
 
-Nothing here draws.  The wizard's screens, the example-config generator, and the tests
-all need these same operations.  Keeping them clear of any terminal makes the merge
-rules testable without one.
+Nothing here draws.  The setup program's screens, the example-config generator, and
+the tests all need these same operations.  Keeping them clear of any terminal makes
+the merge rules testable without one.
 
 The schema carries six custom keywords.  JSON Schema ignores a keyword it does not
 know, so the document stays valid while it says things a validator has no opinion on.
 
-  * `x-visible-when` names the field this one depends on, so the wizard can gray it
-    out.  Visibility and validity are separate questions, and this project keeps them
-    apart on purpose.  `if`/`then` says what a *saved* config must satisfy, and
-    `validate()` enforces that.  This says what is worth *showing* during an edit.  To
-    derive one from the other, a reader would have to reverse-engineer `if`/`then`
-    blocks and guess at the intent behind them.
+  * `x-visible-when` names the field this one depends on, so the setup program can
+    leave it off a section's menu entirely rather than show it disabled.  Visibility
+    and validity are separate questions, and this project keeps them apart on
+    purpose.  `if`/`then` says what a *saved* config must satisfy, and `validate()`
+    enforces that.  This says what is worth *showing* during an edit.  To derive one
+    from the other, a reader would have to reverse-engineer `if`/`then` blocks and
+    guess at the intent behind them.
   * `x-notes` holds paragraphs too long for a form field.  Only `example_toml` renders
-    them.  The wizard shows `description`, which stays a line or two, because a form
-    field has no room for four paragraphs.
+    them.  The setup program shows `description`, which stays a line or two, because a
+    form field has no room for four paragraphs.
   * `x-default-from-runtime` marks a field whose default depends on the machine, such
     as the home directory.  No static document can hold it.  `defaults()` reads those
     from `BuzzConfig`, which already computes them.
   * `x-sample-commented` marks a field that has a real default which nobody should
     copy.  The audio device is the example: its default names one sound card.
   * `x-example` supplies a value to edit for a field the sample config comments out.
-  * `x-enum-titles` gives each `enum` choice a label for the wizard and the sample
-    config to show.
+  * `x-enum-titles` gives each `enum` choice a label for the setup program and the
+    sample config to show.
 """
 
 import json
@@ -37,7 +38,7 @@ from buzz.config import BuzzConfig
 
 SCHEMA_PATH = Path(__file__).with_name('schema.json')
 
-# One section's worth of settings, as they appear in TOML and in the wizard.
+# One section's worth of settings, as they appear in TOML and in the setup program.
 SectionValues = dict[str, Any]
 ConfigValues = dict[str, SectionValues]
 
@@ -51,8 +52,9 @@ def load_schema(path: Path = SCHEMA_PATH) -> dict[str, Any]:
 def section_names(schema: dict[str, Any]) -> list[str]:
     """The sections, in the order the document lists them.
 
-    The order matters.  The wizard walks the sections in it, and `config.example.toml`
-    is written in it.  Both follow the schema instead of each choosing for itself.
+    The order matters.  The setup program walks the sections in it, and
+    `config.example.toml` is written in it.  Both follow the schema instead of each
+    choosing for itself.
     """
     return list(schema['properties'])
 
@@ -90,7 +92,7 @@ def defaults(schema: dict[str, Any], config: BuzzConfig | None = None) -> Config
 
 
 def from_config(schema: dict[str, Any], config: BuzzConfig) -> ConfigValues:
-    """The wizard's starting values: every setting as `config` now holds it.
+    """The setup program's starting values: every setting as `config` now holds it.
 
     This reads the dataclasses instead of parsing the TOML again.  A config file that
     omits a key therefore gets the same default the running program uses.

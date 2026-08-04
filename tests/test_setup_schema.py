@@ -4,8 +4,8 @@ The important ones here are the drift pins.  The schema restates every field of
 BuzzConfig - its type, its default, what it means - and two descriptions of the same
 thing are two chances to disagree.  Nothing else in the suite would notice: a field
 added to the dataclass and forgotten in the schema simply would not appear in the
-wizard, silently, and a schema default that drifted from the dataclass default would
-make the wizard offer a value the program does not actually use.
+setup program, silently, and a schema default that drifted from the dataclass default
+would make the setup program offer a value the program does not actually use.
 """
 import dataclasses
 import json
@@ -46,7 +46,7 @@ class TestSchemaMatchesTheDataclasses:
     def test_every_config_section_is_in_the_schema(self, schema):
         assert section_names(schema) == list(_dataclass_sections()), (
             'schema sections must match BuzzConfig field-for-field and in the same '
-            'order - the order is what the wizard walks and what config.example.toml '
+            'order - the order is what the setup program walks and what config.example.toml '
             'is written in')
 
     def test_every_field_of_every_section_is_in_the_schema(self, schema):
@@ -65,7 +65,7 @@ class TestSchemaMatchesTheDataclasses:
                     continue
                 assert spec['default'] == getattr(getattr(config, section), field), (
                     f'{section}.{field}: schema default disagrees with BuzzConfig, so '
-                    'the wizard would offer a value the program does not use')
+                    'the setup program would offer a value the program does not use')
 
     def test_only_the_known_machine_dependent_fields_lack_a_default(self, schema):
         missing = {(section, field)
@@ -76,7 +76,7 @@ class TestSchemaMatchesTheDataclasses:
 
     def test_the_machine_dependent_fields_say_why_they_have_no_default(self, schema):
         """Without the marker, defaults() cannot tell 'derived at runtime' from
-        'somebody forgot', and would hand the wizard a missing value either way."""
+        'somebody forgot', and would hand the setup program a missing value either way."""
         for section, field in RUNTIME_DEFAULT_FIELDS:
             assert 'x-default-from-runtime' in field_schema(schema, section, field)
 
@@ -144,7 +144,7 @@ class TestDefaults:
 
     def test_the_defaults_validate_against_the_schema(self, schema):
         """A shipped default that its own schema rejects would fail the first time
-        anybody opened the wizard without a config file."""
+        anybody opened the setup program without a config file."""
         assert validate(schema, defaults(schema)) == []
 
     def test_machine_dependent_defaults_come_from_the_running_config(self, schema):
@@ -235,8 +235,8 @@ class TestValidate:
         assert any('weather.latitude' in p for p in problems_of(schema, values))
 
     def test_problems_name_the_setting_they_are_about(self, schema):
-        """The wizard marks up the offending field, and whoever hand-edits the TOML
-        needs to know which line to look at."""
+        """The setup program marks up the offending field, and whoever hand-edits the
+        TOML needs to know which line to look at."""
         values = defaults(schema)
         values['audio']['sample_rate'] = 1
         assert validate(schema, values)[0].startswith('audio.sample_rate:')

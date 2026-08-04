@@ -226,7 +226,15 @@ after all of it. In that order:
    a described default that moved, a number that no longer holds, a flag or setting that
    changed shape. Docs go stale exactly like comments do, and nothing else catches it;
    there is no test that fails when a README goes out of date.
-7. **Diff artifacts.** Read the actual diff before staging, not just the file as it
+7. **STE compliance for touched prose.** Any docstring, comment, or user-facing string
+   in a file this change touches - not the whole file, and not the whole repo - gets
+   checked against `docs/ste-writing.md` and this file's own prose rules: banned words,
+   em dashes, sentence fragments, two spaces after a period, active voice, semicolons
+   in strict text. This is not a dedicated sweep and does not need one; it rides along
+   with whatever change is already being made. Handled this way, every touched file
+   ratchets a little closer to full compliance instead of drifting further from it one
+   untouched sentence at a time.
+8. **Diff artifacts.** Read the actual diff before staging, not just the file as it
    ends up. Editing in passes leaves residue that runs and lints clean and is only
    visible in the diff itself: a doubled blank line where a tool split one edit into
    two, a comment whose sentence now trails off because an insertion fell inside it
@@ -728,6 +736,15 @@ they are banned outright in files and comments:
 Most of them are doing emphasis rather than work. "A genuine bug" is a bug; "the
 load-bearing line" is the line that matters; "the value lands at 128" is the value being
 128. Say the thing.
+
+- **No sentence fragments.** "Two reasons, not one." has no verb and is not a
+  sentence. Write "There are two reasons for this: ..." instead, or fold the
+  fragment into the sentence before it. An impersonal construction like "there
+  are" is fine here even though it reads as passive-adjacent - stating a fact
+  plainly beats forcing an agent onto a sentence that does not need one.
+- **Two spaces after a period.** House style, not an STE rule - keep it in both
+  strict and flavored text. The extra space is what makes prose easy to scan at
+  a glance, sentence by sentence.
 
 - **Comment the why, not the what** - especially where a deliberate choice looks wrong
   at a glance. Worth preserving: peak amplitude rather than RMS (impulse noise, not sine

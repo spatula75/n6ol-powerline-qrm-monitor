@@ -23,9 +23,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   rather not hand-edit a TOML file. `schema.json` describes every setting the
   monitor has - type, default, legal values, and what it is for - and is the single
   source three things now read instead of repeating one another: validation of
-  `~/.buzz/config.toml`, the generator that writes `config.example.toml`, and (from
-  a later change) the terminal wizard's own screens. A test pins every schema
-  default against the dataclass default it describes, so the two cannot drift.
+  `~/.buzz/config.toml`, the generator that writes `config.example.toml`, and the
+  setup program's own screens, below. A test pins every schema default against the
+  dataclass default it describes, so the two cannot drift.
+
+- The terminal setup program itself, run with `python -m buzz.setup` or via
+  `setup.bat` / `setup.sh`.  A full-screen menu, styled after `raspi-config`, built
+  entirely from `schema.json`.  A main menu lists every config section and checks
+  one off once you have looked at it.  Entering a section lists its
+  currently-visible fields and opens a dialog sized to the field's type to edit one
+  (free text, a switch, or a labeled list for an `enum`), navigable with either the
+  arrow keys or Tab.  Escape or Q always confirms before exiting, even with nothing
+  changed.  Finish shows exactly what changed before writing anything, and Save
+  backs up an existing `~/.buzz/config.toml` to a timestamped `.bak` file first - if
+  the backup cannot be written, the config is left alone rather than overwritten.
+  Black screen, cyan text, in the same phosphor color the oscilloscope display
+  uses, built from the 16-color ANSI palette rather than RGB hex so it renders
+  consistently across terminals rather than however each one happens to
+  approximate an arbitrary color.  Runs on Windows, Linux, macOS, and BSD with no
+  extra system dependency, via the new `textual` requirement.  Device selection and
+  level calibration are not wired into the Audio section yet - that is next.
 
 ### Changed
 - Coverage measurement now covers `tools/` as well as `lib/buzz` and `configure`.
@@ -35,7 +52,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `config.example.toml` is generated from `lib/buzz/setup/schema.json` rather than
   hand-maintained, and a test fails if the committed copy stops matching what the
   schema would produce. It had been a third place every setting was described, after
-  the dataclass comments and the wizard's own labels; the sample now cannot disagree
+  the dataclass comments and the setup program's own labels; the sample now cannot disagree
   with the code about a default, and six settings that had been showing example
   values as though they were defaults no longer do.
 
