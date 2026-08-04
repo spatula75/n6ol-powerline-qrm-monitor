@@ -31,12 +31,28 @@ neighbor.
 
 `Button`'s own focused state sidesteps the whole question with `text-style:
 reverse` (real terminal reverse video) instead of a named foreground, and its
-`rich_style` confirmed the effect. The identical technique was tried for the
+`rich_style` confirmed the effect.  The identical technique was tried for the
 highlighted row below first and made things worse, not better - the highlight
 stopped rendering at all on the same real terminal that showed the grey-black
 correctly - which is why this uses the `bold` diagnosis instead: it explains the
 specific grey observed, where `reverse` was a different mechanism entirely and
 its failure explains nothing about why black read as grey in the first place.
+
+One more variable needs a note, for the opposite of the usual reason: `border`
+was never set at all until this was noticed, so every OptionList's outer box was
+rendering with Textual's own ansi-mode default of `ansi_magenta`, confirmed via
+`option_list.styles.border` on a live widget returning `Color(128, 0, 128,
+ansi=5)` - literal magenta.  That was headed for a fix until it turned out to be
+liked as it stood, breaking up what would otherwise be cyan on black throughout,
+so `border` is set here explicitly to the same magenta Textual's default already
+supplied, which pins the color as a deliberate choice rather than leaving it as
+an unstyled leftover that could change out from under this theme if that default
+ever did.  `border-blurred` was a real bug, not a color choice: it was black,
+which is invisible against the black background the moment the terminal loses
+OS focus, reading as the whole selection having vanished.  Set to the same
+magenta as the focused border, for the same reason the block-cursor pair no
+longer has a separate blurred version in `screens/base.py` - the box should stay
+exactly as visible as it was, not go dark the instant focus moves elsewhere.
 """
 
 from textual.theme import Theme
@@ -54,24 +70,22 @@ SCOPE_THEME = Theme(
     ansi=True,
     # `ansi=True` themes bypass Textual's usual RGB-derived variables, so these
     # have to be supplied explicitly - the built-in widgets' own CSS references
-    # them by name (Input's cursor and selection, OptionList's highlighted row).
-    # The block-cursor pair is black-on-bright-cyan, and text-style is pinned to
-    # `none` rather than left at Textual's ansi-mode default of `bold` - see the
-    # module docstring for why `bold` was very likely the actual cause of black
-    # reading as grey. Blurred and focused get the same pair: this program always
-    # focuses the option list it shows (see main_menu.py and section_menu.py), so
-    # the blurred state is rarely seen, but it should not go back to looking
-    # unselected if it ever is.
+    # them by name (a box's border, Input's cursor and selection, OptionList's
+    # highlighted row).  The block-cursor pair is black-on-bright-cyan, and
+    # text-style is pinned to `none` rather than left at Textual's ansi-mode
+    # default of `bold` - see the module docstring for why `bold` was very likely
+    # the actual cause of black reading as grey.  There is no separate blurred
+    # block-cursor pair: `screens/base.py` makes the highlighted row use this
+    # same pair regardless of focus, so setting one here would do nothing - see
+    # that file for why the built-in blurred variables cannot be reached at all.
     variables={
         'ansi-background': 'ansi_black',
         'ansi-foreground': 'ansi_white',
-        'border-blurred': 'ansi_black',
+        'border': 'ansi_magenta',
+        'border-blurred': 'ansi_magenta',
         'block-cursor-foreground': 'ansi_black',
         'block-cursor-background': 'ansi_bright_cyan',
         'block-cursor-text-style': 'none',
-        'block-cursor-blurred-foreground': 'ansi_black',
-        'block-cursor-blurred-background': 'ansi_bright_cyan',
-        'block-cursor-blurred-text-style': 'none',
         'input-cursor-background': 'ansi_black',
         'input-cursor-foreground': 'ansi_white',
         'input-cursor-text-style': 'none',

@@ -83,11 +83,24 @@ class TextFieldDialog(ScopeModalScreen[Any]):
         color: $error;
     }
     """
-    # Input already owns left/right for its text cursor, so this only takes effect
-    # once a Button has focus - see ConfirmDialog's identical note.
+    # Input already owns left/right for its text cursor, so that pair only takes
+    # effect once a Button has focus - see ConfirmDialog's identical note.
+    #
+    # Escape is a binding rather than a `key_escape` method on purpose.  Textual's
+    # `dispatch_key()` (which calls `key_<name>` methods) never calls
+    # `event.stop()` or `event.prevent_default()` on the event it dispatches, so a
+    # `key_escape` method that dismisses this screen does not stop the same key
+    # press from also being resolved through the BINDINGS chain - and by the time
+    # that resolution runs, this screen has already closed, so it resolves against
+    # whichever screen is now on top instead.  That let one Escape press close both
+    # this dialog and the section screen underneath it in a single keystroke.
+    # BINDINGS-based handling does not have this problem: matching a binding here
+    # is what stops the chain, the same mechanism that already made left/right
+    # behave correctly above.
     BINDINGS = [
         ('left', 'app.focus_previous', 'Previous'),
         ('right', 'app.focus_next', 'Next'),
+        ('escape', 'cancel', 'Cancel'),
     ]
 
     def __init__(self, spec: dict[str, Any], current: Any) -> None:
@@ -126,7 +139,7 @@ class TextFieldDialog(ScopeModalScreen[Any]):
             types = _types(self._spec)
             self.dismiss(None if raw == '' and 'null' in types else raw)
 
-    def key_escape(self) -> None:
+    def action_cancel(self) -> None:
         self.dismiss(CANCELLED)
 
 
@@ -156,10 +169,13 @@ class BooleanFieldDialog(ScopeModalScreen[Any]):
         padding-bottom: 1;
     }
     """
-    # See ConfirmDialog's identical note: Tab already cycles this row, arrows do not.
+    # See TextFieldDialog's identical notes: Tab already cycles this row, arrows
+    # do not, and Escape is a binding rather than a `key_escape` method so that
+    # dismissing this screen actually stops the key press there.
     BINDINGS = [
         ('left', 'app.focus_previous', 'Previous'),
         ('right', 'app.focus_next', 'Next'),
+        ('escape', 'cancel', 'Cancel'),
     ]
 
     def __init__(self, spec: dict[str, Any], current: Any) -> None:
@@ -182,7 +198,7 @@ class BooleanFieldDialog(ScopeModalScreen[Any]):
         else:
             self.dismiss(CANCELLED)
 
-    def key_escape(self) -> None:
+    def action_cancel(self) -> None:
         self.dismiss(CANCELLED)
 
 
@@ -214,6 +230,9 @@ class EnumFieldDialog(ScopeModalScreen[Any]):
         padding-bottom: 1;
     }
     """
+    # See TextFieldDialog's note: Escape is a binding rather than a `key_escape`
+    # method so that dismissing this screen actually stops the key press there.
+    BINDINGS = [('escape', 'cancel', 'Cancel')]
 
     def __init__(self, spec: dict[str, Any], current: Any) -> None:
         super().__init__()
@@ -227,7 +246,7 @@ class EnumFieldDialog(ScopeModalScreen[Any]):
         yield Vertical(
             Static(self._spec['title'], id='title'),
             Static(self._spec['description'], id='description'),
-            OptionList(*options, id='value'),
+            OptionList(*options, id='value', classes='scope-options'),
             id='dialog',
         )
 
@@ -251,7 +270,7 @@ class EnumFieldDialog(ScopeModalScreen[Any]):
                 self.dismiss(choice)
                 return
 
-    def key_escape(self) -> None:
+    def action_cancel(self) -> None:
         self.dismiss(CANCELLED)
 
 

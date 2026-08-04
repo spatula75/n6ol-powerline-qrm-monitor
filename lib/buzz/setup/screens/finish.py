@@ -12,10 +12,10 @@ from typing import Any
 
 import tomli_w
 from textual.containers import Vertical, VerticalScroll
-from textual.widgets import Button, Footer, Header, Static
+from textual.widgets import Button, Footer, Static
 
 from buzz.setup.schema import ConfigValues, field_names, section_names
-from buzz.setup.screens.base import ScopeScreen
+from buzz.setup.screens.base import ScopeScreen, scope_header
 
 _BACKUP_TIMESTAMP = '%Y%m%d-%H%M%S'
 
@@ -85,7 +85,7 @@ class FinishScreen(ScopeScreen[None]):
 
     def compose(self):
         self._changes = changed_fields(self.app.schema, self.app.original_values, self.app.values)
-        yield Header()
+        yield scope_header()
         if self._changes:
             yield Vertical(
                 Static('The following will be saved:', id='intro'),

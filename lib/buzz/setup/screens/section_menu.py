@@ -4,11 +4,11 @@ from typing import Any
 
 from textual import work
 from textual.containers import Vertical
-from textual.widgets import Footer, Header, OptionList, Static
+from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
 from buzz.setup.schema import field_names, field_schema, is_visible
-from buzz.setup.screens.base import ScopeScreen
+from buzz.setup.screens.base import ScopeScreen, scope_header
 from buzz.setup.screens.field_dialogs import CANCELLED, open_field_dialog
 
 
@@ -56,11 +56,11 @@ class SectionMenuScreen(ScopeScreen[None]):
 
     def compose(self):
         section_spec = self.app.schema['properties'][self.section]
-        yield Header()
+        yield scope_header()
         yield Vertical(
             Static(section_spec['title'], id='title'),
             Static(section_spec['description'], id='intro'),
-            OptionList(id='fields'),
+            OptionList(id='fields', classes='scope-options'),
             id='body',
         )
         yield Footer()

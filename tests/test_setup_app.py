@@ -4,9 +4,11 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 
-from textual.widgets import Button
+from textual import events
+from textual.widgets import Button, OptionList
 from buzz.setup.screens.field_dialogs import _kind, _parse_number
 from buzz.setup.screens.finish import backup_path, changed_fields, toml_ready
+from buzz.setup.screens.main_menu import MainMenuScreen
 from buzz.setup.screens.section_menu import display_value
 from buzz.setup.app import SetupApp
 
@@ -110,6 +112,74 @@ class TestSetupAppWalkthrough:
                 # Row 0 is a section (never the Finish row or the separator), so
                 # Enter with nothing touched must have opened a section screen.
                 assert app.visited != set()
+
+        run(scenario())
+
+    def test_highlighted_row_stays_visible_when_the_terminal_loses_focus(self, tmp_path):
+        """Regression test for a real bug: OptionList.DEFAULT_CSS defines the
+        highlighted-row style twice at equal specificity, and the copy that wins
+        once the widget is not focused reads `color: $foreground` rather than the
+        theme's own block-cursor variables - so losing OS focus (Alt+Tab, clicking
+        another window) made the selected row render as this theme's bright cyan
+        on itself, invisible.  Confirmed against a live app by posting an AppBlur
+        event.  Fixed in screens/base.py."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                await pilot.pause()
+                option_list = app.screen.query_one('#sections', OptionList)
+                focused_style = option_list.get_component_rich_style('option-list--option-highlighted')
+
+                app.post_message(events.AppBlur())
+                await pilot.pause()
+                blurred_style = option_list.get_component_rich_style('option-list--option-highlighted')
+
+                assert blurred_style.color == focused_style.color
+                assert blurred_style.bgcolor == focused_style.bgcolor
+                assert blurred_style.color != blurred_style.bgcolor
+
+        run(scenario())
+
+    def test_header_icon_is_blank_but_still_reserves_its_width(self, tmp_path):
+        """Regression test: the command-palette icon is disabled (ENABLE_COMMAND_
+        PALETTE is off), so it should show nothing and do nothing, but hiding it
+        outright with `display: none` was tried first and rejected - it dropped
+        the icon's reserved width from the header's layout, which visibly shifted
+        the centered title over. `icon=''` (see screens/base.py's scope_header())
+        blanks the glyph while keeping the width, so the title's region should
+        start exactly where the icon's reserved width ends, not at 0."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                icon = app.screen.query_one('HeaderIcon')
+                title = app.screen.query_one('HeaderTitle')
+                assert icon.icon == ''
+                assert icon.region.width > 0
+                assert title.region.x == icon.region.width
+
+        run(scenario())
+
+    def test_header_icon_does_not_highlight_on_hover(self, tmp_path):
+        """Regression test: HeaderIcon's own `:hover` rule is not conditioned on
+        its `disabled` state, so a disabled icon still visibly highlighted on
+        mouse hover despite doing nothing on click - reading as broken rather
+        than inert.  See screens/base.py's `HeaderIcon:hover` override."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test(size=(100, 30)) as pilot:
+                await pilot.pause()
+                icon = app.screen.query_one('HeaderIcon')
+                normal_style = icon.rich_style
+                await pilot.hover(icon)
+                await pilot.pause()
+                assert icon.rich_style == normal_style
 
         run(scenario())
 
@@ -281,7 +351,7 @@ class TestSetupAppWalkthrough:
         assert not config_path.exists()
 
     def test_enum_field_round_trips_a_non_string_value(self, tmp_path):
-        """pulse_rate's enum values are integers; the dialog must not turn 120 into "120"."""
+        """pulse_rate's enum values are integers.  The dialog must not turn 120 into "120"."""
         config_path = tmp_path / 'config.toml'
 
         async def scenario():
@@ -324,9 +394,9 @@ class TestSetupAppWalkthrough:
                 await pilot.pause()
 
                 # pulse_rate defaults to 120, which is the first enum choice - so this
-                # would pass even with no highlight-on-mount logic at all. What it
+                # would pass even with no highlight-on-mount logic at all.  What it
                 # actually guards is that *something* is highlighted the instant the
-                # dialog opens, whatever the value; Enter here must confirm 120, not
+                # dialog opens, whatever the value.  Enter here must confirm 120, not
                 # do nothing.
                 enum_list = app.screen.query_one('#value')
                 assert enum_list.highlighted is not None
@@ -346,6 +416,7 @@ class TestSetupAppWalkthrough:
                 option_list.highlighted = option_list.get_option_index('station')
                 await pilot.press('enter')
                 await pilot.pause()
+                section_screen = type(app.screen)
 
                 fields = app.screen.query_one('#fields')
                 fields.highlighted = fields.get_option_index('callsign')
@@ -357,6 +428,44 @@ class TestSetupAppWalkthrough:
                 await pilot.pause()
 
                 assert app.values['station']['callsign'] == before
+                # Regression coverage: this used to close all the way to MainMenuScreen instead,
+                # because dismissing the dialog on Escape did not stop that same
+                # key press from also resolving against the section screen's own
+                # Escape binding once it became the top screen again.  See
+                # test_escape_cancel_lands_on_the_section_menu_not_the_main_menu
+                # for the direct reproduction of that bug.
+                assert type(app.screen) is section_screen
+
+        run(scenario())
+
+    def test_escape_cancel_lands_on_the_section_menu_not_the_main_menu(self, tmp_path):
+        """Regression test for a real bug: one Escape press in a field dialog used
+        to close both the dialog and the section menu underneath it, ending back
+        up on the main menu instead.  The cause was `key_escape()` dismissing the
+        dialog without stopping the key event, so the same press was then also
+        resolved against the section screen's own Escape binding, which by then
+        was the new top of the stack.  Fixed by moving Escape handling in every
+        dialog onto the BINDINGS chain, which does stop the event where a bare
+        `key_escape` method does not - see field_dialogs.py and confirm.py."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('audio')
+                await pilot.press('enter')
+                await pilot.pause()
+                section_screen = type(app.screen)
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('sample_rate')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                await pilot.press('escape')
+                await pilot.pause()
+                assert type(app.screen) is section_screen
 
         run(scenario())
 
@@ -419,7 +528,7 @@ class TestSetupAppWalkthrough:
         run(scenario())
 
     def test_left_right_arrows_move_focus_between_dialog_buttons(self, tmp_path):
-        """Tab already cycles a dialog's buttons; the arrow keys did not until this
+        """Tab already cycles a dialog's buttons.  The arrow keys did not until this
         was bound explicitly - regression coverage for that gap."""
         config_path = tmp_path / 'config.toml'
 
@@ -621,6 +730,11 @@ class TestSetupAppWalkthrough:
                 await pilot.press('escape')
                 await pilot.pause()
                 assert app.is_running
+                # Regression coverage: MainMenuScreen also binds Escape (to reopen
+                # this very dialog), so the same bug that skipped a section screen
+                # could instead stack a second ConfirmDialog on top of the first
+                # from one Escape press.  Confirm there is exactly one screen back.
+                assert type(app.screen) is MainMenuScreen
 
         run(scenario())
 
@@ -707,7 +821,7 @@ class TestSetupAppWalkthrough:
 
 
 class TestMainEntryPoint:
-    """`python -m buzz.setup` resolves to this module; importing it must not run the app."""
+    """`python -m buzz.setup` resolves to this module.  Importing it must not run the app."""
 
     def test_importing_does_not_launch_the_app(self):
         import buzz.setup.__main__ as entry_point

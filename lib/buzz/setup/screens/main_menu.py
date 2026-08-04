@@ -2,11 +2,11 @@
 
 from textual import work
 from textual.containers import Vertical
-from textual.widgets import Footer, Header, OptionList, Static
+from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
 from buzz.setup.schema import section_names
-from buzz.setup.screens.base import ScopeScreen
+from buzz.setup.screens.base import ScopeScreen, scope_header
 from buzz.setup.screens.confirm import ConfirmDialog
 from buzz.setup.screens.finish import FinishScreen, changed_fields
 from buzz.setup.screens.section_menu import SectionMenuScreen
@@ -60,10 +60,10 @@ class MainMenuScreen(ScopeScreen[None]):
     ]
 
     def compose(self):
-        yield Header()
+        yield scope_header()
         yield Vertical(
             Static(self._intro_text(), id='intro'),
-            OptionList(id='sections'),
+            OptionList(id='sections', classes='scope-options'),
             id='body',
         )
         yield Footer()

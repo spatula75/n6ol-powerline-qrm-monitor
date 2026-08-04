@@ -30,11 +30,22 @@ class ConfirmDialog(ScopeModalScreen[bool]):
     """
     # A Horizontal's children take Tab/Shift+Tab already (Screen.BINDINGS binds
     # those to app.focus_next/previous), but not the left/right arrows a button
-    # row like this one naturally invites. Binding them to the same actions
+    # row like this one naturally invites.  Binding them to the same actions
     # covers both without touching how Tab already works.
+    #
+    # Escape is a binding rather than a `key_escape` method for the same reason
+    # as every dialog in field_dialogs.py: `dispatch_key()` never stops the key
+    # press it dispatches, so a `key_escape` method that dismisses this screen
+    # does not stop the same press from also resolving through the BINDINGS
+    # chain, by which point this screen has closed and MainMenuScreen - which
+    # binds Escape to open this very dialog - is what the press resolves against
+    # instead.  On this dialog specifically that means a second ConfirmDialog
+    # opening on top of the first from one Escape press, not just a skipped
+    # screen.  A matched binding stops the chain where a bare method does not.
     BINDINGS = [
         ('left', 'app.focus_previous', 'Previous'),
         ('right', 'app.focus_next', 'Next'),
+        ('escape', 'cancel', 'Cancel'),
     ]
 
     def __init__(self, question: str, confirm_label: str, cancel_label: str) -> None:
@@ -59,5 +70,5 @@ class ConfirmDialog(ScopeModalScreen[bool]):
     def on_button_pressed(self, event) -> None:
         self.dismiss(event.button.id == 'confirm')
 
-    def key_escape(self) -> None:
+    def action_cancel(self) -> None:
         self.dismiss(False)

@@ -234,6 +234,14 @@ after all of it. In that order:
    with whatever change is already being made. Handled this way, every touched file
    ratchets a little closer to full compliance instead of drifting further from it one
    untouched sentence at a time.
+
+   **This step is mandatory and unprompted, the same as ruff or the test suite below -
+   run it before every commit, not only when asked.** The real goal is prose that
+   already follows these rules on first draft, so the check should rarely find
+   anything. Treat any violation this step does catch as a sign to slow down while
+   drafting the next sentence, not as proof the safety net is doing its job. Proposing
+   a commit without having actually run this check against every touched file is the
+   same class of miss as proposing one with a known lint error, not a smaller one.
 8. **Diff artifacts.** Read the actual diff before staging, not just the file as it
    ends up. Editing in passes leaves residue that runs and lints clean and is only
    visible in the diff itself: a doubled blank line where a tool split one edit into
