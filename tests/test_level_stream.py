@@ -64,7 +64,7 @@ class TestLevelStreamInit:
     def test_offset_stored_from_config(self):
         cfg = _make_config(offset_db=12.5)
         stream, _, _ = _make_level_stream(cfg=cfg)
-        assert stream._offset_db == pytest.approx(12.5)
+        assert stream.offset_db == pytest.approx(12.5)
 
     def test_blocksize_passed_to_input_stream(self):
         cfg = _make_config()
@@ -105,6 +105,20 @@ class TestLevelStreamCallback:
         cb_lo(_audio(500), 320, None, None)
         cb_hi(_audio(5000), 320, None, None)
         assert stream_hi._latest_dbm > stream_lo._latest_dbm
+
+    def test_offset_can_be_changed_live_without_reopening_the_stream(self):
+        """The setup program's calibration dialog nudges offset_db while a single
+        LevelStream keeps running - see LevelStream's own docstring.  A later
+        callback must pick up the new value, not the one the stream opened with."""
+        stream, _, callback = _make_level_stream(cfg=_make_config(offset_db=0.0))
+        audio = _audio(5000)
+        callback(audio, 320, None, None)
+        before = stream._latest_dbm
+
+        stream.offset_db = 20.0
+        callback(audio, 320, None, None)
+
+        assert stream._latest_dbm == pytest.approx(before + 20.0)
 
 
 class TestLevelStreamRead:
@@ -154,6 +168,37 @@ class TestLevelStreamClose:
             stream = LevelStream(cfg, 0, 320)
         stream.close()
         mock_sd.close.assert_called_once()
+
+    def test_close_unblocks_a_thread_waiting_in_read(self):
+        """Regression test: the setup program's calibration dialogs call read()
+        via asyncio.to_thread(), and cancelling that Task on dismiss does not stop
+        the thread pool worker actually running it - only closing the stream while
+        it is parked in Event.wait() does, since no further callback is ever
+        coming to set that event once the stream is stopped.  See close()'s own
+        comment: an unblocked thread here is what stands between a dismissed
+        dialog and a setup program that hangs on exit rather than closing, since
+        CPython joins every ThreadPoolExecutor worker before the process can
+        exit.  This test hung instead of failing when the fix was reverted -
+        exactly the hang this exists to prevent - which is why it bounds the
+        wait with a join timeout rather than calling stream.read() directly."""
+        import threading
+        import time
+        stream, _, _ = _make_level_stream()
+        result = []
+
+        def _block_in_read():
+            result.append(stream.read())
+
+        # daemon=True: if the fix regresses, this thread must not be able to hang
+        # the whole test run's own process exit - only this test should fail.
+        t = threading.Thread(target=_block_in_read, daemon=True)
+        t.start()
+        time.sleep(0.05)  # give the thread time to actually reach Event.wait()
+        stream.close()
+        t.join(timeout=2.0)
+
+        assert not t.is_alive()
+        assert result == [stream._latest_dbm]
 
 
 class TestLevelStreamContextManager:

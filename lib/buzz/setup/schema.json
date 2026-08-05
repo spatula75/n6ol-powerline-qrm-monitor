@@ -14,16 +14,17 @@
           "title": "Input device",
           "description": "The sound card that carries the RF-to-audio converted signal.",
           "default": "Line In (Realtek(R) Audio), Windows DirectSound",
+          "x-widget": "device-picker",
           "x-sample-commented": "Whatever Setup finds on your machine. The value shown names one sound card and is only an example.",
           "x-notes": [
-            "Choose this in Setup's Audio step. Do not type it. Setup probes every input, shows a live level bar for each, and writes the name for you.",
+            "Choose this in Setup's Audio step. Do not type it. Setup probes every input, shows a level bar for each, and writes the name for you.",
             "The monitor finds the device by this name at every start. It never uses a stored index. Names survive a reboot. Indices do not."
           ]
         },
         "sample_rate": {
           "type": "integer",
           "title": "Sample rate (Hz)",
-          "description": "The audio sample rate. It must match the rate the input device uses.",
+          "description": "The audio sample rate. It must match a rate the input device uses.",
           "default": 16000,
           "minimum": 8000,
           "maximum": 48000,
@@ -37,7 +38,7 @@
         "pulse_rate": {
           "type": "integer",
           "title": "Pulse rate (pps)",
-          "description": "Impulses per second from the mains. This is twice the grid frequency, because a gap fires on both half-cycles.",
+          "description": "Impulses per second from the mains. This is twice the grid frequency, because an arc fires on both peaks.",
           "default": 120,
           "enum": [120, 100],
           "x-enum-titles": {
@@ -78,6 +79,9 @@
           "type": "number",
           "title": "Receiver noise floor (dBm)",
           "description": "The baseline for the noise-floor reference line on the daily graph.",
+          "x-notes": [
+            "You may want to adjust this after gathering a few days of data, to see what is typical for your area in the absence of any utility noise."
+          ],
           "default": -98.0
         },
         "noise_min_snr": {
@@ -92,9 +96,12 @@
           "title": "Audio-to-RF offset (dB)",
           "description": "The offset that converts audio amplitude to RF level at the receiver input.",
           "default": -32.0,
+          "x-widget": "calibration",
           "x-notes": [
-            "This number depends on your hardware. Every dBm and S-unit reading rests on it.",
-            "Calibrate it in Setup's Calibration step. Adjust the RF and AF gain until the reading there matches your own S-meter. S9 is -73 dBm, and one S-unit is 6 dB.",
+            "This number is added to the audio level to approximate the RF level in dBm at the receiver input.  For example, if your radio's own S-meter reads -64 dBm and the sound card sees -32 dB of audio for that same signal, set this to -32.",
+            "Most receivers: leave this alone.  Open the Calibration meter on the Audio page instead, and adjust the RF and AF gain on the receiver until its own S-meter agrees with the reading there.",
+            "Some receivers have no AF gain to adjust - one with its own internal sound device, for instance.  Choose this field itself to open a live meter of its own: Up and Down nudge the offset, Space resets it to the default, and Enter confirms.",
+            "S9 is -73 dBm, and each S-unit is 6 dB.",
             "Set the radio up for measurement first: AGC off, widest filter, SSB, preamp and attenuator off. Tune where the antenna is resonant and bypass the tuner."
           ]
         },
@@ -131,7 +138,8 @@
           "x-visible-when": {"field": "source", "equals": "cumulusmx"},
           "x-example": "http://cumulusmx.local:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing",
           "x-notes": [
-            "Change the query string tags to match the fields your station publishes."
+            "Change the query string tags to match the fields your station publishes.",
+            "You should normally only change the hostname and port here."
           ]
         },
         "latitude": {
@@ -327,7 +335,7 @@
     "render": {
       "type": "object",
       "title": "Video rendering",
-      "description": "Where to find ffmpeg. Only --render and the loudness probe that feeds it need it.",
+      "description": "Where to find ffmpeg. Only --render and the loudness probe that feeds it need it. Only specify this if it cannot be found on the PATH.",
       "properties": {
         "ffmpeg_path": {
           "type": "string",

@@ -5,7 +5,7 @@ Nothing here draws.  The setup program's screens, the example-config generator, 
 the tests all need these same operations.  Keeping them clear of any terminal makes
 the merge rules testable without one.
 
-The schema carries six custom keywords.  JSON Schema ignores a keyword it does not
+The schema carries seven custom keywords.  JSON Schema ignores a keyword it does not
 know, so the document stays valid while it says things a validator has no opinion on.
 
   * `x-visible-when` names the field this one depends on, so the setup program can
@@ -26,6 +26,14 @@ know, so the document stays valid while it says things a validator has no opinio
   * `x-example` supplies a value to edit for a field the sample config comments out.
   * `x-enum-titles` gives each `enum` choice a label for the setup program and the
     sample config to show.
+  * `x-widget` names a dialog other than the type-driven default (a text box, a
+    switch, or an enum's radio list) for `field_dialogs.open_field_dialog()` to open
+    instead.  `audio.input_device_name` uses `device-picker`, and
+    `station.audio_rf_conversion_db` uses `calibration` - see
+    `screens/device_picker.py` and `screens/calibration.py`.  Both dialogs still
+    return the field's new value on confirm and `CANCELLED` on cancel, the same
+    contract every other field dialog honors, so section_menu.py never has to know
+    which one it opened.
 """
 
 import json

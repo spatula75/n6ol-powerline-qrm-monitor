@@ -15,7 +15,6 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent / 'lib'))
 
-import sounddevice as sd
 import tomli_w
 from buzz.config import (
     CONFIG_PATH,
@@ -49,17 +48,13 @@ def main() -> None:
     """
     config = BuzzConfig.from_toml() if CONFIG_PATH.exists() else BuzzConfig()
 
-    new_index = select_device(config.audio.sample_rate, current_name=config.audio.input_device_name)
-    if new_index is None:
+    device = select_device(config.audio.sample_rate, current_name=config.audio.input_device_name)
+    if device is None:
         print(f'No device selected, so {CONFIG_PATH} is unchanged. Run this again and '
               'choose a device by number to set the audio input.')
         return
 
-    device = sd.query_devices(new_index)
-    hostapis = sd.query_hostapis()
-    full_name = f"{device['name']}, {hostapis[device['hostapi']]['name']}"
-
-    config.audio.input_device_name = full_name
+    config.audio.input_device_name = device.name
 
     CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
     data = {
@@ -73,7 +68,7 @@ def main() -> None:
     with open(CONFIG_PATH, 'wb') as f:
         tomli_w.dump(data, f)
 
-    print(f'\nDevice set to: {full_name} (index {new_index})')
+    print(f'\nDevice set to: {device.name} (index {device.real_index})')
     print(f'Config saved to: {CONFIG_PATH}')
 
 

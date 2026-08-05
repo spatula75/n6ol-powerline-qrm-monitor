@@ -56,6 +56,14 @@ from textual.widgets import Header
 
 ScreenResultType = TypeVar('ScreenResultType')
 
+# A sentinel rather than None, because None is itself a legal value for a nullable
+# field (an unset weather coordinate, for instance), so the caller needs a way to
+# tell "the user cleared this" apart from "the user backed out."  Lives here, not in
+# field_dialogs.py where it originated, because device_picker.py and calibration.py
+# need it too, and field_dialogs.py itself imports the dialogs those modules define -
+# importing CANCELLED the other way around would close that into a cycle.
+CANCELLED = object()
+
 # Shared between ScopeScreen and ScopeModalScreen: EnumFieldDialog is a
 # ScopeModalScreen and has its own OptionList, so it needs the same fix.  Targets
 # the `scope-options` class every OptionList in this package carries (not the

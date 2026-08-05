@@ -8,8 +8,17 @@ from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
 from buzz.setup.schema import field_names, field_schema, is_visible
-from buzz.setup.screens.base import ScopeScreen, scope_header
-from buzz.setup.screens.field_dialogs import CANCELLED, open_field_dialog
+from buzz.setup.screens.base import CANCELLED, ScopeScreen, scope_header
+from buzz.setup.screens.calibration import CalibrationMeterDialog
+from buzz.setup.screens.field_dialogs import open_field_dialog
+
+# Not a field - audio_rf_conversion_db lives in the station section, and it stays
+# there (see schema.py's docstring on x-widget).  This is a shortcut to a read-only
+# meter, shown only on the audio section, matching the current in-progress device
+# and sample rate rather than whatever is already saved.  Same sentinel-id shape as
+# main_menu.py's _FINISH_ID, for the same reason: a row on_option_list_option_selected
+# needs to recognize as not a real field before it looks one up in the schema.
+_CALIBRATE_ID = '__calibrate__'
 
 
 def display_value(spec: dict[str, Any], value: Any) -> str:
@@ -72,27 +81,35 @@ class SectionMenuScreen(ScopeScreen[None]):
     def _refresh_options(self) -> None:
         schema = self.app.schema
         section_values = self.app.values[self.section]
-        options: list[Option] = []
+        options: list[Option | None] = []
         for field in field_names(schema, self.section):
             if not is_visible(schema, self.section, field, section_values):
                 continue
             spec = field_schema(schema, self.section, field)
             label = f"{spec['title']}: {display_value(spec, section_values[field])}"
             options.append(Option(label, id=field))
+        if self.section == 'audio':
+            options.append(None)  # a separator, per OptionList.add_option's own convention
+            options.append(Option('Calibration meter...', id=_CALIBRATE_ID))
         option_list = self.query_one('#fields', OptionList)
         option_list.clear_options()
         option_list.add_options(options)
         # See main_menu.py's identical note: clear_options() always drops the
         # highlight, so without this Enter would silently do nothing until the user
-        # pressed an arrow key first.
+        # pressed an arrow key first.  Row 0 is always a field, never the separator.
         if options:
             option_list.highlighted = 0
 
     @work
     async def on_option_list_option_selected(self, event) -> None:
-        # See main_menu.py's identical @work note: open_field_dialog awaits
-        # push_screen_wait, which Textual only allows inside a worker.
+        # See main_menu.py's identical @work note: open_field_dialog and
+        # push_screen_wait both await, which Textual only allows inside a worker.
         field = event.option.id
+        if field == _CALIBRATE_ID:
+            await self.app.push_screen_wait(
+                CalibrationMeterDialog(self.app.values['audio'],
+                                       self.app.values['station']['audio_rf_conversion_db']))
+            return
         schema = self.app.schema
         spec = field_schema(schema, self.section, field)
         current = self.app.values[self.section][field]

@@ -8,6 +8,7 @@ import pytest
 
 import configure
 from buzz.config import AudioConfig, RecordingConfig, ServerConfig, StationConfig, WeatherConfig
+from buzz.device_setup import DeviceInfo
 from configure import _section_dict, main
 
 
@@ -66,14 +67,22 @@ class TestMainNoDeviceSelected:
         assert 'No device selected' in capsys.readouterr().out
 
 
+def _device(real_index: int = 2, name: str = 'Test Mic, Windows DirectSound') -> DeviceInfo:
+    """A selected DeviceInfo, the shape select_device() now returns to main().
+
+    main() no longer calls sd.query_devices()/sd.query_hostapis() itself to
+    re-derive the name - it reads name straight off this, the same DeviceInfo
+    select_device()'s own probe already built - so these tests supply one
+    directly instead of mocking sounddevice.
+    """
+    return DeviceInfo(real_index=real_index, name=name, display_name=name.split(',')[0],
+                      selectable=True, amplitude=0.0, bar='')
+
+
 class TestMainDeviceSelected:
     def test_config_file_created(self, tmp_path):
         config_path = tmp_path / 'config.toml'
-        device = {'name': 'Test Mic', 'hostapi': 0}
-        hostapis = [{'name': 'Windows DirectSound'}]
-        with patch('configure.select_device', return_value=2), \
-             patch('configure.sd.query_devices', return_value=device), \
-             patch('configure.sd.query_hostapis', return_value=hostapis), \
+        with patch('configure.select_device', return_value=_device()), \
              patch('configure.CONFIG_PATH', config_path):
             main()
         assert config_path.exists()
@@ -83,11 +92,7 @@ class TestMainDeviceSelected:
         Writing it would create a second, staler answer to "which device": indices
         move when Windows reassigns audio hardware, and the name does not."""
         config_path = tmp_path / 'config.toml'
-        device = {'name': 'Test Mic', 'hostapi': 0}
-        hostapis = [{'name': 'Windows DirectSound'}]
-        with patch('configure.select_device', return_value=5), \
-             patch('configure.sd.query_devices', return_value=device), \
-             patch('configure.sd.query_hostapis', return_value=hostapis), \
+        with patch('configure.select_device', return_value=_device(real_index=5)), \
              patch('configure.CONFIG_PATH', config_path):
             main()
         with open(config_path, 'rb') as f:
@@ -96,11 +101,8 @@ class TestMainDeviceSelected:
 
     def test_device_name_saved_to_toml(self, tmp_path):
         config_path = tmp_path / 'config.toml'
-        device = {'name': 'USB Audio', 'hostapi': 0}
-        hostapis = [{'name': 'WASAPI'}]
-        with patch('configure.select_device', return_value=3), \
-             patch('configure.sd.query_devices', return_value=device), \
-             patch('configure.sd.query_hostapis', return_value=hostapis), \
+        with patch('configure.select_device',
+                   return_value=_device(real_index=3, name='USB Audio, WASAPI')), \
              patch('configure.CONFIG_PATH', config_path):
             main()
         with open(config_path, 'rb') as f:
@@ -109,11 +111,7 @@ class TestMainDeviceSelected:
 
     def test_prints_confirmation(self, tmp_path, capsys):
         config_path = tmp_path / 'config.toml'
-        device = {'name': 'Test Mic', 'hostapi': 0}
-        hostapis = [{'name': 'DirectSound'}]
-        with patch('configure.select_device', return_value=2), \
-             patch('configure.sd.query_devices', return_value=device), \
-             patch('configure.sd.query_hostapis', return_value=hostapis), \
+        with patch('configure.select_device', return_value=_device()), \
              patch('configure.CONFIG_PATH', config_path):
             main()
         output = capsys.readouterr().out
@@ -123,14 +121,10 @@ class TestMainDeviceSelected:
         from buzz.config import BuzzConfig
         config_path = tmp_path / 'config.toml'
         config_path.write_bytes(b'[station]\ncallsign = "W6TST"\n')
-        device = {'name': 'Mic', 'hostapi': 0}
-        hostapis = [{'name': 'DirectSound'}]
         expected_cfg = BuzzConfig()
         expected_cfg.station.callsign = 'W6TST'
         # from_toml's default param is bound at definition time, so patch the method itself
-        with patch('configure.select_device', return_value=1), \
-             patch('configure.sd.query_devices', return_value=device), \
-             patch('configure.sd.query_hostapis', return_value=hostapis), \
+        with patch('configure.select_device', return_value=_device()), \
              patch('configure.CONFIG_PATH', config_path), \
              patch.object(BuzzConfig, 'from_toml', return_value=expected_cfg):
             main()
@@ -148,16 +142,12 @@ class TestMainDeviceSelected:
         from buzz.config import BuzzConfig
         config_path = tmp_path / 'config.toml'
         config_path.write_bytes(b'')  # only its existence matters; from_toml is patched below
-        device = {'name': 'Mic', 'hostapi': 0}
-        hostapis = [{'name': 'DirectSound'}]
         loaded_cfg = BuzzConfig()
         loaded_cfg.recording.max_events = 42
         loaded_cfg.render.ffmpeg_path = 'C:/custom/ffmpeg'
         # from_toml's default param is bound at definition time, so patch the method
         # itself rather than relying on patching CONFIG_PATH to redirect the load too.
-        with patch('configure.select_device', return_value=1), \
-             patch('configure.sd.query_devices', return_value=device), \
-             patch('configure.sd.query_hostapis', return_value=hostapis), \
+        with patch('configure.select_device', return_value=_device()), \
              patch('configure.CONFIG_PATH', config_path), \
              patch.object(BuzzConfig, 'from_toml', return_value=loaded_cfg):
             main()

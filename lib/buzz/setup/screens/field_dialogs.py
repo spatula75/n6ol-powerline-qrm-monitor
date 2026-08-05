@@ -6,8 +6,8 @@ legal value for a nullable field (an unset weather coordinate, for instance) and
 the caller has to tell "the user cleared this" apart from "the user backed out".
 
 open_field_dialog() is the one entry point section_menu.py calls.  It picks the
-right dialog from the field's JSON Schema `type`, so a caller never has to know
-the mapping itself.
+right dialog from the field's `x-widget`, if it has one, or its JSON Schema `type`
+otherwise, so a caller never has to know the mapping itself.
 """
 
 from typing import Any
@@ -16,9 +16,9 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Input, OptionList, Static, Switch
 from textual.widgets.option_list import Option
 
-from buzz.setup.screens.base import ScopeModalScreen
-
-CANCELLED = object()
+from buzz.setup.screens.base import CANCELLED, ScopeModalScreen
+from buzz.setup.screens.calibration import OffsetCalibrationDialog
+from buzz.setup.screens.device_picker import DevicePickerDialog
 
 
 def _types(spec: dict[str, Any]) -> list[str]:
@@ -28,7 +28,14 @@ def _types(spec: dict[str, Any]) -> list[str]:
 
 
 def _kind(spec: dict[str, Any]) -> str:
-    """Which dialog a field needs: 'boolean', 'enum', 'number', or 'text'."""
+    """Which dialog a field needs: 'boolean', 'calibration', 'device-picker', 'enum', 'number', or 'text'.
+
+    An explicit `x-widget` always wins over the type-driven default - see
+    schema.py's module docstring for the two fields that set one.
+    """
+    widget = spec.get('x-widget')
+    if widget is not None:
+        return widget
     if 'enum' in spec:
         return 'enum'
     types = _types(spec)
@@ -281,4 +288,16 @@ async def open_field_dialog(screen, spec: dict[str, Any], current: Any) -> Any:
         return await screen.app.push_screen_wait(BooleanFieldDialog(spec, current))
     if kind == 'enum':
         return await screen.app.push_screen_wait(EnumFieldDialog(spec, current))
+    if kind == 'device-picker':
+        # Only ever set on audio.input_device_name, which is why this reaches into
+        # the audio section's own in-progress sample rate directly rather than
+        # threading a parameter through every other dialog that would ignore it.
+        sample_rate = screen.app.values['audio']['sample_rate']
+        return await screen.app.push_screen_wait(DevicePickerDialog(spec, current, sample_rate))
+    if kind == 'calibration':
+        # Only ever set on station.audio_rf_conversion_db, which needs to know the
+        # in-progress audio section to know which device to open - same reasoning
+        # as device-picker above.
+        return await screen.app.push_screen_wait(
+            OffsetCalibrationDialog(spec, current, screen.app.values['audio']))
     return await screen.app.push_screen_wait(TextFieldDialog(spec, current))

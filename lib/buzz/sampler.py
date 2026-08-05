@@ -381,6 +381,15 @@ class LevelStream:
     reports.  Smoothing is what makes it viable at this block size - a 320-sample
     block is far too short to estimate an offset from on its own.
 
+    offset_db is public and safe to write from outside while the stream runs: the
+    setup program's calibration dialog nudges it live as the operator adjusts the
+    offset, and amplitude_to_dbm() applies it fresh on every callback, so a write
+    from the UI thread takes effect on the very next block with no stream restart
+    needed.  A plain float assignment races the callback thread only in the
+    Python-level sense of "which value it reads this callback or the next" - never
+    a torn read - which is precise enough for a live display an operator is
+    watching, not a value anything logs or averages.
+
     Use as a context manager:
         with sampler.level_stream() as stream:
             dbm = stream.read()
@@ -392,7 +401,7 @@ class LevelStream:
     def __init__(self, config: BuzzConfig, device_index: int, blocksize: int) -> None:
         self._event = threading.Event()
         self._latest_dbm: float = SILENCE_DBFS
-        self._offset_db = config.station.audio_rf_conversion_db
+        self.offset_db = config.station.audio_rf_conversion_db
         self._dc: float | None = None   # None until the first block seeds it
 
         def _callback(indata: np.ndarray, frames: int,
@@ -402,7 +411,7 @@ class LevelStream:
             self._dc = (block_dc if self._dc is None
                         else self._dc + self.DC_EMA_ALPHA * (block_dc - self._dc))
             amplitude = float(np.mean(np.abs(block - self._dc)))
-            self._latest_dbm = amplitude_to_dbm(amplitude, self._offset_db)
+            self._latest_dbm = amplitude_to_dbm(amplitude, self.offset_db)
             self._event.set()
 
         self._stream = sd.InputStream(
@@ -425,6 +434,19 @@ class LevelStream:
     def close(self) -> None:
         self._stream.stop()
         self._stream.close()
+        # Wakes a read() blocked in the wait above, which the setup program's
+        # calibration dialogs call via asyncio.to_thread() - see calibration.py.
+        # Cancelling that asyncio Task does not stop the thread pool worker
+        # actually running read(): the callback that would normally set this
+        # event has just been stopped, so without this, that thread blocks in
+        # Event.wait() forever, on an event nothing will ever set again.  A
+        # thread stuck like that is not merely leaked - CPython's own
+        # ThreadPoolExecutor registers an atexit hook that joins every worker
+        # thread it ever created, so one stuck thread hangs the entire process
+        # on exit, not just the dialog that orphaned it.  Confirmed live: closing
+        # the setup program after opening either calibration dialog hung
+        # instead of exiting, until this line was added.
+        self._event.set()
 
     def __enter__(self) -> 'LevelStream':
         return self

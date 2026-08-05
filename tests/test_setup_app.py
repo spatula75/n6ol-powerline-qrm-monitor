@@ -6,6 +6,8 @@ from pathlib import Path
 
 from textual import events
 from textual.widgets import Button, OptionList
+from buzz.device_setup import DeviceInfo
+from buzz.setup.screens.calibration import _format_reading, _meter_block
 from buzz.setup.screens.field_dialogs import _kind, _parse_number
 from buzz.setup.screens.finish import backup_path, changed_fields, toml_ready
 from buzz.setup.screens.main_menu import MainMenuScreen
@@ -16,6 +18,34 @@ from buzz.setup.app import SetupApp
 def run(coro):
     """Run an async test scenario without pulling in a pytest-asyncio dependency."""
     return asyncio.run(coro)
+
+
+class _FakeLevelStream:
+    """Stands in for buzz.sampler.LevelStream in the calibration dialog tests.
+
+    Matches the constructor signature _open_level_stream() calls with (config,
+    device_index, blocksize) and read()/close()/offset_db, the only parts of the
+    real class either dialog touches.  read() always reports -50.0 dBm regardless
+    of offset_db - screens/calibration.py never adds it a second time, so a
+    constant reading is what a correct dialog should show no matter how many times
+    the offset gets nudged.  instances records every one created, so a test can
+    reach in and confirm a nudge really reached the stream object, not only the
+    on-screen text - see LevelStream's own offset_db docstring for why that must
+    work without reopening anything.
+    """
+
+    instances: list['_FakeLevelStream'] = []
+
+    def __init__(self, config, device_index, blocksize) -> None:
+        self.offset_db = config.station.audio_rf_conversion_db
+        self.closed = False
+        _FakeLevelStream.instances.append(self)
+
+    def read(self) -> float:
+        return -50.0
+
+    def close(self) -> None:
+        self.closed = True
 
 
 class TestKind:
@@ -33,6 +63,14 @@ class TestKind:
 
     def test_string(self):
         assert _kind({'type': 'string'}) == 'text'
+
+    def test_x_widget_wins_over_type(self):
+        assert _kind({'type': 'string', 'x-widget': 'device-picker'}) == 'device-picker'
+
+    def test_x_widget_wins_over_enum(self):
+        """audio_rf_conversion_db has no enum, but the precedence must hold even if
+        a future field somehow carried both."""
+        assert _kind({'type': 'number', 'enum': [1, 2], 'x-widget': 'calibration'}) == 'calibration'
 
 
 class TestParseNumber:
@@ -818,6 +856,412 @@ class TestSetupAppWalkthrough:
 
         run(scenario())
         assert not config_path.exists()
+
+    def test_device_picker_lists_probed_devices_and_confirming_writes_the_name(
+            self, tmp_path, monkeypatch):
+        """Regression coverage for screens/device_picker.py: the row shows the bare
+        display_name, not the full name with its host API, but a disabled row must
+        stay disabled and unreachable, and confirming the selectable one round-trips
+        its exact (full) name into audio.input_device_name."""
+        config_path = tmp_path / 'config.toml'
+        devices = [
+            DeviceInfo(real_index=3, name='USB Mic, WASAPI', display_name='USB Mic',
+                      selectable=True, amplitude=500.0, bar='####', display_index=1),
+            DeviceInfo(real_index=7, name='Line In, WASAPI', display_name='Line In',
+                      selectable=False, amplitude=0.0, bar='needs 44100 Hz', display_index=2),
+        ]
+        monkeypatch.setattr('buzz.setup.screens.device_picker.enumerate_input_devices',
+                            lambda sample_rate: devices)
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('audio')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('input_device_name')
+                await pilot.press('enter')
+                await pilot.pause()
+                # The probe runs off the event loop (see device_picker.py's
+                # action_rescan), so pause() alone is not enough to see it finish -
+                # workers.wait_for_complete() cannot help either, since the section
+                # screen's own on_option_list_option_selected worker is still
+                # suspended awaiting this very dialog and would never resolve.
+                await asyncio.sleep(0.05)
+                await pilot.pause()
+
+                value_list = app.screen.query_one('#value', OptionList)
+                assert value_list.option_count == 2
+                first_row = str(value_list.get_option_at_index(0).prompt)
+                assert 'USB Mic' in first_row
+                assert 'WASAPI' not in first_row
+                assert value_list.get_option_at_index(0).disabled is False
+                assert value_list.get_option_at_index(1).disabled is True
+                assert value_list.highlighted == 0  # the only selectable row
+
+                await pilot.press('enter')
+                await pilot.pause()
+
+                assert app.values['audio']['input_device_name'] == 'USB Mic, WASAPI'
+
+        run(scenario())
+
+    def test_device_picker_pre_highlights_the_configured_device(self, tmp_path, monkeypatch):
+        """The configured device, when it is still present and still selectable,
+        must be the row already highlighted - not merely the first selectable one,
+        which test_device_picker_lists_probed_devices_and_confirming_writes_the_name
+        above cannot tell apart from this."""
+        config_path = tmp_path / 'config.toml'
+        configured_name = 'Line In (Realtek(R) Audio), Windows DirectSound'
+        devices = [
+            DeviceInfo(real_index=3, name='USB Mic, WASAPI', display_name='USB Mic',
+                      selectable=True, amplitude=500.0, bar='####', display_index=1),
+            DeviceInfo(real_index=9, name=configured_name, display_name='Line In (Realtek(R) Audio)',
+                      selectable=True, amplitude=50.0, bar='##', display_index=2),
+        ]
+        monkeypatch.setattr('buzz.setup.screens.device_picker.enumerate_input_devices',
+                            lambda sample_rate: devices)
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            assert app.values['audio']['input_device_name'] == configured_name
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('audio')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('input_device_name')
+                await pilot.press('enter')
+                await pilot.pause()
+                await asyncio.sleep(0.05)
+                await pilot.pause()
+
+                value_list = app.screen.query_one('#value', OptionList)
+                assert value_list.highlighted == 1
+
+        run(scenario())
+
+    def test_device_picker_rescan_reruns_the_probe(self, tmp_path, monkeypatch):
+        config_path = tmp_path / 'config.toml'
+        calls = []
+
+        def _probe(sample_rate):
+            calls.append(sample_rate)
+            return []
+
+        monkeypatch.setattr('buzz.setup.screens.device_picker.enumerate_input_devices', _probe)
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('audio')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('input_device_name')
+                await pilot.press('enter')
+                await pilot.pause()
+                await asyncio.sleep(0.05)
+                await pilot.pause()
+                assert len(calls) == 1
+                assert 'No input devices found' in app.screen.query_one('#status').content
+
+                await pilot.press('r')
+                await pilot.pause()
+                await asyncio.sleep(0.05)
+                await pilot.pause()
+                assert len(calls) == 2
+
+        run(scenario())
+
+    def test_device_picker_cancel_leaves_the_device_unchanged(self, tmp_path, monkeypatch):
+        config_path = tmp_path / 'config.toml'
+        monkeypatch.setattr('buzz.setup.screens.device_picker.enumerate_input_devices',
+                            lambda sample_rate: [])
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                before = app.values['audio']['input_device_name']
+
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('audio')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('input_device_name')
+                await pilot.press('enter')
+                await pilot.pause()
+                await asyncio.sleep(0.05)
+                await pilot.pause()
+
+                await pilot.press('escape')
+                await pilot.pause()
+
+                assert app.values['audio']['input_device_name'] == before
+
+        run(scenario())
+
+    def test_device_picker_show_devices_survives_being_called_after_dismissal(
+            self, tmp_path, monkeypatch):
+        """Direct regression test for _show_devices()'s NoMatches guard: Escape can
+        dismiss this dialog while its background probe is still in flight, and
+        Textual only cancels that worker at its next await, so a probe finishing in
+        that same instant can still resume and call this method after the screen's
+        own widgets are gone.  The real race is too narrow to hit reliably in a
+        timed test - there is only one probe, not a running loop, unlike
+        CalibrationMeterDialog's equivalent test above - so this calls the method
+        directly, post-dismissal, which reproduces the same NoMatches without
+        depending on real scheduling."""
+        config_path = tmp_path / 'config.toml'
+        monkeypatch.setattr('buzz.setup.screens.device_picker.enumerate_input_devices',
+                            lambda sample_rate: [])
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('audio')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('input_device_name')
+                await pilot.press('enter')
+                await pilot.pause()
+                await asyncio.sleep(0.05)
+                await pilot.pause()
+
+                dialog = app.screen
+                await pilot.press('escape')
+                await pilot.pause()
+
+                # The widgets this reaches for are gone now - it must not raise.
+                dialog._show_devices()
+
+        run(scenario())
+
+    def test_calibration_meter_shows_a_live_reading_and_does_not_touch_the_offset(
+            self, tmp_path, monkeypatch):
+        """Regression coverage for screens/calibration.py's CalibrationMeterDialog:
+        it shows what the running stream reports, and closing it via its Close
+        button must not have written anything back - there is nothing here for it
+        to write."""
+        config_path = tmp_path / 'config.toml'
+        monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
+                            lambda name, kind: {'index': 0})
+        monkeypatch.setattr('buzz.setup.screens.calibration.LevelStream', _FakeLevelStream)
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                before = app.values['station']['audio_rf_conversion_db']
+
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('audio')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('__calibrate__')
+                await pilot.press('enter')
+                await pilot.pause()
+                # The read loop runs forever until the dialog is dismissed (Textual
+                # cancels the worker on unmount - see Widget._on_unmount), so there
+                # is no worker completion to await here, only real elapsed time for
+                # at least one asyncio.to_thread round trip to finish.
+                await asyncio.sleep(0.05)
+                await pilot.pause()
+
+                assert app.screen.query_one('#meter').content == _meter_block(_format_reading(-50.0))
+
+                await pilot.click('#close')
+                await pilot.pause()
+
+                assert app.values['station']['audio_rf_conversion_db'] == before
+
+        run(scenario())
+
+    def test_calibration_meter_reports_a_device_that_will_not_open(self, tmp_path, monkeypatch):
+        config_path = tmp_path / 'config.toml'
+
+        def _boom(name, kind):
+            raise ValueError('device not found')
+
+        monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices', _boom)
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('audio')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('__calibrate__')
+                await pilot.press('enter')
+                await pilot.pause()
+                await asyncio.sleep(0.05)
+                await pilot.pause()
+
+                meter = app.screen.query_one('#meter').content
+                assert 'Could not open the input device' in meter
+                assert 'device not found' in meter
+
+        run(scenario())
+
+    def test_offset_calibration_nudges_and_confirms_the_new_value(self, tmp_path, monkeypatch):
+        """Regression coverage for screens/calibration.py's OffsetCalibrationDialog:
+        Up/Down must change both the on-screen offset and the value Enter confirms,
+        and the running stream must pick up each nudge live - see LevelStream's own
+        offset_db docstring."""
+        config_path = tmp_path / 'config.toml'
+        _FakeLevelStream.instances.clear()
+        monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
+                            lambda name, kind: {'index': 0})
+        monkeypatch.setattr('buzz.setup.screens.calibration.LevelStream', _FakeLevelStream)
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                before = app.values['station']['audio_rf_conversion_db']
+
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('audio_rf_conversion_db')
+                await pilot.press('enter')
+                await pilot.pause()
+                await asyncio.sleep(0.05)
+                await pilot.pause()
+
+                assert f'{before:+.1f} dB' in app.screen.query_one('#offset').content
+                assert app.screen.query_one('#meter').content == _meter_block(_format_reading(-50.0))
+
+                await pilot.press('up')
+                await pilot.press('up')
+                await pilot.pause()
+
+                assert f'{before + 1.0:+.1f} dB' in app.screen.query_one('#offset').content
+                assert _FakeLevelStream.instances[-1].offset_db == before + 1.0
+
+                await pilot.press('enter')
+                await pilot.pause()
+
+                assert app.values['station']['audio_rf_conversion_db'] == before + 1.0
+
+        run(scenario())
+
+    def test_offset_calibration_space_resets_to_the_schema_default(self, tmp_path, monkeypatch):
+        config_path = tmp_path / 'config.toml'
+        monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
+                            lambda name, kind: {'index': 0})
+        monkeypatch.setattr('buzz.setup.screens.calibration.LevelStream', _FakeLevelStream)
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                default = app.schema['properties']['station']['properties'][
+                    'audio_rf_conversion_db']['default']
+
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('audio_rf_conversion_db')
+                await pilot.press('enter')
+                await pilot.pause()
+                await asyncio.sleep(0.05)
+                await pilot.pause()
+
+                await pilot.press('up')
+                await pilot.press('up')
+                await pilot.press('space')
+                await pilot.pause()
+
+                assert f'{default:+.1f} dB' in app.screen.query_one('#offset').content
+
+                await pilot.press('enter')
+                await pilot.pause()
+
+                assert app.values['station']['audio_rf_conversion_db'] == default
+
+        run(scenario())
+
+    def test_offset_calibration_escape_discards_every_nudge(self, tmp_path, monkeypatch):
+        config_path = tmp_path / 'config.toml'
+        monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
+                            lambda name, kind: {'index': 0})
+        monkeypatch.setattr('buzz.setup.screens.calibration.LevelStream', _FakeLevelStream)
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                before = app.values['station']['audio_rf_conversion_db']
+
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('audio_rf_conversion_db')
+                await pilot.press('enter')
+                await pilot.pause()
+                await asyncio.sleep(0.05)
+                await pilot.pause()
+
+                await pilot.press('up')
+                await pilot.pause()
+                await pilot.press('escape')
+                await pilot.pause()
+
+                assert app.values['station']['audio_rf_conversion_db'] == before
+
+        run(scenario())
+
+    def test_offset_calibration_reports_a_device_that_will_not_open(self, tmp_path, monkeypatch):
+        config_path = tmp_path / 'config.toml'
+
+        def _boom(name, kind):
+            raise ValueError('device not found')
+
+        monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices', _boom)
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('audio_rf_conversion_db')
+                await pilot.press('enter')
+                await pilot.pause()
+                await asyncio.sleep(0.05)
+                await pilot.pause()
+
+                meter = app.screen.query_one('#meter').content
+                assert 'Could not open the input device' in meter
+                assert 'device not found' in meter
+
+        run(scenario())
 
 
 class TestMainEntryPoint:

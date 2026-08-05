@@ -1,13 +1,13 @@
 """
 Tests for the pure display/formatting functions in device_setup.
-Hardware-dependent functions (_probe, _enumerate_input_devices, select_device)
+Hardware-dependent functions (_probe, enumerate_input_devices, select_device)
 are not tested here - they require real PortAudio devices.
 """
 
 import pytest
 from buzz.constants import FULL_SCALE_COUNTS
 from buzz.device_setup import (DeviceInfo, _amplitude_bar, _build_selection_prompt,
-                               _current_device, _reason_bar, _BAR_WIDTH, _FILL, _EMPTY)
+                               _reason_bar, _BAR_WIDTH, _FILL, _EMPTY, current_device)
 
 
 class TestAmplitudeBar:
@@ -100,29 +100,29 @@ class TestCurrentDevice:
 
     def _devices(self) -> list[DeviceInfo]:
         return [
-            DeviceInfo(real_index=7, name='Line In, WASAPI', selectable=True,
-                       amplitude=100.0, bar='', display_index=1),
-            DeviceInfo(real_index=3, name='USB Audio, DirectSound', selectable=True,
-                       amplitude=50.0, bar='', display_index=2),
+            DeviceInfo(real_index=7, name='Line In, WASAPI', display_name='Line In',
+                       selectable=True, amplitude=100.0, bar='', display_index=1),
+            DeviceInfo(real_index=3, name='USB Audio, DirectSound', display_name='USB Audio',
+                       selectable=True, amplitude=50.0, bar='', display_index=2),
         ]
 
     def test_it_finds_the_configured_device_by_name(self):
-        found = _current_device(self._devices(), 'USB Audio, DirectSound')
+        found = current_device(self._devices(), 'USB Audio, DirectSound')
         assert found is not None and found.real_index == 3
 
     def test_the_index_it_reports_is_the_live_one(self):
         """The point of matching by name: whatever index the device sits at now is
         the answer, and no stale number from a config file can override it."""
-        found = _current_device(self._devices(), 'Line In, WASAPI')
+        found = current_device(self._devices(), 'Line In, WASAPI')
         assert found.real_index == 7
 
     def test_a_device_that_is_no_longer_present_matches_nothing(self):
         """Unplugged between runs. Marking nothing as current is honest; marking
         whatever now sits at the old index would point at the wrong hardware."""
-        assert _current_device(self._devices(), 'Some Other Card, MME') is None
+        assert current_device(self._devices(), 'Some Other Card, MME') is None
 
     def test_no_configured_name_matches_nothing(self):
-        assert _current_device(self._devices(), None) is None
+        assert current_device(self._devices(), None) is None
 
     def test_an_empty_configured_name_matches_nothing(self):
         """A fresh config has never had a device chosen. The list deliberately holds a
@@ -130,23 +130,23 @@ class TestCurrentDevice:
         real - so that the guard is what makes this pass. Without a nameless device
         present the assertion holds either way and tests nothing."""
         devices = self._devices()
-        devices.append(DeviceInfo(real_index=9, name='', selectable=True,
+        devices.append(DeviceInfo(real_index=9, name='', display_name='', selectable=True,
                                   amplitude=0.0, bar='', display_index=3))
-        assert _current_device(devices, '') is None
+        assert current_device(devices, '') is None
 
     def test_matching_is_exact_not_partial(self):
         """'Line In' is a prefix of a real entry. Accepting prefixes would mark the
         wrong device whenever two cards share the start of their names."""
-        assert _current_device(self._devices(), 'Line In') is None
+        assert current_device(self._devices(), 'Line In') is None
 
 
 class TestSelectionPrompt:
     def _selectable(self) -> list[DeviceInfo]:
         return [
-            DeviceInfo(real_index=7, name='Line In, WASAPI', selectable=True,
-                       amplitude=100.0, bar='', display_index=1),
-            DeviceInfo(real_index=3, name='USB Audio, DirectSound', selectable=True,
-                       amplitude=50.0, bar='', display_index=2),
+            DeviceInfo(real_index=7, name='Line In, WASAPI', display_name='Line In',
+                       selectable=True, amplitude=100.0, bar='', display_index=1),
+            DeviceInfo(real_index=3, name='USB Audio, DirectSound', display_name='USB Audio',
+                       selectable=True, amplitude=50.0, bar='', display_index=2),
         ]
 
     def test_it_offers_every_selectable_number(self):

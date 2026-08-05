@@ -41,8 +41,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   uses, built from the 16-color ANSI palette rather than RGB hex so it renders
   consistently across terminals rather than however each one happens to
   approximate an arbitrary color.  Runs on Windows, Linux, macOS, and BSD with no
-  extra system dependency, via the new `textual` requirement.  Device selection and
-  level calibration are not wired into the Audio section yet - that is next.
+  extra system dependency, via the new `textual` requirement.
+
+- Device selection and level calibration, wired into the setup program.  The
+  Audio section's input device field opens a picker instead of a text box: a
+  one-shot probe of every input device (the same code `configure.py` already
+  used), a level bar per device, and a disabled row for one that cannot open at
+  the configured sample rate, with R to rescan.  Rows show the device name
+  alone; the value actually saved, and matched against at every later startup,
+  still carries its host API too, since that is what tells apart the same
+  physical device listed once per API.  `configure.py` now reads that saved
+  name straight off the same probe instead of re-deriving it a second way, a
+  duplication that had already let the two disagree on formatting.  Audio also
+  gets a Calibration meter action: a live, read-only S-meter, complete with the
+  scale and bar `level_meter.py` already drew, for matching a receiver's own
+  S-meter by adjusting its RF and AF gain.  The Station section's audio-to-RF
+  offset field opens a second, related dialog with the same meter instead of a
+  plain number box, for the minority of receivers with no separate AF gain to
+  adjust - an internal sound device, for instance - where the offset itself is
+  the only thing left to calibrate: Up and Down nudge it, Space resets it to
+  the default, and Enter confirms, all against the same live reading, updating
+  without reopening the audio stream on every nudge.
+  `level_meter.py`'s S-meter rendering (the dBm-to-S-unit string and the ASCII
+  bar) moved to the new `buzz.smeter`, so the console tool and both new
+  dialogs draw the same meter from one implementation.
 
 ### Changed
 - Coverage measurement now covers `tools/` as well as `lib/buzz` and `configure`.
