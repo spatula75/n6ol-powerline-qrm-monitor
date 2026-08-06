@@ -63,7 +63,8 @@
           "type": "string",
           "title": "Timezone",
           "description": "The IANA timezone name for CSV timestamps and graph labels, such as America/Los_Angeles.",
-          "default": "America/Los_Angeles"
+          "default": "America/Los_Angeles",
+          "x-widget": "timezone-picker"
         },
         "path": {
           "type": "string",

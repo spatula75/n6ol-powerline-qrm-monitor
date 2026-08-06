@@ -1,5 +1,5 @@
 """
-Device enumeration and interactive selection for the audio input configurator.
+Device enumeration for the setup program's device-picker dialog.
 
 Probes all PortAudio input devices in parallel: checks sample-rate/format
 compatibility, then samples 100 ms of audio to measure ambient amplitude.
@@ -18,8 +18,8 @@ sounddevice's own device lookup expects, since that string is what gets saved to
 input_device_name and matched against it at every later startup.  The host API is
 part of what makes it distinct: the same device can appear once per API, so the
 name alone would not always tell two entries apart.  display_name is just the
-device name, with no host API at all, because the tables and the setup program's
-device picker are showing one row per already-deduplicated physical device, so the
+device name, with no host API at all, because the setup program's device picker is
+showing one row per already-deduplicated physical device, so the
 host API adds nothing there but width - "Line In (Realtek(R) Audio), Windows
 DirectSound" wraps a device picker sized for an 80-column terminal; "Line In
 (Realtek(R) Audio)" does not.
@@ -40,9 +40,12 @@ from buzz.constants import DB_PER_S_UNIT, FULL_SCALE_COUNTS
 # derived rather than a literal count, so a change to either shared constant moves it
 # with this one instead of silently drifting, which is exactly how this bar ended up
 # at 4.75 dB/segment while the S-meters stayed at 6.
+_BAR_PAD = 2
 _BAR_WIDTH = round(20 * log10(FULL_SCALE_COUNTS) / DB_PER_S_UNIT)
-_FILL = '█'
-_EMPTY = '░'
+_FILL = '▒'
+_EMPTY = ' '
+_LEFT = '▕'
+_RIGHT = '▏'
 
 # Keys are the 'name' field from sd.query_hostapis()[n], which comes from PortAudio.
 # If sounddevice ever changes how it reports API names these will silently stop matching.
@@ -57,31 +60,28 @@ _API_PRIORITY = {
 class DeviceInfo:
     real_index: int       # PortAudio device index, as used by sounddevice
     name: str             # "device, host API", saved to input_device_name and matched against it
-    display_name: str     # device name alone, for the table and the picker - see module docstring
+    display_name: str     # device name alone, for the picker - see module docstring
     selectable: bool      # False if the device doesn't support the configured sample rate
     amplitude: float      # mean absolute amplitude from the 100 ms probe recording
-    bar: str              # pre-rendered level or reason bar, always _BAR_WIDTH chars wide
-    display_index: int = 0  # 1-based index shown to the user in the selection table
+    bar: str              # pre-rendered level or reason bar, always _BAR_WIDTH + _BAR_PAD chars wide
+    display_index: int = 0  # 1-based index, assigned in enumeration order
 
 
 def _amplitude_bar(amplitude: float) -> str:
     """Render amplitude as a logarithmic bar: empty at 1 LSB, full at full scale,
     each filled char spanning DB_PER_S_UNIT dB - see _BAR_WIDTH."""
     n = min(_BAR_WIDTH, int(_BAR_WIDTH * log10(max(1.0, amplitude)) / log10(FULL_SCALE_COUNTS)))
-    return _FILL * n + _EMPTY * (_BAR_WIDTH - n)
+    return _LEFT + (_FILL * n) + (_EMPTY * (_BAR_WIDTH - n)) + _RIGHT
 
 
 def _reason_bar(text: str) -> str:
-    return text[:_BAR_WIDTH].center(_BAR_WIDTH)
+    return f'({text[:_BAR_WIDTH]})'.center(_BAR_WIDTH + _BAR_PAD)
 
 
 def enumerate_input_devices(sample_rate: int) -> list[DeviceInfo]:
     """Probe deduplicated input devices in parallel, one entry per physical device.
 
-    Public: the setup program's device-picker dialog uses this directly, alongside
-    select_device() below, which is the console tool's own entry point.  Both share
-    this one probing pass so the two tools can never disagree about what a device
-    is called or whether it works at the configured sample rate.
+    Public: the setup program's device-picker dialog uses this directly.
     """
     candidates = _best_api_devices(sample_rate)
     with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -103,11 +103,10 @@ def current_device(devices: list[DeviceInfo], current_name: str | None) -> Devic
     program resolves the device too: an index is only true until Windows next
     reassigns audio hardware, so one written into the config last month may now point
     at something else entirely.  A device that has been unplugged simply does not
-    match, and the table then offers no current selection, which is honest.
+    match, and the picker then offers no current selection, which is honest.
 
     Public for the same reason as enumerate_input_devices() above: the setup
-    program's device-picker dialog marks the current device the same way
-    select_device()'s own console table does.
+    program's device-picker dialog uses this to mark the current device.
     """
     if not current_name:
         return None
@@ -183,71 +182,3 @@ def _probe(real_index: int, device: dict[str, Any], sample_rate: int) -> DeviceI
     except Exception:
         return DeviceInfo(real_index=real_index, name=name, display_name=display_name,
                           selectable=False, amplitude=0.0, bar=_reason_bar('could not open'))
-
-
-def _print_device_table(devices: list[DeviceInfo], current: DeviceInfo | None = None) -> None:
-    print()
-    print(f'  Audio level is logarithmic - each █ ≈ {DB_PER_S_UNIT:g} dB above silence (16-bit)')
-    print()
-    idx_w = len(str(len(devices)))
-    print(f"  {'#':>{idx_w}}  [{'LEVEL'.center(_BAR_WIDTH)}]  DEVICE")
-    print(f"  {'-' * idx_w}  {'-' * (_BAR_WIDTH + 2)}  {'-' * 50}")
-    for dev in devices:
-        marker = '  ← current' if current is not None and dev.name == current.name else ''
-        print(f"  {dev.display_index:>{idx_w}}  [{dev.bar}]  {dev.display_name}{marker}")
-    print()
-
-
-def _build_selection_prompt(selectable: list[DeviceInfo],
-                            current: DeviceInfo | None) -> tuple[str, set[int]]:
-    """Build the "Select device (...)" prompt text and the set of valid numbers."""
-    valid_nums = sorted(d.display_index for d in selectable)
-    default_str = f', or Enter to keep current [{current.display_index}]' if current else ''
-    nums_str = ', '.join(str(n) for n in valid_nums)
-    prompt = f'Select device ({nums_str}{default_str}): '
-    return prompt, set(valid_nums)
-
-
-def _prompt_for_device_number(prompt: str, valid_set: set[int], selectable: list[DeviceInfo],
-                              current: DeviceInfo | None) -> DeviceInfo:
-    """Read device numbers from stdin until the user picks a valid one.
-
-    Enter alone keeps the current device if one is still present. Anything else
-    that isn't a valid number re-prompts rather than failing.
-    """
-    nums_str = ', '.join(str(n) for n in sorted(valid_set))
-    while True:
-        raw = input(prompt).strip()
-        if not raw and current is not None:
-            return current
-        try:
-            n = int(raw)
-            if n in valid_set:
-                return next(d for d in selectable if d.display_index == n)
-        except ValueError:
-            pass
-        print(f'  Please enter one of: {nums_str}')
-
-
-def select_device(sample_rate: int, current_name: str | None = None) -> DeviceInfo | None:
-    """Display the device table and prompt for selection.
-
-    Returns the DeviceInfo of the chosen device, or None if no compatible devices
-    are found.  `current_name` is the configured `input_device_name`.  The device it
-    names is marked in the table and kept if the user presses Enter.  Returning the
-    whole DeviceInfo, not just real_index, means the caller reads name off the same
-    probe this printed the table from, rather than re-deriving it from a fresh
-    sd.query_devices() call that could in principle disagree.
-    """
-    print('Scanning audio input devices...')
-    devices = enumerate_input_devices(sample_rate)
-    current = current_device(devices, current_name)
-    _print_device_table(devices, current)
-
-    selectable = [d for d in devices if d.selectable]
-    if not selectable:
-        print('No compatible input devices found.')
-        return None
-
-    prompt, valid_set = _build_selection_prompt(selectable, current)
-    return _prompt_for_device_number(prompt, valid_set, selectable, current)

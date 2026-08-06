@@ -1,9 +1,9 @@
-"""Tests for buzz.smeter: the S-meter reading string and the ASCII bar."""
+"""Tests for buzz.setup.smeter: the S-meter reading string and the ASCII bar."""
 
 import pytest
 
 from buzz.constants import DB_PER_S_UNIT, S9_DBM
-from buzz.smeter import S1_DBM, S9P60_DBM, SCALE_ROW, TENS_ROW, dbm_to_s_string, s_meter_bar
+from buzz.setup.smeter import S1_DBM, S9P60_DBM, SCALE_ROW, TENS_ROW, dbm_to_s_string, s_meter_bar
 
 _BAR_WIDTH = len(SCALE_ROW) - 2  # SCALE_ROW is '[' + one char per bar position + ']'
 

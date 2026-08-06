@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import tomli_w
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Footer, Static
 
 from buzz.setup.schema import ConfigValues, field_names, section_names
@@ -78,10 +78,17 @@ class FinishScreen(ScopeScreen[None]):
         padding: 0 2;
     }
     #actions {
+        height: auto;
         padding: 1 2;
     }
     """
-    BINDINGS = [('escape', 'back', 'Back to main menu')]
+    # See ConfirmDialog's identical note: a Horizontal's children already take
+    # Tab/Shift+Tab, but not the left/right arrows a button row naturally invites.
+    BINDINGS = [
+        ('left', 'app.focus_previous', 'Previous'),
+        ('right', 'app.focus_next', 'Next'),
+        ('escape', 'back', 'Back to main menu'),
+    ]
 
     def compose(self):
         self._changes = changed_fields(self.app.schema, self.app.original_values, self.app.values)
@@ -91,17 +98,25 @@ class FinishScreen(ScopeScreen[None]):
                 Static('The following will be saved:', id='intro'),
                 VerticalScroll(*(Static(self._change_line(c)) for c in self._changes), id='changes'),
                 Static('', id='error'),
-                Vertical(Button('Save', id='save', variant='primary'), Button('Back', id='back'),
-                        id='actions'),
+                Horizontal(Button('Save', id='save', variant='primary'), Button('Back', id='back'),
+                          id='actions'),
                 id='body',
             )
         else:
             yield Vertical(
                 Static('No changes to save.', id='intro'),
-                Vertical(Button('Back', id='back'), id='actions'),
+                Horizontal(Button('Back', id='back'), id='actions'),
                 id='body',
             )
         yield Footer()
+
+    def on_mount(self) -> None:
+        # Neither button focuses itself, and nothing else on this screen is
+        # focusable - without this, arrow keys and Enter do nothing until Tab is
+        # pressed first, and no row shows which one Enter would confirm.  Back is
+        # the safe default, the same reasoning as ConfirmDialog focusing Cancel:
+        # Enter should not save by accident.
+        self.query_one('#back', Button).focus()
 
     def _change_line(self, change: tuple[str, str, Any, Any]) -> str:
         section, field, old, new = change

@@ -67,11 +67,21 @@ pip install -r requirements.txt
 **About virtual environments:** The `.venv` folder holds an isolated copy of Python
 with its own packages. It prevents conflicts with anything else on your system.
 Activate it each time you open a new terminal, before you run the monitor or the
-configure script. PyCharm and VS Code can find and activate it for you.
+setup program. PyCharm and VS Code can find and activate it for you.
 
 ### Configuration
 
-Copy the example config and edit it to match your setup:
+Run the guided setup program. It walks through every section - station callsign,
+timezone, output path, audio input device (with a live level bar per device),
+weather, and publishing - and writes the result to `~/.buzz/config.toml`:
+
+```
+python -m buzz.setup
+```
+
+`config.example.toml` documents every setting, with the same descriptions the setup
+program itself shows, if you would rather copy it and hand-edit `~/.buzz/config.toml`
+directly:
 
 ```
 # Windows
@@ -79,17 +89,6 @@ copy config.example.toml %USERPROFILE%\.buzz\config.toml
 
 # Linux / macOS / BSD
 mkdir -p ~/.buzz && cp config.example.toml ~/.buzz/config.toml
-```
-
-Open `~/.buzz/config.toml` in a text editor. A comment above each setting explains
-what it does. At minimum, update the `[station]` path and timezone. Update the
-`[server]` section too if you want uploads.
-
-Then run the audio device configurator. It scans your input devices, shows live signal
-levels, and writes the correct device settings into your config:
-
-```
-python configure.py
 ```
 
 ---
@@ -202,16 +201,17 @@ naturally resonant.
 - **Preamp: off. Attenuator: off.**
 - **Sound card input level: 0 dB.** No attenuation and no software amplification. Pass
   the line input straight through.
-- **AF (audio) gain: start low** and raise it slowly. Run the live level meter script
-  to read the program's own figure while you adjust:
+- **AF (audio) gain: start low** and raise it slowly. Run the setup wizard's
+  Calibration meter to read the program's own figure while you adjust:
 
   ```
-  python level_meter.py
+  python -m buzz.setup
   ```
 
-  This shows a text S-meter that updates continuously. It uses the same amplitude
-  calculation as the monitor. Adjust RF and AF gain until the reading matches your
-  radio's S-meter. **S9 is −73 dBm**, and each S-unit is **6 dB**.
+  Open the Audio section and choose Calibration meter. This shows a live text
+  S-meter that updates continuously. It uses the same amplitude calculation as the
+  monitor. Adjust RF and AF gain until the reading matches your radio's S-meter.
+  **S9 is −73 dBm**, and each S-unit is **6 dB**.
 
 Once you have set the RF gain, the AF gain, and the sound card input level, **write
 them down.** Those three settings are your calibration baseline. Restore them exactly

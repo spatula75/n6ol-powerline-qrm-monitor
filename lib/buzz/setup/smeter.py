@@ -1,10 +1,10 @@
 """
 Render a signal level as ham radio S-meter text: a reading string and an ASCII bar.
 
-Shared by level_meter.py's console tool and the setup program's calibration dialogs,
-so a receiver's own S-meter and every place this program shows the same signal read
-in the same units, off the same S9_DBM/DB_PER_S_UNIT constants.  Nothing here reads
-audio or knows about the config; it turns a dBm value into text, and that is all.
+Shared by the setup program's calibration dialogs, so a receiver's own S-meter and
+every place this program shows the same signal read in the same units, off the same
+S9_DBM/DB_PER_S_UNIT constants.  Nothing here reads audio or knows about the config;
+it turns a dBm value into text, and that is all.
 """
 
 from buzz.constants import DB_PER_S_UNIT, S9_DBM

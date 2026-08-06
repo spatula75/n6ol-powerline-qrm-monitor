@@ -19,7 +19,7 @@ testability is usually not worth it - say so rather than building it.
 - `lib/buzz/` - the application. One responsibility per module.
 - `tools/` - standalone diagnostic scripts.
 - `tests/` - unit tests. `tests/integration/` is markered and deselected by default.
-- `configure.py`, `level_meter.py` - end-user setup helpers at the root.
+- Interactive setup lives at `lib/buzz/setup/`, run with `python -m buzz.setup`.
 - `docs/`, `README.md`, `README-analysis.md` - user- and design-facing docs.
 - `templates/index.html` - Jinja2 template for the published web page.
 - `config.example.toml` - the documented sample config. Real config lives at
@@ -57,8 +57,7 @@ with `$?` false. Windows PowerShell 5.1 has no `&&` or `||`, so chaining needs
 
     PYTHONPATH=lib python -m buzz.main            # run the monitor
     PYTHONPATH=lib python -m buzz.main --headless # no GUI
-    python configure.py                            # pick the audio input device
-    python level_meter.py                          # live S-meter for setting RF/AF gain
+    python -m buzz.setup                           # guided setup: device, calibration, timezone, a live S-meter
 
 `main.py` flags: `--headless`, `--top`, `--enable-recording`, `--playback FILE`,
 `--mute`, `--playback-gain DB|auto`, `--render FILE.mp4`. Playback replays a recorded
@@ -470,15 +469,17 @@ Practical consequences:
   useful to the next reader.
 - **A constant used by two or more modules belongs in `buzz/constants.py`, not
   redefined in each.** `FULL_SCALE_COUNTS`, `S9_DBM`, and `DB_PER_S_UNIT` live there
-  because dsp.py, scope.py, device_setup.py, waterfall.py, plotter.py, and
-  level_meter.py all need the same numbers and previously each defined its own copy,
-  which is how device_setup.py's level bar drifted to 4.75 dB/segment while every
-  S-meter in the program stayed at 6, with nothing to notice the two had come apart.
-  When auditing for duplicates, check root-level scripts (`level_meter.py`,
-  `configure.py`) as well as `lib/buzz/` - a first pass that grepped only the package
-  missed `level_meter.py`'s own copy of `S9_DBM` entirely. Move a constant here the
-  moment a second module needs it, not before: a value only one module uses belongs
-  with that module, where a reader finds it without a second file to check.
+  because dsp.py, scope.py, device_setup.py, waterfall.py, and plotter.py all need
+  the same numbers, and a since-removed root-level script that once needed them too
+  had already defined its own copy, which is how device_setup.py's level bar drifted
+  to 4.75 dB/segment while every S-meter in the program stayed at 6, with nothing to
+  notice the two had come apart. When auditing for duplicates, check every module
+  that could plausibly need the number, not only the ones already suspected - a
+  first pass that grepped only `lib/buzz/` once missed a root-level script's own
+  copy of `S9_DBM` entirely, back when a script like that still lived outside the
+  package. Move a constant here the moment a second module needs it, not before: a
+  value only one module uses belongs with that module, where a reader finds it
+  without a second file to check.
   Derive dependents from the shared constant (`_BAR_WIDTH = round(20 * log10(...) /
   DB_PER_S_UNIT)`) rather than hand-computing a literal that can drift again the same
   way, and pin the relationship with a test - see `tests/test_constants.py`.

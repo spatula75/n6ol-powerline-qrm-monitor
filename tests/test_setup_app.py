@@ -1,23 +1,40 @@
 """Tests for the setup program: pure helpers directly, screen behavior via Textual's Pilot."""
 
 import asyncio
+import re
 from datetime import datetime
 from pathlib import Path
+from zoneinfo import available_timezones
 
 from textual import events
 from textual.widgets import Button, OptionList
-from buzz.device_setup import DeviceInfo
+from buzz.setup.device_setup import DeviceInfo
 from buzz.setup.screens.calibration import _format_reading, _meter_block
 from buzz.setup.screens.field_dialogs import _kind, _parse_number
 from buzz.setup.screens.finish import backup_path, changed_fields, toml_ready
 from buzz.setup.screens.main_menu import MainMenuScreen
 from buzz.setup.screens.section_menu import display_value
+from buzz.setup.screens.timezone_picker import _canonical_zone_names, _utc_offset_label
 from buzz.setup.app import SetupApp
 
 
 def run(coro):
     """Run an async test scenario without pulling in a pytest-asyncio dependency."""
     return asyncio.run(coro)
+
+
+def _rendered_text(widget) -> str:
+    """Every character a widget actually paints, read straight off `render_line()`.
+
+    `widget.outer_size` and a Static's own `.content` string both describe what
+    the widget was *asked* to show, not what made it onto the screen - a fixed
+    CSS height that leaves too little content space silently drops whatever
+    does not fit, and neither of those two would notice.  This is the check
+    that would have caught it: see the timezone picker's own tests for the bug
+    it was written for.
+    """
+    return ''.join(''.join(segment.text for segment in widget.render_line(y))
+                   for y in range(widget.size.height))
 
 
 class _FakeLevelStream:
@@ -67,6 +84,9 @@ class TestKind:
     def test_x_widget_wins_over_type(self):
         assert _kind({'type': 'string', 'x-widget': 'device-picker'}) == 'device-picker'
 
+    def test_x_widget_timezone_picker(self):
+        assert _kind({'type': 'string', 'x-widget': 'timezone-picker'}) == 'timezone-picker'
+
     def test_x_widget_wins_over_enum(self):
         """audio_rf_conversion_db has no enum, but the precedence must hold even if
         a future field somehow carried both."""
@@ -107,6 +127,41 @@ class TestDisplayValue:
     def test_enum_shows_the_raw_value_not_the_title(self):
         spec = {'type': 'integer', 'enum': [120, 100], 'x-enum-titles': {'120': 'x', '100': 'y'}}
         assert display_value(spec, 120) == '120'
+
+
+class TestCanonicalZoneNames:
+    def test_drops_utc_and_zulu_but_keeps_their_target(self):
+        """UTC and Zulu are backward-compatibility aliases for the same zone as
+        Etc/UTC - see _canonical_zone_names()'s docstring for how tzdata itself
+        says so.  The zone they point at must stay in the list; only the
+        deprecated alternate names for it should go."""
+        canonical = _canonical_zone_names()
+        assert 'UTC' not in canonical
+        assert 'Zulu' not in canonical
+        assert 'Etc/UTC' in canonical
+
+    def test_keeps_ordinary_geographic_zones(self):
+        assert 'America/Chicago' in _canonical_zone_names()
+
+    def test_is_a_strict_subset_of_every_available_timezone(self):
+        canonical = _canonical_zone_names()
+        assert canonical <= available_timezones()
+        assert canonical < available_timezones()  # some alias must have been dropped
+
+
+class TestUtcOffsetLabel:
+    def test_utc_has_no_offset(self):
+        """UTC never observes daylight time, so this is the one zone whose offset
+        is a known constant regardless of when the test runs."""
+        assert _utc_offset_label('UTC') == '+00:00'
+
+    def test_format_is_signed_hh_mm(self):
+        assert re.fullmatch(r'[+-]\d{2}:\d{2}', _utc_offset_label('America/Chicago'))
+
+    def test_west_of_utc_is_negative(self):
+        # America/Chicago is UTC-5 or UTC-6 depending on the time of year - never
+        # positive, never zero.
+        assert _utc_offset_label('America/Chicago').startswith('-')
 
 
 class TestChangedFields:
@@ -750,6 +805,55 @@ class TestSetupAppWalkthrough:
 
         run(scenario())
 
+    def test_finish_screen_buttons_sit_side_by_side_and_take_arrow_keys(self, tmp_path):
+        """Regression test for a real bug: Save and Back sat in a Vertical, so they
+        stacked one above the other instead of side by side like every other
+        button row in the program (ConfirmDialog's Exit/Cancel, for instance).
+        Worse, nothing focused either button on mount, so no row showed which one
+        Enter would confirm, and the arrow keys - bound everywhere else a button
+        row appears - had nothing to move between.  See FinishScreen.on_mount()
+        and the Horizontal in its compose()."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('callsign')
+                await pilot.press('enter')
+                await pilot.pause()
+                app.screen.query_one('#value').value = 'N6OL'
+                await pilot.press('enter')
+                await pilot.pause()
+                await pilot.press('escape')
+                await pilot.pause()
+
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                save = app.screen.query_one('#save', Button)
+                back = app.screen.query_one('#back', Button)
+                assert save.region.y == back.region.y, 'Save and Back should sit on the same row'
+
+                assert back.has_focus, 'Back should be the default focus, so Enter cannot save by accident'
+                # Save is the first child of #actions and Back the second, so
+                # moving to the previous widget from Back reaches Save.
+                await pilot.press('left')
+                await pilot.pause()
+                assert save.has_focus
+
+                await pilot.press('enter')
+                await pilot.pause()
+                assert config_path.exists()
+
+        run(scenario())
+
     def test_escape_on_main_menu_always_confirms_even_with_nothing_changed(self, tmp_path):
         config_path = tmp_path / 'config.toml'
 
@@ -1260,6 +1364,283 @@ class TestSetupAppWalkthrough:
                 meter = app.screen.query_one('#meter').content
                 assert 'Could not open the input device' in meter
                 assert 'device not found' in meter
+
+        run(scenario())
+
+    def test_timezone_picker_highlights_the_current_value_without_typing(self, tmp_path):
+        """The same regression shape as test_enum_dialog_highlights_the_current_value_
+        without_an_arrow_key: opening the dialog on an already-set timezone must
+        highlight it immediately, so Enter with no typing confirms the value
+        already in the config rather than doing nothing."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('timezone')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                zone_list = app.screen.query_one('#value')
+                assert zone_list.highlighted is not None
+                assert zone_list.get_option_at_index(zone_list.highlighted).id == 'America/Los_Angeles'
+                # Regression coverage: setting `.highlighted` on a still-empty
+                # OptionList scrolls against a stale viewport and leaves the row
+                # off-screen - see _show_matches()'s note on why it calls
+                # scroll_to_highlight() a second time after the next refresh.
+                # A scroll offset of 0 here would mean the list opened still
+                # showing the alphabet's start (Africa/...) with the configured
+                # zone highlighted but invisible below the fold, only revealed
+                # once something else forced a second scroll - which read as the
+                # row "jumping" into view on the first arrow key instead of the
+                # dialog opening on it already.
+                assert zone_list.scroll_offset.y > 0
+                await pilot.press('enter')
+                await pilot.pause()
+                assert app.values['station']['timezone'] == 'America/Los_Angeles'
+
+        run(scenario())
+
+    def test_timezone_picker_description_does_not_lose_its_wrapped_second_line(self, tmp_path):
+        """Regression test for a real bug: #description's own CSS once forced
+        `height: 2` while also declaring `padding-bottom: 1` - a fixed height
+        covers the whole padding box, so only one row was ever left for content,
+        and the wrapped second line ("as America/Los_Angeles.") had nowhere to
+        render.  It simply never appeared, at any terminal size, because the
+        bug was in the widget's own box, not in how much room the screen gave
+        it.  #description is auto-height now, so whatever the wrapped text
+        needs is what it gets."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('timezone')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                description = app.screen.query_one('#description')
+                assert 'America/Los_Angeles' in _rendered_text(description)
+
+        run(scenario())
+
+    def test_timezone_picker_status_line_is_actually_visible(self, tmp_path):
+        """Regression test for the same bug in #status: `height: 1` plus its own
+        `padding-top: 1` left zero rows of content space, so no status message -
+        not even the match count - ever rendered at all."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('timezone')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                status = app.screen.query_one('#status')
+                assert status.size.height > 0
+                assert 'match' in _rendered_text(status)
+
+        run(scenario())
+
+    def test_timezone_picker_filters_by_typed_text_and_confirms(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('timezone')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                app.screen.query_one('#filter').value = 'Chicago'
+                await pilot.pause()
+
+                zone_list = app.screen.query_one('#value')
+                shown = [zone_list.get_option_at_index(i).id for i in range(zone_list.option_count)]
+                assert shown == ['America/Chicago']
+                assert zone_list.highlighted == 0
+
+                await pilot.press('enter')
+                await pilot.pause()
+                assert app.values['station']['timezone'] == 'America/Chicago'
+
+        run(scenario())
+
+    def test_timezone_picker_rows_show_the_utc_offset(self, tmp_path):
+        """UTC is the one zone whose offset never changes with the season, which is
+        what makes its row's exact text predictable enough to assert on."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('timezone')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                app.screen.query_one('#filter').value = 'UTC'
+                await pilot.pause()
+
+                # Filtering out the backward-compatibility aliases (see
+                # _canonical_zone_names()) leaves exactly one "UTC" match: the
+                # zone itself, Etc/UTC.  Plain "UTC" is one of the aliases this
+                # dialog no longer offers.
+                zone_list = app.screen.query_one('#value')
+                row = zone_list.get_option('Etc/UTC')
+                assert str(row.prompt) == 'Etc/UTC (+00:00)'
+
+        run(scenario())
+
+    def test_timezone_picker_down_arrow_moves_focus_into_the_result_list(self, tmp_path):
+        """Down does not move the text cursor in an Input, so it bubbles up to this
+        dialog's own binding instead - covering the path Enter-in-the-filter-box
+        never takes: selecting a row directly in the OptionList."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('timezone')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                app.screen.query_one('#filter').value = 'Chicago'
+                await pilot.pause()
+                await pilot.press('down')
+                await pilot.pause()
+
+                zone_list = app.screen.query_one('#value')
+                assert zone_list.has_focus
+                await pilot.press('enter')
+                await pilot.pause()
+                assert app.values['station']['timezone'] == 'America/Chicago'
+
+        run(scenario())
+
+    def test_timezone_picker_fits_a_short_terminal_and_still_scrolls_to_the_highlight(
+            self, tmp_path):
+        """Regression test for a real bug reported against a 25-line terminal: the
+        dialog's own border ran past the bottom of the screen, and the option list
+        scrolled a highlighted row into an area already clipped away by #dialog's
+        own edge, with no scrollbar and no way back to it.  A first fix that gave
+        #value its own percentage-of-screen max-height only shrank the bug -
+        that guess and #dialog's separate percentage guess still did not agree
+        with each other on a short terminal.  The real fix measures the actual
+        chrome around #value after it lays out and sizes #value to what is
+        actually left, in `_fit_results_to_the_terminal()`, so nothing here is
+        two independent guesses anymore."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test(size=(80, 25)) as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('timezone')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                dialog = app.screen.query_one('#dialog')
+                assert dialog.region.y + dialog.region.height <= 25
+
+                zone_list = app.screen.query_one('#value')
+                zone_list.highlighted = zone_list.option_count - 1
+                await pilot.pause()
+                # A scroll offset of 0 would mean the list never moved to reveal
+                # the highlighted row - exactly the symptom reported: the row
+                # highlighted last, past the fold, with nothing to show for it.
+                assert zone_list.scroll_offset.y > 0
+
+        run(scenario())
+
+    def test_timezone_picker_reports_when_nothing_matches(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('timezone')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                app.screen.query_one('#filter').value = 'not a real place'
+                await pilot.pause()
+
+                zone_list = app.screen.query_one('#value')
+                assert zone_list.option_count == 0
+                assert 'No timezone matches' in app.screen.query_one('#status').content
+
+        run(scenario())
+
+    def test_timezone_picker_cancel_leaves_the_value_unchanged(self, tmp_path):
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('station')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                fields = app.screen.query_one('#fields')
+                fields.highlighted = fields.get_option_index('timezone')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                app.screen.query_one('#filter').value = 'Chicago'
+                await pilot.pause()
+                await pilot.press('escape')
+                await pilot.pause()
+
+                assert app.values['station']['timezone'] == 'America/Los_Angeles'
 
         run(scenario())
 

@@ -29,7 +29,7 @@ from buzz.config import AudioConfig, BuzzConfig, StationConfig
 from buzz.sampler import LevelStream
 from buzz.setup.schema import SectionValues
 from buzz.setup.screens.base import CANCELLED, ScopeModalScreen
-from buzz.smeter import SCALE_ROW, TENS_ROW, dbm_to_s_string, s_meter_bar
+from buzz.setup.smeter import SCALE_ROW, TENS_ROW, dbm_to_s_string, s_meter_bar
 
 # 20 ms at 16 kHz - matches LevelStream's own default in AudioSampler.level_stream().
 _METER_BLOCKSIZE = 320
@@ -64,14 +64,12 @@ def _meter_block(reading_line: str) -> str:
 
 
 def _format_reading(dbm: float) -> str:
-    """A live meter line: the same bracketed bar, dBm figure, and S-string
-    level_meter.py's console meter prints, so the two tools read alike.
+    """A live meter line: a bracketed bar, a dBm figure, and an S-string.
 
-    Fixed-width fields (`+7.1f`, a 6-wide S-string) matter here beyond matching
-    level_meter.py's own formatting: _meter_block's parent Static is sized to
-    its widest line, so a reading whose width changed from one update to the
-    next - "-5.0" against "-15.0", say - would resize that widget and visibly
-    shift the whole block sideways on every tick.
+    Fixed-width fields (`+7.1f`, a 6-wide S-string) matter here: _meter_block's
+    parent Static is sized to its widest line, so a reading whose width changed
+    from one update to the next - "-5.0" against "-15.0", say - would resize
+    that widget and visibly shift the whole block sideways on every tick.
     """
     return f'[{s_meter_bar(dbm)}]  {dbm:+7.1f} dBm  {dbm_to_s_string(dbm):<6}'
 

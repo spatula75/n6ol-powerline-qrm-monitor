@@ -19,6 +19,7 @@ from textual.widgets.option_list import Option
 from buzz.setup.screens.base import CANCELLED, ScopeModalScreen
 from buzz.setup.screens.calibration import OffsetCalibrationDialog
 from buzz.setup.screens.device_picker import DevicePickerDialog
+from buzz.setup.screens.timezone_picker import TimezonePickerDialog
 
 
 def _types(spec: dict[str, Any]) -> list[str]:
@@ -28,10 +29,11 @@ def _types(spec: dict[str, Any]) -> list[str]:
 
 
 def _kind(spec: dict[str, Any]) -> str:
-    """Which dialog a field needs: 'boolean', 'calibration', 'device-picker', 'enum', 'number', or 'text'.
+    """Which dialog a field needs: 'boolean', 'calibration', 'device-picker', 'enum', 'number',
+    'text', or 'timezone-picker'.
 
     An explicit `x-widget` always wins over the type-driven default - see
-    schema.py's module docstring for the two fields that set one.
+    schema.py's module docstring for the fields that set one.
     """
     widget = spec.get('x-widget')
     if widget is not None:
@@ -300,4 +302,6 @@ async def open_field_dialog(screen, spec: dict[str, Any], current: Any) -> Any:
         # as device-picker above.
         return await screen.app.push_screen_wait(
             OffsetCalibrationDialog(spec, current, screen.app.values['audio']))
+    if kind == 'timezone-picker':
+        return await screen.app.push_screen_wait(TimezonePickerDialog(spec, current))
     return await screen.app.push_screen_wait(TextFieldDialog(spec, current))

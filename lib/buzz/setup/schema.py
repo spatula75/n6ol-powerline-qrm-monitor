@@ -28,12 +28,12 @@ know, so the document stays valid while it says things a validator has no opinio
     sample config to show.
   * `x-widget` names a dialog other than the type-driven default (a text box, a
     switch, or an enum's radio list) for `field_dialogs.open_field_dialog()` to open
-    instead.  `audio.input_device_name` uses `device-picker`, and
-    `station.audio_rf_conversion_db` uses `calibration` - see
-    `screens/device_picker.py` and `screens/calibration.py`.  Both dialogs still
-    return the field's new value on confirm and `CANCELLED` on cancel, the same
-    contract every other field dialog honors, so section_menu.py never has to know
-    which one it opened.
+    instead.  `audio.input_device_name` uses `device-picker`,
+    `station.audio_rf_conversion_db` uses `calibration`, and `station.timezone` uses
+    `timezone-picker` - see `screens/device_picker.py`, `screens/calibration.py`, and
+    `screens/timezone_picker.py`.  All three dialogs still return the field's new
+    value on confirm and `CANCELLED` on cancel, the same contract every other field
+    dialog honors, so section_menu.py never has to know which one it opened.
 """
 
 import json

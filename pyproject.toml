@@ -62,8 +62,8 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["lib/buzz", "configure", "tools"]
-omit = ["tests/*", "lib/buzz/device_setup.py"]
+source = ["lib/buzz", "tools"]
+omit = ["tests/*", "lib/buzz/setup/device_setup.py"]
 
 [tool.coverage.report]
 # Raised 96 -> 97 once NUMBA_DISABLE_JIT=1 (see tests/conftest.py) made JIT-compiled

@@ -1,8 +1,6 @@
 """Modal device picker for audio.input_device_name: probes every input device once.
 
-Reuses device_setup.py's own probing - the same code configure.py's console tool
-already uses - so the two tools can never disagree about what a device is called or
-whether it works at the configured sample rate.  The probe is a one-shot pass, not a
+Reuses device_setup.py's own probing.  The probe is a one-shot pass, not a
 continuously refreshing meter: it already samples 100 ms of real audio per device to
 measure its level, so a device already reads true the moment it appears, and R reruns
 the whole pass for anyone who plugs something in after the dialog opens.
@@ -17,7 +15,7 @@ from textual.css.query import NoMatches
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
-from buzz.device_setup import DeviceInfo, current_device, enumerate_input_devices
+from buzz.setup.device_setup import DeviceInfo, current_device, enumerate_input_devices
 from buzz.setup.screens.base import CANCELLED, ScopeModalScreen
 
 
@@ -108,9 +106,11 @@ class DevicePickerDialog(ScopeModalScreen[Any]):
             return
         current = current_device(self._devices, self._current_name)
         selectable = [d for d in self._devices if d.selectable]
-        status.update('Choose a device.  Press R to rescan.' if selectable
+        status.update('Choose a device.  Press R to rescan.  Compatible devices show the audio amplitude found during '
+                      'the last scan.  Non-compatible devices show the reason for being non-compatible.' if selectable
                       else 'No compatible input device found.  Press R to rescan.')
-        options = [Option(f'{d.bar}  {d.display_name}', id=str(d.real_index), disabled=not d.selectable)
+        options = [Option(f'{d.bar}  {d.display_name}',
+                          id=str(d.real_index), disabled=not d.selectable)
                   for d in self._devices]
         option_list.add_options(options)
         # Only ever pre-highlight a selectable row - current_device() matches by

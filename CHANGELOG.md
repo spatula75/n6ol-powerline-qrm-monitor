@@ -41,33 +41,44 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   uses, built from the 16-color ANSI palette rather than RGB hex so it renders
   consistently across terminals rather than however each one happens to
   approximate an arbitrary color.  Runs on Windows, Linux, macOS, and BSD with no
-  extra system dependency, via the new `textual` requirement.
+  extra system dependency, via the new `textual` requirement.  `setup.bat` and
+  `setup.sh` bootstrap the environment first: reuse `.venv` if it already exists
+  and is Python 3.12 or later, otherwise find a system Python that is and create
+  it, then install `requirements.txt` before launching - so a first-time user
+  never has to know any of that happened before the guided setup starts.
 
 - Device selection and level calibration, wired into the setup program.  The
   Audio section's input device field opens a picker instead of a text box: a
-  one-shot probe of every input device (the same code `configure.py` already
-  used), a level bar per device, and a disabled row for one that cannot open at
-  the configured sample rate, with R to rescan.  Rows show the device name
-  alone; the value actually saved, and matched against at every later startup,
-  still carries its host API too, since that is what tells apart the same
-  physical device listed once per API.  `configure.py` now reads that saved
-  name straight off the same probe instead of re-deriving it a second way, a
-  duplication that had already let the two disagree on formatting.  Audio also
-  gets a Calibration meter action: a live, read-only S-meter, complete with the
-  scale and bar `level_meter.py` already drew, for matching a receiver's own
-  S-meter by adjusting its RF and AF gain.  The Station section's audio-to-RF
-  offset field opens a second, related dialog with the same meter instead of a
-  plain number box, for the minority of receivers with no separate AF gain to
-  adjust - an internal sound device, for instance - where the offset itself is
-  the only thing left to calibrate: Up and Down nudge it, Space resets it to
-  the default, and Enter confirms, all against the same live reading, updating
-  without reopening the audio stream on every nudge.
-  `level_meter.py`'s S-meter rendering (the dBm-to-S-unit string and the ASCII
-  bar) moved to the new `buzz.smeter`, so the console tool and both new
-  dialogs draw the same meter from one implementation.
+  one-shot probe of every input device, a level bar per device, and a disabled
+  row for one that cannot open at the configured sample rate, with R to rescan.
+  Rows show the device name alone; the value actually saved, and matched
+  against at every later startup, still carries its host API too, since that
+  is what tells apart the same physical device listed once per API.  Audio
+  also gets a Calibration meter action: a live, read-only S-meter for matching
+  a receiver's own S-meter by adjusting its RF and AF gain.  The Station
+  section's audio-to-RF offset field opens a second, related dialog with the
+  same meter instead of a plain number box, for the minority of receivers with
+  no separate AF gain to adjust - an internal sound device, for instance -
+  where the offset itself is the only thing left to calibrate: Up and Down
+  nudge it, Space resets it to the default, and Enter confirms, all against
+  the same live reading, updating without reopening the audio stream on every
+  nudge.  The S-meter rendering (the dBm-to-S-unit string and the ASCII bar)
+  lives in `buzz.setup.smeter`, so both new dialogs draw the same meter from
+  one implementation.
+
+- A timezone picker for the Station section's timezone field, so nobody has to
+  type an IANA name like `America/Chicago` from memory.  Typing a few letters
+  of a region or city filters tzdata's roughly 340 real zones, the same
+  database the monitor resolves at runtime, so a name this dialog offers can
+  never be one it later rejects.  Deprecated backward-compatibility aliases
+  such as `UTC` and `Zulu` are left out - both are the same zone as `Etc/UTC`
+  under an older name, and tzdata's own compiled source says so outright.
+  Each row also shows its current UTC offset, read off the system clock so it
+  already reflects whichever of daylight or standard time the zone is in
+  today.
 
 ### Changed
-- Coverage measurement now covers `tools/` as well as `lib/buzz` and `configure`.
+- Coverage measurement now covers `tools/` as well as `lib/buzz`.
   The release check is part of the release procedure now, so leaving it outside the
   gate meant 429 lines of it counted for nothing. Both tools reach 100%, and the
   total moved 99.19% → 99.29%.
@@ -79,6 +90,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   values as though they were defaults no longer do.
 
 ### Removed
+- `level_meter.py`. The setup program's own Calibration meter action (see Added,
+  above) draws the same live S-meter, so the standalone script had nothing left
+  to do that the guided path did not already cover.
+- `configure.py`. The setup program's Audio section device picker (see Added,
+  above) covers the same ground - probing every input device, showing a level
+  bar, and saving the chosen `input_device_name` - so the standalone console
+  configurator had nothing left to do either. The interactive console flow it
+  used (`select_device()` and the functions it called) went with it.
 - `[station] distance_attenuation`. It was only ever added back onto qualifying
   signal levels to pad the daily chart's y-axis upper bound, for an estimated
   source-power series that was never drawn. Charts scale to the signal, noise, and
@@ -86,7 +105,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `[audio] device_index`. Nothing at runtime read it: the device is resolved by
   `input_device_name` at every startup, deliberately, because names survive a reboot
   and PortAudio indices do not. Its only remaining use was marking the current
-  device in the configurator's table, which now matches on the name instead - so an
+  device in the device picker, which now matches on the name instead - so an
   index that has gone stale can no longer point the marker at the wrong device.
 - Both are simply ignored if present in an existing `~/.buzz/config.toml`; unknown
   keys have always been dropped on load, so no config file needs editing.
