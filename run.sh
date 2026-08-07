@@ -5,6 +5,7 @@ set -e
 DIR="$(cd "$(dirname "$0")" && pwd)"
 VENV="$DIR/.venv"
 CONFIG_DIR="$HOME/.buzz"
+CONFIG_FILE="$CONFIG_DIR/config.toml"
 
 # See setup.sh's identical helper: a venv's interpreter sits at bin/python on a
 # real POSIX layout, but at Scripts/python.exe when a native Windows Python
@@ -23,8 +24,13 @@ if [ -z "$PYTHON" ]; then
     exit 1
 fi
 
-if [ ! -d "$CONFIG_DIR" ]; then
-    echo "No configuration found at $CONFIG_DIR. Run ./setup.sh first." >&2
+# The file, not just the directory: FinishScreen.save() creates ~/.buzz right
+# before writing config.toml into it, so a setup run that crashed or was killed
+# between those two steps leaves the directory behind with no config inside it.
+# Starting on defaults nobody chose in that state is exactly what this check
+# exists to refuse.
+if [ ! -f "$CONFIG_FILE" ]; then
+    echo "No configuration found at $CONFIG_FILE. Run ./setup.sh first." >&2
     exit 1
 fi
 
