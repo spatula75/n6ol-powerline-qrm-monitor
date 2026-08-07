@@ -77,6 +77,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   already reflects whichever of daylight or standard time the zone is in
   today.
 
+- `run.bat` and `run.sh`, matching `setup.bat`/`setup.sh`: start the monitor with
+  no special arguments, using the `.venv` setup already created.  Each checks for
+  that `.venv` and for `~/.buzz` before doing anything else, and says plainly which
+  one is missing and to run setup first, rather than starting with defaults nobody
+  chose.
+
 ### Changed
 - Coverage measurement now covers `tools/` as well as `lib/buzz`.
   The release check is part of the release procedure now, so leaving it outside the

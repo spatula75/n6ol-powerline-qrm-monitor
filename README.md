@@ -76,8 +76,17 @@ timezone, output path, audio input device (with a live level bar per device),
 weather, and publishing - and writes the result to `~/.buzz/config.toml`:
 
 ```
-python -m buzz.setup
+# Windows
+setup.bat
+
+# Linux / macOS / BSD
+./setup.sh
 ```
+
+`setup.bat` and `setup.sh` create (or reuse) a `.venv` with Python 3.12 or later
+and install `requirements.txt` into it before launching, so this is the only
+command a first-time setup needs.  If a virtual environment is already active,
+`python -m buzz.setup` runs the same program directly.
 
 `config.example.toml` documents every setting, with the same descriptions the setup
 program itself shows, if you would rather copy it and hand-edit `~/.buzz/config.toml`
@@ -90,6 +99,14 @@ copy config.example.toml %USERPROFILE%\.buzz\config.toml
 # Linux / macOS / BSD
 mkdir -p ~/.buzz && cp config.example.toml ~/.buzz/config.toml
 ```
+
+**Windows: if a device shows no level at all**, even while making noise and after
+pressing R to rescan, check that device's own Windows sound settings before assuming
+it is broken or the wrong one.  Two settings there can silently keep the monitor from
+ever seeing audio: exclusive mode, and driver-level "enhancements" (noise
+suppression, AGC, and similar effects some drivers apply by default).  Open the
+device's Properties from Windows' Sound settings, disable "Allow applications to
+take exclusive control of this device," disable any enhancements listed, and rescan.
 
 ---
 
@@ -224,6 +241,20 @@ the sound card measures and the real RF level at your receiver input.
 ---
 
 ## Running the Monitor
+
+```
+# Windows
+run.bat
+
+# Linux / macOS / BSD
+./run.sh
+```
+
+`run.bat` and `run.sh` use the `.venv` `setup.bat`/`setup.sh` already created and
+start the monitor with no special arguments - they say so and stop if either the
+virtual environment or `~/.buzz` is missing, rather than running with defaults
+nobody chose.  For anything past the default run - flags, playback, rendering - use
+`python -m buzz.main` directly from an activated virtual environment:
 
 ```
 python -m buzz.main
