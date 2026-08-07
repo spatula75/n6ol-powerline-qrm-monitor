@@ -7,6 +7,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-08-06
+
 ### Added
 - `tools/release_render_check.py`, a step in the release procedure (see
   `CONTRIBUTING.md`) that renders a recent recording at both ends of the
@@ -79,9 +81,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - `run.bat` and `run.sh`, matching `setup.bat`/`setup.sh`: start the monitor with
   no special arguments, using the `.venv` setup already created.  Each checks for
-  that `.venv` and for `~/.buzz` before doing anything else, and says plainly which
-  one is missing and to run setup first, rather than starting with defaults nobody
-  chose.
+  that `.venv` and for `~/.buzz/config.toml` before doing anything else, and says
+  plainly which one is missing and to run setup first, rather than starting with
+  defaults nobody chose.  The file, not just the `~/.buzz` directory: `FinishScreen`
+  creates that directory right before writing the config into it, so a setup run
+  killed between those two steps would otherwise leave the directory behind with
+  nothing in it, and pass a check that only looked for the directory.
 
 ### Changed
 - Coverage measurement now covers `tools/` as well as `lib/buzz`.
