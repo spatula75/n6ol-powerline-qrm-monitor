@@ -21,9 +21,6 @@ class TestAudioConfigDefaults:
     def test_pulse_rate(self):
         assert AudioConfig().pulse_rate == 120
 
-    def test_device_index_default_none(self):
-        assert AudioConfig().device_index is None
-
 
 class TestStationConfigNoiseThreshold:
     def test_noise_threshold_default(self):
@@ -167,16 +164,15 @@ class TestExampleConfigMatchesTheDataclasses:
         assert self._documented() == self._defined()
 
     def test_uncommented_values_are_the_defaults(self):
-        """The example file says the values it shows are the defaults, so they must be.
+        """Every value the example actually sets equals the dataclass default.
 
-        Only the settings that are truly site-specific are exempt - a hostname or
-        a home directory cannot have a meaningful default, and the example gives a
-        plausible one to edit.  Everything else drifts silently otherwise: a default
-        changed in code leaves the example quietly documenting the old value.
+        Six settings used to be exempt - a hostname, a home directory - because the
+        example gave a plausible value to edit where there was no useful default.
+        Generating the file from lib/buzz/setup/schema.json removed the need for the
+        exemption entirely: a setting with no universal default is now written
+        commented-out with its example in the comment beside it, so nothing the parser
+        sees can disagree with the code.  The empty set is the point.
         """
-        placeholders = {('station', 'path'), ('weather', 'url'), ('server', 'host'),
-                        ('server', 'username'), ('server', 'remote_path'),
-                        ('server', 'key_path')}
         example, defaults = BuzzConfig.from_toml(_EXAMPLE), BuzzConfig()
         differing = {
             (section.name, option)
@@ -185,7 +181,7 @@ class TestExampleConfigMatchesTheDataclasses:
             if getattr(getattr(example, section.name), option)
             != getattr(getattr(defaults, section.name), option)
         }
-        assert differing == placeholders
+        assert differing == set()
 
 
 class TestRecordingConfigDefaults:

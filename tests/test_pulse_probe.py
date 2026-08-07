@@ -3,7 +3,7 @@
 The pure math is exercised directly.  The one place that touches a sound card,
 capture(), is mocked at the AudioSampler boundary, and the report sections are
 checked through capsys - they are the tool's entire output, so what they say is
-the behaviour worth pinning.
+the behavior worth pinning.
 """
 from unittest.mock import MagicMock, patch
 

@@ -5,7 +5,7 @@
 Tier 2 - headless, but a real Qt paint pass.  These are the only tests in the
 project that assert on what the operator actually sees, and they exist because two
 bugs got all the way to a running program without a single test noticing: the
-toolbar drew in the desktop's default grey instead of the dark theme, and the Record
+toolbar drew in the desktop's default gray instead of the dark theme, and the Record
 button stayed lit after it had been pressed, so the one control whose whole job is
 to show a state showed the wrong one.  Neither is visible anywhere but the pixels.
 
@@ -63,7 +63,7 @@ class TestToolbarIsPainted:
     """The strip draws its own background, not the desktop's.
 
     A plain QWidget paints its palette background and ignores the stylesheet's unless
-    WA_StyledBackground is set, which left the bar in the system grey with only the
+    WA_StyledBackground is set, which left the bar in the system gray with only the
     button and the label dark on top of it - an unmistakable pale band across the top
     of an otherwise black window, and nothing in the unit suite could see it.
     """
@@ -100,7 +100,7 @@ class TestRecordButtonShowsItsState:
 
     The button offers an action that has already been taken once it is armed, and a
     lit button says the opposite - it looks like the control you still need to press.
-    It dims rather than greying out because it is also the only way to switch
+    It dims rather than graying out because it is also the only way to switch
     recording off with the mouse, so it has to stay clickable.
     """
 

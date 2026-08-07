@@ -311,7 +311,7 @@ class TestMeanSpectrumDb:
     def test_impulse_energy_is_independent_of_position(self):
         """The reason for the 75% overlap.  Hann tapers to zero at the frame edges,
         so with non-overlapping frames an impulse landing on a boundary was
-        attenuated by >12 dB relative to one at a frame centre - on a display whose
+        attenuated by >12 dB relative to one at a frame center - on a display whose
         subject is a 120 pps impulse train.
 
         The hop must satisfy COLA in power, since power is what gets averaged; the
@@ -428,7 +428,7 @@ class TestColorScaleRange:
     def test_headroom_reserves_room_above_the_ceiling(self):
         """A value modestly hotter than the ceiling percentile must still fall
         below 1.0, so it can render as visibly hotter than the ceiling's own
-        colour rather than clipping to the same solid red immediately."""
+        color rather than clipping to the same solid red immediately."""
         floor, ceiling, headroom = -80.0, -50.0, 0.10
         rng = _color_scale_range(floor, ceiling, headroom)
         # Halfway into the reserved headroom band (whose full width is
@@ -440,7 +440,7 @@ class TestColorScaleRange:
     def test_spike_beyond_the_headroom_band_exceeds_one(self):
         """A spike louder than the reserved headroom clips to 1.0 in the caller
         (paintEvent's np.clip) rather than being represented exactly - that's the
-        expected trade-off of a bounded colour scale, not a bug in this function."""
+        expected trade-off of a bounded color scale, not a bug in this function."""
         floor, ceiling, headroom = -80.0, -50.0, 0.10
         rng = _color_scale_range(floor, ceiling, headroom)
         spike = ceiling + rng * headroom * 2   # well past the reserved band
@@ -458,7 +458,7 @@ class TestColorScaleRange:
         signal, no environmental variation) measures about 5.4 dB of p10-to-p98
         spread on its own -- see _MIN_DYNAMIC_RANGE_DB's comment.  Before that
         constant existed as a real floor, a quiet window's own measurement noise
-        would get stretched across nearly the whole colour range, so an idle band
+        would get stretched across nearly the whole color range, so an idle band
         painted itself yellow/orange.  A ceiling only slightly above the floor
         must now still map well below the hot end."""
         floor, ceiling, headroom = -80.0, -74.6, 0.10   # 5.4 dB apart, as measured
@@ -515,7 +515,7 @@ class TestWaterfallConstants:
         assert _DB_RANGE == 48.0
 
     def test_n_rows_reasonable(self):
-        """Typo guard on the history depth.  The lower rail keeps the colour
+        """Typo guard on the history depth.  The lower rail keeps the color
         auto-range's percentiles resting on more than a couple of rows; the upper
         keeps the panel from becoming absurdly tall.  The value inside this range is
         a layout decision (it shares a height with the scope panel), not a DSP one."""
@@ -649,7 +649,7 @@ class TestSpectrumGeometry:
 
     @pytest.mark.parametrize('rate', (8000, 16000, 44100))
     def test_broadband_noise_lands_on_its_anchor(self, rate):
-        """The companion calibration, noise_correction, which is what seeds the colour
+        """The companion calibration, noise_correction, which is what seeds the color
         floor from the station's configured noise floor."""
         geometry = spectrum_geometry(rate)
         sigma = 300.0

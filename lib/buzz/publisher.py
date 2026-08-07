@@ -2,7 +2,7 @@
 HTML index generation and SCP upload to the web server.
 
 Publisher.generate_index() renders index.html from the Jinja2 template, embedding
-the current plot filename, timestamp, and station callsign.  Publisher.scp_to_server()
+the current plot filename, timestamp, and station callsign. Publisher.scp_to_server()
 opens a single SSH connection and uploads a list of (local_path, remote_prefix) pairs
 over SFTP.
 """
@@ -48,7 +48,7 @@ class Publisher:
     def scp_to_server(self, files: list[tuple[Path | str, str]]) -> None:
         """Upload files over a single SSH connection.
 
-        Each entry in *files* is a (local_path, remote_prefix) pair; the file
+        Each entry in *files* is a (local_path, remote_prefix) pair. The file
         is placed at server_remote_path + remote_prefix + basename.
         """
         server = self._config.server
@@ -71,8 +71,8 @@ class Publisher:
                 sftp.put(str(local_file), f'{server.remote_path}{file_prefix}{destination_name}')
         except Exception:
             logger.exception(
-                'Uploading output files to %s failed - check SSH key (%s), '
-                'remote path (%s), and host reachability.  If the error is an '
+                'Uploading output files to %s failed. Check the SSH key (%s), '
+                'the remote path (%s), and host reachability. If the error is an '
                 'unknown host key, add it with: ssh-keyscan %s >> %s . '
                 'Files will be re-uploaded next cycle.',
                 server.host, server.key_path, server.remote_path,

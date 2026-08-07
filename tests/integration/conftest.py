@@ -44,7 +44,7 @@ def qt_app():
     lay out and paint exactly as they would on a desktop, and grab() returns the
     pixels they painted.  That is what makes the display testable on a headless
     runner at all - and both display bugs this suite is answering for (a toolbar that
-    drew in the desktop's grey, a Record button that stayed lit once armed) were
+    drew in the desktop's gray, a Record button that stayed lit once armed) were
     visible in nothing but those pixels.
 
     One per session: Qt permits a single QApplication per process and does not fully

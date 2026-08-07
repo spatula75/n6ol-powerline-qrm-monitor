@@ -169,7 +169,7 @@ class TestStridedExtraction:
     """extract_sweeps and n_complete_sweeps once stride and width are separate."""
 
     def test_a_stride_equal_to_the_width_still_tiles(self):
-        """The behaviour from when the two were necessarily the same."""
+        """The behavior from when the two were necessarily the same."""
         samples = np.arange(40, dtype=np.float32)
         assert extract_sweeps(samples, 0, 10).shape == (4, 10)
         assert n_complete_sweeps(40, 0, 10) == 4

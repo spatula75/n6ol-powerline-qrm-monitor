@@ -71,7 +71,7 @@ class StateLog:
     brief transition polling is blind to.
 
     Runs on the analyzer thread, so it does the least it can: append under a lock
-    and notify.  Register before start(); the listener list is not synchronised.
+    and notify.  Register before start(); the listener list is not synchronized.
     """
 
     def __init__(self) -> None:

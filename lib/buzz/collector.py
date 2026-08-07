@@ -2,7 +2,7 @@
 Measurement loop: samples audio, stores results, generates plots, and uploads files.
 
 Collector.collection_loop() runs forever (until KeyboardInterrupt), waking at the
-top of each minute to call _run_collection().  _run_collection() averages several
+top of each minute to call _run_collection(). _run_collection() averages several
 audio samples, appends a CSV row, renders daily plots, and, if uploads are enabled,
 generates an HTML index and SCPs everything to the configured web server.
 """
@@ -39,10 +39,10 @@ class Collector:
         """Average one minute's analyzer results into (snr, signal, noise, lock_status).
 
         Signal and SNR are averaged only over locked results, so an intermittent
-        signal's unlocked ticks don't drag the level down mid-minute; noise floor
-        is averaged over every result regardless of lock.  With no locked results
-        at all, signal mirrors noise - mirroring AnalysisResult.unlocked()'s
-        convention - so the plotted traces coincide instead of gapping.  With no
+        signal's unlocked ticks don't drag the level down mid-minute. Noise floor
+        is averaged over every result regardless of lock. With no locked results
+        at all, signal mirrors noise, mirroring AnalysisResult.unlocked()'s
+        convention, so the plotted traces coincide instead of gapping. With no
         results at all, the minute reads as silence with status 'none'.
         """
         if not results:
@@ -61,16 +61,16 @@ class Collector:
         """CSV-ready (grid_frequency, phase_drift) strings for this minute.
 
         Grid frequency and drift come from the analyzer's phase tracker, which only
-        has a meaningful estimate while it is following a pulse train.  With no
+        has a meaningful estimate while it is following a pulse train. With no
         locked results this minute the stored rate is stale, so this returns blanks
         rather than a number that looks like a measurement.
 
-        Three decimal places is one digit past what the absolute accuracy supports:
-        the reading is scaled by the sound card's sample-clock error (50-100 ppm on
+        Three decimal places is one digit past what the absolute accuracy supports.
+        The reading is scaled by the sound card's sample-clock error (50-100 ppm on
         typical hardware, or 0.003-0.006 Hz at 60 Hz), so the third digit is only
-        meaningful for how the frequency *changes*, not for what it is.  That error
+        meaningful for how the frequency *changes*, not for what it is. That error
         is a single multiplicative constant, so if the card is ever calibrated the
-        whole logged history can be corrected by one scale factor - which is also
+        whole logged history can be corrected by one scale factor, which is also
         why the raw drift rate is worth keeping alongside the derived frequency.
         """
         if not any(r.locked for r in results):
@@ -80,8 +80,8 @@ class Collector:
     def _fetch_weather_or_blank(self) -> tuple:
         """Fetch current weather, degrading to blank fields on any failure.
 
-        Weather is decoration on the noise measurement - a failed fetch must not
-        cost us the CSV row.
+        Weather is decoration on the noise measurement. A failed fetch must not
+        cost this program the CSV row.
         """
         try:
             return self._weather.fetch()
@@ -135,10 +135,10 @@ class Collector:
 
         Drains the AnalysisResult objects the analyzer published since the previous
         cycle and averages them (draining keeps consecutive rows from re-averaging
-        each other's data), appends a CSV row, generates the raw and smoothed daily
-        plots, and on the hour also regenerates the all-time, 7-day, and 30-day
-        summary graphs.  If server uploads are enabled, also renders the HTML index
-        and SCPs all changed files.
+        each other's data), appends a CSV row, and generates the raw and smoothed
+        daily plots. On the hour it also regenerates the all-time, 7-day, and 30-day
+        summary graphs. If server uploads are enabled, it also renders the HTML
+        index and SCPs all changed files.
         """
         station = self._config.station
         zone = ZoneInfo(station.timezone)

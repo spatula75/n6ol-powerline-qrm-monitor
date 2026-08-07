@@ -19,7 +19,7 @@ CsvValue = str | float
 
 
 class WeatherData(NamedTuple):
-    """One weather observation.  Fields appear in the CSV in this order; a field
+    """One weather observation. Fields appear in the CSV in this order. A field
     is an empty string when the source doesn't provide it."""
     temperature: CsvValue      # °F
     humidity: CsvValue         # %

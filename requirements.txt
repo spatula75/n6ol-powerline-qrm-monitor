@@ -12,4 +12,11 @@ matplotlib~=3.11.1
 paramiko~=5.0.0
 jinja2~=3.1.6
 scipy~=1.18.0
+# Validates ~/.buzz/config.toml against lib/buzz/setup/schema.json, which is also
+# what the setup program builds its screens from and what config.example.toml is
+# generated from.
+jsonschema~=4.26.0
+# The setup program's terminal UI. Runs on Windows/Linux/macOS/BSD with no extra
+# system dependency, unlike curses, which needs windows-curses on Windows.
+textual~=8.2.8
 

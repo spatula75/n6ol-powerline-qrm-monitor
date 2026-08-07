@@ -23,7 +23,6 @@ def _make_plotter(tmp_path: Path) -> tuple[Plotter, CsvStore]:
     cfg.station.noise_floor = -98.0
     cfg.station.noise_min_snr = 12.0
     cfg.station.audio_rf_conversion_db = -32.0
-    cfg.station.distance_attenuation = 29.54
     cfg.audio.pulse_rate = 120
     store = CsvStore(cfg)
     return Plotter(cfg, store), store

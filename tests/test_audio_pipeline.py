@@ -14,7 +14,6 @@ CHUNK = AudioPipeline.CHUNK_SIZE
 
 def _make_config() -> BuzzConfig:
     cfg = BuzzConfig()
-    cfg.audio.device_index = 0
     cfg.audio.input_device_name = 'Test, DirectSound'
     cfg.audio.sample_rate = SAMPLE_RATE
     return cfg
@@ -218,7 +217,7 @@ class TestAudioPipelineGetSnapshot:
 class TestAudioPipelineGetSnapshotAligned:
     """Phase-aligned snapshots: the window must end at a multiple of `align`
     samples in the global stream, so every window shares a phase origin no
-    matter where the chunk-quantised tail happens to be."""
+    matter where the chunk-quantized tail happens to be."""
 
     ALIGN = 400   # 3 pulse periods at 16 kHz / 120 pps
 

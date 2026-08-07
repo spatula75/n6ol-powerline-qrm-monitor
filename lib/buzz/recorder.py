@@ -1,10 +1,10 @@
 """
 Automatic .wav capture of interference events.
 
-EventRecorder watches the analyzer's state machine and writes each event it sees
-to its own file, so an interesting burst can be replayed through buzz.playback
-later - analysed again on the same displays, at real speed, with no receiver
-attached and no chance of missing it live.
+EventRecorder watches the analyzer's state machine and writes each event it sees to
+its own file, so an interesting burst can be replayed through buzz.playback later:
+analyzed again on the same displays, at real speed, with no receiver attached and no
+chance of missing it live.
 
 A recording spans more than the event itself:
 
@@ -13,39 +13,39 @@ A recording spans more than the event itself:
     already captured                                without a lock
     when lock hit
 
-The lead-in is free.  The ring buffer is always holding the last several seconds
-of audio, so at the instant of lock the run-up to the event has already been
-captured - the recorder just reads the buffer from its oldest surviving sample
-rather than from the live tail.  Without that, every recording would begin with
-the pulse train mid-stride, which is the least useful part to look at.
+The lead-in is free.  The ring buffer always holds the last several seconds of
+audio, so at the instant of lock the run-up to the event is already captured.  The
+recorder just reads the buffer from its oldest surviving sample rather than from the
+live tail.  Without that, every recording would begin with the pulse train
+mid-stride, which is the least useful part to look at.
 
-The trailer costs nothing either.  A recording ends because the signal has been
-gone for stop_after_seconds, and that audio is written as it arrives rather than
-being held back, so by the time the timeout expires the trailer is already in the
+The trailer costs nothing either.  A recording ends because the signal has been gone
+for stop_after_seconds, and the recorder writes that audio as it arrives rather than
+holding it back, so by the time the timeout expires the trailer is already in the
 file.  The same timeout is what lets a flickering signal stay one recording: any
 lock inside the window continues the event instead of splitting it in two.
 
 Both ends are faded so the file starts and finishes at exactly zero and cannot
 click - see fade_ramp for the shape, FADE_SECONDS for the length, and _write for
-how the fade-out reaches audio whose lastness is only known afterwards.
+how the fade-out reaches audio whose lastness is only known afterward.
 
-The event budget can be a rate rather than a one-off.  With rearm_reset_minutes
-set, max_events refills on that cycle - 10 and 1440 give ten events a day, every
-day, unattended.  The cycle is measured from when the budget was last filled
-rather than from when it ran out, so it keeps its time of day instead of sliding
-later by however long each day's events took to arrive.
+The event budget can be a rate rather than a one-off.  With rearm_reset_minutes set,
+max_events refills on that cycle: 10 and 1440 give ten events a day, every day,
+unattended.  The cycle is measured from when the budget was last filled rather than
+from when it ran out, so it keeps its time of day instead of sliding later by
+however long each day's events took to arrive.
 
 Lock is not polled.  The analyzer publishes each state change to a listener (see
-ContinuousAnalyzer.add_state_listener) and the recorder's thread does the writing,
+ContinuousAnalyzer.add_state_listener), and the recorder's thread does the writing,
 so a lock that comes and goes between two polls still starts a recording and
-analysis never ends up behind disk I/O - the listener sets two flags under a lock
+analysis never ends up behind disk I/O.  The listener sets two flags under a lock
 held for nothing longer than that, and does no work of its own.
 
-Everything is measured in absolute sample positions rather than wall-clock time -
-the same audio clock the analyzer's drift tracker uses.  A recording's length is
-then exactly what its audio contains, regardless of when the polling thread
-happened to run, and a stalled capture device cannot time out a recording that
-has not actually gone quiet.
+Everything is measured in absolute sample positions rather than wall-clock time, the
+same audio clock the analyzer's drift tracker uses.  A recording's length is then
+exactly what its audio contains, regardless of when the polling thread happened to
+run, and a stalled capture device cannot time out a recording that has not actually
+gone quiet.
 """
 
 import logging
@@ -73,10 +73,10 @@ _BYTES_PER_SAMPLE = 2   # 16-bit PCM, matching the int16 capture format end to e
 _EMPTY = np.empty(0, dtype=np.int16)
 
 # How each `ended` token written into a file's metadata reads in the log.  These are
-# also exactly the two ends that are not the recorder's own doing - each is asked for
-# from outside and announced by whoever asked - which is why the budget stays quiet
-# about them in _finish().  The two tokens produced by a limit are described with
-# that limit's value instead, by _end_description.
+# also exactly the two ends that are not the recorder's own doing: each is asked for
+# from outside and announced by whoever asked, which is why the budget stays quiet
+# about them in _finish().  _end_description describes the two tokens a limit
+# produces with that limit's value instead.
 _END_DESCRIPTIONS = {
     'operator': 'stopped by operator',
     'shutdown': 'monitor shutting down',
@@ -94,7 +94,7 @@ class RecorderStatus:
     # Seconds of audio since the lock that started the recording; 0 when idle.
     #
     # Timed from the lock rather than from the first sample in the file, for the same
-    # reason max_seconds is: the lead-in is audio the monitor already had, so counting
+    # reason max_seconds is.  The lead-in is audio the monitor already had, so counting
     # it would start the display at whatever the ring buffer happened to hold, and
     # would disagree with the limit the recording is actually measured against.
     elapsed_seconds: float
@@ -108,17 +108,17 @@ def fade_ramp(n: int) -> np.ndarray:
     """An n-point raised-cosine ramp rising from exactly 0 to exactly 1.
 
     A file that begins or ends on a non-zero sample steps to or from silence, and a
-    step is broadband: it clicks, and clicks at the seams when files are played back
-    to back.  Sound cards carry a DC offset (the reason LevelStream removes one), so
+    step is broadband: it clicks, and clicks at the seams when files play back to
+    back.  Sound cards carry a DC offset (the reason LevelStream removes one), so
     this happens even where the recording contains nothing but noise floor.
 
-    Raised cosine rather than an exponential, which the ends of a file argue for on
-    both counts.  An exponential approaches zero without reaching it, so it has to be
-    truncated - and the truncation is itself a step, exactly what the fade was for.
-    This shape hits 0 and 1 exactly, and meets both of them with zero slope, so the
-    join to silence and the join to full-scale audio are each smooth.  That
-    continuity is worth 6 dB/octave of splatter rolloff over a linear ramp's corner,
-    for the same cost.
+    This uses a raised cosine rather than an exponential, and the ends of a file
+    argue for that on both counts.  An exponential approaches zero without reaching
+    it, so it has to be truncated, and the truncation is itself a step, exactly what
+    the fade was for.  This shape hits 0 and 1 exactly, and meets both of them with
+    zero slope, so the join to silence and the join to full-scale audio are each
+    smooth.  That continuity is worth 6 dB/octave of splatter rolloff over a linear
+    ramp's corner, for the same cost.
 
     Reverse it for the fade-out; the last sample is then exactly zero.
     """
@@ -128,10 +128,10 @@ def fade_ramp(n: int) -> np.ndarray:
 def event_filename(when: datetime) -> str:
     """Return the .wav filename for an event that locked at `when`.
 
-    Local time with the UTC offset attached, so a file is unambiguous a year later
-    and across a DST change.  ISO 8601's colons are illegal in Windows filenames and
-    its T separator is hard to read at a glance, so date and time are joined with a
-    dash instead: event-20260729-143307-0700.wav.
+    Local time with the UTC offset attached, so a file stays unambiguous a year
+    later and across a DST change.  ISO 8601's colons are illegal in Windows
+    filenames and its T separator is hard to read at a glance, so date and time are
+    joined with a dash instead: event-20260729-143307-0700.wav.
     """
     return f'event-{when.strftime("%Y%m%d-%H%M%S%z")}.wav'
 
@@ -173,7 +173,7 @@ class EventRecorder:
     #
     # Sized for a cut through full-scale audio, because both ends can be one.  A file
     # usually opens in quiet lead-in and closes in the silence the event faded into,
-    # but not always: an arc already buzzing when the monitor starts is locked onto
+    # but not always.  An arc already buzzing when the monitor starts is locked onto
     # within a second or two, so the lead-in is a live pulse train from its first
     # sample, and a max_seconds cap ends a file mid-event the same way.  Even then the
     # fade gives up well under one pulse out of the 120 in that second.
@@ -199,7 +199,7 @@ class EventRecorder:
         self._pulse_rate       = config.audio.pulse_rate
         self._rf_conversion_db = config.station.audio_rf_conversion_db
         # Both limits in samples, on the audio clock, and both clamped: a nonsensical
-        # setting should degrade to the nearest sensible behaviour rather than into
+        # setting should degrade to the nearest sensible behavior rather than into
         # something surprising.  A negative cap would drive the write position back
         # behind itself and re-read audio already written, so anything at or below
         # zero means uncapped.  A zero timeout would end every recording on the tick
@@ -210,15 +210,15 @@ class EventRecorder:
         self._min_lock_samples = self._qualifying_lock_samples(recording.min_lock_seconds)
         self._fade_in = fade_ramp(round(self.FADE_SECONDS * self._sample_rate))
 
-        # The analyzer, kept for its published levels rather than its state - the
+        # The analyzer, kept for its published levels rather than its state.  The
         # state arrives by push because lock is an edge, but SNR is a level, and a
         # level is exactly the thing it is right to read when you happen to want it.
         self._analyzer = analyzer
         self._min_lock_snr = recording.min_lock_snr
-        # Recent SNR readings taken while a lock is being judged.  A rolling window
-        # rather than an average over the whole wait: an event that starts quiet and
-        # builds should be recorded from the moment it is loud enough, and an average
-        # dragged down by how it began would hold it off long after that.
+        # Recent SNR readings taken while a lock is being judged.  This is a rolling
+        # window rather than an average over the whole wait: an event that starts
+        # quiet and builds should be recorded from the moment it is loud enough, and
+        # an average dragged down by how it began would hold it off long after that.
         self._recent_snr: deque[float] = deque(maxlen=self.SNR_WINDOW)
 
         # Negative would leave the deadline permanently in the past, re-arming on
@@ -230,10 +230,10 @@ class EventRecorder:
         # watching, not at the end of an unattended day from an empty folder that
         # explains nothing about why it is empty.
         #
-        # The short-circuit matters.  Recording that is off reaches for
-        # nothing at all, so a monitor run without it leaves no stray directory
-        # behind and cannot complain about a path it was never going to use; the
-        # check happens instead when the operator presses Record.
+        # The short-circuit matters.  Recording that is off reaches for nothing at
+        # all, so a monitor run without it leaves no stray directory behind and
+        # cannot complain about a path it was never going to use.  The check happens
+        # instead when the operator presses Record.
         self._armed = recording.enabled and self._can_record()
         self._events_remaining = self._initial_budget()
         # Monotonic deadline for the next budget reset, or None when no cycle is
@@ -244,7 +244,7 @@ class EventRecorder:
 
         # Lock state is pushed from the analyzer rather than read back from it (see
         # ContinuousAnalyzer.add_state_listener), seeded here with the state the
-        # analyzer is in at wiring time.  _lock_acquired is sticky until the next
+        # analyzer is in at wiring time.  _lock_acquired stays sticky until the next
         # tick consumes it, so an event that locks and drops again inside a single
         # poll interval still starts a recording instead of vanishing between polls.
         self._locked = analyzer.state == AnalyzerState.LOCKED
@@ -299,7 +299,7 @@ class EventRecorder:
     def stop(self) -> None:
         """Stop polling and close any recording in progress.
 
-        Finalising matters: a .wav's header carries its length, and a file whose
+        Finalizing matters: a .wav's header carries its length, and a file whose
         writer never closed reports zero frames no matter how much audio is in it.
         """
         self._stop.set()
@@ -312,8 +312,9 @@ class EventRecorder:
     def arm(self) -> None:
         """Enable recording and refill the event budget, restarting the reset cycle.
 
-        Re-checks the directory, so this is also how an operator retries after fixing
-        a bad path: arming is refused, loudly, while there is nowhere to record to.
+        This re-checks the directory, so it is also how an operator retries after
+        fixing a bad path: arming is refused, loudly, while there is nowhere to
+        record to.
         """
         if not self._can_record():
             return
@@ -327,9 +328,10 @@ class EventRecorder:
     def disarm(self) -> None:
         """Disable recording, closing any recording in progress at its current length.
 
-        Cancels the reset cycle as well.  Switching recording off by hand has to mean
-        off: coming back to a monitor that re-armed itself overnight, because it was
-        turned off during a cycle rather than between two, would be a nasty surprise.
+        This cancels the reset cycle as well.  Switching recording off by hand has
+        to mean off: coming back to a monitor that re-armed itself overnight, because
+        it was turned off during a cycle rather than between two, would be a nasty
+        surprise.
         """
         with self._lock:
             self._armed = False
@@ -377,39 +379,41 @@ class EventRecorder:
     def _max_lead_in_samples(self) -> int:
         """The most lead-in this configuration can produce, for the metadata.
 
-        Recorded alongside lead_in_seconds because without it the figure is censored
-        data wearing the clothes of a measurement.  The buffer is a sliding window and
-        the wait for min_lock_seconds runs while it slides, so the lead-in can never
-        exceed the buffer's capacity less that wait.  A recording sitting exactly at
-        that bound is saying "everything there was", not "the analyzer took this long
-        to lock" -- and from the file alone the two are indistinguishable, since
-        neither the buffer size nor min_lock_seconds is otherwise recorded.
+        This is recorded alongside lead_in_seconds because without it the figure is
+        censored data wearing the clothes of a measurement.  The buffer is a sliding
+        window, and the wait for min_lock_seconds runs while it slides, so the
+        lead-in can never exceed the buffer's capacity less that wait.  A recording
+        sitting exactly at that bound is saying "everything there was", not "the
+        analyzer took this long to lock" - and from the file alone the two are
+        indistinguishable, since neither the buffer size nor min_lock_seconds is
+        otherwise recorded.
 
-        Observed across fourteen real recordings: eight clustered at 6.56-6.59 s with a
-        9.60 s buffer and min_lock_seconds of 3, which is this bound to within a poll.
-        The rest, from 0.0 to 3.26, are true measurements.  Nothing in the file said
-        which was which.
+        Observed across fourteen real recordings: eight clustered at 6.56-6.59 s with
+        a 9.60 s buffer and min_lock_seconds of 3, which is this bound to within a
+        poll.  The rest, from 0.0 to 3.26, are true measurements.  Nothing in the
+        file said which was which.
         """
         return max(0, self._pipeline.capacity_samples - self._min_lock_samples)
 
     def _qualifying_lock_samples(self, seconds: float) -> int:
         """How long a lock must hold before it is worth a file, in samples.
 
-        Two ceilings, and the wait is clamped to whichever is lower.
+        Two ceilings apply, and the wait is clamped to whichever is lower.
 
-        The ring buffer, because waiting is not free: the buffer is a sliding window,
-        so every second spent deciding is a second of run-up that has fallen off the
-        far end by the time the file opens.  Wait longer than the buffer and the
-        recording would begin *after* the lock, missing the onset of the very event
-        it exists to capture.
+        The first is the ring buffer, because waiting is not free.  The buffer is a
+        sliding window, so every second spent deciding is a second of run-up that
+        has fallen off the far end by the time the file opens.  Wait longer than the
+        buffer and the recording would begin *after* the lock, missing the onset of
+        the very event it exists to capture.
 
-        And max_seconds, because the wait is counted against it - those seconds are
-        part of the event, so asking for three of them and ten of recording buys ten
-        and not thirteen.  A wait longer than the whole allowance is a contradiction:
-        left alone it would reach back past the audio the file opens with and throw
-        away its newest seconds to stay inside a limit already spent.  Clamped, the
-        two settings meet at the sensible end of it - the recording is exactly the
-        allowance, all of it from what the buffer was already holding.
+        The second is max_seconds, because the wait is counted against it.  Those
+        seconds are part of the event, so asking for three of them and ten of
+        recording buys ten and not thirteen.  A wait longer than the whole allowance
+        is a contradiction: left alone it would reach back past the audio the file
+        opens with and throw away its newest seconds to stay inside a limit already
+        spent.  Clamped, the two settings meet at the sensible end of it - the
+        recording is exactly the allowance, all of it from what the buffer was
+        already holding.
         """
         capacity = self._pipeline.capacity_samples
         wanted = max(0, round(seconds * self._sample_rate))
@@ -433,10 +437,11 @@ class EventRecorder:
     def _can_record(self) -> bool:
         """Whether recording is possible at all, before anything is armed.
 
-        The sample rate is checked because every duration here is derived by dividing
-        by it, and because wave refuses to write a file without a valid one - a check
-        at the point of arming turns what would otherwise be a failure per poll, plus
-        a stray file for each, into one message and a recorder that stays off.
+        This checks the sample rate because every duration here is derived by
+        dividing by it, and because wave refuses to write a file without a valid
+        one.  A check at the point of arming turns what would otherwise be a
+        failure per poll, plus a stray file for each, into one message and a
+        recorder that stays off.
         """
         if self._sample_rate <= 0:
             logger.error('Cannot record at a sample rate of %s - check sample_rate in '
@@ -513,9 +518,9 @@ class EventRecorder:
     def _on_analyzer_state(self, state: AnalyzerState) -> None:
         """Analyzer state change, delivered on the analyzer thread.
 
-        Deliberately trivial: it records what happened and returns.  Anything more -
-        opening a file, writing audio - would run analysis-critical work behind disk
-        I/O.  The recorder's own thread picks this up on its next tick.
+        Deliberately trivial: it records what happened and returns.  Anything more,
+        such as opening a file or writing audio, would run analysis-critical work
+        behind disk I/O.  The recorder's own thread picks this up on its next tick.
 
         The lock it does take is _state_lock, which guards these two flags alone and
         is never held across anything slower than an assignment, so the analyzer is
@@ -531,10 +536,10 @@ class EventRecorder:
     def _not_yet(self) -> str | None:
         """Which gate is still holding a recording back, phrased for the log.
 
-        Recorded rather than inferred afterwards.  By the time a recording starts
-        both gates are satisfied and nothing in its state says which of them the
-        waiting was for - a question that has already cost three wrong guesses and a
-        measurement rig to answer from the outside.
+        This is recorded rather than inferred afterward.  By the time a recording
+        starts, both gates are satisfied and nothing in its state says which of them
+        the waiting was for - a question that has already cost three wrong guesses
+        and a measurement rig to answer from the outside.
         """
         if not self._lock_has_held():
             return 'waiting out min_lock_seconds'
@@ -550,9 +555,9 @@ class EventRecorder:
 
         Any reported loss restarts the count, including one that comes and goes
         between two polls.  The analyzer debounces a real loss across several checks
-        before it reports one, so a loss that reaches here is a true one - and
-        without this, a stream of blips accumulates: no tick ever observes the gaps,
-        because the next blip has set the flag again before it runs.
+        before it reports one, so a loss that reaches here is a true one.  Without
+        this, a stream of blips would accumulate: no tick would ever observe the
+        gaps, because the next blip has set the flag again before it runs.
         """
         held = self._pipeline.total_samples - self._locked_since
         return held >= self._min_lock_samples
@@ -560,7 +565,7 @@ class EventRecorder:
     def _sample_snr(self) -> None:
         """Note the analyzer's latest SNR, while a lock is waiting to be judged.
 
-        Only locked results carry a level - an unlocked one reports zero by
+        Only locked results carry a level.  An unlocked one reports zero by
         convention (see AnalysisResult.unlocked), and averaging those in would hold
         off a perfectly loud event for the sake of a reading that measured nothing.
         """
@@ -573,17 +578,17 @@ class EventRecorder:
     def _is_loud_enough(self) -> bool:
         """Whether the signal has reached min_lock_snr, judged over recent readings.
 
-        An event below the bar is watched, not abandoned: powerline arcs commonly
+        An event below the bar is watched, not abandoned.  Powerline arcs commonly
         start quiet and build, and one that crosses ten seconds in is still worth
-        recording from the moment it does - at the cost of that much lead-in, which
-        is the trade this setting makes and the reason to keep it modest.
+        recording from the moment it does, at the cost of that much lead-in.  That
+        is the trade this setting makes, and the reason to keep it modest.
 
         The window must be full before it decides anything.  Judged on one or two
-        readings, a single loud tick averages away a weak event and lets it through -
-        and the first readings after a cold lock are the ones least worth trusting
-        anyway, since the analyzer's drift estimate has not converged and levels read
-        several dB low until it does.  Waiting for a full window costs about a second
-        and buys a measurement worth thresholding on.
+        readings, a single loud tick averages away a weak event and lets it through.
+        The first readings after a cold lock are also the least worth trusting
+        anyway, since the analyzer's drift estimate has not converged and levels
+        read several dB low until it does.  Waiting for a full window costs about a
+        second and buys a measurement worth thresholding on.
         """
         if not self._min_lock_snr:
             return True
@@ -594,11 +599,11 @@ class EventRecorder:
     def _consume_lock_state(self) -> tuple[bool, bool]:
         """(locked since the previous tick, lost since the previous tick).
 
-        Reading the live flag and clearing the sticky ones are one operation because
-        they have to be.  Done separately, a lock and a loss arriving in the gap
-        between them would clear the flag that recorded the lock while leaving the
-        level saying there is none - and a brief lock vanishing between two polls is
-        precisely the failure the push exists to prevent.
+        Reading the live flag and clearing the sticky ones has to be one operation.
+        Done separately, a lock and a loss arriving in the gap between them would
+        clear the flag that recorded the lock while leaving the level saying there is
+        none, and a brief lock vanishing between two polls is precisely the failure
+        the push exists to prevent.
 
         Both edges are reported, not just the acquisition.  A run of brief locks
         looks identical to one long lock if all you know is that there was a lock
@@ -672,10 +677,11 @@ class EventRecorder:
             writer.setframerate(self._sample_rate)
         except Exception:
             # Any failure, not just OSError: wave rejects a bad frame rate with its
-            # own exception, and an escape from here would leave a half-configured
-            # writer in place for the next tick to trip over - and drop a stray file
-            # per poll for as long as the signal lasts.  Built into a local and only
-            # published on success, so a failure cannot leave one half-installed.
+            # own exception.  An escape from here would leave a half-configured
+            # writer in place for the next tick to trip over, dropping a stray file
+            # per poll for as long as the signal lasts.  This builds the writer into
+            # a local and only publishes it on success, so a failure cannot leave
+            # one half-installed.
             logger.exception('Cannot start recording in %s - disarming.', self._directory)
             if writer is not None:
                 # Closing a writer that never got its header settings raises in turn,
@@ -690,7 +696,7 @@ class EventRecorder:
         # moment, which is the run-up the file opens with.
         span = self._pipeline.read_from(0)
         self._frames_accepted, self._tail = 0, _EMPTY
-        # Where the lock actually sits inside that, which is not where the file
+        # Where the lock actually sits inside that span, which is not where the file
         # starts and not where this decision is being taken.  min_lock_seconds puts
         # those seconds between the two, and they are part of the event: the cue
         # marker, the metadata and the length cap all measure from the lock, so all
@@ -709,7 +715,7 @@ class EventRecorder:
         # buffer holds beyond the deliberate wait is lead-in, and lead-in is free.
         #
         # The charge is the configured wait rather than the observed one, so a
-        # recording overruns max_seconds by however late the poll was in noticing it -
+        # recording overruns max_seconds by however late the poll was in noticing it,
         # up to POLL_INTERVAL.  Charging what was observed would be exact here and
         # unbounded for min_lock_snr, so the overrun is documented rather than chased.
         self._event_start = span.end - self._min_lock_samples
@@ -720,10 +726,10 @@ class EventRecorder:
         self._last_lock = self._position = end
         self._write(samples)
         # Both of the reasons a recording is not what the settings might suggest, said
-        # plainly, because neither is recoverable from the file afterwards.  A monitor
+        # plainly, because neither is recoverable from the file afterward.  A monitor
         # that has just started has not filled its buffer, so an arc already buzzing
-        # when it did gets a shorter run-up than the same arc would an hour later -
-        # which reads as a bug.  And a start delayed by a gate is a number the
+        # when it did gets a shorter run-up than the same arc would an hour later,
+        # which reads as a bug.  A start delayed by a gate is also a number the
         # operator would otherwise have to work back to from the length of the file.
         notes = []
         if span.start == 0:
@@ -767,9 +773,9 @@ class EventRecorder:
     def _write(self, samples: np.ndarray) -> None:
         """Take audio into the recording, holding back enough of it to fade out with.
 
-        The end of a recording is only known after the fact - the tick that decides
-        to stop has already been handed the audio that turned out to be last.  So a
-        fade's worth of the newest samples never goes straight to the file; it waits
+        The end of a recording is only known after the fact: the tick that decides to
+        stop has already been handed the audio that turned out to be last.  So a
+        fade's worth of the newest samples never goes straight to the file.  It waits
         here until either more audio arrives behind it, or the recording ends and
         _flush_tail() ramps it down to silence.  The file therefore trails the
         capture by 5 ms, which nothing depends on.
@@ -790,8 +796,8 @@ class EventRecorder:
         """Ramp up whatever part of `samples` falls inside the opening fade.
 
         Applied by position within the recording rather than per write, because the
-        lead-in arrives as one large span and everything after it in small ones - the
-        fade has to span whatever split the polling happens to produce.
+        lead-in arrives as one large span and everything after it in small ones, so
+        the fade has to span whatever split the polling happens to produce.
         """
         remaining = len(self._fade_in) - self._frames_accepted
         if remaining <= 0:
@@ -826,7 +832,7 @@ class EventRecorder:
         """Tag the finished file with what it is and how to read it back.
 
         Never allowed to fail the recording.  The audio is closed and safe by this
-        point, and an untagged recording is still a perfectly good one - losing it
+        point, and an untagged recording is still a perfectly good one, so losing it
         over a metadata write would be a poor trade.
         """
         settings = wavmeta.format_settings({
@@ -859,18 +865,18 @@ class EventRecorder:
     def _finish(self, ended: str) -> None:
         """Close the current file, tag it, count the event, and disarm if spent.
 
-        `ended` is a short token naming why the recording stopped; it is written into
-        the file's metadata, where it is the only way to tell a recording that ran its
-        course from one the length cap cut short.
+        `ended` is a short token naming why the recording stopped.  It is written
+        into the file's metadata, where it is the only way to tell a recording that
+        ran its course from one the length cap cut short.
         """
         self._flush_tail()
         self._writer.close()
         self._writer = None
         self._write_metadata(ended)
-        # Broken down, because the total is not the number any setting names and
+        # Broken down, because the total is not the number any setting names, and
         # working out why takes knowing that max_seconds runs from the lock while the
-        # lead-in sits outside it - which is a lot to ask of somebody reading a log at
-        # the end of a night.
+        # lead-in sits outside it - a lot to ask of somebody reading a log at the end
+        # of a night.
         logger.info('Recorded %s - %.1f s: %.1f s lead-in + %.1f s from the lock (%s)',
                     self._path.name,
                     self._frames_accepted / self._sample_rate,

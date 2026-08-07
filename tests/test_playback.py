@@ -173,7 +173,7 @@ class TestFilePlaybackPipeline:
 
     def test_position_starts_at_the_beginning(self, tmp_path):
         """Not exactly zero: the first chunk is due immediately, and the position is
-        quantised to whole chunks, so it has already moved by the time anyone looks."""
+        quantized to whole chunks, so it has already moved by the time anyone looks."""
         path = _write_wav(tmp_path / 'a.wav', _ramp(20), sample_rate=CHUNK * 4)
         with _playing(path) as pipeline:
             assert pipeline.position <= pipeline.duration / 10
@@ -299,7 +299,7 @@ class TestTransport:
             assert pipeline.finished is True
 
     def test_toggle_at_the_end_does_not_pause(self, tmp_path):
-        """The space bar reaches this even though the Play button is greyed out at the
+        """The space bar reaches this even though the Play button is grayed out at the
         end of the file.  Pausing there would leave the transport paused at a position
         resume() rightly refuses to continue from, and disagreeing with the button."""
         path = _write_wav(tmp_path / 'a.wav', _ramp(3))
@@ -600,7 +600,7 @@ class TestAudioOutput:
     def test_a_stuck_feeder_keeps_its_stream(self, tmp_path):
         """close() joins with a timeout, so a feeder blocked in write() on a device
         that stopped draining outlives it.  Closing the stream from under that write
-        is undefined behaviour; leaking it on a misbehaving device is the lesser
+        is undefined behavior; leaking it on a misbehaving device is the lesser
         evil, and the process is on its way out regardless."""
         with patch('buzz.playback.sd.OutputStream') as stream:
             stuck = threading.Event()

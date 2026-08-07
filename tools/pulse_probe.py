@@ -2,7 +2,7 @@
 Diagnostic: measure the real shape of the powerline pulse train from live audio.
 
 Run this when you want to know what the interference actually looks like at your
-station, rather than what the analyzer assumes about it.  It reports three things:
+station, rather than what the analyzer assumes about it. It reports three things:
 
   1. How fast the pulse phase is drifting, and therefore the utility line frequency.
   2. How many separate sources (utility phases) are arcing.
@@ -16,22 +16,23 @@ How it works
 -------------------------------------------------------------------------------
 
 The pulse train repeats every `samples_per_pulse` samples (133.33 at 16 kHz /
-120 pps).  If you chop the audio into pieces that long and average them on top of
-each other, the pulses line up and reinforce while the random noise averages away.
+120 pps). Chop the audio into pieces that long and average them on top of each
+other, and the pulses line up and reinforce while the random noise averages away.
 That average is called the *folded profile*, and it is the pulse shape.
 
-The catch is that utility power is never exactly 60 Hz.  A small error means
-the pulses arrive slightly early or late each time, so over a few seconds they walk
-away from where the fold expects them.  Averaging then blurs the pulse instead of
+The catch is that utility power is never exactly 60 Hz. A small error means the
+pulses arrive slightly early or late each time, so over a few seconds they walk
+away from where the fold expects them. Averaging then blurs the pulse instead of
 sharpening it - at the drift rates seen in practice, an 8-second fold can smear a
 pulse across 40+ samples.
 
-So we do not guess the drift: we search for it.  Every candidate drift rate gets a
-folded profile, and the correct rate is the one that produces the *sharpest* profile,
-because that is the only rate at which the pulses fall on top of each other.  This
-measures the drift and removes it in a single step, and it needs no phase tracking
-and no assumption about how many sources are present - every source hangs off the
-same grid, so one drift correction de-smears all of them at once.
+So this tool does not guess the drift: it searches for it. Every candidate drift
+rate gets a folded profile, and the correct rate is the one that produces the
+*sharpest* profile, because that is the only rate at which the pulses fall on top
+of each other. This measures the drift and removes it in a single step. It needs
+no phase tracking and no assumption about how many sources are present, because
+every source hangs off the same grid, so one drift correction de-smears all of
+them at once.
 """
 
 import argparse
@@ -46,7 +47,7 @@ from buzz.config import BuzzConfig
 from buzz.dsp import pulse_phase_period
 from buzz.sampler import AudioSampler
 
-# Drift rates to consider, in samples of phase slip per second of audio.  A grid
+# Drift rates to consider, in samples of phase slip per second of audio. A grid
 # error of 0.1 Hz slips about 27 samples/s, so +/-40 covers anything short of a
 # serious grid disturbance while keeping the search cheap.
 DRIFT_SEARCH_LIMIT = 40.0
@@ -64,7 +65,7 @@ MAX_PULSE_WIDTH = 20
 def rectify(audio: np.ndarray) -> np.ndarray:
     """Remove the DC offset and take the absolute value, as the analyzer does.
 
-    The median is used rather than the mean because the pulse train itself would
+    This uses the median rather than the mean, because the pulse train itself would
     drag a mean away from the true offset - see ContinuousAnalyzer._capture.
     """
     samples = audio.astype(np.float64)
@@ -75,13 +76,13 @@ def fold_pulses(rectified: np.ndarray, sample_rate: int, pulse_rate: int,
                 drift_rate: float, half_width: int) -> tuple[np.ndarray, int]:
     """Average one pulse period of audio around every pulse in the recording.
 
-    drift_rate is the assumed phase slip in samples per second.  Pulse i arrives at
+    drift_rate is the assumed phase slip in samples per second. Pulse i arrives at
     time i/pulse_rate, by which point the train has slipped drift_rate * i /
-    pulse_rate samples; adding that back keeps successive pulses aligned so they
+    pulse_rate samples. Adding that back keeps successive pulses aligned so they
     reinforce instead of blurring.
 
-    Returns (profile, n_pulses).  The profile spans half_width samples either side
-    of each pulse position, so index half_width is the nominal pulse centre.
+    Returns (profile, n_pulses). The profile spans half_width samples either side
+    of each pulse position, so index half_width is the nominal pulse center.
     """
     samples_per_pulse = sample_rate / pulse_rate
     max_pulses = int((len(rectified) - 2 * half_width) / samples_per_pulse) - 1
@@ -89,22 +90,22 @@ def fold_pulses(rectified: np.ndarray, sample_rate: int, pulse_rate: int,
         return np.zeros(2 * half_width + 1), 0
 
     pulse_index = np.arange(max_pulses)
-    centres = (np.round(pulse_index * samples_per_pulse).astype(np.int64)
+    centers = (np.round(pulse_index * samples_per_pulse).astype(np.int64)
                + np.round(drift_rate * pulse_index / pulse_rate).astype(np.int64))
-    centres = centres[(centres - half_width >= 0) & (centres + half_width < len(rectified))]
-    if len(centres) == 0:
+    centers = centers[(centers - half_width >= 0) & (centers + half_width < len(rectified))]
+    if len(centers) == 0:
         return np.zeros(2 * half_width + 1), 0
 
     window = np.arange(-half_width, half_width + 1)
-    return rectified[centres[:, None] + window[None, :]].mean(axis=0), len(centres)
+    return rectified[centers[:, None] + window[None, :]].mean(axis=0), len(centers)
 
 
 def profile_sharpness(profile: np.ndarray) -> float:
     """How peaked a folded profile is: its maximum over its median.
 
-    Used to score candidate drift rates.  A profile folded at the correct rate has
+    Used to score candidate drift rates. A profile folded at the correct rate has
     its pulses stacked on one spot and scores high; a wrong rate spreads the same
-    energy over many samples and scores low.  The median is the reference rather
+    energy over many samples and scores low. The median is the reference rather
     than the minimum because it is not swayed by a single quiet sample.
     """
     middle = np.median(profile)
@@ -115,7 +116,7 @@ def estimate_drift_rate(rectified: np.ndarray, sample_rate: int, pulse_rate: int
                         half_width: int) -> float:
     """Find the phase slip rate that makes the folded profile sharpest.
 
-    Returns samples of slip per second.  Positive means the pulses arrive later than
+    Returns samples of slip per second. Positive means the pulses arrive later than
     a perfect `pulse_rate` train would predict, which means the grid is running slow.
     """
     candidates = np.arange(-DRIFT_SEARCH_LIMIT, DRIFT_SEARCH_LIMIT + DRIFT_SEARCH_STEP,
@@ -130,11 +131,11 @@ def drift_rate_to_grid_hz(drift_rate: float, sample_rate: int, pulse_rate: int) 
 
     Note the direction: a *positive* slip means each pulse arrives later than the
     configured rate predicts, so the true pulse rate is *lower* and the grid is
-    running slow.  Frequency moves opposite to the slip.
+    running slow. Frequency moves opposite to the slip.
 
     Writing the true pulse rate as r, aligning the fold to the actual pulses requires
     drift_rate = sample_rate * (pulse_rate - r) / r, which rearranges to
-    r = sample_rate * pulse_rate / (sample_rate + drift_rate).  There are two pulses
+    r = sample_rate * pulse_rate / (sample_rate + drift_rate). There are two pulses
     per power cycle (one per half-cycle), so halving r gives the line frequency.
     """
     true_pulse_rate = sample_rate * pulse_rate / (sample_rate + drift_rate)
@@ -145,8 +146,8 @@ def find_source_peaks(profile: np.ndarray) -> list[int]:
     """Return the profile indices of distinct pulse sources, strongest first.
 
     Each arcing utility phase produces its own pulse train, offset from the others by
-    120 degrees of the power cycle.  Within one pulse period that is a third of the
-    period - about 44 samples at 16 kHz / 120 pps - so several peaks at roughly that
+    120 degrees of the power cycle. Within one pulse period that is a third of the
+    period, about 44 samples at 16 kHz / 120 pps, so several peaks at roughly that
     spacing means several phases are arcing at once.
     """
     floor = profile.min()
@@ -176,13 +177,13 @@ def matched_width_sweep(profile: np.ndarray) -> list[tuple[int, int, float]]:
     Returns [(width, start_offset_from_peak, figure_of_merit), ...].
 
     The score is sum(signal) / sqrt(width), the standard matched-filter result for a
-    rectangular window in white noise.  Both halves matter: a wider window collects
+    rectangular window in white noise. Both halves matter: a wider window collects
     more of the pulse's energy (the sum grows) but also admits more noise (the
-    sqrt(width) divisor).  The best width is where those balance, which is the pulse's
+    sqrt(width) divisor). The best width is where those balance, which is the pulse's
     effective duration.
 
     A tempting but wrong alternative is to score by the peak-to-trough contrast of the
-    profile.  That always favours width 1, because the profile has already been
+    profile. That always favors width 1, because the profile has already been
     averaged over hundreds of pulses, so it cannot show the noise reduction that is
     the entire reason to use a wider window on a single measurement.
     """
@@ -216,8 +217,10 @@ def capture(config: BuzzConfig, seconds: float) -> np.ndarray:
 
 def _print_drift_section(rectified: np.ndarray, sample_rate: int, pulse_rate: int,
                          half_width: int) -> tuple[np.ndarray, int]:
-    """Print the "UTILITY LINE DRIFT" section; return (profile, n_pulses) for the
-    sections that follow, so the drift-corrected fold is computed exactly once.
+    """Print the "UTILITY LINE DRIFT" section.
+
+    Returns (profile, n_pulses) for the sections that follow, so the
+    drift-corrected fold is computed exactly once.
     """
     duration = len(rectified) / sample_rate
     drift_rate = estimate_drift_rate(rectified, sample_rate, pulse_rate, half_width)
@@ -239,8 +242,10 @@ def _print_drift_section(rectified: np.ndarray, sample_rate: int, pulse_rate: in
 
 
 def _print_active_phases_section(profile: np.ndarray, samples_per_pulse: float) -> None:
-    """Print the "ACTIVE UTILITY PHASES" section: how many sources appear to be
-    arcing, based on secondary peaks in the folded profile.
+    """Print the "ACTIVE UTILITY PHASES" section.
+
+    This reports how many sources appear to be arcing, based on secondary peaks in
+    the folded profile.
     """
     peaks = find_source_peaks(profile)
     strongest = int(profile.argmax())
@@ -264,8 +269,10 @@ def _print_active_phases_section(profile: np.ndarray, samples_per_pulse: float) 
 
 
 def _print_profile_section(profile: np.ndarray, n_pulses: int) -> None:
-    """Print the "FOLDED PULSE PROFILE" section: a sample-by-sample bar chart of
-    the drift-corrected fold, for a close look at the pulse shape itself.
+    """Print the "FOLDED PULSE PROFILE" section.
+
+    This is a sample-by-sample bar chart of the drift-corrected fold, for a close
+    look at the pulse shape itself.
     """
     strongest = int(profile.argmax())
     print()

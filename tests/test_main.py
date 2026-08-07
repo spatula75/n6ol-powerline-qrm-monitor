@@ -555,7 +555,7 @@ class TestSuppliedCalibration:
     """--audio-rf-conversion-db, for a .wav that arrived from another operator.
 
     The pulse rate and the calibration live in metadata only this program writes, so a
-    file from elsewhere is analysed against this station's figures. Whether it locks
+    file from elsewhere is analyzed against this station's figures. Whether it locks
     and what the burst looks like survive that; the dBm and S-unit readings do not.
     This is how somebody who knows the sending station's calibration can supply it.
     """

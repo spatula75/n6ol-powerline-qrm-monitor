@@ -3,82 +3,80 @@
 ContinuousAnalyzer runs on a daemon thread and maintains a three-state machine:
 
   SEARCHING   - no valid phase pair.  Runs the full FFT fit on 1 s of audio every
-                SEARCH_INTERVAL seconds until a pulse train is found.  Entered at
-                startup, and again from SIGNAL_LOST once the stored phases have
-                aged past PHASE_HOLD_TIMEOUT and are no longer worth extrapolating.
+                SEARCH_INTERVAL seconds until it finds a pulse train.  The analyzer
+                enters this state at startup, and again from SIGNAL_LOST once the
+                stored phases have aged past PHASE_HOLD_TIMEOUT and are no longer
+                worth extrapolating.
 
-  LOCKED      - the 120 pps phase is known and the signal is present.  Each
-                tick (~200 ms) it calls average_pulse_amplitude at the
-                *predicted* peak and noise phases, summing over the full 1 s
-                capture - about pulse_rate pulses per phase, roughly 240 summed
-                positions a tick at the default rate.  Direct time-domain
-                averaging, not the FFT the full analysis needs; scan_pulses
-                only sizes that FFT's kernel and plays no part here.  Every
-                REFINE_INTERVAL seconds it runs _phase_search() to re-measure
-                the phase and refine the drift estimate.  A full FFT isn't
-                needed here: any drift too large for the narrow scan would
-                already cause _quick_check() to lose lock first.
+  LOCKED      - the 120 pps phase is known and the signal is present.  Each tick
+                (~200 ms) it calls average_pulse_amplitude at the *predicted* peak
+                and noise phases, summing over the full 1 s capture: about
+                pulse_rate pulses per phase, roughly 240 summed positions a tick at
+                the default rate.  This is direct time-domain averaging, not the
+                FFT the full analysis needs.  scan_pulses only sizes that FFT's
+                kernel and plays no part here.  Every REFINE_INTERVAL seconds it runs
+                _phase_search() to re-measure the phase and refine the drift
+                estimate.  A full FFT is not needed here: any drift too large for the
+                narrow scan would already cause _quick_check() to lose lock first.
 
   SIGNAL_LOST - phase pair known but signal absent.  Four-tier re-acquisition:
                 Tier 1 (200 ms): _noise_check() samples live noise at _noise_phase
                   and tries _peak_phase for instant re-acquisition.
                 Tier 2 (1 s): _phase_search() scans ±PHASE_SEARCH_RADIUS samples
-                  around _peak_phase using Numba amplitude averaging - ~40× cheaper
-                  than an FFT, handles slow grid-frequency drift.
+                  around _peak_phase using Numba amplitude averaging.  This is
+                  ~40x cheaper than an FFT and handles slow grid-frequency drift.
                 Tier 3a (5 s): _fast_scan() runs a short-kernel FFT (FAST_SCAN_PULSES
-                  pulses, FAST_SCAN_SAMPLES audio) as a cheap candidate detector; ~6×
-                  cheaper than the full FFT, skips Tier 3b when nothing is present.
+                  pulses, FAST_SCAN_SAMPLES audio) as a cheap candidate detector.
+                  It costs ~6x less than the full FFT and skips Tier 3b when
+                  nothing is present.
                 Tier 3b (on Tier-3a hit, or every SIGNAL_LOST_REFINE as safety net):
                   _full_analysis() with the full kernel to confirm and refresh phases.
 
 Tracking utility power drift
 ----------------------------
-Utility power is never exactly 60 Hz, and a grid error of only 0.02 Hz walks the
-pulse phase about 5 samples every second - in either direction, depending on
-whether the grid is running fast or slow.  With pulses only PULSE_WIDTH_SAMPLES
-wide, three samples of error is enough to sample the gap between pulses instead
-of the pulses themselves.
+Utility power is never exactly 60 Hz, and a grid error of only 0.02 Hz walks the pulse
+phase about 5 samples every second, in either direction depending on whether the grid
+runs fast or slow.  Pulses are only PULSE_WIDTH_SAMPLES wide, so three samples of error
+is enough to sample the gap between pulses instead of the pulses themselves.
 
-So the analyzer does not just store where the pulse train was; it also estimates
-how fast that position is moving.  Each refine appends the measured phase to a
-short history, and the rate is re-fitted as the least-squares slope of phase
-against time through those points (_record_phase_measurement, fit_drift_rate).
-That one number then fixes two separate problems:
+So the analyzer does not just store where the pulse train was.  It also estimates how
+fast that position is moving.  Each refine appends the measured phase to a short
+history, and it re-fits the rate as the least-squares slope of phase against time
+through those points (_record_phase_measurement, fit_drift_rate).  That one number
+fixes two separate problems.
 
-  * The phase goes stale between refines.  Projecting it forward on every tick
-    keeps each measurement sampling the pulses rather than the gaps
-    (_predicted_phases).
+  * The phase goes stale between refines.  Projecting it forward on every tick keeps
+    each measurement sampling the pulses rather than the gaps (_predicted_phases).
 
-  * The sampling grid walks away from the pulses *within* a single analysis
-    window, because the nominal spacing assumes an exact 60 Hz grid.  Spacing the
-    samples at the measured rate instead fixes this
-    (_effective_samples_per_pulse).  This is the larger of the two effects, and no
-    amount of phase correction touches it.
+  * The sampling grid walks away from the pulses *within* a single analysis window,
+    because the nominal spacing assumes an exact 60 Hz grid.  Spacing the samples at
+    the measured rate instead fixes this (_effective_samples_per_pulse).  This is the
+    larger of the two effects, and no amount of phase correction touches it.
 
-Untracked, both together bias every published level downward by 5-7 dB at
-ordinary drift rates.  Tracked, the residual is about a dB, which is the floor
-set by phases being whole numbers of samples: the prediction is always up to half
-a sample off.  Going below that would need sub-sample interpolation of the audio.
+Untracked, both together bias every published level downward by 5-7 dB at ordinary
+drift rates.  Tracked, the residual is about a dB, which is the floor set by phases
+being whole numbers of samples: the prediction is always up to half a sample off.
+Going below that would need sub-sample interpolation of the audio.
 
-Fitting a line through several measurements, rather than dividing one prediction
-error by one refine interval, is what keeps the *rate* itself away from that same
-quantisation floor: the per-measurement errors are zero-mean and the fit spans a
-baseline several times longer than a single interval.  Against synthetic audio at
-known drift rates this holds the rate to under 0.01 samples/s where the previous
-estimator sat at 0.38 - the difference between a synchronised display creeping
-about a division a minute and one that truly stands still.
+Fitting a line through several measurements, rather than dividing one prediction error
+by one refine interval, is what keeps the *rate* itself away from that same
+quantization floor.  The per-measurement errors are zero-mean, and the fit spans a
+baseline several times longer than a single interval.  Against synthetic audio at known
+drift rates this holds the rate to under 0.01 samples/s, where the previous estimator
+sat at 0.38.  That is the difference between a synchronized display creeping about a
+division a minute and one that truly stands still.
 
 The estimate starts at zero and needs DRIFT_FIT_MIN_POINTS measurements before it
-produces anything at all, so levels read low for the first couple of seconds after
-a cold acquisition and reach full accuracy once the history fills.
+produces anything at all.  Levels therefore read low for the first couple of seconds
+after a cold acquisition, and reach full accuracy once the history fills.
 
-State transitions are centralised: each tier method measures, publishes, and
-returns the state it believes the machine should be in; the per-state tick
-methods pass that through _transition(), which owns all transition bookkeeping
-(state change, debounce-counter reset, phase validation, refine timestamp).
+The analyzer centralizes state transitions.  Each tier method measures, publishes, and returns
+the state it believes the machine should be in.  The per-state tick methods pass that
+through _transition(), which owns all transition bookkeeping: state change,
+debounce-counter reset, phase validation, refine timestamp.
 
-Results are deposited in a lock-protected slot; the Qt UI polls it on each
-paint tick without blocking.
+Results go into a lock-protected slot.  The Qt UI polls it on each paint tick
+without blocking.
 """
 
 import logging
@@ -115,9 +113,9 @@ class AnalyzerState(StrEnum):
 class TriggerSync(StrEnum):
     """How much a display should trust the phase returned by trigger_phase().
 
-    This is a coarser view of the state machine than AnalyzerState, because a
-    synchronised display cares about a different question than the analyzer does:
-    not "what am I doing" but "is the phase I am about to draw with real".
+    This is a coarser view of the state machine than AnalyzerState.  A synchronized
+    display asks a different question than the analyzer does: not "what am I
+    doing" but "is the phase I am about to draw with real".
 
       LOCK - measured from live audio; the pulse train is present and tracked.
       HOLD - no signal right now, but a valid phase pair and drift rate survive
@@ -138,46 +136,46 @@ def fit_drift_rate(history: Sequence[tuple[float, float]],
                    min_points: int) -> float | None:
     """Least-squares slope of phase against time, in samples of phase per second.
 
-    `min_points` is required rather than defaulted: the only correct value lives in
+    `min_points` is required rather than defaulted.  The only correct value lives in
     ContinuousAnalyzer.DRIFT_FIT_MIN_POINTS, and a default here would silently go on
     testing the old number if that constant were ever retuned.
 
     `history` is (audio-clock seconds, unwrapped phase) pairs.  Under a steady grid
-    error those points lie on a straight line whose slope *is* the drift rate, so
+    error those points lie on a straight line, and its slope *is* the drift rate, so
     fitting the line recovers the rate directly.
 
-    Why a fit rather than the obvious rise-over-run between the last two points:
-    phases are measured to the nearest whole sample, so every point carries up to
-    half a sample of quantisation error.  Dividing one such error by one short
-    refine interval puts it straight into the answer - at a 0.6 s interval that is
+    Why a fit, rather than the obvious rise-over-run between the last two points:
+    phases are measured to the nearest whole sample, so every point carries up to half
+    a sample of quantization error.  Dividing one such error by one short refine
+    interval puts it straight into the answer.  At a 0.6 s interval that is
     0.5 / 0.6 = 0.83 samples/s of error with nothing to average against.  Fitting a
-    line through many points beats that twice over: the individual errors are
-    zero-mean so they partly cancel, and the outermost points span a far longer
+    line through many points beats that twice over.  The individual errors are
+    zero-mean, so they partly cancel, and the outermost points span a far longer
     baseline, over which the same vertical uncertainty implies a much smaller slope
-    uncertainty.  Measured against synthetic audio at known drift rates, this took
-    the steady-state error from 0.38 samples/s to under 0.01 - and settled *faster*
+    uncertainty.  Measured against synthetic audio at known drift rates, this took the
+    steady-state error from 0.38 samples/s to under 0.01, and it settled *faster*
     after a step change, so it costs no responsiveness.
 
-    "Least squares" is the line minimising the sum of squared vertical distances to
-    the points; squaring keeps errors above and below the line from cancelling and
-    admits an exact closed-form answer rather than a search.  The expression below
-    is that closed form: how much time and phase vary together, over how much time
+    "Least squares" is the line that minimizes the sum of squared vertical distances
+    to the points.  Squaring keeps errors above and below the line from canceling and
+    admits an exact closed-form answer rather than a search.  The expression below is
+    that closed form: how much time and phase vary together, over how much time
     varies alone.
 
     Returns None when there are too few points to define a slope, or when every
-    measurement fell at the same instant (a stalled audio clock), leaving the
-    caller's existing estimate untouched.
+    measurement fell at the same instant, which means a stalled audio clock.  Either
+    way the caller's existing estimate is left untouched.
     """
     n = len(history)
     if n < min_points:
         return None
     times  = np.fromiter((t for t, _ in history), dtype=np.float64, count=n)
     phases = np.fromiter((p for _, p in history), dtype=np.float64, count=n)
-    centred_times = times - times.mean()
-    spread = float(centred_times @ centred_times)
+    centered_times = times - times.mean()
+    spread = float(centered_times @ centered_times)
     if spread <= 0.0:
         return None
-    return float(centred_times @ (phases - phases.mean()) / spread)
+    return float(centered_times @ (phases - phases.mean()) / spread)
 
 
 @dataclass(frozen=True)
@@ -191,9 +189,9 @@ class AnalysisResult:
     def unlocked(cls, noise_dbm: float) -> 'AnalysisResult':
         """Result for a tick with no pulse-train lock.
 
-        By convention an unlocked result has signal_dbm == noise_dbm and snr == 0:
-        the plotter and the meter panel both rely on the pair coinciding so unlocked
-        stretches render as a single continuous noise trace rather than a gap.
+        By convention an unlocked result has signal_dbm == noise_dbm and snr == 0.
+        The plotter and the meter panel both rely on the pair coinciding, so an
+        unlocked stretch renders as a single continuous noise trace rather than a gap.
         """
         return cls(signal_dbm=noise_dbm, noise_dbm=noise_dbm, snr=0.0, locked=False)
 
@@ -228,9 +226,9 @@ class ContinuousAnalyzer:
     # minute has passed.  Beyond it the cheap tiers cannot succeed by construction, so
     # holding the state costs a re-acquisition path and buys nothing.
     #
-    # Returning to SEARCHING also keeps the displays honest: trigger_phase() reports
+    # Returning to SEARCHING also keeps the displays honest.  trigger_phase() reports
     # HOLD purely on the strength of a valid phase pair, so without this it would go on
-    # claiming a synchronised sweep for as long as the signal stayed away - overnight,
+    # claiming a synchronized sweep for as long as the signal stayed away - overnight,
     # if the arc quits at dusk.  One state machine, one answer.
     #
     # Measured against the audio clock rather than the wall clock, for the same reason
@@ -279,11 +277,11 @@ class ContinuousAnalyzer:
     # replaced while leaving a single bad measurement outvoted nine to one.
     DRIFT_FIT_POINTS = 10
     # Fewest points that define a slope worth trusting.  Two points would fit exactly
-    # and reproduce the old rise-over-run behaviour, quantisation error and all.
+    # and reproduce the old rise-over-run behavior, quantization error and all.
     DRIFT_FIT_MIN_POINTS = 3
     # Largest gap between consecutive measurements the history can be trusted across.
     # Unwrapping in _record_phase_measurement folds each step to the shortest
-    # equivalent move, which is only the true move while the phase has travelled less
+    # equivalent move, which is only the true move while the phase has traveled less
     # than half a period since the last measurement.  At MAX_PHASE_DRIFT_RATE that
     # takes 3.3 s, so 2.0 s leaves margin.  A longer gap - a signal outage, a stalled
     # device - means the points are no longer one continuous track, and continuing to
@@ -386,7 +384,7 @@ class ContinuousAnalyzer:
         """The state machine's current state.
 
         Mostly of interest as the starting point for a listener registered before
-        start() - add_state_listener() reports every change after that, but not the
+        start().  add_state_listener() reports every change after that, but not the
         state the machine is already in.
 
         Not lock-protected: _state is only ever assigned on the analyzer thread, and
@@ -398,24 +396,25 @@ class ContinuousAnalyzer:
     def reset(self) -> None:
         """Forget everything learned about the signal and start acquiring again.
 
-        For replaying a recording from the top: the analyzer that has just watched
+        For replaying a recording from the top.  The analyzer that has just watched
         the event through knows where the pulse train is and how fast it is drifting,
         so without this the second pass opens already locked.  That is not what
         happened live, and watching the acquisition is usually the point of replaying
         an event at all.
 
-        Split in two, because the two halves have different deadlines.  The tracker
-        state - drift rate, fitted history, DC estimate, tier timers - belongs to the
-        analysis thread and cannot be swapped out from under a tick already using it,
-        so it is left for _apply_reset() to do when that thread next comes round.
+        This splits in two, because the two halves have different deadlines.  The
+        tracker state - drift rate, fitted history, DC estimate, tier timers -
+        belongs to the analysis thread and cannot be swapped out from under a tick
+        already using it, so _apply_reset() does it when that thread next comes
+        round.
 
         What the displays read cannot wait that long.  A tick can sit in
         wait_for_data for a second at a time, and a second is long enough for the
         replayed audio to refill the buffer and re-lock, so the operator would see
-        the lock indicator never drop and conclude the restart did nothing.  The
-        display-visible fields are therefore cleared here and now, under the lock
-        trigger_phase() reads them through: the scope drops to FREE and the meters to
-        silence the instant the button is pressed.
+        the lock indicator never drop and conclude the restart did nothing.  This
+        method therefore clears the display-visible fields here and now, under the
+        lock trigger_phase() reads them through: the scope drops to FREE and the
+        meters to silence the instant the button is pressed.
         """
         self._reset_requested.set()
         with self._result_lock:
@@ -431,16 +430,16 @@ class ContinuousAnalyzer:
 
         Lock is an event, not a level.  A consumer that polls this class instead has
         to infer the event by watching for the level to differ from last time, at
-        whatever rate it happens to poll - which means a brief lock that comes and
-        goes between two polls is invisible to it, and the intermittent signals this
-        monitor exists to catch are exactly the ones that behave that way.
+        whatever rate it happens to poll.  A brief lock that comes and goes between
+        two polls is then invisible to it, and the intermittent signals this monitor
+        exists to catch are exactly the ones that behave that way.
 
         Listeners run on the analyzer thread, inside the transition, so they must
         return promptly and must not call back into the analyzer.  Recording audio to
         disk from one would stall analysis; the event recorder's listener therefore
         only sets a flag, and its own thread does the work.
 
-        Register before start().  The list is not synchronised, and everything is
+        Register before start().  The list is not synchronized, and everything is
         wired up before the analyzer thread exists.
         """
         self._state_listeners.append(listener)
@@ -461,8 +460,8 @@ class ContinuousAnalyzer:
         """Return all results published since the last drain (oldest first) and clear them.
 
         Draining rather than copying keeps successive collector cycles averaging
-        disjoint sets of results - a non-draining read would re-average the tail
-        of the previous minute into every row.
+        disjoint sets of results.  A non-draining read would re-average the tail of
+        the previous minute into every row.
         """
         with self._result_lock:
             results = list(self._result_buffer)
@@ -474,25 +473,26 @@ class ContinuousAnalyzer:
     def _transition(self, new_state: AnalyzerState) -> None:
         """Apply a state change proposed by a tier method.
 
-        The single place transition bookkeeping happens: entering any new state
-        resets the lock-loss debounce counter; entering LOCKED additionally marks
-        the stored phases valid and stamps the refine timer so a fresh lock isn't
-        immediately re-refined.  A proposal matching the current state is a no-op.
+        This is the single place transition bookkeeping happens.  Entering any new
+        state resets the lock-loss debounce counter.  Entering LOCKED additionally
+        marks the stored phases valid and stamps the refine timer, so a fresh lock is
+        not immediately re-refined.  A proposal matching the current state is a
+        no-op.
 
         Leaving LOCKED drops the fitted phase history.  The signal is gone, so the
         next measurement will arrive after an unknown gap during which the phase may
-        have wrapped any number of times - unwrapping across that would fabricate a
-        slope.  The rate estimate itself survives; see _reset_phase_history().
+        have wrapped any number of times, and unwrapping across that would fabricate
+        a slope.  The rate estimate itself survives; see _reset_phase_history().
 
         Entering SEARCHING additionally invalidates the phase pair.  SEARCHING means
-        "we know nothing about where the train is" - that is true at startup and it is
-        true again once PHASE_HOLD_TIMEOUT has expired, and both callers want the same
-        consequences: a cold FFT search, a drift estimate reset on the next lock (see
-        _full_analysis), and trigger_phase() reporting FREE rather than a HOLD it can
-        no longer justify.
+        "we know nothing about where the train is".  That is true at startup and it
+        is true again once PHASE_HOLD_TIMEOUT has expired, and both callers want the
+        same consequences: a cold FFT search, a drift estimate reset on the next lock
+        (see _full_analysis), and trigger_phase() reporting FREE rather than a HOLD
+        it can no longer justify.
 
         Being the one place state changes happen, this is also where they are
-        published to listeners (see add_state_listener) - after the bookkeeping, so a
+        published to listeners (see add_state_listener), after the bookkeeping, so a
         listener that reads the analyzer sees a consistent view.
         """
         if new_state == self._state:
@@ -512,7 +512,7 @@ class ContinuousAnalyzer:
         """Notify listeners of a state change, isolating each from the others.
 
         A listener raising must not abort the transition or kill the analyzer
-        thread: analysis is the primary job, and something as peripheral as a
+        thread.  Analysis is the primary job, and something as peripheral as a
         recorder or a display losing one notification is not worth stopping it for.
         """
         for listener in self._state_listeners:
@@ -524,9 +524,9 @@ class ContinuousAnalyzer:
     def _apply_reset(self) -> None:
         """Return to the state a freshly-built analyzer is in (analysis thread only).
 
-        Everything measured from the audio goes; everything derived from the config
-        stays, since the kernels and geometry describe the signal being looked for
-        rather than anything learned about it.
+        Everything measured from the audio goes.  Everything derived from the
+        config stays, because the kernels and geometry describe the signal being
+        looked for, not anything learned about it.
         """
         self._reset_requested.clear()
         self._peak_phase = self._noise_phase = 0.0
@@ -628,7 +628,7 @@ class ContinuousAnalyzer:
 
         The nominal spacing (sample_rate / pulse_rate) assumes the grid sits exactly
         at pulse_rate.  When it does not, the sampling grid does not merely start in
-        the wrong place - it walks away from the real pulses *within* a single
+        the wrong place.  It walks away from the real pulses *within* a single
         analysis window.  At 0.05 pps of error the two diverge by 6.7 samples over
         one second, which with 3-sample pulses costs about 6 dB.
 
@@ -646,13 +646,13 @@ class ContinuousAnalyzer:
     def _audio_clock_seconds(self) -> float:
         """Seconds of audio captured since the stream started.
 
-        Drift is measured against the audio timeline, not the wall clock.  The two
+        The analyzer measures drift against the audio timeline, not the wall clock.  The two
         agree while capture is healthy, but if the sound device stalls, wall time
-        keeps running while no audio arrives - and the pulse train cannot drift
+        keeps running while no audio arrives, and the pulse train cannot drift
         through samples that were never recorded.  Predicting against wall time
         would then extrapolate straight past the real position.  Counting captured
         samples instead makes a stalled stream simply freeze the prediction, which
-        is the correct behaviour.
+        is the correct behavior.
         """
         return self._pipeline.total_samples / self._sample_rate
 
@@ -672,17 +672,17 @@ class ContinuousAnalyzer:
 
         This is the point of tracking a drift rate at all.  The pulse train walks
         through the sample grid at _phase_drift_rate samples per second, so a phase
-        measured even half a second ago is already stale - and with pulses only
-        PULSE_WIDTH_SAMPLES wide, being three samples late means sampling the gap
+        measured even half a second ago is already stale.  Pulses are only
+        PULSE_WIDTH_SAMPLES wide, so being three samples late means sampling the gap
         between pulses instead of the pulses, which reads as pure noise.  Projecting
         the last measurement forward keeps every tick sampling the right place
         instead of drifting off between refines.
 
-        Both phases are shifted by the same amount because both are anchored to the
-        same power cycle: the noise phase marks a gap *between* pulses, so when the
-        pulses walk the gap walks with them.  (They are still searched separately in
-        _phase_search, because which gap is quietest can change for reasons that have
-        nothing to do with drift - see that method's docstring.)
+        Both phases shift by the same amount because both anchor to the same power
+        cycle: the noise phase marks a gap *between* pulses, so when the pulses walk,
+        the gap walks with them.  (They are still searched separately
+        in _phase_search, because which gap is quietest can change for reasons that
+        have nothing to do with drift - see that method's docstring.)
 
         `at_time` is a reading of the audio clock; it defaults to right now.  Drift
         can be either sign - a grid running fast walks the phase one way, a grid
@@ -709,11 +709,11 @@ class ContinuousAnalyzer:
     def _reset_phase_history(self) -> None:
         """Drop the fitted history, keeping the current rate estimate.
 
-        Called when the measurements stop being one continuous track - a signal
-        outage, a cold start, a stalled device.  The *rate* deliberately survives:
-        the grid went on drifting while the signal was gone, so the last estimate is
-        a far better starting guess than zero (cold start zeroes it separately, in
-        _full_analysis, because there is no history there to be right about).
+        This runs when the measurements stop forming one continuous track: a signal
+        outage, a cold start, a stalled device.  The *rate* deliberately survives.
+        The grid went on drifting while the signal was gone, so the last estimate is
+        a far better starting guess than zero.  A cold start zeroes it separately, in
+        _full_analysis, because there is no history there to be right about.
         """
         self._phase_history.clear()
         self._previous_measured_phase = None
@@ -722,23 +722,23 @@ class ContinuousAnalyzer:
                                   measured_at: float) -> None:
         """Store a freshly measured phase pair and re-fit the drift rate through it.
 
-        The rate is the least-squares slope of the recent (time, phase) history - see
+        The rate is the least-squares slope of the recent (time, phase) history.  See
         fit_drift_rate() for what that buys over the rise-over-run this replaced.
 
-        Two things have to be true for a line fit to mean anything, and both are
-        handled here rather than in the fit:
+        Two things have to be true for a line fit to mean anything, and this method
+        handles both rather than leaving them to the fit.
 
-        * The phases must be *unwrapped*.  Measurements come back folded into
+        * The phases must be *unwrapped*.  A measurement comes back folded into
           [0, _phase_align), so a steadily drifting train produces a sawtooth, and
           the slope of a sawtooth is not the drift rate.  Each step is folded to its
-          shortest equivalent move and accumulated instead, turning the sawtooth back
-          into the straight line it physically is.
+          shortest equivalent move and accumulated instead, turning the sawtooth
+          back into the straight line it physically is.
 
         * The points must be one continuous track.  Unwrapping infers the move from
           the shortest path, which is only right while less than half a period has
-          passed; across a gap the phase may have wrapped an unknowable number of
-          times.  A gap beyond MAX_PHASE_HISTORY_GAP therefore restarts the history
-          rather than fitting a fabricated slope through it.
+          passed.  Across a gap the phase may have wrapped an unknowable number of
+          times, so a gap beyond MAX_PHASE_HISTORY_GAP restarts the history rather
+          than fitting a fabricated slope through it.
 
         `measured_at` is a reading of the audio clock, not the wall clock.
         """
@@ -790,8 +790,8 @@ class ContinuousAnalyzer:
         Writing the true rate as r, matching the sampling grid to the actual pulses
         requires drift = sample_rate * (pulse_rate - r) / r, which rearranges to
         r = sample_rate * pulse_rate / (sample_rate + drift).  Arcing happens twice
-        per power cycle - once per half-cycle, at each voltage peak - so halving
-        that converts pulses per second into cycles per second.
+        per power cycle, once per half-cycle at each voltage peak, so halving that
+        converts pulses per second into cycles per second.
         """
         with self._result_lock:
             drift_rate = self._phase_drift_rate
@@ -799,7 +799,7 @@ class ContinuousAnalyzer:
         return true_pulse_rate / 2
 
     def trigger_phase(self) -> tuple[int, TriggerSync]:
-        """Where the pulse train is right now, for a display to synchronise its sweep to.
+        """Where the pulse train is right now, for a display to synchronize its sweep to.
 
         Returns (phase in samples within pulse_phase_period, how much to trust it).
         Safe to call from the Qt thread: the four pieces of tracker state are read as
@@ -808,17 +808,18 @@ class ContinuousAnalyzer:
 
         The phase is the *predicted* one, not the last measured one - the same
         projection the analyzer uses for its own sampling (see _predicted_phases).
-        A display syncing to a stale measurement would show the trace creeping across
-        the screen at the grid's drift rate, which is precisely what this view exists
-        to cancel out.
+        A display syncing to a stale measurement would show the trace creeping
+        across the screen at the grid's drift rate, which is precisely what this
+        view exists to cancel out.
 
         FREE returns phase 0 rather than a meaningless number.  Note that this still
-        yields a *stationary* trace rather than a sliding one, because the caller reads
-        phase-aligned snapshots: with no lock the sweep simply starts at an arbitrary
-        point in the pulse period instead of a chosen one.  For a display that is the
-        right failure mode - an un-synced trace that holds still is readable, whereas
-        one scrolling at an arbitrary rate is not, and the returned TriggerSync is what
-        tells the operator not to trust its horizontal position.
+        yields a *stationary* trace rather than a sliding one, because the caller
+        reads phase-aligned snapshots: with no lock the sweep simply starts at an
+        arbitrary point in the pulse period instead of a chosen one.  For a display
+        that is the right failure mode.  An un-synced trace that holds still is
+        readable, whereas one scrolling at an arbitrary rate is not, and the
+        returned TriggerSync is what tells the operator not to trust its horizontal
+        position.
         """
         with self._result_lock:
             # _state and _phases_valid are written on the analyzer thread outside this
@@ -851,29 +852,29 @@ class ContinuousAnalyzer:
         Snapshots are aligned to _phase_align so every window starts at the same
         offset within the pulse period.  Without this the window origin moves with
         the ring buffer tail between ticks, and phases stored from one snapshot
-        point at the wrong samples in the next - silently breaking _quick_check,
+        point at the wrong samples in the next, silently breaking _quick_check,
         _noise_check, and _phase_search.
 
-        The DC offset is removed before rectification.  The receiver is in LSB, so its
-        audio is a frequency-translated slice of RF: bipolar and zero-mean by
+        The DC offset is removed before rectification.  The receiver is in LSB, so
+        its audio is a frequency-translated slice of RF: bipolar and zero-mean by
         construction, and any constant is the sound card's own offset.  abs(x + d)
         adds that offset to the pulse positions and the inter-pulse positions alike,
-        which compresses the ratio between them and costs SNR - worst at the weak-signal
-        end.
+        which compresses the ratio between them and costs SNR, worst at the
+        weak-signal end.
 
-        The estimator is the median, not the mean.  The mean is not robust to the very
-        thing being measured: a 120 pps train of 20000-count pulses pulls the window
-        mean to ~450 counts when the true offset is zero, so subtracting it would
-        inject an error that grows with signal strength.  The pulses occupy ~2% of
-        samples, which the median ignores entirely.  It costs ~270 us per window
-        against ~1185 us for one FFT fit.
+        The estimator is the median, not the mean.  The mean is not robust to the
+        very thing being measured: a 120 pps train of 20000-count pulses pulls the
+        window mean to ~450 counts when the true offset is zero, so subtracting it
+        would inject an error that grows with signal strength.  The pulses occupy
+        ~2% of samples, which the median ignores entirely.  It costs ~270 us per
+        window against ~1185 us for one FFT fit.
 
-        The estimate is additionally EMA-smoothed (see DC_EMA_ALPHA) rather than taken
-        fresh per window, so per-window estimation noise isn't injected into every
-        reading while true drift is still followed.
+        The estimate is additionally EMA-smoothed (see DC_EMA_ALPHA) rather than
+        taken fresh per window, so per-window estimation noise is not injected into
+        every reading while true drift is still followed.
 
         Returns None when the pipeline cannot supply the data within
-        CAPTURE_TIMEOUT - the caller should leave the state machine unchanged.
+        CAPTURE_TIMEOUT.  The caller should leave the state machine unchanged.
         """
         if not self._pipeline.wait_for_data(n_samples + self._phase_align,
                                             timeout=self.CAPTURE_TIMEOUT):
@@ -889,8 +890,8 @@ class ContinuousAnalyzer:
                        noise_phase: int | None = None) -> tuple[float, float, float] | None:
         """Sample signal and noise amplitudes at the given phases.
 
-        With no phases supplied it uses the *predicted* ones - where drift says the
-        pulse train should be right now - rather than wherever it was last measured.
+        With no phases supplied it uses the *predicted* ones, where drift says the
+        pulse train should be right now, rather than wherever it was last measured.
         That is what stops the reading sagging between refines; see
         _predicted_phases().
 
@@ -915,10 +916,11 @@ class ContinuousAnalyzer:
     def _fast_scan(self) -> bool:
         """Short-kernel FFT screening: cheaply detect whether a signal candidate exists.
 
-        Uses FAST_SCAN_PULSES and FAST_SCAN_SAMPLES (~0.25 s) so the FFT is ~6× cheaper
-        than the full analysis.  Returns True when the best-phase fit score exceeds the
-        worst by FAST_SCAN_SNR dB - a weak hint that something is worth confirming.
-        Does not publish or propose a state; only gates whether Tier 3b runs.
+        Uses FAST_SCAN_PULSES and FAST_SCAN_SAMPLES (~0.25 s), so the FFT costs ~6x
+        less than the full analysis.  Returns True when the best-phase fit score
+        exceeds the worst by FAST_SCAN_SNR dB, a weak hint that something is worth
+        confirming.  This does not publish or propose a state; it only gates whether
+        Tier 3b runs.
         """
         abs_data = self._capture(self.FAST_SCAN_SAMPLES)
         if abs_data is None:
@@ -939,9 +941,9 @@ class ContinuousAnalyzer:
         """FFT fit over 1 s of audio; establishes or refreshes the locked phase pair.
 
         Returns LOCKED when a pulse train passes LOCK_ACQUIRE_SNR, otherwise the
-        current state.  When called from SIGNAL_LOST and no lock is found, nothing
-        is published - _noise_check() is already providing live noise results on
-        each tick.
+        current state.  When called from SIGNAL_LOST and no lock is found, this
+        publishes nothing, because _noise_check() is already providing live noise
+        results on each tick.
         """
         abs_data = self._capture(self._window_samples)
         if abs_data is None:
@@ -1005,17 +1007,17 @@ class ContinuousAnalyzer:
                     minimize: bool) -> tuple[int, int]:
         """Scan ± PHASE_SEARCH_RADIUS around center for the best pulse amplitude.
 
-        anchor is the other pulse train's phase; the analysis window starts at
+        anchor is the other pulse train's phase.  The analysis window starts at
         max(candidate, anchor) so both trains fit within the same audio.  minimize
         selects the quietest candidate (noise scan) instead of the loudest (signal
         scan).
 
         The incumbent (offset 0) keeps its place unless a challenger beats it by
-        PHASE_MOVE_MARGIN - true drift shows large amplitude differences (one
-        sample of offset already costs ~1/3 of a pulse's overlap), so the deadband
-        only suppresses noise-driven flicker, not real movement.
+        PHASE_MOVE_MARGIN.  True drift shows large amplitude differences: one sample
+        of offset already costs ~1/3 of a pulse's overlap.  So the deadband only
+        suppresses noise-driven flicker, not real movement.
 
-        Returns (best_phase, best_offset); center with offset 0 if no candidate
+        Returns (best_phase, best_offset): center with offset 0 if no candidate
         fits or no challenger clears the margin.
         """
         best_amp      = None
@@ -1075,51 +1077,53 @@ class ContinuousAnalyzer:
     def _phase_search(self) -> AnalyzerState:
         """Narrow amplitude scan ± PHASE_SEARCH_RADIUS around each predicted phase.
 
-        This is the analyzer's tracking step, and it does two jobs: it finds where
+        This is the analyzer's tracking step, and it does two jobs.  It finds where
         the pulse train actually is now, and it uses the gap between that and where
         drift predicted it would be to refine the drift estimate itself.  Scanning
         around the *prediction* rather than the last measurement is what keeps the
-        search centred - under steady drift the pulse has already moved by the time
-        we look again, so a search centred on the old position starts off-target and
-        has to spend its radius catching up.
+        search centered: under steady drift the pulse has already moved by the time
+        it looks again, so a search centered on the old position starts off-target
+        and has to spend its radius catching up.
 
-        ~40× cheaper than _full_analysis() - evaluates average_pulse_amplitude at
-        2*PHASE_SEARCH_RADIUS+1 candidates per phase (Numba JIT) rather than running
-        an FFT over the full audio window.
+        This costs ~40x less than _full_analysis(): it evaluates
+        average_pulse_amplitude at 2*PHASE_SEARCH_RADIUS+1 candidates per phase
+        (Numba JIT) rather than running an FFT over the full audio window.
 
-        Signal and noise phases are searched independently.  The tempting shortcut of
-        shifting _noise_phase by the same delta as _peak_phase is wrong in the general
-        case: the quiet inter-pulse window is wherever no arc source happens to fall,
-        and with multiple overlapping sources that window can drift at a completely
-        different rate - or disappear and reappear elsewhere - independent of any one
-        source's phase.  Searching both independently costs one extra pass of 21
-        Numba amplitude averages and correctly handles all source configurations.
+        Signal and noise phases are searched independently.  Shifting _noise_phase
+        by the same delta as _peak_phase looks tempting, but it is wrong in the
+        general case: the quiet inter-pulse window sits wherever no arc source
+        happens to fall, and with multiple overlapping sources that window can
+        drift at a completely different rate, or disappear and reappear elsewhere,
+        independent of any one source's phase.  Searching both independently costs
+        one extra pass of 21 Numba amplitude averages and correctly handles all
+        source configurations.
 
-        Each scan's winning offset is recorded separately (_latest_signal_correction for
-        signal, _latest_noise_correction for noise) on every call, win or lose, so the
-        UI can display how much each phase actually moved rather than assuming they
-        track together.  Note that these are offsets from the predicted phase, so once
-        drift is being tracked well they read near zero even while the grid is drifting
-        hard - they show the tracker's residual error, not the raw movement.
+        Each scan records its winning offset separately (_latest_signal_correction
+        for signal, _latest_noise_correction for noise) on every call, win or lose,
+        so the UI can show how much each phase actually moved rather than assuming
+        they track together.  These are offsets from the predicted phase, so once
+        drift is being tracked well they read near zero even while the grid is
+        drifting hard.  They show the tracker's residual error, not the raw
+        movement.
 
-        The SNR bar for updating the phases depends on how we got here.  Acquiring
-        from SIGNAL_LOST demands LOCK_ACQUIRE_SNR - strong evidence before trusting
-        a new phase pair.  While already LOCKED, tracking only requires
-        LOCK_LOSE_SNR, the same bar _quick_check() holds the lock at; requiring
-        the acquisition bar here would create a dead zone (LOCK_LOSE_SNR ≤ snr <
-        LOCK_ACQUIRE_SNR) where the lock is held but drift can't be followed,
+        The SNR bar for updating the phases depends on how the analyzer got here.
+        Acquiring from SIGNAL_LOST demands LOCK_ACQUIRE_SNR, strong evidence before
+        trusting a new phase pair.  While already LOCKED, tracking only requires
+        LOCK_LOSE_SNR, the same bar _quick_check() holds the lock at.  Requiring the
+        acquisition bar here would create a dead zone (LOCK_LOSE_SNR <= snr <
+        LOCK_ACQUIRE_SNR) where the lock is held but drift cannot be followed,
         guaranteeing eventual loss on weak signals.
 
-        On success both phases are updated and LOCKED is returned; otherwise the
-        current state.  Does not publish on failure; _noise_check() already
-        published the noise result on this tick.
+        On success both phases are updated and LOCKED is returned, otherwise the
+        current state.  This does not publish on failure, because _noise_check()
+        already published the noise result on this tick.
         """
         abs_data = self._capture(self._window_samples)
         if abs_data is None:
             return self._state
 
         # Stamp the audio clock after the capture, so it refers to the audio we
-        # actually just analysed rather than to whatever had arrived before we waited.
+        # actually just analyzed rather than to whatever had arrived before we waited.
         measured_at = self._audio_clock_seconds()
         predicted_peak, predicted_noise = self._predicted_phases(measured_at)
         signal_phase, noise_phase = self._scan_signal_and_noise_phases(
@@ -1145,9 +1149,9 @@ class ContinuousAnalyzer:
     def _noise_check(self) -> AnalyzerState:
         """Live noise + fast signal re-acquisition at stored phases (SIGNAL_LOST only).
 
-        Samples the noise floor at _noise_phase every tick so the NF meter stays
-        current.  Also samples _peak_phase; if SNR is high enough, returns LOCKED
-        without needing a full FFT fit.
+        Samples the noise floor at _noise_phase every tick, so the NF meter stays
+        current.  Also samples _peak_phase.  If SNR is high enough, this returns
+        LOCKED without needing a full FFT fit.
         """
         abs_data = self._capture(self._window_samples)
         if abs_data is None:

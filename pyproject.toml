@@ -22,6 +22,11 @@ dependencies = [
     "jinja2>=3.1",
     "tomli-w",
     "tzdata",
+    # The setup program's schema: validation for ~/.buzz/config.toml, and the source
+    # both the setup program's screens and config.example.toml are built from.
+    "jsonschema>=4.20",
+    # The setup program's terminal UI.
+    "textual>=8.2",
 ]
 keywords = ["ham radio", "amateur radio", "powerline", "QRM", "interference", "monitoring"]
 classifiers = [
@@ -57,8 +62,8 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["lib/buzz", "configure", "tools"]
-omit = ["tests/*", "lib/buzz/device_setup.py"]
+source = ["lib/buzz", "tools"]
+omit = ["tests/*", "lib/buzz/setup/device_setup.py"]
 
 [tool.coverage.report]
 # Raised 96 -> 97 once NUMBA_DISABLE_JIT=1 (see tests/conftest.py) made JIT-compiled

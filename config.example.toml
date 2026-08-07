@@ -1,236 +1,291 @@
 # N6OL Powerline QRM Monitor - example configuration
 #
-# Copy this file to ~/.buzz/config.toml and edit to suit your setup.
+# Copy this file to ~/.buzz/config.toml and edit to suit your setup, or let the
+# setup program write it for you:
 #
-# Every option the monitor understands appears here.  The values shown are the
-# defaults, except for paths, hostnames, and URLs, which are examples to edit.
-# Options that are commented out have no useful default: leaving them commented
-# means either the monitor works it out (the recording directory), the feature is
-# off (Open-Meteo coordinates), or configure.py fills them in (the audio device).
+#     setup.bat                (Windows)
+#     ./setup.sh               (Linux / macOS / BSD)
+#
+# Every option the monitor understands appears here, with the value shown being the
+# default. Options that are commented out have no useful default: either the monitor
+# works it out, the feature is off, or the setup program fills them in.
+#
+# GENERATED FILE - edit lib/buzz/setup/schema.json and regenerate, do not edit here.
 
 
+# The sound card the receiver feeds, and what it sends.
 [audio]
-# Run configure.py to select your audio input device interactively.
-# It will probe all available devices, show live signal levels, and write
-# the device_index and input_device_name fields below automatically.
-# You should not need to edit those two fields by hand.
-# input_device_name = "Your Device, Windows DirectSound"
-# device_index = 1
+# The sound card that carries the RF-to-audio converted signal.
+#
+# Choose this in Setup's Audio step. Do not type it. Setup probes every
+# input, shows a level bar for each, and writes the name for you.
+#
+# The monitor finds the device by this name at every start. It never uses a
+# stored index. Names survive a reboot. Indices do not.
+#
+# Default: Whatever Setup finds on your machine. The value shown names one
+# Default: sound card and is only an example.
+# input_device_name = "Line In (Realtek(R) Audio), Windows DirectSound"
 
-# Audio sample rate in Hz. Must match what your input device is configured to
-# use. 16000 Hz is sufficient for powerline noise analysis and keeps CPU load low.
+# The audio sample rate. It must match a rate the input device uses.
+#
+# The monitor enforces this band. It does not treat it as advice.
+#
+# Below 8000 Hz the 4 kHz that the waterfall and the analysis look at sits
+# above Nyquist. Nothing is there to measure.
+#
+# Above 48000 Hz the ring buffer is a fixed size, so it holds too little
+# history for the analyzer to acquire the way it was tuned. A powerline arc
+# has nothing to say up there anyway.
+#
+# 16000 Hz is enough for this measurement and keeps CPU load low. That
+# matters for a monitor that runs all day without an operator.
 sample_rate = 16000
 
-# Expected interference pulse rate in Hz.
-# Use 120 for 60 Hz grids (North America).
-# Use 100 for 50 Hz grids (Europe and most of the rest of the world).
+# Impulses per second from the mains. This is twice the grid frequency,
+# because an arc fires on both peaks.
+#
+#   120 pps - 60 Hz grid (North America)
+#   100 pps - 50 Hz grid (Europe and most other places)
 pulse_rate = 120
 
 
+# Who measures, from where, and the calibration that turns audio into dBm.
 [station]
-# Your amateur radio callsign, used in page titles and plot labels.
+# Your amateur radio callsign. It appears in page titles and plot labels.
 callsign = "N0CALL"
 
-# IANA timezone name used for CSV timestamps and graph labels.
+# The IANA timezone name for CSV timestamps and graph labels, such as
+# America/Los_Angeles.
 timezone = "America/Los_Angeles"
 
-# Local directory where CSV files, plots, and the index page are written.
-path = "C:\\Users\\yourname"
+# Where the monitor writes CSV files, plots, and the index page.
+#
+# Recordings go to a 'recordings' folder under this path, unless the
+# recording section names a directory of its own.
+#
+# Default: Your home directory, resolved when the program starts.
+# path = "C:\\Users\\yourname"
 
-# Your receiver's noise floor in dBm. Used as the baseline for the noise
-# floor reference line on the daily graph.
+# The baseline for the noise-floor reference line on the daily graph.
+#
+# You may want to adjust this after gathering a few days of data, to see
+# what is typical for your area in the absence of any utility noise.
 noise_floor = -98.0
 
-# Minimum SNR in dB for a reading to count as interference-present in the
-# probability summary graphs.
+# How far above the noise floor a reading must sit to count as interference
+# in the probability summaries.
 noise_min_snr = 12.0
 
-# dB offset applied to the audio amplitude to approximate RF level at the
-# receiver input. Hardware-specific: calibrate by comparing the program's
-# reading against your S-meter (S9 = -73 dBm, each S-unit = 6 dB).
+# The offset that converts audio amplitude to RF level at the receiver
+# input.
+#
+# This number is added to the audio level to approximate the RF level in dBm
+# at the receiver input. For example, if your radio's own S-meter reads -64
+# dBm and the sound card sees -32 dB of audio for that same signal, set this
+# to -32.
+#
+# Most receivers: leave this alone. Open the Calibration meter on the Audio
+# page instead, and adjust the RF and AF gain on the receiver until its own
+# S-meter agrees with the reading there.
+#
+# Some receivers have no AF gain to adjust - one with its own internal sound
+# device, for instance. Choose this field itself to open a live meter of its
+# own: Up and Down nudge the offset, Space resets it to the default, and
+# Enter confirms.
+#
+# S9 is -73 dBm, and each S-unit is 6 dB.
+#
+# Set the radio up for measurement first: AGC off, widest filter, SSB,
+# preamp and attenuator off. Tune where the antenna is resonant and bypass
+# the tuner.
 audio_rf_conversion_db = -32.0
 
-# Estimated path loss in dB from the interference source to your location.
-# Used to calculate source strength from the measured level.
-distance_attenuation = 30.0
-
-# ISO 8601 start date for the all-time probability summary graph.
+# The ISO 8601 date that the all-time probability summary graph starts from.
 summary_start_date_iso = "2024-01-01T00:00:00+0000"
 
 
+# Weather readings logged beside each measurement. Arcing follows humidity
+# and wind, so these are worth keeping.
 [weather]
-# Weather data source. Options:
-#   "cumulusmx" - pull from a local CumulusMX weather station HTTP endpoint
-#   "openmeteo" - pull from the free Open-Meteo API (no account required)
-#   "none"      - disable weather data; weather columns in CSV will be blank
+# Where weather readings come from. Choose none to leave those CSV columns
+# empty.
+#
+#   CumulusMX - a weather station on your own network
+#   Open-Meteo - a free public API that needs no account
+#   None - leave the weather columns empty
 source = "cumulusmx"
 
-# CumulusMX JSON endpoint (only used when source = "cumulusmx").
-# Adjust the query string tags to match your station's available fields.
-url = "http://cumulusmx.local:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing"
-
-# Latitude and longitude for Open-Meteo (only used when source = "openmeteo").
-# latitude = 34.05
-# longitude = -118.25
-
-
-[recording]
-# Automatically save interference events as .wav files, which can be replayed
-# later with:  python -m buzz.main --playback event-20260729-143307-0700.wav
+# The JSON endpoint of your CumulusMX installation.
 #
-# A recording starts when the analyzer locks onto the pulse train and ends once
-# the signal has been gone for stop_after_seconds.  It opens with whatever audio
-# the monitor had already buffered when the lock happened, and ends with the
-# silence it waited through, so an event that begins and ends while the monitor
-# is running is captured whole, with a run-up and a run-out around it.
+# Change the query string tags to match the fields your station publishes.
 #
-# Two things can still cut one short.  The lead-in cannot reach back further than
-# the buffer holds - about ten seconds at the default sample rate - so an arc that
-# was already buzzing when the monitor started began before the recording does.
-# And max_seconds, below, ends a recording mid-event by design.  The .wav's
-# metadata covers both: a capped recording records that as the reason it ended,
-# and every recording records how much lead-in it actually managed.
+# You should normally only change the hostname and port here.
+# Example:
+# http://cumulusmx.local:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing
+url = ""
 
-# Set enabled = true to arm recording at startup.  --enable-recording arms it for
-# one run without editing this file, and the Record button (or the R key) in the
-# main window toggles it while the monitor is running.
+# The latitude that Open-Meteo looks up.
+#
+# Unset by default.
+# latitude =
+
+# The longitude that Open-Meteo looks up.
+#
+# Unset by default.
+# longitude =
+
+
+# Upload plots and data to a web server over SCP, so anyone can see the
+# results. This is off by default, and the monitor then runs on this machine
+# alone.
+[server]
+# Upload output files after each collection cycle. The monitor ignores every
+# setting below while this is off.
 enabled = false
 
-# Where .wav files are written, and where --playback looks when it is given a
-# bare filename.  Defaults to a "recordings" folder under [station] path.
-# directory = "C:\\Users\\yourname\\recordings"
+# The hostname or IP address of the web server that holds the published
+# output.
+# Example: yourserver.example.com
+host = ""
 
-# How many of the next events to record.  Recording disarms itself once this many
-# have been captured; pressing Record again starts a fresh count.  Set to 0 to
-# record every event until you switch recording off by hand.
+# The account to log in as on that server.
+# Example: yourname
+username = ""
+
+# Where uploaded files go on the server. End it with a slash.
+# Example: /var/www/html/noise/
+remote_path = ""
+
+# The private key that authenticates the upload. It must have no passphrase,
+# so uploads run without an operator.
+#
+# Generate one with: ssh-keygen -t ed25519 -f ~/.buzz/buzz.pem -N ""
+#
+# Append ~/.buzz/buzz.pem.pub to the server account's
+# ~/.ssh/authorized_keys. Confirm that the key works before you switch
+# uploads on.
+#
+# On Windows, use forward slashes or double backslashes. TOML reads one
+# backslash as the start of an escape sequence.
+#
+# Default: buzz.pem inside the .buzz folder in your home directory.
+# key_path = "C:/Users/yourname/.buzz/buzz.pem"
+
+
+# Save interference events as .wav files. Replay one later with --playback,
+# or render it to video with --render.
+[recording]
+# Start with recording armed. The Record button, or the R key, toggles it
+# while the monitor runs. The --enable-recording flag arms it for one run.
+#
+# A recording starts when the analyzer locks onto the pulse train. It ends
+# once the signal has been gone for stop_after_seconds.
+#
+# It opens with the audio the monitor had already buffered at the moment of
+# the lock, and it ends with the silence it waited through. An event that
+# starts and ends while the monitor runs is therefore captured whole, with a
+# run-up and a run-out around it.
+enabled = false
+
+# Where the monitor writes .wav files. Leave it empty to use a 'recordings'
+# folder under the station output path.
+#
+# The --playback flag also looks here when you give it a bare filename
+# instead of a path.
+#
+# Default: A 'recordings' folder under the station output path.
+# directory = "C:/Users/yourname/recordings"
+
+# How many of the next events to capture before recording disarms itself.
+# Set 0 to record every event until you switch recording off.
 max_events = 10
 
-# Minutes between resets of that budget, which turns max_events into a rate rather
-# than a one-off: 1440 with the max_events above records up to ten events a day,
-# every day, unattended.  The cycle is measured from when the budget was last
-# reset, not from when it ran out, so it keeps its time of day instead of sliding
-# later by however long each day's events took to arrive.  A quiet period does not
-# carry its unused events forward - the budget tops back up either way.
+# How often to refill that budget, which makes it a rate instead of a
+# one-off. 1440 gives max_events every day. Set 0 to never re-arm.
 #
-# 0 never re-arms: once the budget is spent, recording stays off until you switch
-# it back on.  Switching it off by hand always cancels the cycle too.
-rearm_reset_minutes = 0
+# The cycle runs from the last reset, not from the moment the budget ran
+# out. It therefore keeps its time of day instead of sliding later by
+# however long each day's events took to arrive.
+#
+# A quiet period does not carry unused events forward. Switching recording
+# off by hand also cancels the cycle.
+rearm_reset_minutes = 0.0
 
-# How much of the interference to record, in seconds.  This measures the event, not
-# the file: the run-up the ring buffer was already holding comes free on top, as does
-# the trailer afterwards, so the .wav on disk is always somewhat longer than the
-# number set here.
+# How much of the interference to record, measured from the lock. Set 0 to
+# record the whole event however long it runs.
 #
-# Any min_lock_seconds spent waiting is counted against this, since those seconds are
-# part of the event and are kept - 3 there and 10 here gives ten seconds of event,
-# not thirteen.  A min_lock_snr wait is not counted: it is open-ended, and charging a
-# wait that can run to minutes would spend the whole allowance before the file was
-# even opened.
+# This measures the event, not the file. The run-up that the ring buffer
+# already held comes free on top, and so does the trailer afterward. The
+# .wav on disk is therefore always longer than this.
 #
-# Expect a recording to overrun this by up to 200 ms.  The recorder works on a poll
-# rather than watching continuously, so a min_lock_seconds wait is noticed up to one
-# poll after it has actually elapsed, and only the configured value is charged
-# against this - the remainder sits on top.  A 10 second setting can therefore
-# produce 10.1 seconds of event.
+# A min_lock_seconds wait counts against this, because the monitor keeps
+# those seconds and they are part of the event. Three seconds there and ten
+# here give ten seconds of event, not thirteen.
 #
-# Set it by how much of the noise is worth studying rather than by how big the files
-# should be.  0 records the whole event however long it runs.
+# A min_lock_snr wait does not count. That wait is open-ended, and charging
+# it would spend the whole allowance before the file even opened.
 #
-# A capped recording does not roll over into a second file: the rest of that
-# event is skipped, and the next event starts the next file.
+# Expect an overrun of up to 200 ms. The recorder polls rather than watching
+# continuously.
 #
-# The cap always wins over stop_after_seconds below, so setting it shorter than
-# that leaves room for less trailer than the other setting asks for.
-max_seconds = 120
+# A capped recording does not roll over into a second file. The monitor
+# skips the rest of that event and starts the next file at the next event.
+# The cap always wins over stop_after_seconds.
+max_seconds = 120.0
 
-# Seconds without a lock before a recording is closed.  This audio is kept, so
-# this also decides how much trailer every recording ends with.  Raise it if a
-# flickering signal is being split across several files; lower it to trim dead
-# air off the end.
-stop_after_seconds = 10
+# How many seconds without a lock end a recording. The monitor keeps this
+# audio, so it also sets how much trailer every recording ends with.
+#
+# Raise it if one flickering signal splits across several files. Lower it to
+# trim dead air off the end.
+stop_after_seconds = 10.0
 
-# How long the interference must be present before a recording starts.  A night of
-# two-second blips otherwise fills the directory with files too short to be worth
-# replaying; raise this until only the events you would actually sit and watch get
-# through.  0 records every lock, however brief.
+# How long the interference must hold before a recording starts. Set 0 to
+# record every lock, however brief.
 #
-# The waiting counts against max_seconds below.  Those seconds are part of the
-# event and the monitor keeps them, so 3 here with max_seconds = 10 gives ten
-# seconds of event - three waited through, seven recorded after - and not thirteen.
+# A night of two-second blips otherwise fills the directory with files too
+# short to replay.
 #
-# Keep it short - 5 seconds or less.  It is also paid for out of the lead-in,
-# because the audio that comes from is a sliding window a few seconds long: wait two
-# seconds and every recording opens two seconds later relative to the event.  Two
-# ceilings apply and the value is clamped to the lower of them, with a warning
-# saying what was used instead: the length of that window, beyond which a recording
-# would start after the event began and miss the onset entirely; and max_seconds,
-# which the wait cannot exceed without spending the whole allowance it counts
-# against.
-min_lock_seconds = 0
+# Keep it to five seconds or less. The lead-in pays for it, because that
+# audio comes from a sliding window a few seconds long. Wait two seconds and
+# every recording opens two seconds later against the event.
+#
+# The monitor clamps the value to the lower of the buffer length and
+# max_seconds. It warns and says which one it used.
+min_lock_seconds = 0.0
 
-# Minimum signal-to-noise ratio, in dB, before a recording starts.  The analyzer is
-# sensitive enough to lock onto interference you can barely hear; this keeps those
-# events off the disk without making the monitor any less sensitive.
+# How loud the interference must be before a recording starts. This keeps
+# barely audible events off the disk.
 #
-# Recording only.  It does not change when a signal is locked, measured, logged to
-# the CSV, or drawn on the display - the analyzer locks at 6 dB SNR, which is a
-# constant in the code rather than a setting here, so any value at or below 6 does
-# nothing at all.
+# This affects recording alone. It does not change when the analyzer locks,
+# measures, logs, or draws. That happens at a fixed 6 dB SNR in the code, so
+# any value at or below 6 does nothing.
 #
-# A signal that starts quiet and grows louder - which is how many arcs behave - is
-# not skipped.  Recording begins at the moment it crosses the threshold, so the
-# event is caught even if its opening seconds are not.
+# A signal that starts quiet and grows louder is not skipped. Recording
+# starts the moment it crosses, so the monitor catches the event even when
+# it misses the opening seconds.
 #
-# Time spent below the threshold is paid for out of the lead-in, and the lead-in
-# runs out: only the last few seconds of audio are ever held, so the run-up you keep
-# is roughly the buffer's length minus the time spent waiting.  Sitting at 6 dB for
-# three seconds before crossing a threshold of 10 costs about three seconds of
-# run-up; sitting there for thirty loses the run-up altogether and opens the file
-# some twenty seconds into the event, onset and all.
-#
-# That is the one way this is sharper-edged than min_lock_seconds above, which is
-# capped at the buffer and so can never cost you the beginning of an event.  This
-# one's wait depends on the signal, so it cannot be capped - set it only as high as
-# it needs to be.  Something in the low teens is a reasonable place to start;
-# noise_min_snr in the [station] section is set to 12 for a related purpose and is a
-# fair guide.
-min_lock_snr = 0
+# The lead-in pays for the wait, and the lead-in runs out. This differs from
+# min_lock_seconds, which the monitor can clamp: this wait depends on the
+# signal rather than the clock. Something in the low teens is a reasonable
+# place to start.
+min_lock_snr = 0.0
 
 
-[server]
-# Set enabled = true to upload output files to a web server via SCP after each
-# collection cycle.  When false (the default) the monitor runs in local-only mode
-# and all fields below are ignored.
-enabled = false
-
-# Hostname or IP address of the web server that hosts the published output.
-host = "192.168.1.123"
-
-# SSH username on the web server.
-username = "yourname"
-
-# Remote path where output files are uploaded.
-remote_path = "/web/n6ol/noise/"
-
-# Path to the SSH private key used for authentication.
-key_path = "C:\\Users\\yourname\\.buzz\\buzz.pem"
-
-
+# Where to find ffmpeg. Only --render and the loudness probe that feeds it
+# need it. Only specify this if it cannot be found on the PATH.
 [render]
-# Where to find ffmpeg, used by --render and by --playback-gain auto, and by nothing
-# else.  The monitor never looks for it unless you ask for one of those, so leaving
-# this empty costs nothing if you never make a video.
+# Leave this empty to search PATH, where a normal install puts ffmpeg.
 #
-# Empty (the default) searches PATH, which is where a normal install puts it -- so
-# most people never need to set this at all.  Set it when ffmpeg is installed
-# somewhere PATH doesn't reach: a Windows build unzipped into a folder, or winget's
-# shim directory in a terminal that hasn't been restarted since installing.
+# Set it only when ffmpeg sits somewhere PATH does not reach. Two cases: a
+# Windows build unzipped into a folder, and winget's shim directory in a
+# terminal you have not restarted since the install.
 #
-# Either the binary or the folder holding it will do.  A copy found on PATH is used
-# in preference to this setting.
+# Either the binary or the folder that holds it will do. A copy on PATH wins
+# over this setting.
 #
-# Backslashes are doubled because TOML reads a single one as the start of an escape
-# sequence, exactly as in key_path above.
-#
-# ffmpeg_path = "C:\\Users\\yourname\\AppData\\Local\\Microsoft\\WinGet\\Links"
+# A monitor that never renders never looks for ffmpeg, so an empty value
+# costs nothing.
+# Example: C:/Users/yourname/AppData/Local/Microsoft/WinGet/Links
 ffmpeg_path = ""

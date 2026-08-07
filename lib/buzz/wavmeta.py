@@ -1,14 +1,14 @@
 """
 RIFF metadata for recorded .wav files: provenance tags and cue markers.
 
-The stdlib wave module writes audio and nothing else - Wave_write has no metadata
-API at all, and its setmark() raises outright.  So the chunks are assembled here
+The stdlib wave module writes audio and nothing else. Wave_write has no metadata
+API at all, and its setmark() raises outright. So the chunks are assembled here
 and appended after wave has closed the file.
 
-That is safe rather than clever.  A .wav is a RIFF container of independent
-chunks, and every reader walks it chunk by chunk; the stdlib's own reader stops
+That is safe rather than clever. A .wav is a RIFF container of independent
+chunks, and every reader walks it chunk by chunk. The stdlib's own reader stops
 the moment it reaches `data`, so anything after the audio is invisible to it and
-the audio itself is untouched.  Appending means updating the RIFF size field at
+the audio itself is untouched. Appending means updating the RIFF size field at
 offset 4, and requires the data chunk to be an even number of bytes, which
 16-bit mono always is.
 
@@ -24,7 +24,7 @@ Two kinds of metadata go in:
               of lock, so opening a recording in an editor shows where the
               lead-in ends and the event itself begins.
 
-Reading is deliberately forgiving.  Anything unparsable, truncated, or simply
+Reading is deliberately forgiving. Anything unparsable, truncated, or simply
 recorded by other software reads as "no metadata", never as an error: playback
 of a plain .wav from anywhere else has to keep working.
 """
@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 _T = TypeVar('_T')
 
-# INFO tag text is nominally ASCII.  UTF-8 is the de facto encoding for anything
+# INFO tag text is nominally ASCII. UTF-8 is the de facto encoding for anything
 # beyond it, and everything written here (callsigns, timestamps, numbers) is ASCII
 # in practice, so this only matters for an exotic callsign in someone's config.
 _ENCODING = 'utf-8'
@@ -57,7 +57,7 @@ def _chunk(chunk_id: bytes, payload: bytes) -> bytes:
 def _build_info(tags: dict[str, str]) -> bytes:
     """A LIST/INFO chunk from four-character tag ids to text.
 
-    Values are NUL-terminated, as the INFO convention expects; the pad byte that
+    Values are NUL-terminated, as the INFO convention expects. The pad byte that
     _chunk adds for odd-length values is separate from that terminator.
     """
     body = b'INFO'
@@ -69,8 +69,8 @@ def _build_info(tags: dict[str, str]) -> bytes:
 def _build_cues(cues: dict[int, str]) -> bytes:
     """A cue chunk plus the LIST/adtl chunk holding each cue point's label.
 
-    Positions are sample frames from the start of the file.  For uncompressed PCM
-    the chunk-start and block-start fields are zero and the play order position and
+    Positions are sample frames from the start of the file. For uncompressed PCM
+    the chunk-start and block-start fields are zero, and the play order position and
     sample offset are both simply that frame number.
     """
     points = b''
@@ -102,13 +102,13 @@ def _iter_chunks(f: Any) -> Any:
     Seeks rather than reading, so inspecting the tags on a long recording does not
     pull its audio into memory.
 
-    Sizes are clamped to what is actually left in the file.  A chunk header declares
+    Sizes are clamped to what is actually left in the file. A chunk header declares
     its own length in 32 bits, so a truncated download or a corrupt byte can claim
-    four gigabytes; read(size) on that allocates the four gigabytes before finding out
+    four gigabytes. read(size) on that allocates the four gigabytes before finding out
     there is nothing to put in them, and MemoryError is not the "no metadata" this
-    module promises to degrade to.  The walk itself was always safe - an overshooting
-    seek goes past EOF and the next read comes back short - but a caller holding a
-    size it trusts is not.
+    module promises to degrade to. The walk itself was always safe: an overshooting
+    seek goes past EOF and the next read comes back short. A caller holding a size it
+    trusts is not.
     """
     f.seek(0, 2)
     file_size = f.tell()
@@ -146,8 +146,8 @@ def _parse_info(body: bytes) -> dict[str, str]:
     """Split an INFO chunk body into {tag: text}, keeping whatever parses.
 
     A corrupt or truncated length is not treated as an error, in keeping with the
-    rest of this module: the value is whatever bytes are actually there, and the
-    next position falls past the end of the body, which ends the walk.  Tags read
+    rest of this module. The value is whatever bytes are actually there, and the
+    next position falls past the end of the body, which ends the walk. Tags read
     before that point are kept.
     """
     tags, pos = {}, 0
@@ -166,7 +166,7 @@ def format_settings(values: dict[str, Any]) -> str:
     """Render settings as `key=value` pairs for the ICMT tag.
 
     Space-separated, which keeps the tag readable in any editor that shows it while
-    staying trivially parsable.  Values must not contain spaces; everything stored
+    staying trivially parsable. Values must not contain spaces; everything stored
     this way is a number or a short identifier.
     """
     return ' '.join(f'{key}={value}' for key, value in values.items())
@@ -187,7 +187,7 @@ def setting(settings: dict[str, str], key: str, cast: Callable[[str], _T]) -> _T
     """Return settings[key] converted by `cast`, or None if absent or unparsable.
 
     A recording made by other software, or by an older version of this one, simply
-    has nothing to say about the key - which is not an error, just an absence.
+    has nothing to say about the key. That is not an error, just an absence.
     """
     try:
         return cast(settings[key])

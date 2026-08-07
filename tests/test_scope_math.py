@@ -210,7 +210,7 @@ class TestResampleToColumns:
 
 
 class TestTraceRows:
-    HEIGHT = 101   # odd, so the centre row is exact
+    HEIGHT = 101   # odd, so the center row is exact
 
     def test_bipolar_zero_is_centred(self):
         rows = trace_rows(np.array([0.0]), 1000.0, self.HEIGHT)

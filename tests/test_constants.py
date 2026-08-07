@@ -11,7 +11,7 @@ from math import log10
 import pytest
 
 from buzz.constants import DB_PER_S_UNIT, FULL_SCALE_COUNTS, S9_DBM
-from buzz.device_setup import _BAR_WIDTH
+from buzz.setup.device_setup import _BAR_WIDTH
 
 
 class TestConstants:

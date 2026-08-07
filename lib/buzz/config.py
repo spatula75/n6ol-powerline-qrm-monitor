@@ -3,9 +3,9 @@ Configuration dataclasses and TOML loader for the powerline QRM monitor.
 
 BuzzConfig is the top-level config object, composed of six section dataclasses:
 AudioConfig, StationConfig, WeatherConfig, ServerConfig, RecordingConfig, and
-RenderConfig.  Each maps directly to a [section] in ~/.buzz/config.toml.
-BuzzConfig.from_toml() reads the file and populates the dataclasses; unknown keys
-are silently ignored so old config files don't break when new fields are added.
+RenderConfig. Each maps directly to a [section] in ~/.buzz/config.toml.
+BuzzConfig.from_toml() reads the file and populates the dataclasses. Unknown keys
+are silently ignored, so old config files don't break when new fields are added.
 """
 
 import tomllib
@@ -21,13 +21,13 @@ CONFIG_PATH = Path.home() / '.buzz' / 'config.toml'
 #
 # The floor is set by what the display and the analysis are looking at: the waterfall
 # shows 0-4 kHz, so 8 kHz is exactly twice that and the lowest rate that can carry the
-# band at all.  Below it the top of the display is above Nyquist and there is nothing
+# band at all. Below it the top of the display is above Nyquist and there is nothing
 # there to show.
 #
-# The ceiling is practical rather than theoretical.  Nothing in a powerline arc lives
+# The ceiling is practical rather than theoretical. Nothing in a powerline arc lives
 # above a few kHz, so a higher rate buys no signal and costs proportionally more of
-# everything -- and the fixed-size ring buffer holds 3.2 s at 48 kHz against 9.6 s at
-# 16 kHz, so history shrinks as the rate climbs.  48 kHz is the highest rate a file
+# everything. The fixed-size ring buffer also holds 3.2 s at 48 kHz against 9.6 s at
+# 16 kHz, so history shrinks as the rate climbs. 48 kHz is the highest rate a file
 # from elsewhere is likely to arrive at, and the lowest useful history this can give.
 MIN_SAMPLE_RATE = 8000
 MAX_SAMPLE_RATE = 48000
@@ -36,24 +36,24 @@ MAX_SAMPLE_RATE = 48000
 def validate_sample_rate(sample_rate: int, source: str, configured_rate: int) -> None:
     """Refuse a sample rate the rest of the program cannot honestly work at.
 
-    Refusing rather than coping, because both directions produce a display and a set
-    of numbers that look perfectly plausible and are not: below the floor the top of
-    the waterfall is above Nyquist and shows an empty band, and far above the ceiling
-    the buffer holds too little history for the analyzer to acquire the way it was
-    tuned to.  `source` names where the rate came from, since a bad one can arrive
-    from the config or from a file somebody sent.
+    This refuses rather than copes, because both directions produce a display and a
+    set of numbers that look perfectly plausible and are not. Below the floor, the
+    top of the waterfall is above Nyquist and shows an empty band. Far above the
+    ceiling, the buffer holds too little history for the analyzer to acquire the way
+    it was tuned to. `source` names where the rate came from, since a bad one can
+    arrive from the config or from a file somebody sent.
 
     `configured_rate` is this station's own, which is what the remedy suggests
-    resampling to -- a file at the rate the rest of the setup already uses is the one
-    that needs the least explaining afterwards.  It is a suggestion rather than an
-    instruction because anything inside the band will work.
+    resampling to: a file at the rate the rest of the setup already uses is the one
+    that needs the least explaining afterwards. It is a suggestion rather than an
+    instruction, because anything inside the band will work.
     """
     if not MIN_SAMPLE_RATE <= sample_rate <= MAX_SAMPLE_RATE:
         raise ValueError(
             f'{source} has a sample rate of {sample_rate} Hz, and this program works '
             f'only where {MIN_SAMPLE_RATE} <= sample rate <= {MAX_SAMPLE_RATE} Hz. '
             f'Below {MIN_SAMPLE_RATE} Hz the 4 kHz the display and the analysis look '
-            'at is above Nyquist, so there is nothing there to measure; above '
+            'at is above Nyquist, so there is nothing there to measure. Above '
             f'{MAX_SAMPLE_RATE} Hz the fixed-size buffer holds too little history to '
             'acquire reliably, and a powerline arc has nothing to say up there '
             f'anyway. Consider resampling it to {configured_rate} Hz, the rate this '
@@ -63,11 +63,9 @@ def validate_sample_rate(sample_rate: int, source: str, configured_rate: int) ->
 @dataclass
 class AudioConfig:
     # Sounddevice name of the audio input recording the RF-to-audio converted signal.
+    # The device is always resolved by this name, never by a stored index: names
+    # survive a reboot, and indices change whenever Windows reassigns audio hardware.
     input_device_name: str = 'Line In (Realtek(R) Audio), Windows DirectSound'
-    # PortAudio device index written by configure.py for reference. Not used at
-    # runtime - the device is always resolved by input_device_name, which is stable
-    # across reboots. Indices change whenever Windows reassigns USB/audio devices.
-    device_index: int | None = None
     # Audio sample rate in Hz. Must match what the input device is configured to use,
     # and must lie between MIN_SAMPLE_RATE and MAX_SAMPLE_RATE -- see validate_sample_rate.
     sample_rate: int = 16000
@@ -91,9 +89,6 @@ class StationConfig:
     # dB offset applied to audio amplitude to approximate RF level at the receiver input.
     # Hardware-specific: derived by calibrating against a known signal level.
     audio_rf_conversion_db: float = -32.0
-    # Path loss in dB from the powerline to the monitoring location.
-    # Used to estimate source strength from the measured level.
-    distance_attenuation: float = 30.0
     # ISO 8601 start date for the all-time summary graph.
     summary_start_date_iso: str = '2024-01-01T00:00:00+0000'
 
@@ -119,7 +114,7 @@ class WeatherConfig:
 
 @dataclass
 class ServerConfig:
-    # Set to true to enable SCP uploads to a web server; false runs in local-only mode.
+    # Set to true to enable SCP uploads to a web server. False runs in local-only mode.
     enabled: bool = False
     # Hostname or IP of the web server that hosts the published output.
     host: str = ''
@@ -130,7 +125,7 @@ class ServerConfig:
 
 @dataclass
 class RecordingConfig:
-    # Set to true to arm event recording at startup; --enable-recording arms it for
+    # Set to true to arm event recording at startup. --enable-recording arms it for
     # one run without editing the config, and the toolbar button toggles it live.
     enabled: bool = False
     # Directory for recorded .wav files.  Empty means <station.path>/recordings.
@@ -144,7 +139,7 @@ class RecordingConfig:
     # the budget was last reset, not from when it ran out, so it does not drift.
     # 0 never re-arms: once the budget is spent, recording stays off until armed by hand.
     rearm_reset_minutes: float = 0.0
-    # Longest single recording in seconds, measured from the moment of lock; the
+    # Longest single recording in seconds, measured from the moment of lock. The
     # lead-in and trailer are extra.  0 records the event however long it runs.
     max_seconds: float = 120.0
     # Seconds without a lock before a recording is closed.  This audio is kept, so

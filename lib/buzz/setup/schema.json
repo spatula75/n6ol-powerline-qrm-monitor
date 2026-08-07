@@ -1,0 +1,356 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "N6OL Powerline QRM Monitor configuration",
+  "description": "Every setting the monitor reads. Each section is one table of ~/.buzz/config.toml.",
+  "type": "object",
+  "properties": {
+    "audio": {
+      "type": "object",
+      "title": "Audio input",
+      "description": "The sound card the receiver feeds, and what it sends.",
+      "properties": {
+        "input_device_name": {
+          "type": "string",
+          "title": "Input device",
+          "description": "The sound card that carries the RF-to-audio converted signal.",
+          "default": "Line In (Realtek(R) Audio), Windows DirectSound",
+          "x-widget": "device-picker",
+          "x-sample-commented": "Whatever Setup finds on your machine. The value shown names one sound card and is only an example.",
+          "x-notes": [
+            "Choose this in Setup's Audio step. Do not type it. Setup probes every input, shows a level bar for each, and writes the name for you.",
+            "The monitor finds the device by this name at every start. It never uses a stored index. Names survive a reboot. Indices do not."
+          ]
+        },
+        "sample_rate": {
+          "type": "integer",
+          "title": "Sample rate (Hz)",
+          "description": "The audio sample rate. It must match a rate the input device uses.",
+          "default": 16000,
+          "minimum": 8000,
+          "maximum": 48000,
+          "x-notes": [
+            "The monitor enforces this band. It does not treat it as advice.",
+            "Below 8000 Hz the 4 kHz that the waterfall and the analysis look at sits above Nyquist. Nothing is there to measure.",
+            "Above 48000 Hz the ring buffer is a fixed size, so it holds too little history for the analyzer to acquire the way it was tuned. A powerline arc has nothing to say up there anyway.",
+            "16000 Hz is enough for this measurement and keeps CPU load low. That matters for a monitor that runs all day without an operator."
+          ]
+        },
+        "pulse_rate": {
+          "type": "integer",
+          "title": "Pulse rate (pps)",
+          "description": "Impulses per second from the mains. This is twice the grid frequency, because an arc fires on both peaks.",
+          "default": 120,
+          "enum": [120, 100],
+          "x-enum-titles": {
+            "120": "120 pps - 60 Hz grid (North America)",
+            "100": "100 pps - 50 Hz grid (Europe and most other places)"
+          }
+        }
+      }
+    },
+    "station": {
+      "type": "object",
+      "title": "Station",
+      "description": "Who measures, from where, and the calibration that turns audio into dBm.",
+      "properties": {
+        "callsign": {
+          "type": "string",
+          "title": "Callsign",
+          "description": "Your amateur radio callsign. It appears in page titles and plot labels.",
+          "default": "N0CALL"
+        },
+        "timezone": {
+          "type": "string",
+          "title": "Timezone",
+          "description": "The IANA timezone name for CSV timestamps and graph labels, such as America/Los_Angeles.",
+          "default": "America/Los_Angeles",
+          "x-widget": "timezone-picker"
+        },
+        "path": {
+          "type": "string",
+          "title": "Output directory",
+          "description": "Where the monitor writes CSV files, plots, and the index page.",
+          "x-default-from-runtime": "Your home directory, resolved when the program starts.",
+          "x-example": "C:\\Users\\yourname",
+          "x-notes": [
+            "Recordings go to a 'recordings' folder under this path, unless the recording section names a directory of its own."
+          ]
+        },
+        "noise_floor": {
+          "type": "number",
+          "title": "Receiver noise floor (dBm)",
+          "description": "The baseline for the noise-floor reference line on the daily graph.",
+          "x-notes": [
+            "You may want to adjust this after gathering a few days of data, to see what is typical for your area in the absence of any utility noise."
+          ],
+          "default": -98.0
+        },
+        "noise_min_snr": {
+          "type": "number",
+          "title": "Minimum SNR for a detection (dB)",
+          "description": "How far above the noise floor a reading must sit to count as interference in the probability summaries.",
+          "default": 12.0,
+          "minimum": 0
+        },
+        "audio_rf_conversion_db": {
+          "type": "number",
+          "title": "Audio-to-RF offset (dB)",
+          "description": "The offset that converts audio amplitude to RF level at the receiver input.",
+          "default": -32.0,
+          "x-widget": "calibration",
+          "x-notes": [
+            "This number is added to the audio level to approximate the RF level in dBm at the receiver input.  For example, if your radio's own S-meter reads -64 dBm and the sound card sees -32 dB of audio for that same signal, set this to -32.",
+            "Most receivers: leave this alone.  Open the Calibration meter on the Audio page instead, and adjust the RF and AF gain on the receiver until its own S-meter agrees with the reading there.",
+            "Some receivers have no AF gain to adjust - one with its own internal sound device, for instance.  Choose this field itself to open a live meter of its own: Up and Down nudge the offset, Space resets it to the default, and Enter confirms.",
+            "S9 is -73 dBm, and each S-unit is 6 dB.",
+            "Set the radio up for measurement first: AGC off, widest filter, SSB, preamp and attenuator off. Tune where the antenna is resonant and bypass the tuner."
+          ]
+        },
+        "summary_start_date_iso": {
+          "type": "string",
+          "title": "Summary graph start date",
+          "description": "The ISO 8601 date that the all-time probability summary graph starts from.",
+          "default": "2024-01-01T00:00:00+0000"
+        }
+      }
+    },
+    "weather": {
+      "type": "object",
+      "title": "Weather",
+      "description": "Weather readings logged beside each measurement. Arcing follows humidity and wind, so these are worth keeping.",
+      "properties": {
+        "source": {
+          "type": "string",
+          "title": "Weather source",
+          "description": "Where weather readings come from. Choose none to leave those CSV columns empty.",
+          "default": "cumulusmx",
+          "enum": ["cumulusmx", "openmeteo", "none"],
+          "x-enum-titles": {
+            "cumulusmx": "CumulusMX - a weather station on your own network",
+            "openmeteo": "Open-Meteo - a free public API that needs no account",
+            "none": "None - leave the weather columns empty"
+          }
+        },
+        "url": {
+          "type": "string",
+          "title": "CumulusMX endpoint",
+          "description": "The JSON endpoint of your CumulusMX installation.",
+          "default": "",
+          "x-visible-when": {"field": "source", "equals": "cumulusmx"},
+          "x-example": "http://cumulusmx.local:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing",
+          "x-notes": [
+            "Change the query string tags to match the fields your station publishes.",
+            "You should normally only change the hostname and port here."
+          ]
+        },
+        "latitude": {
+          "type": ["number", "null"],
+          "title": "Latitude",
+          "description": "The latitude that Open-Meteo looks up.",
+          "default": null,
+          "minimum": -90,
+          "maximum": 90,
+          "x-visible-when": {"field": "source", "equals": "openmeteo"}
+        },
+        "longitude": {
+          "type": ["number", "null"],
+          "title": "Longitude",
+          "description": "The longitude that Open-Meteo looks up.",
+          "default": null,
+          "minimum": -180,
+          "maximum": 180,
+          "x-visible-when": {"field": "source", "equals": "openmeteo"}
+        }
+      },
+      "if": {"properties": {"source": {"const": "openmeteo"}}, "required": ["source"]},
+      "then": {
+        "comment": "`required` alone would pass: both keys are present, holding null. Open-Meteo needs real coordinates, so the type has to narrow here too.",
+        "properties": {
+          "latitude": {"type": "number"},
+          "longitude": {"type": "number"}
+        },
+        "required": ["latitude", "longitude"]
+      }
+    },
+    "server": {
+      "type": "object",
+      "title": "Web publishing",
+      "description": "Upload plots and data to a web server over SCP, so anyone can see the results. This is off by default, and the monitor then runs on this machine alone.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Publish to a web server",
+          "description": "Upload output files after each collection cycle. The monitor ignores every setting below while this is off.",
+          "default": false
+        },
+        "host": {
+          "type": "string",
+          "title": "Server hostname",
+          "description": "The hostname or IP address of the web server that holds the published output.",
+          "default": "",
+          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-example": "yourserver.example.com"
+        },
+        "username": {
+          "type": "string",
+          "title": "SSH username",
+          "description": "The account to log in as on that server.",
+          "default": "",
+          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-example": "yourname"
+        },
+        "remote_path": {
+          "type": "string",
+          "title": "Remote path",
+          "description": "Where uploaded files go on the server. End it with a slash.",
+          "default": "",
+          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-example": "/var/www/html/noise/"
+        },
+        "key_path": {
+          "type": "string",
+          "title": "SSH private key",
+          "description": "The private key that authenticates the upload. It must have no passphrase, so uploads run without an operator.",
+          "x-default-from-runtime": "buzz.pem inside the .buzz folder in your home directory.",
+          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-example": "C:/Users/yourname/.buzz/buzz.pem",
+          "x-notes": [
+            "Generate one with: ssh-keygen -t ed25519 -f ~/.buzz/buzz.pem -N \"\"",
+            "Append ~/.buzz/buzz.pem.pub to the server account's ~/.ssh/authorized_keys. Confirm that the key works before you switch uploads on.",
+            "On Windows, use forward slashes or double backslashes. TOML reads one backslash as the start of an escape sequence."
+          ]
+        }
+      },
+      "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+      "then": {
+        "properties": {
+          "host": {"minLength": 1},
+          "username": {"minLength": 1},
+          "remote_path": {"minLength": 1},
+          "key_path": {"minLength": 1}
+        },
+        "required": ["host", "username", "remote_path", "key_path"]
+      }
+    },
+    "recording": {
+      "type": "object",
+      "title": "Event recording",
+      "description": "Save interference events as .wav files. Replay one later with --playback, or render it to video with --render.",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "title": "Arm recording at startup",
+          "description": "Start with recording armed. The Record button, or the R key, toggles it while the monitor runs. The --enable-recording flag arms it for one run.",
+          "default": false,
+          "x-notes": [
+            "A recording starts when the analyzer locks onto the pulse train. It ends once the signal has been gone for stop_after_seconds.",
+            "It opens with the audio the monitor had already buffered at the moment of the lock, and it ends with the silence it waited through. An event that starts and ends while the monitor runs is therefore captured whole, with a run-up and a run-out around it."
+          ]
+        },
+        "directory": {
+          "type": "string",
+          "title": "Recording directory",
+          "description": "Where the monitor writes .wav files. Leave it empty to use a 'recordings' folder under the station output path.",
+          "default": "",
+          "x-sample-commented": "A 'recordings' folder under the station output path.",
+          "x-example": "C:/Users/yourname/recordings",
+          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-notes": [
+            "The --playback flag also looks here when you give it a bare filename instead of a path."
+          ]
+        },
+        "max_events": {
+          "type": "integer",
+          "title": "Events to record",
+          "description": "How many of the next events to capture before recording disarms itself. Set 0 to record every event until you switch recording off.",
+          "default": 10,
+          "minimum": 0,
+          "x-visible-when": {"field": "enabled", "equals": true}
+        },
+        "rearm_reset_minutes": {
+          "type": "number",
+          "title": "Budget reset (minutes)",
+          "description": "How often to refill that budget, which makes it a rate instead of a one-off. 1440 gives max_events every day. Set 0 to never re-arm.",
+          "default": 0.0,
+          "minimum": 0,
+          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-notes": [
+            "The cycle runs from the last reset, not from the moment the budget ran out. It therefore keeps its time of day instead of sliding later by however long each day's events took to arrive.",
+            "A quiet period does not carry unused events forward. Switching recording off by hand also cancels the cycle."
+          ]
+        },
+        "max_seconds": {
+          "type": "number",
+          "title": "Longest recording (seconds)",
+          "description": "How much of the interference to record, measured from the lock. Set 0 to record the whole event however long it runs.",
+          "default": 120.0,
+          "minimum": 0,
+          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-notes": [
+            "This measures the event, not the file. The run-up that the ring buffer already held comes free on top, and so does the trailer afterward. The .wav on disk is therefore always longer than this.",
+            "A min_lock_seconds wait counts against this, because the monitor keeps those seconds and they are part of the event. Three seconds there and ten here give ten seconds of event, not thirteen.",
+            "A min_lock_snr wait does not count. That wait is open-ended, and charging it would spend the whole allowance before the file even opened.",
+            "Expect an overrun of up to 200 ms. The recorder polls rather than watching continuously.",
+            "A capped recording does not roll over into a second file. The monitor skips the rest of that event and starts the next file at the next event. The cap always wins over stop_after_seconds."
+          ]
+        },
+        "stop_after_seconds": {
+          "type": "number",
+          "title": "Stop after silence (seconds)",
+          "description": "How many seconds without a lock end a recording. The monitor keeps this audio, so it also sets how much trailer every recording ends with.",
+          "default": 10.0,
+          "minimum": 0,
+          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-notes": [
+            "Raise it if one flickering signal splits across several files. Lower it to trim dead air off the end."
+          ]
+        },
+        "min_lock_seconds": {
+          "type": "number",
+          "title": "Minimum lock before recording (seconds)",
+          "description": "How long the interference must hold before a recording starts. Set 0 to record every lock, however brief.",
+          "default": 0.0,
+          "minimum": 0,
+          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-notes": [
+            "A night of two-second blips otherwise fills the directory with files too short to replay.",
+            "Keep it to five seconds or less. The lead-in pays for it, because that audio comes from a sliding window a few seconds long. Wait two seconds and every recording opens two seconds later against the event.",
+            "The monitor clamps the value to the lower of the buffer length and max_seconds. It warns and says which one it used."
+          ]
+        },
+        "min_lock_snr": {
+          "type": "number",
+          "title": "Minimum SNR before recording (dB)",
+          "description": "How loud the interference must be before a recording starts. This keeps barely audible events off the disk.",
+          "default": 0.0,
+          "minimum": 0,
+          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-notes": [
+            "This affects recording alone. It does not change when the analyzer locks, measures, logs, or draws. That happens at a fixed 6 dB SNR in the code, so any value at or below 6 does nothing.",
+            "A signal that starts quiet and grows louder is not skipped. Recording starts the moment it crosses, so the monitor catches the event even when it misses the opening seconds.",
+            "The lead-in pays for the wait, and the lead-in runs out. This differs from min_lock_seconds, which the monitor can clamp: this wait depends on the signal rather than the clock. Something in the low teens is a reasonable place to start."
+          ]
+        }
+      }
+    },
+    "render": {
+      "type": "object",
+      "title": "Video rendering",
+      "description": "Where to find ffmpeg. Only --render and the loudness probe that feeds it need it. Only specify this if it cannot be found on the PATH.",
+      "properties": {
+        "ffmpeg_path": {
+          "type": "string",
+          "title": "ffmpeg location",
+          "description": "Leave this empty to search PATH, where a normal install puts ffmpeg.",
+          "default": "",
+          "x-example": "C:/Users/yourname/AppData/Local/Microsoft/WinGet/Links",
+          "x-notes": [
+            "Set it only when ffmpeg sits somewhere PATH does not reach. Two cases: a Windows build unzipped into a folder, and winget's shim directory in a terminal you have not restarted since the install.",
+            "Either the binary or the folder that holds it will do. A copy on PATH wins over this setting.",
+            "A monitor that never renders never looks for ffmpeg, so an empty value costs nothing."
+          ]
+        }
+      }
+    }
+  }
+}

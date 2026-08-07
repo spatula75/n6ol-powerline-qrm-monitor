@@ -29,11 +29,12 @@ logger = logging.getLogger(__name__)
 
 # Ring buffer capacity, in seconds of audio rather than in samples.
 #
-# 9.6 s is exactly what 300 chunks of 512 came to at 16 kHz, so nothing changes at the
-# rate this program records at.  Expressing it as a duration is what makes it mean the
-# same thing at any other rate: a fixed sample count held 9.6 s at 16 kHz but only 3.5 s
-# at 44.1 kHz, silently shrinking both the analyzer's history and the lead-in an event
-# recording opens with, in proportion to a setting nobody would connect to either.
+# 9.6 s is exactly what 300 chunks of 512 came to at 16 kHz, so nothing changes at
+# the rate this program records at.  Expressing it as a duration is what makes it
+# mean the same thing at any other rate.  A fixed sample count held 9.6 s at 16 kHz
+# but only 3.5 s at 44.1 kHz, silently shrinking both the analyzer's history and the
+# lead-in an event recording opens with, in proportion to a setting nobody would
+# connect to either.
 #
 # Ample headroom for the continuous analyzer's 1 s aligned windows and the waterfall's
 # per-frame reads, and it doubles as the lead-in an event recording opens with.
@@ -43,7 +44,7 @@ _BUFFER_SECONDS = 9.6
 # precisely because the audio is mono and narrow-band.
 _DEFAULT_SAMPLE_RATE = 16000
 
-# How often a continuing run of dropped audio is summarised.  A minute is chosen to
+# How often a continuing run of dropped audio is summarized.  A minute is chosen to
 # match the collector's cycle, so a log reporting dropouts lines up with the CSV rows
 # they affected.  The first one is always reported immediately; see DropoutReporter.
 _DROPOUT_REPORT_SECONDS = 60.0
@@ -128,7 +129,7 @@ class RingBufferPipeline:
         window's phase origin moves with the tail (512-sample chunks are not a
         whole number of pulse periods), silently invalidating stored phases.
 
-        Caller should ensure wait_for_data(n_samples + align) has returned True.
+        The caller should ensure wait_for_data(n_samples + align) has returned True.
         """
         n_chunks = ceil((n_samples + align - 1) / self.CHUNK_SIZE)
         with self._condition:
@@ -281,8 +282,8 @@ class AudioPipeline(RingBufferPipeline):
         def _callback(indata: np.ndarray, frames: int,
                       time: object, status: sd.CallbackFlags) -> None:
             if status:
-                # PortAudio reports every input fault through `status`, and they are
-                # all handled the same way because the recovery is the same.  On a
+                # PortAudio reports every input fault through `status`, and all of
+                # them get the same handling, because the recovery is the same.  On a
                 # capture stream it is in practice an overflow: the device captured
                 # faster than this callback collected, and the driver discarded the
                 # difference.
@@ -298,11 +299,12 @@ class AudioPipeline(RingBufferPipeline):
                 # The grid frequency is therefore the reading to distrust, not the
                 # levels.
                 #
-                # Logged rather than raised.  This monitor runs unattended all day, and
-                # losing every later measurement to protect one polluted minute is the
-                # wrong trade; every other failure here degrades and carries on for the
-                # same reason.  The analyzer recovers by itself: a phase that stops
-                # making sense drops it to SEARCHING and it re-acquires.
+                # This is logged rather than raised.  The monitor runs unattended all
+                # day, and losing every later measurement to protect one polluted
+                # minute is the wrong trade; every other failure here degrades and
+                # carries on for the same reason.  The analyzer recovers on its own: a
+                # phase that stops making sense drops it to SEARCHING and it
+                # re-acquires.
                 dropped = self._dropouts.record(monotonic())
                 if dropped is not None:
                     logger.warning(
@@ -336,8 +338,9 @@ class AudioSampler:
     def __init__(self, config: BuzzConfig) -> None:
         """Resolve the PortAudio device to record from and start the pipeline.
 
-        Always resolves the device by name, not by the stored index.  PortAudio
-        device indices are reassigned by Windows on every reboot; the name is stable.
+        This always resolves the device by name, not by the stored index.
+        PortAudio device indices are reassigned by Windows on every reboot; the name
+        is stable.
         """
         self._config = config
         device = sd.query_devices(config.audio.input_device_name, 'input')
@@ -364,10 +367,11 @@ class AudioSampler:
 class LevelStream:
     """Persistent input stream for real-time level monitoring.
 
-    Uses a PortAudio callback rather than blocking read() because DirectSound on
-    Windows does not support PortAudio's blocking I/O reliably.  The callback fires
-    whenever the hardware delivers a new buffer; read() blocks on a threading.Event
-    until that happens, then returns immediately with the latest dBm level.
+    This uses a PortAudio callback rather than blocking read(), because DirectSound
+    on Windows does not support PortAudio's blocking I/O reliably.  The callback
+    fires whenever the hardware delivers a new buffer; read() blocks on a
+    threading.Event until that happens, then returns immediately with the latest
+    dBm level.
 
     The sound card's DC offset is removed before rectification, using the same
     EMA-smoothed median estimate the analyzer applies (see ContinuousAnalyzer._capture
@@ -376,6 +380,15 @@ class LevelStream:
     so an uncorrected offset would be baked into every measurement the monitor ever
     reports.  Smoothing is what makes it viable at this block size - a 320-sample
     block is far too short to estimate an offset from on its own.
+
+    offset_db is public and safe to write from outside while the stream runs: the
+    setup program's calibration dialog nudges it live as the operator adjusts the
+    offset, and amplitude_to_dbm() applies it fresh on every callback, so a write
+    from the UI thread takes effect on the very next block with no stream restart
+    needed.  A plain float assignment races the callback thread only in the
+    Python-level sense of "which value it reads this callback or the next" - never
+    a torn read - which is precise enough for a live display an operator is
+    watching, not a value anything logs or averages.
 
     Use as a context manager:
         with sampler.level_stream() as stream:
@@ -388,7 +401,7 @@ class LevelStream:
     def __init__(self, config: BuzzConfig, device_index: int, blocksize: int) -> None:
         self._event = threading.Event()
         self._latest_dbm: float = SILENCE_DBFS
-        self._offset_db = config.station.audio_rf_conversion_db
+        self.offset_db = config.station.audio_rf_conversion_db
         self._dc: float | None = None   # None until the first block seeds it
 
         def _callback(indata: np.ndarray, frames: int,
@@ -398,7 +411,7 @@ class LevelStream:
             self._dc = (block_dc if self._dc is None
                         else self._dc + self.DC_EMA_ALPHA * (block_dc - self._dc))
             amplitude = float(np.mean(np.abs(block - self._dc)))
-            self._latest_dbm = amplitude_to_dbm(amplitude, self._offset_db)
+            self._latest_dbm = amplitude_to_dbm(amplitude, self.offset_db)
             self._event.set()
 
         self._stream = sd.InputStream(
@@ -421,6 +434,19 @@ class LevelStream:
     def close(self) -> None:
         self._stream.stop()
         self._stream.close()
+        # Wakes a read() blocked in the wait above, which the setup program's
+        # calibration dialogs call via asyncio.to_thread() - see calibration.py.
+        # Cancelling that asyncio Task does not stop the thread pool worker
+        # actually running read(): the callback that would normally set this
+        # event has just been stopped, so without this, that thread blocks in
+        # Event.wait() forever, on an event nothing will ever set again.  A
+        # thread stuck like that is not merely leaked - CPython's own
+        # ThreadPoolExecutor registers an atexit hook that joins every worker
+        # thread it ever created, so one stuck thread hangs the entire process
+        # on exit, not just the dialog that orphaned it.  Confirmed live: closing
+        # the setup program after opening either calibration dialog hung
+        # instead of exiting, until this line was added.
+        self._event.set()
 
     def __enter__(self) -> 'LevelStream':
         return self

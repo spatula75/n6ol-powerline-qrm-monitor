@@ -7,7 +7,7 @@ Working notes for Claude Code on this project. Distilled from prior sessions.
 A continuous powerline QRM monitor for ham radio operators. It samples receiver audio,
 locks onto the 120 pps (60 Hz grid; 100 pps where mains is 50 Hz) impulse train from
 arcing hardware, and logs signal and noise-floor levels to CSV, charts, and optional
-`.wav` event recordings. There is a live Qt display: waterfall, phase-synchronised
+`.wav` event recordings. There is a live Qt display: waterfall, phase-synchronized
 oscilloscope, and S-unit bar graphs.
 
 It is a **field tool, not lab test equipment**. The goal is knowing when the utility is
@@ -19,7 +19,7 @@ testability is usually not worth it - say so rather than building it.
 - `lib/buzz/` - the application. One responsibility per module.
 - `tools/` - standalone diagnostic scripts.
 - `tests/` - unit tests. `tests/integration/` is markered and deselected by default.
-- `configure.py`, `level_meter.py` - end-user setup helpers at the root.
+- Interactive setup lives at `lib/buzz/setup/`, run with `python -m buzz.setup`.
 - `docs/`, `README.md`, `README-analysis.md` - user- and design-facing docs.
 - `templates/index.html` - Jinja2 template for the published web page.
 - `config.example.toml` - the documented sample config. Real config lives at
@@ -57,8 +57,7 @@ with `$?` false. Windows PowerShell 5.1 has no `&&` or `||`, so chaining needs
 
     PYTHONPATH=lib python -m buzz.main            # run the monitor
     PYTHONPATH=lib python -m buzz.main --headless # no GUI
-    python configure.py                            # pick the audio input device
-    python level_meter.py                          # live S-meter for setting RF/AF gain
+    python -m buzz.setup                           # guided setup: device, calibration, timezone, a live S-meter
 
 `main.py` flags: `--headless`, `--top`, `--enable-recording`, `--playback FILE`,
 `--mute`, `--playback-gain DB|auto`, `--render FILE.mp4`. Playback replays a recorded
@@ -221,12 +220,28 @@ after all of it. In that order:
 5. **Hands-on verification.** Changes to the audio path, the display, or the charts get
    checked against a live radio before being committed - green tests are not the finish
    line for those.
-6. **Documentation drift.** A code or behaviour change means checking `README.md`,
+6. **Documentation drift.** A code or behavior change means checking `README.md`,
    `README-analysis.md`, and `config.example.toml` for anything the change makes wrong -
    a described default that moved, a number that no longer holds, a flag or setting that
    changed shape. Docs go stale exactly like comments do, and nothing else catches it;
    there is no test that fails when a README goes out of date.
-7. **Diff artifacts.** Read the actual diff before staging, not just the file as it
+7. **STE compliance for touched prose.** Any docstring, comment, or user-facing string
+   in a file this change touches - not the whole file, and not the whole repo - gets
+   checked against `docs/ste-writing.md` and this file's own prose rules: banned words,
+   em dashes, sentence fragments, two spaces after a period, active voice, semicolons
+   in strict text. This is not a dedicated sweep and does not need one; it rides along
+   with whatever change is already being made. Handled this way, every touched file
+   ratchets a little closer to full compliance instead of drifting further from it one
+   untouched sentence at a time.
+
+   **This step is mandatory and unprompted, the same as ruff or the test suite below -
+   run it before every commit, not only when asked.** The real goal is prose that
+   already follows these rules on first draft, so the check should rarely find
+   anything. Treat any violation this step does catch as a sign to slow down while
+   drafting the next sentence, not as proof the safety net is doing its job. Proposing
+   a commit without having actually run this check against every touched file is the
+   same class of miss as proposing one with a known lint error, not a smaller one.
+8. **Diff artifacts.** Read the actual diff before staging, not just the file as it
    ends up. Editing in passes leaves residue that runs and lints clean and is only
    visible in the diff itself: a doubled blank line where a tool split one edit into
    two, a comment whose sentence now trails off because an insertion fell inside it
@@ -255,7 +270,7 @@ the interpreted one.
 
 ## Reporting finished work
 
-### Summarise structural changes
+### Summarize structural changes
 
 When a sizeable unit of work is done, **describe what changed structurally** before
 anything else: what was added, where it lives, and what it does. New modules, new
@@ -347,7 +362,7 @@ wrong the same way.
 
 **The counterweight matters as much as the rule.** A small gain does not justify churn,
 and *readability beats pattern purity* still stands. Refactor where the structure
-actually clarifies, not to make the code resemble a catalogue.
+actually clarifies, not to make the code resemble a catalog.
 
 ---
 
@@ -371,12 +386,12 @@ What that outranks, in practice:
   matters - and where it does, the comment should say so.
 
 **Tests express intent too, and are often the better place for it.** A test states what
-behaviour is supposed to hold, in a form that fails loudly when someone breaks the
+behavior is supposed to hold, in a form that fails loudly when someone breaks the
 assumption - where a comment making the same claim just goes quietly out of date. When
 the thing to convey is an identity, an equivalence, or a boundary condition, a test
 usually carries it better than prose: the equivalence tests behind the pulse-train
 summation don't merely check the optimization, they record the claim that makes it
-valid. Reach for a test whenever the explanation is really a claim about behaviour.
+valid. Reach for a test whenever the explanation is really a claim about behavior.
 
 ## Don't overdrive your headlights
 
@@ -454,15 +469,17 @@ Practical consequences:
   useful to the next reader.
 - **A constant used by two or more modules belongs in `buzz/constants.py`, not
   redefined in each.** `FULL_SCALE_COUNTS`, `S9_DBM`, and `DB_PER_S_UNIT` live there
-  because dsp.py, scope.py, device_setup.py, waterfall.py, plotter.py, and
-  level_meter.py all need the same numbers and previously each defined its own copy,
-  which is how device_setup.py's level bar drifted to 4.75 dB/segment while every
-  S-meter in the program stayed at 6, with nothing to notice the two had come apart.
-  When auditing for duplicates, check root-level scripts (`level_meter.py`,
-  `configure.py`) as well as `lib/buzz/` - a first pass that grepped only the package
-  missed `level_meter.py`'s own copy of `S9_DBM` entirely. Move a constant here the
-  moment a second module needs it, not before: a value only one module uses belongs
-  with that module, where a reader finds it without a second file to check.
+  because dsp.py, scope.py, device_setup.py, waterfall.py, and plotter.py all need
+  the same numbers, and a since-removed root-level script that once needed them too
+  had already defined its own copy, which is how device_setup.py's level bar drifted
+  to 4.75 dB/segment while every S-meter in the program stayed at 6, with nothing to
+  notice the two had come apart. When auditing for duplicates, check every module
+  that could plausibly need the number, not only the ones already suspected - a
+  first pass that grepped only `lib/buzz/` once missed a root-level script's own
+  copy of `S9_DBM` entirely, back when a script like that still lived outside the
+  package. Move a constant here the moment a second module needs it, not before: a
+  value only one module uses belongs with that module, where a reader finds it
+  without a second file to check.
   Derive dependents from the shared constant (`_BAR_WIDTH = round(20 * log10(...) /
   DB_PER_S_UNIT)`) rather than hand-computing a literal that can drift again the same
   way, and pin the relationship with a test - see `tests/test_constants.py`.
@@ -527,7 +544,7 @@ leave an equivalence test behind.
 
 **Every `@njit` gets an explicit signature**, so numba compiles at import instead of on
 first call. Take the time to work out the right types; it is not optional and it is not
-a micro-optimisation.
+a micro-optimization.
 
 Lazy compilation runs on whichever thread reaches the function first. In this program
 that is the Qt thread, part-way through a paint, while audio keeps arriving on another
@@ -560,11 +577,11 @@ that call rather than quietly compiling another variant mid-flight.
 - Cover every method of any appreciable complexity. Separate tests into discrete files
   and classes by subject.
 - **Write tests to document, not only to catch regressions.** A test name and its
-  assertions should say what behaviour is intended and why it holds. Where a knowledge
+  assertions should say what behavior is intended and why it holds. Where a knowledge
   gap makes code hard to trust - a mathematical identity, an equivalence between a fast
   path and an obvious one, a boundary that must not move - a test is the durable way to
   state it. See "First principle: express the intention".
-- Golden files and generated sample audio in `tests/resources/` pin down DSP behaviour
+- Golden files and generated sample audio in `tests/resources/` pin down DSP behavior
   so later tweaks have to be deliberate.
 - **When a test stands in for a sound source, it uses the dtype the real source
   produces.** Synthetic audio is easy to build in whatever type is convenient, and the
@@ -672,6 +689,45 @@ different machines means nothing.
 Match the voice already in the codebase: concise, factual, plain. Avoid AI-assistant tics:
 no "X IS REAL", no "it isn't X, it's Y" constructions, no breathless framing.
 
+Prose here also follows a Simplified Technical English discipline, adapted under the MIT
+License from a skill by Ege Çelebi (@woosal1337), and through it from the ASD-STE100
+standard. It lives in its own file so the attribution and the license terms stay with
+the rules, and is imported here so it loads with this one:
+
+@docs/ste-writing.md
+
+Two modes, and the difference matters: **strict** for error messages, log lines and
+numbered procedures, where every extra word costs a reader who is already stuck;
+**flavored** for comments, docstrings and PR text, where the sentence and active-voice
+discipline applies but the length caps and vocabulary limits do not. Where those rules
+disagreed with the ones already here, the disagreement was settled deliberately rather
+than by whichever file was read last, and `docs/ste-writing.md` records which won and
+why. Its self-lint list is the thing to run over any prose before returning it.
+
+**Verifying a wording-only pass.** A rewrite that touches every docstring and comment
+in a file is exactly the kind of change that is easy to get subtly wrong - a dropped
+number, a fact that quietly changed, a paren that landed in the wrong place and broke
+the code underneath it. Prove it did not, the same way every time, before committing:
+
+1. **AST-diff with docstrings zeroed.** Parse the file before and after with `ast`,
+   blank out every module/class/function docstring (`ast.get_docstring(node,
+   clean=False)`, then null the string), and compare `ast.dump()` of the two trees.
+   Identical means every line of code is provably unchanged; comments are not part of
+   the AST at all, so read the diff by eye to confirm those too.
+2. **A figure-preservation scan.** Regex out every `dB`, `Hz`, `ms`, `%`, sample count,
+   and similar quantity from the prose on both sides and diff the two as multisets.
+   Nothing dropped, added, or changed, or the diff says exactly what moved.
+3. **`ruff check .` and the full suite with coverage,** as before every commit.
+4. For Markdown, where there is no AST, check structure instead: heading count, table
+   row count, code-fence count, and line count identical, plus the same figure scan.
+
+One case the AST diff will correctly flag: a user-facing string in a `raise` or a
+`logger.*` call is code, not a docstring, so tightening its wording (dropping a
+semicolon banned in strict mode, say) shows up as a real AST difference. That is not a
+false alarm - confirm by hand that only wording moved, no interpolated value or
+control flow, and say so in the commit message. `buzz.config.validate_sample_rate`
+and `Publisher.scp_to_server`'s failure log are worked examples.
+
 **Banned words and punctuation.** These are assistant tells rather than house voice, and
 they are banned outright in files and comments:
 
@@ -680,13 +736,24 @@ they are banned outright in files and comments:
   where the break really needs the weight, meaning a refinement that also wants a pause;
   the codebase already uses `--` that way in comments. A colon, semicolon, comma or full
   stop is often better than either, and a *paired* aside is nearly always clearer with
-  commas, since half of a `- ... -` pair at the start of a line reads as a bullet.
+  commas, since half of a `- ... -` pair at the start of a line reads as a bullet. The
+  semicolon is the one exception to that list in strict text: an error message or a
+  numbered step takes two sentences instead, per `docs/ste-writing.md`.
 - **These words:** *genuine*, *genuinely*, *load-bearing*, *is real*, *are real*, *land*,
   *lands*, *landed*.
 
 Most of them are doing emphasis rather than work. "A genuine bug" is a bug; "the
 load-bearing line" is the line that matters; "the value lands at 128" is the value being
 128. Say the thing.
+
+- **No sentence fragments.** "Two reasons, not one." has no verb and is not a
+  sentence. Write "There are two reasons for this: ..." instead, or fold the
+  fragment into the sentence before it. An impersonal construction like "there
+  are" is fine here even though it reads as passive-adjacent - stating a fact
+  plainly beats forcing an agent onto a sentence that does not need one.
+- **Two spaces after a period.** House style, not an STE rule - keep it in both
+  strict and flavored text. The extra space is what makes prose easy to scan at
+  a glance, sentence by sentence.
 
 - **Comment the why, not the what** - especially where a deliberate choice looks wrong
   at a glance. Worth preserving: peak amplitude rather than RMS (impulse noise, not sine
@@ -722,7 +789,7 @@ load-bearing line" is the line that matters; "the value lands at 128" is the val
   trims prose that restates the obvious - it does not license leaving hard-to-verify
   code unexplained. See "Don't overdrive your headlights"; the two rules meet at
   whether a reader can confirm the code is correct.
-- Where a comment explains the physics or the radio behaviour behind a decision, the
+- Where a comment explains the physics or the radio behavior behind a decision, the
   reasoning is authoritative and the wording is not. Tighten the prose; don't quietly
   change what it claims.
 - **Never invent facts** - crash frequencies, dates, history, measurements. If it isn't
@@ -783,7 +850,7 @@ it in CI output months later.
   least-squares fitting, the correlation identities this code leans on. Radio knowledge
   is a different matter; see Domain reference.
 - Display work is tuned by eye against a real signal, in terms of pixel dimensions,
-  padding, and colour ranges. Expect iteration, and change one thing at a time so each
+  padding, and color ranges. Expect iteration, and change one thing at a time so each
   round of feedback is attributable.
 
 ## Domain reference

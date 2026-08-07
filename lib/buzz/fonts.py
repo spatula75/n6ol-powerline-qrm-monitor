@@ -1,23 +1,23 @@
 """The display's typeface, carried with the program rather than borrowed from the OS.
 
-Every label on the display is tabular - frequencies up a frequency axis, S-units up a
-meter, a time base across a scope - so they want a monospace face, and they want the
-same one everywhere.  Asking the system for one delivers neither.
+Every label on the display is tabular: frequencies up a frequency axis, S-units up a
+meter, a time base across a scope. So they want a monospace face, and they want the
+same one everywhere. Asking the system for one delivers neither.
 
-`QFont('Monospace')` is a fontconfig generic.  It resolves on Linux and means nothing
+`QFont('Monospace')` is a fontconfig generic. It resolves on Linux and means nothing
 on Windows, where Qt substitutes its default UI face: this display asked for Monospace
 for years and drew Tahoma, which is proportional, so columns of numbers never lined up.
 
 Worse for rendering, a platform with no font database at all resolves it to nothing and
-draws every character as a tofu box.  Qt's offscreen platform on Windows is exactly
-that -- it reports zero font families -- which is the platform a headless render would
-use.  A video of empty rectangles is not a video anybody wants, and nothing about the
-failure announces itself until you look at the output.
+draws every character as a tofu box. Qt's offscreen platform on Windows is exactly
+that - it reports zero font families - which is the platform a headless render would
+use. A video of empty rectangles is not a video anybody wants, and nothing about the
+failure announces itself until someone looks at the output.
 
 So the font is loaded from a file, into the application's own database, where neither
-the platform nor the machine's installed fonts can affect it.  DejaVu Sans Mono comes
+the platform nor the machine's installed fonts can affect it. DejaVu Sans Mono comes
 with matplotlib, which is already a hard dependency, so this adds no asset to ship and
-no licence to think about.  Measured both ways, the same string draws the identical
+no license to think about. Measured both ways, the same string draws the identical
 number of lit pixels under the native platform and under offscreen.
 """
 
@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 FAMILY = 'DejaVu Sans Mono'
 # Fontconfig's generic, which is right on Linux and the best guess left if the file
-# below cannot be found.  Reaching this means the labels may be proportional, which is
+# below cannot be found. Reaching this means the labels may be proportional, which is
 # ugly rather than broken, so it warns and carries on.
 _FALLBACK_FAMILY = 'Monospace'
 _FILES = ('DejaVuSansMono.ttf', 'DejaVuSansMono-Bold.ttf')
@@ -40,12 +40,12 @@ _FILES = ('DejaVuSansMono.ttf', 'DejaVuSansMono-Bold.ttf')
 def font_files() -> list[Path]:
     """The .ttf files to load, from matplotlib's bundled copy of DejaVu.
 
-    Separated from the loading so it can be tested without a QApplication: whether the
-    files are where we think they are is the part that breaks when a dependency
-    reorganises itself, and it is worth knowing without a display.
+    Separated from the loading so it can be tested without a QApplication. Whether
+    the files are where this program expects is the part that breaks when a
+    dependency reorganizes itself, and it is worth knowing without a display.
 
     Bold is loaded alongside the regular so that the bold labels are the face's own
-    bold rather than one Qt synthesises by smearing the regular sideways.
+    bold rather than one Qt synthesizes by smearing the regular sideways.
     """
     try:
         import matplotlib
@@ -65,9 +65,9 @@ def display_family() -> str:
     two widgets, and because loading the same file repeatedly would grow Qt's font
     database an entry at a time.
 
-    Must be called with a QApplication already built -- Qt has nowhere to put an
-    application font before that -- which is why it happens on first paint rather than
-    at import.
+    Must be called with a QApplication already built. Qt has nowhere to put an
+    application font before that, which is why this happens on first paint rather
+    than at import.
     """
     files = font_files()
     if not files:
@@ -90,9 +90,9 @@ def display_font(size: int, bold: bool = False) -> QFont:  # pragma: no cover
     """A label font at `size` points, in the display's own face.
 
     Excluded from coverage for the same reason the widget classes are: constructing a
-    QFont needs a live Qt application, which the unit suite has no platform for.  The
-    offscreen integration tier exercises it, and does so against the case that matters
-    -- a platform reporting no fonts at all.
+    QFont needs a live Qt application, which the unit suite has no platform for. The
+    offscreen integration tier exercises it, against the case that matters most: a
+    platform reporting no fonts at all.
     """
     font = QFont(display_family(), size)
     if bold:
