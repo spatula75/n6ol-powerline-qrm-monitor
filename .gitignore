@@ -7,3 +7,5 @@ __pycache__/
 htmlcov/
 # Scratch space: notes, probes, and anything else kept to hand but not shipped.
 tmp/
+# /site/ is auto-generated from docs/ by GHA or by running mkdocs build --strict, thus there's no value to vc it
+/site/
