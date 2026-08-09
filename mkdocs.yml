@@ -1,0 +1,60 @@
+site_name: N6OL Powerline QRM Monitor
+site_description: Documentation for the N6OL Powerline QRM Monitor
+site_url: https://spatula75.github.io/n6ol-powerline-qrm-monitor/
+repo_url: https://github.com/spatula75/n6ol-powerline-qrm-monitor
+repo_name: spatula75/n6ol-powerline-qrm-monitor
+edit_uri: edit/main/docs/
+
+exclude_docs: |
+  ste-writing.md
+
+
+theme:
+  name: material
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - toc.follow
+    - search.suggest
+    - content.action.edit
+    - content.code.copy
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - toc:
+      permalink: true
+
+nav:
+  - Home: index.md
+  - Tutorials:
+      - Getting started: tutorials/getting-started.md
+      - Calibration: tutorials/calibration.md
+  - How-to guides:
+      - Publish to a web server: how-to-guides/server-publishing.md
+      - Record events: how-to-guides/recording-events.md
+      - Replay and render recordings: how-to-guides/replaying-recordings.md
+  - Reference:
+      - Configuration: reference/configuration.md
+      - Command line: reference/cli.md
+  - Concepts:
+      - How it works: concepts/how-it-works.md
+      - Agentic AI usage: concepts/agentic-ai.md
+      - Roadmap: concepts/roadmap.md
+      - Further reading: concepts/further-reading.md

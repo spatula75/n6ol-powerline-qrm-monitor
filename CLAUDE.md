@@ -20,7 +20,9 @@ testability is usually not worth it - say so rather than building it.
 - `tools/` - standalone diagnostic scripts.
 - `tests/` - unit tests. `tests/integration/` is markered and deselected by default.
 - Interactive setup lives at `lib/buzz/setup/`, run with `python -m buzz.setup`.
-- `docs/`, `README.md`, `README-analysis.md` - user- and design-facing docs.
+- `docs/`, `README.md` - user- and design-facing docs. `docs/` is the Diataxis-organized
+  site published by `.github/workflows/docs.yml`; `README.md` is a summary that points
+  there.
 - `templates/index.html` - Jinja2 template for the published web page.
 - `config.example.toml` - the documented sample config. Real config lives at
   `~/.buzz/config.toml`; the app falls back to dataclass defaults when it's absent.
@@ -220,11 +222,11 @@ after all of it. In that order:
 5. **Hands-on verification.** Changes to the audio path, the display, or the charts get
    checked against a live radio before being committed - green tests are not the finish
    line for those.
-6. **Documentation drift.** A code or behavior change means checking `README.md`,
-   `README-analysis.md`, and `config.example.toml` for anything the change makes wrong -
-   a described default that moved, a number that no longer holds, a flag or setting that
-   changed shape. Docs go stale exactly like comments do, and nothing else catches it;
-   there is no test that fails when a README goes out of date.
+6. **Documentation drift.** A code or behavior change means checking `README.md`, the
+   relevant page(s) under `docs/`, and `config.example.toml` for anything the change
+   makes wrong - a described default that moved, a number that no longer holds, a flag
+   or setting that changed shape. Docs go stale exactly like comments do, and nothing
+   else catches it; there is no test that fails when a README goes out of date.
 7. **STE compliance for touched prose.** Any docstring, comment, or user-facing string
    in a file this change touches - not the whole file, and not the whole repo - gets
    checked against `docs/ste-writing.md` and this file's own prose rules: banned words,
