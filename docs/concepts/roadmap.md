@@ -14,4 +14,4 @@ Milestone 5: Render playback to video
 
 Milestone 6: More user-friendly configuration program, user-facing documentation
 
-Milestone 7: RTLSDR support
+Milestone 7: RTL-SDR support

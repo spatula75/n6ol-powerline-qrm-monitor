@@ -10,7 +10,7 @@ To run the main program, use `python -m buzz.main` followed by optional argument
 
 `--headless` - run without the Qt display, suitable for a 24x7 monitoring process or if there's no value in keeping a display active.
 
-`--top` - incompatible with `--headless`, when running with the display active, keeps the display on top of all other windows (always visible)
+`--top` - keeps the display on top of all other windows (always visible).  Has no effect with `--headless`, since there is no window to keep on top.
 
 `--enable-recording` - even if recording is not enabled at startup in the configuration file, this arms recording on startup.
 
@@ -18,8 +18,8 @@ To run the main program, use `python -m buzz.main` followed by optional argument
 
 `--mute` - in playback, mutes the audio output, so the display is still rendered, but without any sound.
 
-`--playback-gain <dB value or 'auto'>` - either a gain in decibels to apply to the recorded audio when playing back, or the word `auto` to normalize the audio to -23 dB LUFS
+`--playback-gain <dB value or 'auto'>` - either a gain in decibels to apply to the recorded audio when playing back, or the word `auto` to normalize the audio to -23 dB LUFS.
 
-`--audio-rf-conversion-db <dB value>` - useful when playing a .wav file that was not generated with the analyzer when the signal strength of the receiver at the time the recording was made is known.  This number represents the offset between the full-scale audio amplitude and the dBm value reported by the receiver.  It is used to make the S meters on the display accurate.  For .wav files produced by the monitor, this value is carried in metadata and applied automatically.
+`--audio-rf-conversion-db <dB value>` - useful when playing back a .wav file the monitor did not generate, if you know the signal strength the receiver reported when it was recorded.  This number represents the offset between the full-scale audio amplitude and the dBm value reported by the receiver.  It is used to make the S meters on the display accurate.  For .wav files produced by the monitor, this value is carried in metadata and applied automatically.
 
-`--render <filename>` - realtime render the playback to a video file. Can be used with `--headless`.
+`--render <filename>` - render the playback to a video file, in real time. Can be used with `--headless`.
