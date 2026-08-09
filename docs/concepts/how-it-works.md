@@ -51,7 +51,7 @@ Whenever data has been added to the ring buffer, a `threading.Condition` notifie
 
 ### Analysis
 
-The analyzer runs constantly on a variable-length cycle, a loop that runs forever with a variable length wait between cycles, depending on the state of things.
+The analyzer runs a loop forever with a variable length wait between cycles, depending on the state of things.
 
 The analysis itself runs through three states: FREE, LOCK, and HOLD (internally SEARCHING, LOCKED, and SIGNAL_LOST).
 
