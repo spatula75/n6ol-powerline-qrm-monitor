@@ -7,6 +7,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.1] - 2026-08-08
+
+### Added
+- A Diataxis-organized documentation site under `docs/`, built with MkDocs Material
+  and published to GitHub Pages at
+  <https://spatula75.github.io/n6ol-powerline-qrm-monitor/>: tutorials, how-to guides,
+  a command-line and configuration reference, and a page on how the analyzer works
+  internally.
+
+### Changed
+- `README.md` is now a short summary that points to the documentation site, rather
+  than duplicating it.
+
+### Removed
+- `README-analysis.md`, superseded by `docs/concepts/how-it-works.md`.
+
 ## [1.5.0] - 2026-08-06
 
 ### Added
