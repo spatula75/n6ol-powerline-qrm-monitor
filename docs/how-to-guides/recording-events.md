@@ -28,7 +28,7 @@ Starting at the time you start up the monitor, your "Events to Record" budget wi
 
 #### Examples
 
-If you wanted te record the first 10 events ever hour, you could set "Events to Record" to 10, and "Budget reset" to 60.  Then every time 60 minutes passes, the number of remaining events to record will reset to 10.  Or if you wanted 5 events per day, you can set "Events to record" to 5 and "Budget reset" to 1440.
+If you wanted to record the first 10 events every hour, you could set "Events to record" to 10, and "Budget reset" to 60.  Then every time 60 minutes passes, the number of remaining events to record will reset to 10.  Or if you wanted 5 events per day, you can set "Events to record" to 5 and "Budget reset" to 1440.
 
 ### Longest recording
 
@@ -36,7 +36,7 @@ This specifies the maximum number of seconds of an event that will be recorded, 
 
 ### Stop after silence
 
-Should you wish to record a few seconds of audio after the end of an event (if it stops within the duration specified by "Longest Recording"), you can specify that duration here. You should probably keep this somewhat short, 1-10 seconds is probably reasonable.
+Should you wish to record a few seconds of audio after the end of an event (if it stops within the duration specified by "Longest Recording"), you can specify that duration here. You should probably keep this somewhat short - 1-10 seconds is probably reasonable.
 
 ### Minimum lock before recording
 

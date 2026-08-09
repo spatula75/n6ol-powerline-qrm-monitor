@@ -55,7 +55,7 @@ The analyzer runs constantly on a variable-length cycle, a loop that runs foreve
 
 The analysis itself runs through three states: FREE, LOCK, and HOLD (internally SEARCHING, LOCKED, and SIGNAL_LOST).
 
-In "FREE" mode, once per second, a full cross-correlation (by way of fft convolution) of a 120pps pulse train is run against incoming audio, looking for any match significant enough to analyze.  Once a positive match has been found, the analyzer switches to the LOCK state.
+In "FREE" mode, once per second, a full cross-correlation (by way of FFT convolution) of a 120pps pulse train is run against incoming audio, looking for any match significant enough to analyze.  Once a positive match has been found, the analyzer switches to the LOCK state.
 
 In the LOCK state, the duration of the cycle is reduced to 200ms and full cross correlations are no longer performed.  Instead, every 600ms a brief search is performed before and after the current position in time where the impulse train is believed to hold its maximal value to see if the greatest peak has shifted earlier or later in time (indicating a phase shift from the predicted position).  If a significantly better match is found, the position is corrected, and the extent of the correction is saved.  This allows the drift from precisely 60 Hz (or 50 Hz) to be predicted and for that prediction to be refined over time.
 
@@ -63,7 +63,7 @@ Should the lock be lost (meaning, the SNR between the signal and the estimated n
 
 After 60 seconds in the HOLD (SIGNAL_LOST) state, things return to the "FREE" (SEARCHING) state.
 
-The analyzer frequently publishes analysis results which contain the estimated noise floor, estimated impulse noise signal strength, and estimated utility frequency in hz (possible because of the frequent phase measurements).  These data are observed by the S meter in the main display, and consumed by the Collector.
+The analyzer frequently publishes analysis results which contain the estimated noise floor and estimated impulse noise signal strength.  These data are observed by the S meter in the main display, and consumed by the Collector.  The estimated utility frequency in Hz, made possible by the frequent phase measurements, is not part of these published results - it's read directly from the analyzer, by the status bar in the main display and by the Collector when it writes a CSV row.
 
 ### Waterfall, Scope, S-Meter Display
 

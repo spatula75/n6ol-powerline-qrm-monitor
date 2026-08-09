@@ -12,7 +12,7 @@ The analysis front-end can also be rendered real-time to a video file, suitable 
 
 ## Activating the Python virtual environment
 
-When running the main module, it is necessary to ensure you are running in the Python virtual environment created during [initial setup](../tutorials/getting-started.md).  To do this on Windows, run `.venv\Scripts\activate` and on MacOS, Linux, and FreeBSD use `.venv/bin/activate`.  To disable the virtual environment later for all operating systems simply use `deactivate`.
+When running the main module, it is necessary to ensure you are running in the Python virtual environment created during [initial setup](../tutorials/getting-started.md).  To do this on Windows, run `.venv\Scripts\activate` and on macOS, Linux, and FreeBSD use `.venv/bin/activate`.  To disable the virtual environment later for all operating systems simply use `deactivate`.
 
 ## Playback
 
@@ -20,9 +20,9 @@ In the simplest form, use `python -m buzz.main --playback <filename>` where the 
 
 Logging, charting, and recording are disabled during playback.
 
-If you are playing back a file that wasn't recorded using the monitor, you can specify `--audio-rf-conversion-db -<value>` to provide the offset between the audio level in the recording and the RF dBm level (shown on the S meters in the main display).  This generally requires that whomever provided the file tells you what the RF level was at the time the recording was made; then you can choose a value accordingly.  For example, `--audio-rf-conversion-db -28.5`
+If you are playing back a file that wasn't recorded using the monitor, you can specify `--audio-rf-conversion-db -<value>` to provide the offset between the audio level in the recording and the RF dBm level (shown on the S meters in the main display).  This generally requires that whoever provided the file tells you what the RF level was at the time the recording was made; then you can choose a value accordingly.  For example, `--audio-rf-conversion-db -28.5`
 
-Should you not wish to hear any audio during playback, you can add `--mute` to the command line.  If, other other hand, you wish to apply gain to hear the audio better (as files are often recorded at a low amplitude), add `--playback-gain` followed by either a dB gain you would like applied, or the word `auto` to set the gain to -23dB LUFS (the EBU R128 broadcast reference) with a peak amplitude of no more than -2dB.
+Should you not wish to hear any audio during playback, you can add `--mute` to the command line.  If, on the other hand, you wish to apply gain to hear the audio better (as files are often recorded at a low amplitude), add `--playback-gain` followed by either a dB gain you would like applied, or the word `auto` to set the gain to -23dB LUFS (the EBU R128 broadcast reference) with a peak amplitude of no more than -2dB.
 
 ## Rendering to video
 

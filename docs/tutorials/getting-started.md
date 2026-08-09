@@ -10,9 +10,9 @@ If you just installed Python and your current command window was open prior to i
 
 ## Download the monitor
 
-Find the latest release at [https://github.com/spatula75/n6ol-powerline-qrm-monitor/releases](https://https://github.com/spatula75/n6ol-powerline-qrm-monitor/releases), scroll to the end of the release description and look under "Assets."  Here you will find a `.tar.gz` and `.zip` file; download whichever one is appropriate for your platform.  Linux and FreeBSD users likely want the tarball, whereas MacOS and Windows users likely want the zip archive.
+Find the latest release at [https://github.com/spatula75/n6ol-powerline-qrm-monitor/releases](https://github.com/spatula75/n6ol-powerline-qrm-monitor/releases), scroll to the end of the release description and look under "Assets."  Here you will find a `.tar.gz` and `.zip` file; download whichever one is appropriate for your platform.  Linux and FreeBSD users likely want the tarball, whereas macOS and Windows users likely want the zip archive.
 
-The monitor does not (yet) install itself as a fullly integrated piece of software on any operating system, so just find a suitable directory on your system, and extract the files.  For example:
+The monitor does not (yet) install itself as a fully integrated piece of software on any operating system, so just find a suitable directory on your system, and extract the files.  For example:
 
 ```
 mkdir ham_radio
@@ -30,7 +30,7 @@ On Windows and MacOS you can also just create a folder somewhere, such as off yo
 
 ## Run Setup
 
-The monitor ships with setup scripts for both Windows and Linux, FreeBSD, MacOS, etc.  These scripts are called `setup.bat` and `setup.sh`.  From the command line, run whichever is appropriate to your environment.  On *nix variants, you likely need to precede this with `./`, i.e., `./setup.sh` to indicate to your shell that it should look in the current folder.
+The monitor ships with setup scripts for both Windows and Linux, FreeBSD, macOS, etc.  These scripts are called `setup.bat` and `setup.sh`.  From the command line, run whichever is appropriate to your environment.  On *nix variants, you likely need to precede this with `./`, i.e., `./setup.sh` to indicate to your shell that it should look in the current folder.
 
 Setup will attempt to locate your Python installation, create a virtual environment (aka a "venv"), install the project's dependencies, and then it will run the configuration program for the first time.
 
@@ -42,7 +42,7 @@ The monitor has many options. The most critical ones will be covered here; other
 
 At this point, you should connect your radio to your sound device that you plan to use for monitoring and verify that your operating system recognizes sound coming from your radio as input.
 
-Set your RF gain to 0, disable pre-amps, attenuators, widen your filter bandwidth all the way, turn off AGC, and switch to either LSB or USB mode.  Adjust the gain in your operating system for minimal interference with the signal, ideally 0dB gain and no "enhancements" applied.  IN Windows, disable "exclusive access" to the device, and you can right-click the input gain to choose measurement in decibels to find 0dB.
+Set your RF gain to 0, disable pre-amps, attenuators, widen your filter bandwidth all the way, turn off AGC, and switch to either LSB or USB mode.  Adjust the gain in your operating system for minimal interference with the signal, ideally 0dB gain and no "enhancements" applied.  In Windows, disable "exclusive access" to the device, and you can right-click the input gain to choose measurement in decibels to find 0dB.
 
 Each section of the configuration file corresponds to a section in the configuration program.  Enter a section with the `ENTER` key and go back with the `ESC` key.  Use arrow keys to navigate.  Start with Audio.
 
@@ -56,7 +56,7 @@ At the bottom of this menu is the `Calibration` tool.  Much more detail can be f
 
 If you are unable to get the two to agree because you can't adjust the audio gain at all, there's another method available; see the [Calibration tutorial](calibration.md) for more.
 
-To get the pulse rate setting, double your local electrical utility's alternating current frequency.  For the most of North and Central America, for example, that means 120.  For Europe and Asia, this is usually 100.  Chances are if you're using this tool, you're already very familiar with the frequency you need.
+To get the pulse rate setting, double your local electrical utility's alternating current frequency.  For most of North and Central America, for example, that means 120.  For Europe and Asia, this is usually 100.  Chances are if you're using this tool, you're already very familiar with the frequency you need.
 
 ### Station Configuration
 

@@ -6,7 +6,7 @@ The CSV files and charts produced by the monitor, and the bar graph display in t
 
 Also, because the application is sampling in 16 bits, audio which exactly matched the signal level would lose information below about -98dB, the lower limit of 16-bit audio read from a sound device.  Because our radios can be sensitive to much lower levels, there's also value in exploiting this difference.
 
-By default, the monitor is configured for a 32dB conversion offset between the two; thus, a -98db audio reading on the sound card corresponds to -130dBm on the radio.
+By default, the monitor is configured for a 32dB conversion offset between the two; thus, a -98dB audio reading on the sound card corresponds to -130dBm on the radio.
 
 ## Method 1: AF Gain
 

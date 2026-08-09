@@ -28,11 +28,11 @@ If you find yourself logged in, you're ready for the next step.
 
 ### Configure your key and enable publishing
 
-Launch the setup program either by running `setup.bat` or `./setup.sh`, and navigate to "Web Publishing".  If not alread enabled, use `SPACE` or `ENTER` to toggle web publishing on, tab to `OK` and press `ENTER` to enable publishing.
+Launch the setup program either by running `setup.bat` or `./setup.sh`, and navigate to "Web Publishing".  If not already enabled, use `SPACE` or `ENTER` to toggle web publishing on, tab to `OK` and press `ENTER` to enable publishing.
 
-Fill in your server hostname and username.  For the "Remote path" enter a full directory path on your web server where files are expected to be read by your web server;  for example, `/var/www/html/noise`.  This directory must already exist on your web host, so make sure you create it if necessary.
+Fill in your server hostname and username.  For the "Remote path" enter a full directory path on your web server where files are expected to be read by your web server;  for example, `/var/www/html/noise`. This directory must already exist on your web host, so make sure you create it if necessary.
 
-Your ssh key location should already been configured to point at `buzz.pem` from above, but if you placed it in a different location, update the path to the key here as well.
+Your ssh key location should already be configured to point at `buzz.pem` from above, but if you placed it in a different location, update the path to the key here as well.
 
 Then press `ESC` to go back to the main configuration screen and select `FINISH`.
 
