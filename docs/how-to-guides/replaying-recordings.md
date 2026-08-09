@@ -12,7 +12,7 @@ The analysis front-end can also be rendered real-time to a video file, suitable 
 
 ## Activating the Python virtual environment
 
-When running the main module, it is necessary to ensure you are running in the Python virtual environment created during [initial setup](../tutorials/getting-started.md).  To do this on Windows, run `.venv\Scripts\activate` and on macOS, Linux, and FreeBSD use `.venv/bin/activate`.  To disable the virtual environment later for all operating systems simply use `deactivate`.
+When running the main module, it is necessary to ensure you are running in the Python virtual environment created during [initial setup](../tutorials/getting-started.md).  To do this on Windows, run `.venv\Scripts\activate` and on macOS, Linux, and FreeBSD use `source .venv/bin/activate`.  To disable the virtual environment later for all operating systems simply use `deactivate`.
 
 ## Playback
 

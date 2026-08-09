@@ -34,6 +34,8 @@ For technical documentation, comments, docstrings, etc., LLMs can be persuaded t
 
 For end-user-facing documentation?  Absolutely not.  Every word of these docs has been written by hand, by a human (me) for other humans (you).  No giant walls of textslop here.  LLMs are simply too inept at producing prose that flows naturally and communicates ideas clearly.
 
+The one exception to the rule is in asking an LLM to double-check grammar, spelling, and factual accuracy - things LLMs can handle without *generating* anything, merely making or offering corrections.
+
 ### Conclusion
 
 Agentic "AI" has been and will continue to be a tool used by this project to aid in controlled, thoughtful development, under the guidelines above.  I understand there will be some for whom this is reflexively intolerable.  They are invited to seek out other projects or start their own.
