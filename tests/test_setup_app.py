@@ -7,7 +7,7 @@ from pathlib import Path
 from zoneinfo import available_timezones
 
 from textual import events
-from textual.widgets import Button, OptionList
+from textual.widgets import Button, OptionList, RadioButton, RadioSet
 from buzz.setup.device_setup import DeviceInfo
 from buzz.setup.screens.calibration import _format_reading, _meter_block
 from buzz.setup.screens.field_dialogs import _kind, _parse_number
@@ -21,6 +21,22 @@ from buzz.setup.app import SetupApp
 def run(coro):
     """Run an async test scenario without pulling in a pytest-asyncio dependency."""
     return asyncio.run(coro)
+
+
+async def _open_field(pilot, app, section: str, field: str) -> None:
+    """Walk from the main menu into one field's dialog, the way a keyboard would.
+
+    Both menus start with nothing highlighted until something sets `highlighted`,
+    which is why each step assigns it before pressing Enter.
+    """
+    sections = app.screen.query_one('#sections', OptionList)
+    sections.highlighted = sections.get_option_index(section)
+    await pilot.press('enter')
+    await pilot.pause()
+    fields = app.screen.query_one('#fields', OptionList)
+    fields.highlighted = fields.get_option_index(field)
+    await pilot.press('enter')
+    await pilot.pause()
 
 
 def _rendered_text(widget) -> str:
@@ -705,7 +721,10 @@ class TestSetupAppWalkthrough:
                 fields.highlighted = fields.get_option_index('enabled')
                 await pilot.press('enter')
                 await pilot.pause()
-                app.screen.query_one('#value').toggle()
+                # Arrow up to "On" and press it, the way an operator would.  The dialog
+                # opens with its cursor on "Off", which is the value currently set.
+                await pilot.press('up')
+                await pilot.press('space')
                 await pilot.click('#ok')
                 await pilot.pause()
                 assert app.values['server']['enabled'] is True
@@ -713,6 +732,121 @@ class TestSetupAppWalkthrough:
                 # host, username, etc. only appear now that publishing is on.
                 fields = app.screen.query_one('#fields')
                 assert fields.get_option_index('host') is not None
+
+        run(scenario())
+
+    def test_boolean_dialog_names_both_choices(self, tmp_path):
+        """The complaint that replaced the Switch: it was an unlabeled square, and
+        the words "on" and "off" appeared nowhere in the dialog."""
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                await _open_field(pilot, app, 'recording', 'enabled')
+                labels = [str(button.label)
+                          for button in app.screen.query_one('#value', RadioSet).query(RadioButton)]
+                assert labels == ['On', 'Off'], (
+                    f'The boolean dialog offers {labels} rather than On and Off.  The '
+                    'section menu row renders a boolean as On/Off (see '
+                    'section_menu.display_value), so the two have to agree.')
+
+        run(scenario())
+
+    def test_boolean_dialog_marks_the_current_value_away_from_the_cursor(self, tmp_path):
+        """A switch could not show this, which is why the choices are radio buttons.
+
+        The mark says what is set and the cursor says where the keyboard is.  Textual
+        parks its cursor on row 0 whatever is pressed, so BooleanFieldDialog.on_mount
+        moves it onto the pressed row; without that an Off field opens with the cursor
+        drawn on "On", which is the ambiguity this replaced.  An arrow key then moves
+        the cursor and leaves the mark where it was.
+        """
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                # recording.enabled defaults to False, so Off is row 1 - a row the
+                # cursor would not be on by Textual's own default.
+                await _open_field(pilot, app, 'recording', 'enabled')
+                choices = app.screen.query_one('#value', RadioSet)
+                assert choices.pressed_index == 1, 'Off should be the pressed row'
+                assert choices._selected == 1, (
+                    f'The cursor opened on row {choices._selected} while row '
+                    f'{choices.pressed_index} is the one set.  Either on_mount stopped '
+                    'placing the cursor, or Textual renamed RadioSet._selected and the '
+                    'guarded assignment in on_mount silently did nothing.')
+
+                # Moving the cursor must not move the mark.
+                await pilot.press('up')
+                assert choices._selected == 0
+                assert choices.pressed_index == 1, (
+                    'An arrow key changed the value.  The mark must stay put until Space or '
+                    'Enter presses a button.  Without that the dialog is no better '
+                    'than the switch it replaced.')
+
+        run(scenario())
+
+    def test_recording_settings_show_even_when_it_starts_disarmed(self, tmp_path):
+        """recording.enabled only seeds the recorder's opening state.
+
+        The Record button, the R key and `--enable-recording` all arm a run that
+        started disarmed, and the monitor honors every other recording setting when
+        they do.  Hiding those settings left an operator unable to choose a directory
+        or an event budget that was going to be used anyway.
+        """
+        config_path = tmp_path / 'config.toml'
+        gated = ('directory', 'max_events', 'rearm_reset_minutes', 'max_seconds',
+                 'stop_after_seconds', 'min_lock_seconds', 'min_lock_snr')
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                sections = app.screen.query_one('#sections', OptionList)
+                sections.highlighted = sections.get_option_index('recording')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                assert app.values['recording']['enabled'] is False, (
+                    'This test needs recording to start disarmed, which is the '
+                    'default it is written against.')
+                fields = app.screen.query_one('#fields', OptionList)
+                shown = {option.id for option in fields.options}
+                missing = [f for f in gated if f not in shown]
+                assert not missing, (
+                    f'{len(missing)} recording settings are hidden while recording '
+                    f'starts disarmed: {", ".join(missing)}.  They are not gated on a '
+                    'master switch.  See schema.py on when x-visible-when applies.')
+
+        run(scenario())
+
+    def test_publishing_settings_stay_hidden_until_it_is_switched_on(self, tmp_path):
+        """The counterpart, and the reason the keyword still exists.
+
+        server.enabled is a master switch: main.py builds no Publisher at all while
+        it is off, so the host and the key path really are out of reach.  Removing
+        the recording gates must not remove this one.
+        """
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                sections = app.screen.query_one('#sections', OptionList)
+                sections.highlighted = sections.get_option_index('server')
+                await pilot.press('enter')
+                await pilot.pause()
+
+                assert app.values['server']['enabled'] is False
+                fields = app.screen.query_one('#fields', OptionList)
+                shown = {option.id for option in fields.options}
+                offered = [f for f in ('host', 'username', 'remote_path', 'key_path')
+                           if f in shown]
+                assert not offered, (
+                    f'{", ".join(offered)} offered while publishing is off.  The '
+                    'monitor builds no Publisher in that state, so it reads none of '
+                    'them.')
 
         run(scenario())
 

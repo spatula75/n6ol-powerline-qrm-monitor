@@ -28,7 +28,7 @@ If you find yourself logged in, you're ready for the next step.
 
 ### Configure your key and enable publishing
 
-Launch the setup program either by running `setup.bat` or `./setup.sh`, and navigate to "Web Publishing".  If not already enabled, use `SPACE` or `ENTER` to toggle web publishing on, tab to `OK` and press `ENTER` to enable publishing.
+Launch the setup program either by running `setup.bat` or `./setup.sh`, and navigate to "Web Publishing".  If not already enabled, select "Publish to a web server", use the arrow keys to move to "On", press `SPACE` or `ENTER` to select it, then tab to `OK` and press `ENTER` to enable publishing.  The rest of the publishing settings appear once it's on.
 
 Fill in your server hostname and username.  For the "Remote path" enter a full directory path on your web server where files are expected to be read by your web server;  for example, `/var/www/html/noise`. This directory must already exist on your web host, so make sure you create it if necessary.
 

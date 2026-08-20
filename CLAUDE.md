@@ -227,6 +227,18 @@ after all of it. In that order:
    makes wrong - a described default that moved, a number that no longer holds, a flag
    or setting that changed shape. Docs go stale exactly like comments do, and nothing
    else catches it; there is no test that fails when a README goes out of date.
+
+   **Anything under `docs/` needs approval before it is written to disk.** Propose the
+   wording in the reply, get a yes, then edit. That tree is the published site and it
+   has a voice of its own, so it is not a place to make a judgement call unattended.
+
+   **Match the prose already on the page** rather than this file's rules for code
+   comments. `docs/` addresses the operator directly in the second person, uses
+   contractions, and runs to longer explanatory paragraphs than a comment would. Read
+   the surrounding page first and write to it. The house bans on em dashes, banned
+   words, and one space after a period still hold. Detail that belongs to the
+   implementation does not: an operator wants to know what a setting does, not which
+   object the monitor builds when it is on.
 7. **STE compliance for touched prose.** Any docstring, comment, or user-facing string
    in a file this change touches - not the whole file, and not the whole repo - gets
    checked against `docs/ste-writing.md` and this file's own prose rules: banned words,

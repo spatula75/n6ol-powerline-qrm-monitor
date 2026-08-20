@@ -13,7 +13,7 @@ otherwise, so a caller never has to know the mapping itself.
 from typing import Any
 
 from textual.containers import Horizontal, Vertical
-from textual.widgets import Button, Input, OptionList, Static, Switch
+from textual.widgets import Button, Input, OptionList, RadioButton, RadioSet, Static
 from textual.widgets.option_list import Option
 
 from buzz.setup.screens.base import CANCELLED, ScopeModalScreen
@@ -152,8 +152,26 @@ class TextFieldDialog(ScopeModalScreen[Any]):
         self.dismiss(CANCELLED)
 
 
+# The two choices of a boolean dialog, On first so that the pressed row index maps
+# onto the value without a lookup: row _ON_INDEX is True.
+#
+# "On" and "Off" rather than "Enabled"/"Disabled" or "Yes"/"No", because
+# section_menu.display_value() already renders a boolean row as On or Off.  The menu
+# and the dialog have to call the same two states by the same two names.
+_ON_INDEX = 0
+_BOOLEAN_LABELS = ('On', 'Off')
+
+
 class BooleanFieldDialog(ScopeModalScreen[Any]):
-    """Edit a boolean field with a switch."""
+    """Edit a boolean field as a pair of labeled radio buttons.
+
+    This was a bare `Switch`, an unlabeled square sliding between two ends, with the
+    words "on" and "off" appearing nowhere in the dialog.
+
+    A radio pair names both choices and marks the current one.  The mark and the
+    cursor stay separate: an arrow key moves `_selected`, and Space or Enter presses
+    a button.  Moving between the choices therefore never obscures what is set.
+    """
 
     DEFAULT_CSS = """
     BooleanFieldDialog {
@@ -177,15 +195,17 @@ class BooleanFieldDialog(ScopeModalScreen[Any]):
         text-align: center;
         padding-bottom: 1;
     }
+    #value {
+        width: 100%;
+        margin-bottom: 1;
+    }
     """
-    # See TextFieldDialog's identical notes: Tab already cycles this row, arrows
-    # do not, and Escape is a binding rather than a `key_escape` method so that
-    # dismissing this screen actually stops the key press there.
-    BINDINGS = [
-        ('left', 'app.focus_previous', 'Previous'),
-        ('right', 'app.focus_next', 'Next'),
-        ('escape', 'cancel', 'Cancel'),
-    ]
+    # See TextFieldDialog's identical notes on Escape.  Left and right are not bound
+    # here as they are there: RadioSet binds `up,left` and `down,right` itself, and
+    # those move between the two choices, which is what an arrow key should do while
+    # the choices have focus.  Tab still reaches OK and Cancel, and once a Button
+    # holds focus its own bindings take over.
+    BINDINGS = [('escape', 'cancel', 'Cancel')]
 
     def __init__(self, spec: dict[str, Any], current: Any) -> None:
         super().__init__()
@@ -193,17 +213,36 @@ class BooleanFieldDialog(ScopeModalScreen[Any]):
         self._current = current
 
     def compose(self):
+        current = bool(self._current)
         yield Vertical(
             Static(self._spec['title'], id='title'),
             Static(self._spec['description'], id='description'),
-            Switch(value=bool(self._current), id='value'),
+            RadioSet(
+                RadioButton(_BOOLEAN_LABELS[0], value=current),
+                RadioButton(_BOOLEAN_LABELS[1], value=not current),
+                id='value',
+            ),
             Horizontal(Button('OK', id='ok', variant='primary'), Button('Cancel', id='cancel')),
             id='dialog',
         )
 
+    def on_mount(self) -> None:
+        """Focus the choices, with the cursor on the value already set.
+
+        `RadioSet._on_mount` calls `action_next_button()`, parking its cursor on row
+        0 whatever is pressed.  On an Off field the cursor would therefore appear on
+        "On" while the mark sits on "Off", which is the ambiguity this dialog
+        replaced.  `_selected` is private with no setter, so the assignment is
+        guarded against an upstream rename.  test_setup_app.py pins the placement.
+        """
+        choices = self.query_one('#value', RadioSet)
+        if hasattr(choices, '_selected'):
+            choices._selected = _ON_INDEX if bool(self._current) else _ON_INDEX + 1
+        choices.focus()
+
     def on_button_pressed(self, event) -> None:
         if event.button.id == 'ok':
-            self.dismiss(self.query_one('#value', Switch).value)
+            self.dismiss(self.query_one('#value', RadioSet).pressed_index == _ON_INDEX)
         else:
             self.dismiss(CANCELLED)
 

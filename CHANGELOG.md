@@ -8,6 +8,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Changed
+- The setup program edits a yes/no setting with a labeled pair of radio buttons
+  rather than a switch. The switch was an unlabeled square that slid between two
+  ends, and the words "on" and "off" appeared nowhere in the dialog, so reading a
+  setting meant remembering which side had meant on. The radio pair names both
+  choices and marks the one in force, and the mark stays put while the arrow keys
+  move the cursor over it.
+- The recording section shows every setting whatever "Arm recording at startup" is
+  set to. That setting only decides whether the monitor starts armed. The Record
+  button, the R key and `--enable-recording` all arm a run that started disarmed,
+  and the monitor honors the directory, the event budget and the lock gates when
+  they do, so hiding those seven settings kept an operator from choosing values that
+  were going to be used anyway. Publishing still hides its own settings while it is
+  off, because the monitor builds no uploader at all in that state.
+
+### Changed
 - The scope's horizontal graticule now divides the pulse period into thirds rather
   than the sweep into tenths, giving 2.78 ms/div at 120 pps and 3.33 ms/div at 100
   pps. A division is then the spacing between the bursts of two arcing phases of one

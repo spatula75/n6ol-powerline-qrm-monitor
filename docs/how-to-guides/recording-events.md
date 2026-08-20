@@ -8,7 +8,9 @@ Important note: when limiting the duration of recordings, expect that the actual
 
 ## Setup Options
 
-Launch the setup program either by running setup.bat or ./setup.sh, and navigate to "Event recording."  If not already enabled, select "Arm recording at startup," then use `SPACE` or `ENTER` to toggle recording on, then use `TAB` to select "OK" and `ENTER` to enable.  This will reveal the recording options.
+Launch the setup program either by running setup.bat or ./setup.sh, and navigate to "Event recording."  All of the recording options are listed there whether or not recording starts armed.
+
+If you'd like the monitor to start with recording already armed, select "Arm recording at startup," use the arrow keys to move to "On," press `SPACE` or `ENTER` to select it, then use `TAB` to select "OK" and `ENTER`.  You don't have to turn this on to record events; the Record button, the `R` key, and the `--enable-recording` flag all arm a monitor that started up disarmed.
 
 ### Recording Directory
 
