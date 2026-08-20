@@ -18,7 +18,7 @@ from buzz.ffmpeg import FfmpegError
 from buzz.render import (FRAME_RATE, RenderError, RenderSession, _FrameGrid,
                          _nearest_slot, ffmpeg_command)
 
-WIDTH, HEIGHT = 734, 248
+WIDTH, HEIGHT = 742, 248
 FRAME_BYTES = WIDTH * HEIGHT * 4
 
 

@@ -6,17 +6,22 @@ from buzz.scope import (
     SCOPE_H, accumulate_trace, auto_range_full_scale, build_graticule,
     build_phosphor_colormap, extract_sweeps, full_scale_dbfs, n_complete_sweeps,
     resample_to_columns, sweep_start_offset, trace_rows, update_running_average,
-    _HEADER_H, _TRACE_H, _H_DIVISIONS, _V_DIVISIONS, _GRATICULE_LINE, _GRATICULE_AXIS,
-    _PRETRIGGER_DIVISIONS,
+    _HEADER_H, _TRACE_H, H_DIVISIONS, _V_DIVISIONS, _GRATICULE_LINE, _GRATICULE_AXIS,
+    _DIVISIONS_PER_PULSE, _PRETRIGGER_DIVISIONS,
     _MIN_FULL_SCALE, _RANGE_HEADROOM, _RANGE_PERCENTILE, _RANGE_EMA_ALPHA,
 )
-from buzz.waterfall import _AXIS_H, _WATERFALL_H
+from buzz.waterfall import (
+    DISPLAY_BINS, _AXIS_H, _PIXELS_PER_BIN, _WATERFALL_H, panel_width)
+
+# The width ScopeWidget is actually given: the waterfall's 128 bins x 5 px,
+# widened to a whole number of divisions.  648 px, so a division is exactly 72.
+PANEL_W = panel_width(DISPLAY_BINS * _PIXELS_PER_BIN)
 
 SWEEP = 400          # pulse_phase_period(16000, 120)
 PULSE_OFFSETS = (0, 133, 267)   # round(i * 16000/120) for i = 0, 1, 2
 # Derived from the shipped constant rather than hardcoded, so these tests keep
 # exercising the pretrigger production actually uses.
-PRETRIGGER = round(SWEEP * _PRETRIGGER_DIVISIONS / _H_DIVISIONS)
+PRETRIGGER = round(SWEEP * _PRETRIGGER_DIVISIONS / H_DIVISIONS)
 
 
 def pulse_train(n_samples, phase, amplitude=1000.0):
@@ -281,27 +286,43 @@ class TestAccumulateTrace:
 
 class TestBuildGraticule:
     def test_shape(self):
-        assert build_graticule(_TRACE_H, 640).shape == (_TRACE_H, 640)
+        assert build_graticule(_TRACE_H, PANEL_W).shape == (_TRACE_H, PANEL_W)
 
     def test_values_within_intensity_range(self):
-        grid = build_graticule(_TRACE_H, 640)
+        grid = build_graticule(_TRACE_H, PANEL_W)
         assert grid.min() >= 0.0
         assert grid.max() <= 1.0
 
-    def test_centre_rules_are_brighter(self):
-        grid = build_graticule(_TRACE_H, 640)
-        assert grid[0, 320] == pytest.approx(_GRATICULE_AXIS)
+    def test_the_zero_volts_line_is_brighter(self):
+        grid = build_graticule(_TRACE_H, PANEL_W)
         assert grid[round(_TRACE_H / 2), 0] == pytest.approx(_GRATICULE_AXIS)
 
-    def test_division_lines_are_dimmer_than_centre(self):
-        grid = build_graticule(_TRACE_H, 640)
-        assert grid[0, 64] == pytest.approx(_GRATICULE_LINE)
+    def test_pulse_period_rules_are_brighter_than_the_phase_slots(self):
+        """The hierarchy the display is read by: a bright vertical line closes one
+        cycle of the pulse train, and the dim ones inside it divide that cycle into
+        the three phase slots."""
+        grid = build_graticule(_TRACE_H, PANEL_W)
+        for i in range(1, H_DIVISIONS):
+            column = round(i * PANEL_W / H_DIVISIONS)
+            expected = (_GRATICULE_AXIS if i % _DIVISIONS_PER_PULSE == 0
+                        else _GRATICULE_LINE)
+            assert grid[0, column] == pytest.approx(expected), (
+                f'Division line {i} of {H_DIVISIONS} is at intensity '
+                f'{grid[0, column]:.3f} rather than {expected:.3f}. Lines on a whole '
+                'pulse period take the bright rule and the phase slots the dim one.')
         assert _GRATICULE_LINE < _GRATICULE_AXIS
 
+    def test_no_vertical_rule_at_the_screen_center(self):
+        """With an odd division count the middle of the screen falls inside a cell, so
+        a center rule would add a line that measures nothing.  It used to be drawn
+        unconditionally, back when the division count was even."""
+        grid = build_graticule(_TRACE_H, PANEL_W)
+        assert grid[0, round(PANEL_W / 2)] == 0.0
+
     def test_division_counts(self):
-        grid = build_graticule(_TRACE_H, 640)
+        grid = build_graticule(_TRACE_H, PANEL_W)
         lit_columns = np.flatnonzero(grid[0] > 0)
-        assert len(lit_columns) == _H_DIVISIONS - 1
+        assert len(lit_columns) == H_DIVISIONS - 1
         lit_rows = np.flatnonzero(grid[:, 0] > 0)
         assert len(lit_rows) == _V_DIVISIONS - 1
 
@@ -410,28 +431,41 @@ class TestUpdateRunningAverage:
 class TestPretrigger:
     """Where the triggering pulse sits, and why it isn't a whole division."""
 
-    WIDTH = 640   # ScopeWidget takes its width from the waterfall; 128 bins x 5 px
+    WIDTH = PANEL_W   # ScopeWidget takes its width from the waterfall panel
 
     def _column(self):
-        pretrigger = round(SWEEP * _PRETRIGGER_DIVISIONS / _H_DIVISIONS)
+        pretrigger = round(SWEEP * _PRETRIGGER_DIVISIONS / H_DIVISIONS)
         return pretrigger * self.WIDTH / SWEEP
 
     def test_lands_clear_of_any_graticule_line(self):
         """A whole number of divisions would draw the pulse directly under a grid
         line, hiding its leading edge and reading as pinned to the grid."""
-        division_px = self.WIDTH / _H_DIVISIONS
+        division_px = self.WIDTH / H_DIVISIONS
         distance_to_line = abs((self._column() / division_px) % 1)
         assert 0.25 < distance_to_line < 0.75
 
     def test_leaves_room_for_the_leading_edge_and_halo(self):
-        assert self._column() >= 0.5 * self.WIDTH / _H_DIVISIONS
+        assert self._column() >= 0.5 * self.WIDTH / H_DIVISIONS
 
     def test_does_not_push_the_train_off_the_right(self):
         """Three pulses have to remain visible after the lead-in."""
-        assert _PRETRIGGER_DIVISIONS < _H_DIVISIONS / 3
+        assert _PRETRIGGER_DIVISIONS < H_DIVISIONS / 3
+
+    def test_each_phase_slot_is_centered_on_its_burst(self):
+        """1.5 divisions is half a pulse period, so the triggering burst sits at the
+        centre of a cell -- and the bursts of a second or third arcing phase, a third
+        of a pulse period either side, sit at the centers of the cells next door.
+        That is what lets the phases be counted by which cells carry a burst."""
+        division_px = self.WIDTH / H_DIVISIONS
+        for slot in (-1, 0, 1):
+            column = self._column() + slot * division_px
+            assert (column / division_px) % 1 == pytest.approx(0.5, abs=0.02), (
+                f'The phase slot {slot} cell away from the trigger carries its burst '
+                f'at column {column:.1f}, which is not the cell center. Either the '
+                'pretrigger or the division count has moved.')
 
     def test_matches_the_documented_position(self):
-        assert self._column() == pytest.approx(96.0, abs=1.0)
+        assert self._column() == pytest.approx(108.0, abs=1.0)
 
 
 class TestPanelGeometry:

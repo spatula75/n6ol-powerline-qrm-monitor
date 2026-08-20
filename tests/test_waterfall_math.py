@@ -6,6 +6,7 @@ from buzz.analyzer import AnalysisResult
 from buzz.config import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 from buzz.dsp import SILENCE_DBFS
 from buzz.recorder import RecorderStatus
+from buzz.scope import H_DIVISIONS
 from buzz.constants import DB_PER_S_UNIT, S9_DBM
 from buzz.waterfall import (
     build_colormap, format_clock, format_countdown, format_mute_button,
@@ -13,8 +14,8 @@ from buzz.waterfall import (
     format_recorder_status,
     _aggregate_meter_history, _color_scale_range, _correction_offset, _mean_spectrum_db,
     _n_segments_lit, _spectrum_percentiles,
-    spectrum_geometry, DISPLAY_BINS,
-    _MAX_HZ, _N_ROWS, _DB_RANGE, _S_LEVELS_DBM,
+    panel_width, spectrum_geometry, DISPLAY_BINS,
+    _MAX_HZ, _N_ROWS, _DB_RANGE, _S_LEVELS_DBM, _PANEL_WIDTH_MULTIPLE, _PIXELS_PER_BIN,
     _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE, _COLOR_HEADROOM, _MIN_DYNAMIC_RANGE_DB,
 )
 
@@ -575,7 +576,7 @@ class TestSpectrumGeometry:
     """The FFT window is a fixed span of time, so the display is the same at any rate.
 
     The bin count covering 0-_MAX_HZ is _MAX_HZ * N / rate, and N is rate * seconds, so
-    the rate cancels.  That is what keeps the waterfall 640 px wide whether the audio
+    the rate cancels.  That is what keeps the spectrum 640 px wide whether the audio
     arrives at 8 kHz or 48 kHz, and what keeps its frequency resolution constant --
     where a fixed 512-sample window gave 86 Hz per bin at 44.1 kHz against 31 Hz at 16.
     """
@@ -593,29 +594,53 @@ class TestSpectrumGeometry:
     def test_every_admitted_rate_gives_an_encodable_frame(self):
         """The precondition rendering relies on, checked over the whole band.
 
-        ffmpeg_command() pads nothing, because with the window pinned to time nothing
-        can arrive odd - and yuv420p subsamples chroma by two each way, so an odd
-        dimension is refused outright.  Only the waterfall's width varies with the
-        rate, so that claim reduces to the bin count being even at every rate
-        validate_sample_rate admits.
+        ffmpeg_command() pads nothing, because nothing can arrive odd - and yuv420p
+        subsamples chroma by two each way, so an odd dimension is refused outright.
+        Only the panel width varies with the rate, so the claim reduces to
+        panel_width() being even at every rate validate_sample_rate admits.
+
+        This measures the width the window is actually built from rather than the bin
+        count it used to reduce to. The two stopped being the same thing once the panel
+        was widened to a whole number of scope divisions: rounding an even natural
+        width up to a multiple of an odd division count can give an odd figure, and
+        640 -> 648 happens not to.  _PANEL_WIDTH_MULTIPLE is what stops it, and this is
+        what would notice if it went.
 
         Exhaustive rather than a handful of rates, and it costs about a second.  The
         rates above are all comfortably inside the band, so they would go on passing if
         the band itself moved: drop MIN_SAMPLE_RATE to 7500 and 252 rates become legal
-        at an odd bin count, from 7547 Hz at 121 bins and a 699 px window, and every
-        render at those rates fails in x264 with nothing here to have warned about it.
-        This is the test that ties the two together.
+        at an odd bin count, from 7547 Hz at 121 bins, and without the even-width
+        guarantee every render at those rates fails in x264 with nothing here to have
+        warned about it.  This is the test that ties the two together.
         """
-        odd = [rate for rate in range(MIN_SAMPLE_RATE, MAX_SAMPLE_RATE + 1)
-               if spectrum_geometry(rate).display_bins % 2]
+        widths = {rate: panel_width(spectrum_geometry(rate).display_bins * _PIXELS_PER_BIN)
+                  for rate in range(MIN_SAMPLE_RATE, MAX_SAMPLE_RATE + 1)}
+        odd = [rate for rate, width in widths.items() if width % 2]
         assert not odd, (
-            f'{len(odd)} admitted sample rates give an odd bin count, starting at '
-            f'{odd[0]} Hz with {spectrum_geometry(odd[0]).display_bins} bins. The '
-            'frame is that many bins wide times _PIXELS_PER_BIN plus a fixed panel, so '
-            'an odd count makes an odd frame and x264 refuses the render outright. '
-            'Either the sample-rate band in config.py widened past what the geometry '
-            'holds for, or _WINDOW_SECONDS changed; ffmpeg_command() no longer pads, '
-            'so one of the two has to give.')
+            f'{len(odd)} admitted sample rates give an odd frame width, starting at '
+            f'{odd[0]} Hz at {widths[odd[0]]} px. x264 refuses an odd dimension under '
+            'yuv420p and ffmpeg_command() does not pad. Either _PANEL_WIDTH_MULTIPLE '
+            'stopped forcing an even width, or the sample-rate band in config.py '
+            'widened past what the geometry holds for.')
+
+    @pytest.mark.parametrize('rate', RATES)
+    def test_the_panel_divides_into_whole_scope_divisions(self, rate):
+        """The other half of what panel_width buys, and the reason it exists: the
+        graticule over the trace has to fall on exact pixels.  At 640 px the scope's
+        nine divisions came out as eight cells of 71 px and one of 72."""
+        width = panel_width(spectrum_geometry(rate).display_bins * _PIXELS_PER_BIN)
+        assert width % H_DIVISIONS == 0, (
+            f'At {rate} Hz the panel is {width} px, which {H_DIVISIONS} divisions do '
+            'not divide evenly, so one graticule cell is a pixel wider than the rest.')
+
+    def test_the_panel_is_only_as_wide_as_it_has_to_be(self):
+        """Rounded up to the next legal width, not to a comfortable one.  The margin
+        either side is black, and any more of it is screen given to nothing."""
+        natural = DISPLAY_BINS * _PIXELS_PER_BIN
+        assert panel_width(natural) - natural < _PANEL_WIDTH_MULTIPLE
+
+    def test_an_already_legal_width_is_left_alone(self):
+        assert panel_width(_PANEL_WIDTH_MULTIPLE * 4) == _PANEL_WIDTH_MULTIPLE * 4
 
     @pytest.mark.parametrize('rate', RATES)
     def test_resolution_stays_constant(self, rate):

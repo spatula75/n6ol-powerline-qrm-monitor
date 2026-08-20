@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+- The scope's horizontal graticule now divides the pulse period into thirds rather
+  than the sweep into tenths, giving 2.78 ms/div at 120 pps and 3.33 ms/div at 100
+  pps. A division is then the spacing between the bursts of two arcing phases of one
+  distribution circuit, so each phase occupies a cell of its own and the number of
+  arcing phases can be counted by eye. The lines closing a whole pulse period are
+  drawn brighter than the phase slots inside it. The division count comes from the
+  configured pulse rate, not from the analyzer's measured grid frequency, so the
+  graticule stands still.
+- The scope's bright vertical rule at the center of the screen is gone. With nine
+  divisions the center falls inside a cell rather than on a line, so the rule would
+  have marked nothing.
+- The scope graticule is about 10% brighter.
+- The display panel is 648 px wide rather than 640, so the scope's nine divisions
+  come out at exactly 72 px each instead of eight cells of 71 and one of 72. The
+  waterfall keeps its own 640 px width, since that is set by the frequency scale, and
+  is centered in the panel against a black margin 4 px either side. The window is
+  therefore 742 px wide rather than 734, and a rendered `.mp4` is 742x248.
+  `waterfall.panel_width()` rounds to a multiple of `lcm(H_DIVISIONS, 2)`, so the
+  frame width stays even at every admitted sample rate and x264 keeps accepting it.
+
 ## [1.5.1] - 2026-08-08
 
 ### Added

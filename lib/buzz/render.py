@@ -151,8 +151,9 @@ def ffmpeg_command(ffmpeg: str, output: Path, source: Path, width: int, height: 
     Nothing pads the frame to an even size, which yuv420p needs, because nothing can
     arrive odd.  The only rate-dependent term in the window is the waterfall's
     width, and the FFT window is a fixed span of time, so the bin count is
-    4000 Hz x 32 ms = 128 at every rate config.validate_sample_rate admits.  The
-    window is therefore 734x248 always.  This did once vary: a fixed 512-sample
+    4000 Hz x 32 ms = 128 at every rate config.validate_sample_rate admits.  Even a
+    rate that broke that would still not arrive odd, since waterfall.panel_width only
+    returns even widths.  The window is 742x248 always.  This did once vary: a fixed 512-sample
     window gave 185 bins at 11025 Hz and a 1019 px window that x264 refused
     outright.  The integration tier renders at four rates and asserts both
     dimensions, so a layout change that brought that back would fail there rather

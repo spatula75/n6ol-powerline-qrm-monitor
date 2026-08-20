@@ -312,7 +312,7 @@ def _start_render(args: argparse.Namespace, config: BuzzConfig, window: 'MainWin
     for should not be able to fail.
 
     The window is measured rather than told its size.  It was built without the
-    control strip, so it is 734x248 instead of 734x284, and a hard-coded frame size
+    control strip, so it is 742x248 instead of 742x284, and a hard-coded frame size
     here would be a second place to keep that in step.
     """
     from buzz.render import RenderError, RenderSession

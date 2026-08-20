@@ -455,6 +455,18 @@ Practical consequences:
   existing rows, and readers must tolerate their absence in older files.
 - **Break up long or convoluted methods** into private helpers named so that the original
   method reads like an English procedure of what it does.
+- **When stacked panels share a width and one of them has a hard constraint, widen the
+  shared panel and center the constrained panel inside it.** Do not stretch either one
+  to match the other. The waterfall's width is its frequency scale, `DISPLAY_BINS`
+  times `_PIXELS_PER_BIN`, and stretching it would silently change what the axis means.
+  The scope above it wants a width its graticule divides exactly. So `panel_width()`
+  rounds up to the next figure that suits the scope, and `WaterfallWidget` draws its
+  spectrum centered in that, against a painted black margin. Paint the margin rather
+  than leaving it to the widget palette, which is whatever the platform theme supplies:
+  Qt's offscreen platform gives (239, 239, 239), so a headless render came out with
+  near-white bars beside the spectrum where a windowed one had dark ones. Same trap
+  `MainWindow`'s container background already documents, and only the pixels show it -
+  see `TestTheWaterfallSitsCenteredInItsPanel`.
 - Keep coverage exclusions surgical - exclude the one unrunnable loop, not the whole file.
 
 ## Naming
@@ -488,6 +500,17 @@ Practical consequences:
   `buzz.dsp.SILENCE_DBFS` and `PULSE_WIDTH_SAMPLES` are already this kind of shared
   constant and stay in `dsp.py` rather than moving: dsp is imported everywhere that
   needs them, so a re-export would only add a second name for the same thing.
+- **A value that has to satisfy two constraints gets derived from both, not from
+  whichever one is currently binding.** The shared panel width must be a whole number
+  of the scope's `H_DIVISIONS`, so the graticule falls on exact pixels, and it must be
+  even, because a rendered frame is yuv420p and x264 refuses an odd dimension. That is
+  `_PANEL_WIDTH_MULTIPLE = lcm(H_DIVISIONS, 2)` rather than the literal 18 it currently
+  evaluates to. Writing 18 works today and quietly stops working the moment the
+  division count changes to another odd number: the panel stays a whole number of
+  divisions, the frame goes odd, and the failure surfaces in x264 rather than anywhere
+  near the edit. The `lcm` cannot drop a factor it was given. Same family as the
+  derived `_BAR_WIDTH` above, with the difference that the second constraint belongs to
+  a different module and nothing else states the coupling.
 
 ## Type hints
 
