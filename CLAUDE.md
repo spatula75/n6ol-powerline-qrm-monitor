@@ -260,7 +260,10 @@ after all of it. In that order:
    The spacing rule is scoped to prose somebody reads as prose - comments, docstrings,
    and end-user documentation. `CHANGELOG.md`, `CLAUDE.md` and `schema.json` are
    exempt from it and always have been in practice; every other rule still applies to
-   them.
+   them. `docs/ste-writing.md` is exempt too, on different grounds: it was adapted
+   from an outside skill under the MIT License, so its text is the source's rather
+   than ours, and reflowing borrowed prose to a house rule that source never claimed
+   would hide which parts we actually changed.
 
    **This step is mandatory and unprompted, the same as ruff or the test suite below -
    run it before every commit, not only when asked.** The real goal is prose that

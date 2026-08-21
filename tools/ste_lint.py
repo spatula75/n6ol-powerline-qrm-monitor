@@ -54,6 +54,12 @@ sources rather than prose, and which have never followed it - 329 instances at
 the time of writing.  Enforcing it there would mean a large cosmetic diff that
 improves nothing.  Every other rule still applies to those files.
 
+docs/ste-writing.md is exempt for a different reason: it was adapted from an
+outside skill under the MIT License, and its wording is closer to that source
+than to this project's own.  Reflowing 45 sentences of borrowed text to suit a
+house rule the source never claimed to follow would only obscure what was
+changed here and what was not.
+
 Two other exemptions are narrower.  A rule book (CLAUDE.md, ste-writing.md) is
 exempt from the vocabulary rules, because it quotes each of those words in order
 to ban it, and every quotation reported as a fault.  CHANGELOG.md's released
@@ -113,7 +119,7 @@ PREPOSITIONS = frozenset(
 STRICT_WORD_CAP = 25
 
 # Files exempt from the two-space rule only.  See the module docstring.
-SPACING_EXEMPT = ('CHANGELOG.md', 'CLAUDE.md', '.json')
+SPACING_EXEMPT = ('CHANGELOG.md', 'CLAUDE.md', 'ste-writing.md', '.json')
 # Files that quote the banned words in order to ban them.
 RULE_BOOKS = ('CLAUDE.md', 'ste-writing.md')
 

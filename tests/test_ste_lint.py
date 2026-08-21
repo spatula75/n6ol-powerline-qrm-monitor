@@ -78,12 +78,25 @@ class TestSpacing:
         assert 'one space after a period' not in rules(check('a.py', 1, 'see config.py for it', False))
 
     def test_exempt_files_are_not_checked_for_spacing(self):
-        """CHANGELOG.md, CLAUDE.md and the schema have never used two spaces."""
-        for path in ('CHANGELOG.md', 'CLAUDE.md', 'lib/buzz/setup/schema.json'):
+        """CHANGELOG.md, CLAUDE.md and the schema have never used two spaces.
+
+        docs/ste-writing.md is exempt on different grounds: it was adapted from an
+        outside skill under the MIT License, so reflowing its 45 borrowed sentences
+        would obscure which parts this project actually changed.
+        """
+        for path in ('CHANGELOG.md', 'CLAUDE.md', 'docs/ste-writing.md',
+                     'lib/buzz/setup/schema.json'):
             assert 'one space after a period' not in rules(check(path, 1, 'One. Two.', False)), path
 
     def test_an_exempt_file_is_still_checked_for_everything_else(self):
         assert 'em dash' in rules(check('CHANGELOG.md', 1, 'a — b', False))
+
+    def test_the_rule_book_passes_the_tool_that_enforces_it(self):
+        """Every finding this file ever produced was one of its own examples, and a
+        wall of them on the one document nobody may edit blind is worse than none."""
+        rule_book = Path(__file__).resolve().parents[1] / 'docs' / 'ste-writing.md'
+        found = lint_file(rule_book)
+        assert not found, '\n'.join(f.render() for f in found)
 
     def test_an_abbreviation_is_not_a_sentence_end(self):
         """"e.g. Something" is one sentence, so the space after it is not the
