@@ -53,9 +53,9 @@ pytestmark = [
                'nothing else, so the rest of the suite runs without them'),
 ]
 
-# The window with its control strip removed: 640 waterfall + 8 gap + 86 meters wide,
+# The window with its control strip removed: 648 panel + 8 gap + 86 meters wide,
 # 120 scope + 8 gap + 120 waterfall tall.  Both even, which yuv420p requires.
-EXPECTED_SIZE = (734, 248)
+EXPECTED_SIZE = (742, 248)
 FRAME_RATE = 30
 ROOT = Path(__file__).resolve().parent.parent.parent
 
@@ -207,9 +207,9 @@ class TestTheControlsAreGone:
     def test_the_frame_is_the_window_without_its_toolbar(self, rendered):
         video = probe(rendered)['video']
         assert (video['width'], video['height']) == EXPECTED_SIZE, (
-            f"Rendered {video['width']}x{video['height']}, expected {EXPECTED_SIZE}. "
-            'The taller size (734x284) means the control strip was drawn into the '
-            'video; a different width means the panel geometry moved. MainWindow '
+            f"Rendered {video['width']}x{video['height']}, expected {EXPECTED_SIZE}.  "
+            'The taller size (742x284) means the control strip was drawn into the '
+            'video.  A different width means the panel geometry moved.  MainWindow '
             'takes show_controls=False for renders and drops the bar and its layout '
             'spacing together.')
 

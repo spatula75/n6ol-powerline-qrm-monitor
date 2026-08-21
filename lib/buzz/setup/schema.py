@@ -15,6 +15,13 @@ know, so the document stays valid while it says things a validator has no opinio
     enforces that.  This says what is worth *showing* during an edit.  To derive one
     from the other, a reader would have to reverse-engineer `if`/`then` blocks and
     guess at the intent behind them.
+
+    Gate a field on a master switch only, meaning one whose off position puts the
+    other settings out of reach for the whole run.  `server.enabled` qualifies:
+    `main.py` builds no `Publisher` when it is off.  `recording.enabled` does not,
+    and gated the whole recording section by mistake.  It only seeds the recorder's
+    opening state.  The R key and `--enable-recording` both arm a run that started
+    disarmed, and every other recording setting governs that run.
   * `x-notes` holds paragraphs too long for a form field.  Only `example_toml` renders
     them.  The setup program shows `description`, which stays a line or two, because a
     form field has no room for four paragraphs.

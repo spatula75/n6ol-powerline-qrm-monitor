@@ -25,7 +25,9 @@ from PySide6.QtWidgets import QPushButton                               # noqa: 
 
 from buzz.config import BuzzConfig                                      # noqa: E402
 from buzz.fonts import FAMILY, display_family, display_font             # noqa: E402
-from buzz.waterfall import _BAR_BG, _BAR_H, MainWindow, RecordingBarWidget  # noqa: E402
+from buzz.waterfall import (                                            # noqa: E402
+    _AXIS_H, _BAR_BG, _BAR_H, _WATERFALL_H, MainWindow, RecordingBarWidget,
+    WaterfallWidget)
 
 _BAR_WIDTH = 600            # wide enough that the stretch leaves bare background
 
@@ -140,6 +142,59 @@ class TestRecordButtonShowsItsState:
         """Dimmed is not disabled.  Disabling it would leave the mouse no way to stop
         a recording that is running."""
         assert faces['enabled']
+
+
+@pytest.mark.integration
+class TestTheWaterfallSitsCenteredInItsPanel:
+    """The panel is wider than the spectrum, and the difference has to be painted.
+
+    The panel is rounded up to a whole number of the scope's graticule divisions, so
+    the spectrum no longer fills it: 640 px of spectrum in a 648 px panel, 4 px either
+    side.  Those margins are painted black rather than left to the widget's palette
+    background, which is whatever the platform theme happens to supply -- the same trap
+    the toolbar above fell into, and invisible anywhere but the pixels.
+    """
+
+    # A row of history driven to the top of the color scale, so every bin renders at
+    # the colormap's hot end.  The spectrum is otherwise black at its floor -- the
+    # colormap's cold end is (0, 0, 0), the same color as the margin beside it -- and
+    # the boundary this is measuring would be invisible.  The layout is what is under
+    # test here, not the color math, so filling the history is fair setup rather than
+    # standing in for the thing being checked.
+    @pytest.fixture(scope='class')
+    @staticmethod
+    def waterfall_image(qt_app, monitor):
+        widget = WaterfallWidget(monitor.pipeline, BuzzConfig())
+        try:
+            widget.resize(widget.width(), _WATERFALL_H)
+            widget._history_db[:] = widget._color_floor + widget._color_range
+            return widget.grab().toImage()
+        finally:
+            widget.stop()
+
+    def test_the_margins_are_black(self, waterfall_image):
+        row = _AXIS_H + 10        # inside the spectrum area, below the frequency axis
+        for x in (0, waterfall_image.width() - 1):
+            assert waterfall_image.pixelColor(x, row) == QColor(0, 0, 0), (
+                f'The margin pixel at x={x} is '
+                f'{waterfall_image.pixelColor(x, row).name()} rather than black, so the '
+                'widget palette is showing through beside the spectrum. paintEvent has '
+                'to fill the full panel width before drawing the scaled spectrum into '
+                'it.')
+
+    def test_the_margins_are_even(self, waterfall_image):
+        """Centered, not flush left.  A spectrum pushed to one side would sit visibly
+        out of register with the scope trace above it, which is the whole reason the
+        panel was widened rather than the spectrum stretched."""
+        row = _AXIS_H + 10
+        width = waterfall_image.width()
+        lit_columns = [x for x in range(width)
+                       if waterfall_image.pixelColor(x, row) != QColor(0, 0, 0)]
+        assert lit_columns, 'no spectrum was drawn at all, so there is nothing to center'
+        left, right = lit_columns[0], width - 1 - lit_columns[-1]
+        assert abs(left - right) <= 1, (
+            f'The spectrum has {left} px of margin on the left and {right} on the '
+            f'right.  It sits off center in its {width} px panel.')
 
 
 @pytest.mark.integration

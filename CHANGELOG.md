@@ -7,6 +7,50 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `tools/ste_lint.py`, which checks prose against the writing rules in `CLAUDE.md`
+  and `docs/ste-writing.md`. It reads comments, docstrings, the messages of `raise`,
+  `assert` and `logger.*`, Markdown outside code fences, and the operator-facing text
+  in `schema.json`, so identifiers and command syntax are never mistaken for
+  sentences. `--changed` limits it to the lines a diff added, and it exits 1 on a
+  finding so it can run beside `ruff check .`. It cannot check the three rules that
+  need a reader: sentence fragments, passive voice, and an `-ing` form used as the
+  main verb.
+
+### Changed
+- The setup program edits a yes/no setting with a labeled pair of radio buttons
+  rather than a switch. The switch was an unlabeled square that slid between two
+  ends, and the words "on" and "off" appeared nowhere in the dialog, so reading a
+  setting meant remembering which side had meant on. The radio pair names both
+  choices and marks the one in force, and the mark stays put while the arrow keys
+  move the cursor over it.
+- The recording section shows every setting whatever "Arm recording at startup" is
+  set to. That setting only decides whether the monitor starts armed. The Record
+  button, the R key and `--enable-recording` all arm a run that started disarmed,
+  and the monitor honors the directory, the event budget and the lock gates when
+  they do, so hiding those seven settings kept an operator from choosing values that
+  were going to be used anyway. Publishing still hides its own settings while it is
+  off, because the monitor builds no uploader at all in that state.
+- The scope's horizontal graticule now divides the pulse period into thirds rather
+  than the sweep into tenths, giving 2.78 ms/div at 120 pps and 3.33 ms/div at 100
+  pps. A division is then the spacing between the bursts of two arcing phases of one
+  distribution circuit, so each phase occupies a cell of its own and the number of
+  arcing phases can be counted by eye. The lines closing a whole pulse period are
+  drawn brighter than the phase slots inside it. The division count comes from the
+  configured pulse rate, not from the analyzer's measured grid frequency, so the
+  graticule stands still.
+- The scope's bright vertical rule at the center of the screen is gone. With nine
+  divisions the center falls inside a cell rather than on a line, so the rule would
+  have marked nothing.
+- The scope graticule is about 10% brighter.
+- The display panel is 648 px wide rather than 640, so the scope's nine divisions
+  come out at exactly 72 px each instead of eight cells of 71 and one of 72. The
+  waterfall keeps its own 640 px width, since that is set by the frequency scale, and
+  is centered in the panel against a black margin 4 px either side. The window is
+  therefore 742 px wide rather than 734, and a rendered `.mp4` is 742x248.
+  `waterfall.panel_width()` rounds to a multiple of `lcm(H_DIVISIONS, 2)`, so the
+  frame width stays even at every admitted sample rate and x264 keeps accepting it.
+
 ## [1.5.1] - 2026-08-08
 
 ### Added

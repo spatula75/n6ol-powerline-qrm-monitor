@@ -16,6 +16,7 @@ import numpy as np
 import pytest
 
 from buzz.scope import (
+    _DIVISIONS_PER_PULSE,
     _PHOSPHOR_PULSES,
     _SWEEP_PULSES,
     extract_sweeps,
@@ -45,14 +46,29 @@ class TestTheTraceShowsTheSamePicture:
     def test_time_per_division_is_constant_for_a_grid(self, rate):
         """The number the operator reads off the header, which used to depend on the
         sample rate of the file they happened to open."""
-        assert sweep_geometry(rate, 120).ms_per_division == pytest.approx(2.5, abs=0.02)
+        assert sweep_geometry(rate, 120).ms_per_division == pytest.approx(2.778, abs=0.02)
 
     @pytest.mark.parametrize('rate', RATES)
     def test_a_fifty_hertz_grid_gets_a_longer_division(self, rate):
-        """3.00 ms/div at 100 pps, which is correct rather than a compromise: a 50 Hz
-        grid has a longer pulse period, so three cycles take longer. Forcing 2.50 would
-        show two and a half cycles -- the same picture stretched."""
-        assert sweep_geometry(rate, 100).ms_per_division == pytest.approx(3.0, abs=0.02)
+        """3.33 ms/div at 100 pps, which is correct rather than a compromise: a 50 Hz
+        grid has a longer pulse period, so its phase slots are wider too."""
+        assert sweep_geometry(rate, 100).ms_per_division == pytest.approx(3.333, abs=0.02)
+
+    @pytest.mark.parametrize('rate,pulse_rate', COMBINATIONS)
+    def test_a_division_is_one_phase_slot(self, rate, pulse_rate):
+        """What the time base is actually for.  A division is 1/(3 * pulse_rate), the
+        spacing between the bursts of two arcing phases of one distribution circuit, so
+        each phase occupies its own cell and the phases can be counted by eye.
+
+        The expected figure comes from the pulse rate rather than from the geometry, so
+        a wrong sweep width or division count cannot agree with itself here.
+        """
+        expected_ms = 1000.0 / (_DIVISIONS_PER_PULSE * pulse_rate)
+        geometry = sweep_geometry(rate, pulse_rate)
+        assert geometry.ms_per_division == pytest.approx(expected_ms, rel=0.01), (
+            f'At {rate} Hz / {pulse_rate} pps a division spans '
+            f'{geometry.ms_per_division:.3f} ms rather than {expected_ms:.3f}.  The '
+            'graticule no longer divides the pulse period into phase slots.')
 
     @pytest.mark.parametrize('rate,pulse_rate', COMBINATIONS)
     def test_the_phosphor_holds_the_same_number_of_pulses(self, rate, pulse_rate):
@@ -68,11 +84,12 @@ class TestTheTraceShowsTheSamePicture:
 
     def test_sixteen_kilohertz_is_unchanged(self):
         """The rate this program records at, where the phase period happened to be
-        exactly three pulse periods -- so none of this moves the familiar display."""
+        exactly three pulse periods -- so the sweep is cut out of the audio exactly as
+        it always was, and only the graticule over it changed."""
         geometry = sweep_geometry(16000, 120)
         assert geometry.sweep_samples == 400
         assert geometry.stride_samples == 400
-        assert geometry.ms_per_division == pytest.approx(2.5)
+        assert geometry.ms_per_division == pytest.approx(2.778, abs=0.001)
 
 
 class TestSweepsSuperimpose:
@@ -162,7 +179,7 @@ class TestTheGeometryIsAlwaysUsable:
         geometry = sweep_geometry(8001, 120)
         assert geometry.n_sweeps >= 1
         assert geometry.stride_samples % geometry.phase_period == 0
-        assert geometry.ms_per_division == pytest.approx(2.5, abs=0.02)
+        assert geometry.ms_per_division == pytest.approx(2.778, abs=0.02)
 
 
 class TestStridedExtraction:

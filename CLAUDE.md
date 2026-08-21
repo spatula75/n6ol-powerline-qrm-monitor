@@ -227,6 +227,18 @@ after all of it. In that order:
    makes wrong - a described default that moved, a number that no longer holds, a flag
    or setting that changed shape. Docs go stale exactly like comments do, and nothing
    else catches it; there is no test that fails when a README goes out of date.
+
+   **Anything under `docs/` needs approval before it is written to disk.** Propose the
+   wording in the reply, get a yes, then edit. That tree is the published site and it
+   has a voice of its own, so it is not a place to make a judgement call unattended.
+
+   **Match the prose already on the page** rather than this file's rules for code
+   comments. `docs/` addresses the operator directly in the second person, uses
+   contractions, and runs to longer explanatory paragraphs than a comment would. Read
+   the surrounding page first and write to it. The house bans on em dashes, banned
+   words, and one space after a period still hold. Detail that belongs to the
+   implementation does not: an operator wants to know what a setting does, not which
+   object the monitor builds when it is on.
 7. **STE compliance for touched prose.** Any docstring, comment, or user-facing string
    in a file this change touches - not the whole file, and not the whole repo - gets
    checked against `docs/ste-writing.md` and this file's own prose rules: banned words,
@@ -235,6 +247,23 @@ after all of it. In that order:
    with whatever change is already being made. Handled this way, every touched file
    ratchets a little closer to full compliance instead of drifting further from it one
    untouched sentence at a time.
+
+   **Run `python tools/ste_lint.py --changed` for the mechanical half of it.** That
+   catches em dashes, banned words, British spellings, wordy choices, the spacing
+   rule, and strict mode's caps, semicolons, contractions and trailing prepositions -
+   over extracted prose rather than raw lines, so identifiers and command syntax are
+   never mistaken for sentences. It exits 1 on a finding, so it belongs beside `ruff
+   check .` rather than after the suite. The three rules it cannot check stay a
+   reading job: sentence fragments, passive voice, and an `-ing` form used as the main
+   verb. A clean run is not a substitute for rereading what you wrote.
+
+   The spacing rule is scoped to prose somebody reads as prose - comments, docstrings,
+   and end-user documentation. `CHANGELOG.md`, `CLAUDE.md` and `schema.json` are
+   exempt from it and always have been in practice; every other rule still applies to
+   them. `docs/ste-writing.md` is exempt too, on different grounds: it was adapted
+   from an outside skill under the MIT License, so its text is the source's rather
+   than ours, and reflowing borrowed prose to a house rule that source never claimed
+   would hide which parts we actually changed.
 
    **This step is mandatory and unprompted, the same as ruff or the test suite below -
    run it before every commit, not only when asked.** The real goal is prose that
@@ -455,6 +484,18 @@ Practical consequences:
   existing rows, and readers must tolerate their absence in older files.
 - **Break up long or convoluted methods** into private helpers named so that the original
   method reads like an English procedure of what it does.
+- **When stacked panels share a width and one of them has a hard constraint, widen the
+  shared panel and center the constrained panel inside it.** Do not stretch either one
+  to match the other. The waterfall's width is its frequency scale, `DISPLAY_BINS`
+  times `_PIXELS_PER_BIN`, and stretching it would silently change what the axis means.
+  The scope above it wants a width its graticule divides exactly. So `panel_width()`
+  rounds up to the next figure that suits the scope, and `WaterfallWidget` draws its
+  spectrum centered in that, against a painted black margin. Paint the margin rather
+  than leaving it to the widget palette, which is whatever the platform theme supplies:
+  Qt's offscreen platform gives (239, 239, 239), so a headless render came out with
+  near-white bars beside the spectrum where a windowed one had dark ones. Same trap
+  `MainWindow`'s container background already documents, and only the pixels show it -
+  see `TestTheWaterfallSitsCenteredInItsPanel`.
 - Keep coverage exclusions surgical - exclude the one unrunnable loop, not the whole file.
 
 ## Naming
@@ -488,6 +529,17 @@ Practical consequences:
   `buzz.dsp.SILENCE_DBFS` and `PULSE_WIDTH_SAMPLES` are already this kind of shared
   constant and stay in `dsp.py` rather than moving: dsp is imported everywhere that
   needs them, so a re-export would only add a second name for the same thing.
+- **A value that has to satisfy two constraints gets derived from both, not from
+  whichever one is currently binding.** The shared panel width must be a whole number
+  of the scope's `H_DIVISIONS`, so the graticule falls on exact pixels, and it must be
+  even, because a rendered frame is yuv420p and x264 refuses an odd dimension. That is
+  `_PANEL_WIDTH_MULTIPLE = lcm(H_DIVISIONS, 2)` rather than the literal 18 it currently
+  evaluates to. Writing 18 works today and quietly stops working the moment the
+  division count changes to another odd number: the panel stays a whole number of
+  divisions, the frame goes odd, and the failure surfaces in x264 rather than anywhere
+  near the edit. The `lcm` cannot drop a factor it was given. Same family as the
+  derived `_BAR_WIDTH` above, with the difference that the second constraint belongs to
+  a different module and nothing else states the coupling.
 
 ## Type hints
 
@@ -685,6 +737,25 @@ If a feature truly cannot be covered without the dependency, find a workaround -
 extract the logic behind an interface and test that - rather than letting CI's result
 depend on what happens to be installed. A coverage gate that means different things on
 different machines means nothing.
+
+### A gate that cannot run must not report a pass
+
+Any check that guards a commit has two ways to say nothing is wrong, and only one of
+them is true: it ran and found nothing, or it never ran. **Exit distinctly for the
+second, and never let an empty result parse as clean.**
+
+The precedent is `tools/ste_lint.py`. Its `--changed` mode read `.stdout` off an
+unchecked `subprocess.run(['git', 'diff', ...])`, so a `--base` naming no commit gave
+an empty diff, which parsed as "no lines were added", which reported `clean` and
+exited 0. A typo in the one argument turned a mandatory pre-commit gate into a
+formality, and nothing about the output said so. It now raises on a non-zero
+returncode and exits 2, which is neither the 0 that means clean nor the 1 that means
+a finding.
+
+The same trap is anywhere a check derives its verdict from the *absence* of
+something: an empty file list, a glob that matched nothing, a subprocess whose output
+was never examined. Ask what the check does when its input never arrives. If the
+answer is "passes", that is the bug, not the missing input.
 
 ## Comments and documentation
 

@@ -19,7 +19,7 @@ import logging
 from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
-from math import ceil
+from math import ceil, lcm
 from typing import TYPE_CHECKING
 
 import numpy as np
@@ -42,7 +42,7 @@ from buzz.fonts import display_family, display_font
 from buzz.playback import FilePlaybackPipeline
 from buzz.recorder import EventRecorder, RecorderStatus
 from buzz.sampler import RingBufferPipeline
-from buzz.scope import SCOPE_H, ScopeWidget
+from buzz.scope import H_DIVISIONS, SCOPE_H, ScopeWidget
 
 if TYPE_CHECKING:
     # For the hint on DisplayRecorder only.  buzz.render is loaded lazily by main, so
@@ -271,6 +271,21 @@ _PANEL_W  = _PAD + _BAR_W + _PAD + _LABEL_W + _PAD + _BAR_W + _PAD  # 86 px
 # Height of the waterfall widget alone.  The scope sits above it at the same height,
 # so the two panels read as a matched pair.
 _WATERFALL_H = _N_ROWS * _PIXELS_PER_ROW + _AXIS_H  # 120 px
+
+# Widths the shared panel is allowed to take, as a multiple of this.  Two conditions
+# have to hold at once, and neither is negotiable:
+#
+#   * A whole number of the scope's horizontal divisions, so its graticule falls on
+#     exact pixels.  H_DIVISIONS is odd (9), so 640 px would give eight cells of 71
+#     and one of 72.
+#   * Even, because the render encodes yuv420p, which subsamples chroma by two each
+#     way and refuses an odd frame dimension outright.  The panel is the only part of
+#     the frame width that is not a fixed constant, so its parity is the frame's.
+#
+# lcm rather than a literal 18, so changing the division count to another odd number
+# cannot silently drop the second condition.
+_PANEL_WIDTH_MULTIPLE = lcm(H_DIVISIONS, 2)
+
 # Breathing room between panels, used on both axes: vertically between the scope and
 # the waterfall, and horizontally between that stack and the meter panel.  One
 # constant for both so the layout stays visually consistent rather than having the
@@ -309,6 +324,20 @@ _BAR_TEXT    = '#c8c8c8'
 _REC_TEXT    = '#ff6464'                  # status line while audio is being written
 _BAR_DIM        = '#5a5a5a'               # a control with nothing left to offer
 _BAR_BORDER_DIM = '#2a2a2a'
+
+
+def panel_width(spectrum_width: int) -> int:
+    """Round the spectrum's natural width up to a legal shared-panel width.
+
+    The waterfall's own width is set by the physics - _PIXELS_PER_BIN pixels for each
+    of DISPLAY_BINS bins, 640 px - and is not free to move without changing the
+    frequency scale.  The scope has to be the same width to sit above it, and wants a
+    width its graticule divides exactly.  So the panel is widened to the next legal
+    figure and the spectrum is centered in it against black, rather than the spectrum
+    being stretched to fit.  640 becomes 648: 4 px of margin either side, and 72 px
+    per division rather than 71.1.
+    """
+    return ceil(spectrum_width / _PANEL_WIDTH_MULTIPLE) * _PANEL_WIDTH_MULTIPLE
 
 
 def format_countdown(seconds: float) -> str:
@@ -567,7 +596,13 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         self._color_ceiling = floor_seed + _DB_RANGE
         self._color_range = _color_scale_range(
             self._color_floor, self._color_ceiling, _COLOR_HEADROOM)
-        self.setFixedSize(self._display_bins * _PIXELS_PER_BIN, _WATERFALL_H)
+        # The spectrum keeps its natural width, and the widget is the next width the
+        # scope's graticule divides exactly - see panel_width.  The difference is split
+        # between the two sides, so the spectrum sits centered under the trace above it.
+        self._spectrum_w = self._display_bins * _PIXELS_PER_BIN
+        width = panel_width(self._spectrum_w)
+        self._spectrum_x = (width - self._spectrum_w) // 2
+        self.setFixedSize(width, _WATERFALL_H)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -611,7 +646,7 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         painter.fillRect(0, 0, w, _AXIS_H, QColor(30, 30, 30))
         painter.setPen(QColor(200, 200, 200))
         painter.setFont(display_font(8))
-        bin_px = w / self._display_bins
+        bin_px = self._spectrum_w / self._display_bins
         # Ticks at round frequencies, placed at whichever bin is nearest - rather than
         # at every Nth bin, labeled with that bin's own center frequency.  A bin is
         # only 31.25 Hz wide at 16 kHz because the rate divides neatly; at 11025 it is
@@ -627,7 +662,7 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         last_placeable_hz = (self._display_bins - 0.5) * self._hz_per_bin
         for step in range(ceil(last_placeable_hz / _FREQ_LABEL_HZ)):
             hz = step * _FREQ_LABEL_HZ
-            x = int(round(hz / self._hz_per_bin) * bin_px)
+            x = self._spectrum_x + int(round(hz / self._hz_per_bin) * bin_px)
             painter.drawLine(x, _AXIS_H - 5, x, _AXIS_H)
             painter.drawText(x + 2, _AXIS_H - 6, f'{hz} Hz')
 
@@ -643,10 +678,16 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         img = QImage(rgb_rows.data, self._display_bins, used_h,
                      self._display_bins * 3, QImage.Format.Format_RGB888)
         # Scale horizontally (bins → _PIXELS_PER_BIN px each); used_h is already exact so no vertical scaling.
-        scaled = img.scaled(w, used_h,
+        scaled = img.scaled(self._spectrum_w, used_h,
                             Qt.AspectRatioMode.IgnoreAspectRatio,
                             Qt.TransformationMode.FastTransformation)
-        painter.drawImage(0, _AXIS_H, scaled)
+        # The margins either side of the spectrum are painted rather than left to the
+        # widget's palette background, which is whatever the platform theme happens to
+        # supply -- the same trap MainWindow's container hit, where a windowed and a
+        # headless render came out with different separator colors.  Black is the
+        # colormap's own cold end, so the margin reads as part of the display.
+        painter.fillRect(0, _AXIS_H, w, used_h, QColor(0, 0, 0))
+        painter.drawImage(self._spectrum_x, _AXIS_H, scaled)
 
     def stop(self) -> None:
         self._timer.stop()
@@ -997,8 +1038,9 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
 
         self.setCentralWidget(container)
         # The bar takes its layout spacing with it when it goes, so a hidden-controls
-        # window is _BAR_H + _PANEL_GAP shorter -- 734x248 rather than 734x284.  Both
-        # dimensions stay even, which yuv420p requires.
+        # window is _BAR_H + _PANEL_GAP shorter -- 742x248 rather than 742x284.  Both
+        # dimensions stay even, which yuv420p requires; the width because panel_width
+        # only returns even figures, the height because every constant it sums is even.
         bar_height = _BAR_H + _PANEL_GAP if self._bar is not None else 0
         self.setFixedSize(self._waterfall.width() + _PANEL_GAP + self._meters.width(),
                           bar_height + _WINDOW_H)

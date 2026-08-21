@@ -73,7 +73,56 @@ _TRACE_H = 96
 # Public because MainWindow (in waterfall.py) sizes the window around it.
 SCOPE_H = _HEADER_H + _TRACE_H           # 120 px, matching the waterfall panel
 
-_H_DIVISIONS = 10                        # 2.5 ms/div across a 25 ms sweep
+# What the trace shows and how long the phosphor remembers, both counted in *pulse
+# periods* rather than in samples or milliseconds.
+#
+# The pulse period is the only length here with any physical meaning: it is the
+# thing being looked at.  Counting in it is what makes the display say the same
+# thing at any sample rate and at either grid frequency.  Three cycles cross the
+# screen and twenty-four cycles of persistence follow, whether the audio arrives
+# at 8 kHz or 48, and whether the grid is 60 Hz (120 pps) or 50 Hz (100 pps).
+#
+# 24 is chosen so the sweep count comes out whole everywhere: every phase period met
+# in practice is 1, 2, 3, 4 or 8 pulse periods, and 24 divides by all of them.  See
+# sweep_geometry for what happens at a rate where it does not.
+_SWEEP_PULSES = 3
+_PHOSPHOR_PULSES = 24
+
+# Horizontal divisions per pulse period, which is what sets the time base.  A
+# division is 1/(_DIVISIONS_PER_PULSE * pulse_rate): 2.78 ms at 120 pps and 3.33 ms
+# at 100 pps, since a 50 Hz grid truly has a longer period.
+#
+# Three, because that is how many phases a distribution circuit has.  Each phase's
+# gaps fire at its own voltage peak, so a second or third arcing phase puts its
+# bursts a third of a pulse period either side of the first.  Cut the graticule into
+# thirds and each of those bursts gets a cell of its own, which is what makes the
+# number of arcing phases readable at a glance.  A round 2.50 ms/div does not divide
+# the pulse period at all, so under it the same three-phase picture reads as an
+# irregular smear.
+#
+# Read the shape, not the occupancy.  A division is 60 degrees of the mains cycle,
+# and so is the spacing between two phases, so burst width and phase separation are
+# measured on the same scale with no headroom between them.  A gap conducts for as
+# long as instantaneous line voltage exceeds its breakdown threshold, which is 54
+# degrees when that threshold sits at 89% of peak and 130 degrees at 43%, so one
+# badly degraded phase spills into both neighboring cells and can occupy all three.
+# Two phases are told apart from one wide burst by the dip between two peaks, not by
+# how many cells carry light.  AVG mode is what resolves that dip out of the noise.
+#
+# The width is worth reading in its own right: it tracks conduction angle, and so
+# tracks how far the gap has degraded, independent of receiver gain and propagation.
+# Treat it as an upper bound on the damage, since receiver passband ringing adds
+# width that is not conduction.
+#
+# Static, taken from the configured pulse rate rather than from the analyzer's
+# measured grid frequency.  The measurement wanders by tens of millihertz through the
+# day, and a graticule that breathed with it would be unreadable for exactly the
+# comparison it exists to support.
+#
+# Public for the same reason SCOPE_H is: waterfall.py sizes the shared panel width to
+# a whole number of these, so the graticule falls on exact pixels.  See panel_width().
+_DIVISIONS_PER_PULSE = 3
+H_DIVISIONS = _SWEEP_PULSES * _DIVISIONS_PER_PULSE
 _V_DIVISIONS = 8                         # center line at division 4
 
 # How far in from the left edge the triggering pulse sits, in divisions.
@@ -85,20 +134,24 @@ _V_DIVISIONS = 8                         # center line at division 4
 # passband, which rings and spreads a sharp impulse over milliseconds on both sides
 # of its peak.  Give the sweep too little lead-in and that leading flank simply
 # falls off the left edge, which looks like a pulse jammed against the frame.
-# 1.5 divisions is 60 samples (3.75 ms at 16 kHz) of room ahead of the peak.
+# 1.5 divisions is 67 samples (4.19 ms at 16 kHz) of room ahead of the peak.
 #
 # The half-division is deliberate too: a whole number of divisions would put the
 # peak exactly on a graticule line, hiding the leading flank under it and reading as
 # pinned to the grid rather than placed on it.  x.5 sits midway between two lines.
 #
+# With three divisions to the pulse period that half-division does a second job.
+# 1.5 divisions is half a pulse period, so the triggering burst sits at the center of
+# its own cell, and a second or third arcing phase - a third of a pulse period either
+# side - sits at the center of the cell next door.  All three phase slots are then
+# read the same way, by whether the cell has a burst in it.
+#
 # Sized against the real burst rather than by eye.  Observed directly on this
 # display, the arc is not an impulse but a symmetric broadband burst 2.5-6 ms wide
-# (40-96 samples), so at its widest it extends ~48 samples = 77 px either side of
-# the peak.  1.5 divisions puts the first burst's leading edge 19 px inside the left
-# rail and still leaves 40 px past the third burst's tail.  Going to 2.0 divisions
-# would trade that for only 8 px at the right, and past ~2.1 the third burst wraps
-# off screen, so this sits near the middle of the usable range, not an arbitrary
-# choice.
+# (40-96 samples), so at its widest it extends ~48 samples = 78 px either side of
+# the peak.  1.5 divisions puts the first burst's leading edge 30 px inside the left
+# rail and leaves 29 px past the third burst's tail, which is about as centered as
+# the sweep allows.  Past ~1.9 divisions that third tail runs off the right edge.
 #
 # tools/pulse_probe.py can quantify the burst, but note its MAX_PULSE_WIDTH = 20
 # ceiling is far below what is actually there; raise it before trusting a width from
@@ -106,26 +159,6 @@ _V_DIVISIONS = 8                         # center line at division 4
 _PRETRIGGER_DIVISIONS = 1.5
 
 _UPDATE_MS = 100                         # matches the waterfall's frame cadence
-
-# What the trace shows and how long the phosphor remembers, both counted in *pulse
-# periods* rather than in samples or milliseconds.
-#
-# The pulse period is the only length here with any physical meaning: it is the
-# thing being looked at.  Counting in it is what makes the display say the same
-# thing at any sample rate and at either grid frequency.  Three cycles cross the
-# screen and twenty-four cycles of persistence follow, whether the audio arrives
-# at 8 kHz or 48, and whether the grid is 60 Hz (120 pps) or 50 Hz (100 pps).
-#
-# Time per division then follows the grid, which is the honest answer rather than a
-# compromise: 2.50 ms/div at 120 pps and 3.00 ms/div at 100 pps, because a 50 Hz grid
-# truly has a longer period.  Forcing both to 2.50 would show 2.5 cycles at 100 pps,
-# the same picture stretched, saying less about the waveform.
-#
-# 24 is chosen so the sweep count comes out whole everywhere: every phase period met
-# in practice is 1, 2, 3, 4 or 8 pulse periods, and 24 divides by all of them.  See
-# sweep_geometry for what happens at a rate where it does not.
-_SWEEP_PULSES = 3
-_PHOSPHOR_PULSES = 24
 
 # ---------------------------------------------------------------------------
 # Phosphor
@@ -172,8 +205,8 @@ _PHOSPHOR_STOPS = (
 
 # Graticule intensities, on the same 0–1 scale as the phosphor, so the etched
 # grid glows like part of the CRT face and any real trace outranks it.
-_GRATICULE_LINE = 0.10
-_GRATICULE_AXIS = 0.17                   # center horizontal/vertical rules
+_GRATICULE_LINE = 0.11
+_GRATICULE_AXIS = 0.19                   # pulse-period rules and the center line
 
 # ---------------------------------------------------------------------------
 # Auto-ranging vertical scale
@@ -321,8 +354,8 @@ def sweep_geometry(sample_rate: int, pulse_rate: int) -> SweepGeometry:
         # A whole phase period of slack at the head, because the trigger offset can
         # push the first sweep that far in before any of it is drawn.
         capture_samples=phase_period + (n_sweeps - 1) * stride_samples + sweep_samples,
-        pretrigger=round(sweep_samples * _PRETRIGGER_DIVISIONS / _H_DIVISIONS),
-        ms_per_division=sweep_samples / sample_rate * 1000 / _H_DIVISIONS,
+        pretrigger=round(sweep_samples * _PRETRIGGER_DIVISIONS / H_DIVISIONS),
+        ms_per_division=sweep_samples / sample_rate * 1000 / H_DIVISIONS,
     )
 
 
@@ -423,7 +456,7 @@ def full_scale_dbfs(full_scale: float) -> float:
 def resample_to_columns(sweep: np.ndarray, n_columns: int) -> np.ndarray:
     """Linearly interpolate a sweep onto n_columns evenly spaced positions.
 
-    The sweep carries fewer samples than the display has columns (400 across 640 px
+    The sweep carries fewer samples than the display has columns (400 across 648 px
     at the defaults), so this interpolates up rather than decimating down.  Linear
     interpolation is the right choice for a scope: it is exactly the straight line
     an analogue beam would trace between two sampled points, and unlike a smoothing
@@ -502,13 +535,23 @@ def build_graticule(height: int, width: int) -> np.ndarray:
     painted on top of the trace would look like an overlay instead of glass.
     """
     grid = np.zeros((height, width), dtype=np.float32)
-    for i in range(1, _H_DIVISIONS):
-        grid[:, round(i * width / _H_DIVISIONS)] = _GRATICULE_LINE
+    # Every _DIVISIONS_PER_PULSE-th line closes a whole pulse period and takes the
+    # brighter rule; the phase slots inside it take the dimmer one.  That is the
+    # hierarchy the display is read by: a bright line says where one cycle of the
+    # pulse train ends, and the dim ones divide that cycle into its phase slots.
+    for i in range(1, H_DIVISIONS):
+        period_boundary = i % _DIVISIONS_PER_PULSE == 0
+        grid[:, round(i * width / H_DIVISIONS)] = (
+            _GRATICULE_AXIS if period_boundary else _GRATICULE_LINE)
     for i in range(1, _V_DIVISIONS):
         grid[round(i * height / _V_DIVISIONS), :] = _GRATICULE_LINE
-    # Center rules brighter.  Both division counts are even, so these sit exactly on
-    # an existing grid line and overwrite it rather than adding a neighbouring one.
-    grid[:, round(width / 2)] = _GRATICULE_AXIS
+    # The zero-volts line, brighter.  _V_DIVISIONS is even, so this sits exactly on an
+    # existing grid line and overwrites it rather than adding a neighboring one.
+    #
+    # There is no matching vertical rule at the horizontal center, though there was
+    # when the divisions were counted in tens.  H_DIVISIONS is odd now, so the middle
+    # of the screen falls inside a cell rather than on a line, and drawing one there
+    # would add a ninth vertical line marking nothing.
     grid[round(height / 2), :] = _GRATICULE_AXIS
     return grid
 
