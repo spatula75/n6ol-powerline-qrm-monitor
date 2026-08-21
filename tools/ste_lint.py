@@ -8,7 +8,8 @@ Run this before a commit, over whatever the change touched:
     python tools/ste_lint.py --changed --base main
 
 It exits 1 when it finds something, so it can sit beside `ruff check .` in the
-pre-commit sequence.
+pre-commit sequence, and 2 when it could not run at all - a `--base` that names
+no commit, say.  A gate that cannot run must not report a pass.
 
 -------------------------------------------------------------------------------
 What counts as prose
@@ -52,6 +53,13 @@ CHANGELOG.md, CLAUDE.md, or schema.json, which are records and machine-readable
 sources rather than prose, and which have never followed it - 329 instances at
 the time of writing.  Enforcing it there would mean a large cosmetic diff that
 improves nothing.  Every other rule still applies to those files.
+
+Two other exemptions are narrower.  A rule book (CLAUDE.md, ste-writing.md) is
+exempt from the vocabulary rules, because it quotes each of those words in order
+to ban it, and every quotation reported as a fault.  CHANGELOG.md's released
+sections are not read at all: they describe what shipped, the published release
+notes were lifted from them verbatim, and ste-writing.md's override 3 leaves them
+alone.  The [Unreleased] section above them is still checked.
 
 -------------------------------------------------------------------------------
 What this cannot do
@@ -109,6 +117,12 @@ SPACING_EXEMPT = ('CHANGELOG.md', 'CLAUDE.md', '.json')
 # Files that quote the banned words in order to ban them.
 RULE_BOOKS = ('CLAUDE.md', 'ste-writing.md')
 
+# CHANGELOG.md's released sections describe what shipped, and the published release
+# notes were lifted from them verbatim, so ste-writing.md's override 3 leaves their
+# wording alone.  Everything from the first version heading down is therefore out of
+# scope; the [Unreleased] section above it is still being written and is checked.
+RELEASED_HEADING = re.compile(r'^## \[\d')
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -125,7 +139,14 @@ class Finding:
     end_line: int = 0
 
     def touches(self, added: set[int]) -> bool:
-        """Whether any line of the prose behind this finding was added."""
+        """Whether any line of the prose behind this finding was added.
+
+        A finding whose line could not be worked out reports as touched.  Dropping
+        it would be the silent kind of miss this tool exists to prevent, and the
+        cost of the other choice is one finding a reader has to place by hand.
+        """
+        if self.line <= 0:
+            return True
         return any(line in added for line in range(self.line, max(self.end_line, self.line) + 1))
 
     def render(self) -> str:
@@ -134,41 +155,63 @@ class Finding:
         return f'{self.path}:{self.line}: {self.rule} ({mode}) - {self.detail}\n    {excerpt}'
 
 
-def sentences(text: str) -> list[str]:
-    """Split prose into sentences, leaving decimals and initials intact.
+# A period that closes a sentence, as against one inside "2.5 ms" or "config.py".
+# What excludes those two is the whitespace every user of this pattern requires
+# after it, since neither a decimal nor a dotted name has any.  The lookbehind is
+# for the remaining case, a one-letter initial: "N. Johnson" is one sentence.
+#
+# The lookbehind used to reject any capital or digit, which was far too broad.  It
+# read "the gate is 97.  Coverage fell" as a single sentence, so the strict word cap
+# was applied to the pair and the trailing-preposition check only ever saw the last
+# clause of a multi-sentence message.
+SENTENCE_END = r'(?<!\b[A-Z])[.!?]'
+# The "1." opening a numbered step is not a sentence end.  Only a figure at the
+# start of its own line is a marker, so a sentence that closes on a number is
+# still checked.
+LIST_MARKER = re.compile(r'(?:^|\n)\s*\d+$')
 
-    The negative lookbehind is what keeps "2.5 ms" and "config.py" from being read
-    as sentence ends; both appear constantly in this codebase's prose.
-    """
+
+def sentences(text: str) -> list[str]:
+    """Split prose into sentences, leaving decimals and initials intact."""
     flat = ' '.join(text.split())
-    return [part.strip() for part in re.split(r'(?<![A-Z0-9])[.!?]\s+', flat) if part.strip()]
+    return [part.strip() for part in re.split(SENTENCE_END + r'\s+', flat) if part.strip()]
 
 
 def _check_spacing(path: str, line: int, text: str, strict: bool) -> list[Finding]:
     """One space after a period, where two belong."""
     if path.endswith(SPACING_EXEMPT):
         return []
-    for match in re.finditer(r'(?<![A-Z0-9])\.(?= [A-Z])', text):
+    # The lookahead is the whole test: one space and then a capital is the fault.
+    # Two spaces do not match it, and neither does a newline, which is a paragraph
+    # break rather than a missing space.
+    for match in re.finditer(SENTENCE_END + r'(?= [A-Z])', text):
         before = text[:match.start()].rstrip()
         if before.endswith(('e.g', 'i.e', '.')):
             continue
-        # Exactly one space is the fault.  A newline is a paragraph break, and a
-        # period inside code such as `self.x` is excluded by the lookbehind above.
-        if text[match.start() + 2:match.start() + 3] != ' ':
-            excerpt = text[max(0, match.start() - 30):match.start() + 30]
-            return [Finding(path, line, 'one space after a period', excerpt.strip(),
-                            text, strict)]
+        if LIST_MARKER.search(text[:match.start()]):
+            continue
+        excerpt = text[max(0, match.start() - 30):match.start() + 30]
+        return [Finding(path, line, 'one space after a period', excerpt.strip(),
+                        text, strict)]
     return []
 
 
 def _check_words(path: str, line: int, text: str, strict: bool) -> list[Finding]:
-    """Banned words, marketing adjectives, British spellings, and wordy choices."""
+    """Banned words, marketing adjectives, British spellings, and wordy choices.
+
+    A rule book is exempt from all four.  CLAUDE.md and ste-writing.md quote every
+    one of these words in order to ban it, so each rule here fires on the sentence
+    that outlaws it: the line naming the two British spellings this project is
+    converting is itself two British spellings.  Reporting a wall of findings on
+    the one file nobody may edit blind is worse than reporting none.
+    """
+    if path.endswith(RULE_BOOKS):
+        return []
     found = []
-    if not path.endswith(RULE_BOOKS):
-        for pattern, rule in ((BANNED, 'banned word'), (MARKETING, 'marketing adjective')):
-            hit = pattern.search(text)
-            if hit:
-                found.append(Finding(path, line, rule, f'"{hit.group(0)}"', text, strict))
+    for pattern, rule in ((BANNED, 'banned word'), (MARKETING, 'marketing adjective')):
+        hit = pattern.search(text)
+        if hit:
+            found.append(Finding(path, line, rule, f'"{hit.group(0)}"', text, strict))
     hit = BRITISH.search(text)
     if hit:
         found.append(Finding(path, line, 'British spelling', f'"{hit.group(0)}"', text, strict))
@@ -241,18 +284,37 @@ LOG_METHODS = frozenset(('debug', 'info', 'warning', 'error', 'exception', 'crit
 MIN_MESSAGE_WORDS = 4
 
 
-def _strict_strings(node: ast.AST) -> list[tuple[int, int, str]]:
-    """The message of one raise, assert, or logger call, rebuilt from its pieces."""
+def _strict_strings(node: ast.AST | None) -> list[tuple[int, int, str]]:
+    """The message of one raise, assert, or logger call, rebuilt from its pieces.
+
+    The pieces are gathered depth first through `ast.iter_child_nodes`, which
+    yields a node's children in the order the source wrote them.  `ast.walk` is
+    breadth first and returned them scrambled: `f"could not read {path} " + "and
+    the fallback was empty"` came back with the two halves reversed, which both
+    hides a real fault at the join and invents one that is not there.
+
+    An interpolated value is not descended into.  It is code, and a dictionary key
+    or a repr inside it is not part of the sentence the reader sees.
+    """
+    if node is None:
+        return []
     parts: list[str] = []
     first: int | None = None
     last = 0
-    for inner in ast.walk(node):
+
+    def gather(inner: ast.AST) -> None:
+        nonlocal first, last
         if isinstance(inner, ast.Constant) and isinstance(inner.value, str):
             parts.append(inner.value)
             first = first if first is not None else inner.lineno
             last = max(last, inner.end_lineno or inner.lineno)
         elif isinstance(inner, ast.FormattedValue):
             parts.append('{}')
+        else:
+            for child in ast.iter_child_nodes(inner):
+                gather(child)
+
+    gather(node)
     joined = ''.join(parts)
     if first is None or len(joined.split()) < MIN_MESSAGE_WORDS:
         return []
@@ -275,9 +337,16 @@ def python_prose(source: str) -> list[tuple[int, int, str, bool]]:
                 literal = node.body[0]
                 items.append((literal.lineno, literal.end_lineno or literal.lineno,
                               doc, False))
-        holders: list[ast.AST] = []
-        if isinstance(node, (ast.Raise, ast.Assert)):
-            holders = [node]
+        # The message only, never the whole statement.  An assert's test expression
+        # holds strings of its own, and reading those as part of the message glued
+        # `assert state == 'unlocked', 'the analyzer did not lock in the time given
+        # at'` into one string ending in "unlocked", which hides the trailing
+        # preposition the rule exists to catch.
+        holders: list[ast.AST | None] = []
+        if isinstance(node, ast.Raise):
+            holders = [node.exc]
+        elif isinstance(node, ast.Assert):
+            holders = [node.msg]
         elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
                 and node.func.attr in LOG_METHODS):
             holders = list(node.args)
@@ -319,11 +388,37 @@ def json_prose(source: str) -> list[tuple[int, int, str, bool]]:
 
     walk(json.loads(source))
     items = []
+    # `walk` visits the document in the order it was written, so the search can run
+    # forward from the last hit.  Without that, two fields sharing a description
+    # both report against the first one's line.
+    cursor = 0
     for text in texts:
-        at = source.find(text)
-        start = source[:at].count('\n') + 1 if at >= 0 else 0
-        items.append((start, start + text.count('\n'), text, False))
+        at = _locate(source, text, cursor)
+        if at < 0:
+            items.append((0, 0, text, False))
+            continue
+        cursor = at + 1
+        start = source[:at].count('\n') + 1
+        items.append((start, start, text, False))
     return items
+
+
+def _locate(source: str, text: str, start_at: int) -> int:
+    """Where a decoded JSON string sits in its source file, or -1.
+
+    The decoded string is not what the file holds.  A quote or a backslash inside
+    it was written escaped, so searching for the decoded form misses every string
+    that carries one, and the schema's `ssh-keygen -N ""` note is exactly that.
+    Under --changed a miss is worse than a wrong line number: the item reports at
+    line 0, and an edit to it then goes unchecked.  `json.dumps` re-escapes the
+    text the way the file wrote it.  The decoded form is still tried afterwards,
+    since a file is free to escape more than the minimum.
+    """
+    for candidate in (json.dumps(text)[1:-1], text):
+        at = source.find(candidate, start_at)
+        if at >= 0:
+            return at
+    return -1
 
 
 EXTRACTORS = {'.py': python_prose, '.md': markdown_prose, '.json': json_prose}
@@ -335,17 +430,40 @@ def lint_file(path: Path) -> list[Finding]:
     if extract is None:
         return []
     name = path.as_posix()
+    source = path.read_text(encoding='utf-8')
+    released = _released_from(source) if path.name == 'CHANGELOG.md' else sys.maxsize
     findings = []
-    for start, end, text, strict in extract(path.read_text(encoding='utf-8')):
+    for start, end, text, strict in extract(source):
+        if start >= released:
+            continue
         for finding in check(name, start, text, strict):
             findings.append(replace(finding, end_line=end))
     return findings
 
 
+def _released_from(source: str) -> int:
+    """The first line of CHANGELOG.md's released sections, or a line past the end."""
+    for number, line in enumerate(source.splitlines(), 1):
+        if RELEASED_HEADING.match(line):
+            return number
+    return sys.maxsize
+
+
 def changed_lines(base: str) -> dict[str, set[int]]:
     """Line numbers the working tree and its commits have added since `base`."""
-    diff = subprocess.run(['git', 'diff', '-U0', base], capture_output=True,
-                          text=True, encoding='utf-8').stdout
+    result = subprocess.run(['git', 'diff', '-U0', base], capture_output=True,
+                            text=True, encoding='utf-8')
+    # A failed diff gives an empty stdout, which parses as "nothing changed" and
+    # reports the run clean.  For a gate that runs before every commit, a mistyped
+    # base ref must not read as a pass.
+    if result.returncode != 0:
+        reason = (result.stderr.strip().splitlines() or ['git printed no reason'])[0]
+        raise RuntimeError(
+            f'git diff against "{base}" failed: {reason}\n'
+            f'The base has to be a commit in this repository.  Pass an existing '
+            f'branch, tag, or commit to --base, or drop --changed and name the '
+            f'files to check.')
+    diff = result.stdout
     added: dict[str, set[int]] = {}
     path = None
     for line in diff.splitlines():
@@ -370,7 +488,11 @@ def main(argv: list[str] | None = None) -> int:
     added: dict[str, set[int]] = {}
     paths = [Path(p) for p in args.paths]
     if args.changed:
-        added = changed_lines(args.base)
+        try:
+            added = changed_lines(args.base)
+        except RuntimeError as failure:
+            print(failure, file=sys.stderr)
+            return 2
         if not paths:
             paths = [Path(p) for p in added]
 

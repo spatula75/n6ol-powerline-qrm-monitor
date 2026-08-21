@@ -31,8 +31,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   they do, so hiding those seven settings kept an operator from choosing values that
   were going to be used anyway. Publishing still hides its own settings while it is
   off, because the monitor builds no uploader at all in that state.
-
-### Changed
 - The scope's horizontal graticule now divides the pulse period into thirds rather
   than the sweep into tenths, giving 2.78 ms/div at 120 pps and 3.33 ms/div at 100
   pps. A division is then the spacing between the bursts of two arcing phases of one

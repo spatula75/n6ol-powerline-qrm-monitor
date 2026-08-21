@@ -735,6 +735,25 @@ extract the logic behind an interface and test that - rather than letting CI's r
 depend on what happens to be installed. A coverage gate that means different things on
 different machines means nothing.
 
+### A gate that cannot run must not report a pass
+
+Any check that guards a commit has two ways to say nothing is wrong, and only one of
+them is true: it ran and found nothing, or it never ran. **Exit distinctly for the
+second, and never let an empty result parse as clean.**
+
+The precedent is `tools/ste_lint.py`. Its `--changed` mode read `.stdout` off an
+unchecked `subprocess.run(['git', 'diff', ...])`, so a `--base` naming no commit gave
+an empty diff, which parsed as "no lines were added", which reported `clean` and
+exited 0. A typo in the one argument turned a mandatory pre-commit gate into a
+formality, and nothing about the output said so. It now raises on a non-zero
+returncode and exits 2, which is neither the 0 that means clean nor the 1 that means
+a finding.
+
+The same trap is anywhere a check derives its verdict from the *absence* of
+something: an empty file list, a glob that matched nothing, a subprocess whose output
+was never examined. Ask what the check does when its input never arrives. If the
+answer is "passes", that is the bug, not the missing input.
+
 ## Comments and documentation
 
 Match the voice already in the codebase: concise, factual, plain. Avoid AI-assistant tics:

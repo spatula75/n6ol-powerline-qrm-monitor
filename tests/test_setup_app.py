@@ -788,6 +788,45 @@ class TestSetupAppWalkthrough:
 
         run(scenario())
 
+    def test_boolean_dialog_arrows_move_the_choices_then_the_buttons(self, tmp_path):
+        """Left and right have to do something wherever focus is.
+
+        The screen binds them to focus_previous/focus_next, and RadioSet binds
+        up/left and down/right itself.  The widget's binding resolves first, so the
+        arrows move between On and Off while the choices have focus and between OK
+        and Cancel once a Button does.  Without the screen binding the arrows are
+        inert on the button row, because Button.BINDINGS carries only `enter` - and
+        an operator who reached OK with Tab then has no way back but Tab again.
+        """
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                await _open_field(pilot, app, 'recording', 'enabled')
+                choices = app.screen.query_one('#value', RadioSet)
+                assert choices._selected == 1, 'the dialog opens on the pressed row, Off'
+
+                # The RadioSet has focus, so left is its own binding, not the screen's.
+                await pilot.press('left')
+                assert choices._selected == 0, (
+                    'Left did not move the cursor between the choices.  The screen '
+                    'binding for left is resolving ahead of the RadioSet, which means '
+                    'an arrow key no longer picks a value.')
+
+                # Tab to OK, where the screen's binding is the only thing bound.
+                await pilot.press('tab')
+                assert isinstance(app.screen.focused, Button)
+                await pilot.press('right')
+                assert isinstance(app.screen.focused, Button), (
+                    'Focus left the button row entirely.')
+                assert app.screen.focused.id == 'cancel', (
+                    'Right did nothing on the button row.  Button.BINDINGS is only '
+                    '`enter`, so the screen has to bind left and right or the arrows '
+                    'are inert once OK or Cancel has focus.')
+
+        run(scenario())
+
     def test_recording_settings_show_even_when_it_starts_disarmed(self, tmp_path):
         """recording.enabled only seeds the recorder's opening state.
 

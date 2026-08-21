@@ -200,12 +200,18 @@ class BooleanFieldDialog(ScopeModalScreen[Any]):
         margin-bottom: 1;
     }
     """
-    # See TextFieldDialog's identical notes on Escape.  Left and right are not bound
-    # here as they are there: RadioSet binds `up,left` and `down,right` itself, and
-    # those move between the two choices, which is what an arrow key should do while
-    # the choices have focus.  Tab still reaches OK and Cancel, and once a Button
-    # holds focus its own bindings take over.
-    BINDINGS = [('escape', 'cancel', 'Cancel')]
+    # See TextFieldDialog's identical notes on Escape.  Left and right are bound the
+    # same way they are there, and for the same reason: `Button.BINDINGS` carries
+    # only `enter`, so without this pair the arrow keys do nothing at all once OK or
+    # Cancel has focus.  There is no conflict with the choices, because RadioSet
+    # binds `up,left` and `down,right` itself and a binding on the focused widget
+    # resolves before one on the screen.  So the arrows move between On and Off while
+    # the RadioSet holds focus, and between OK and Cancel once a Button does.
+    BINDINGS = [
+        ('left', 'app.focus_previous', 'Previous'),
+        ('right', 'app.focus_next', 'Next'),
+        ('escape', 'cancel', 'Cancel'),
+    ]
 
     def __init__(self, spec: dict[str, Any], current: Any) -> None:
         super().__init__()
