@@ -7,6 +7,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.2] - 2026-08-20
+
 ### Added
 - `tools/ste_lint.py`, which checks prose against the writing rules in `CLAUDE.md`
   and `docs/ste-writing.md`. It reads comments, docstrings, the messages of `raise`,
