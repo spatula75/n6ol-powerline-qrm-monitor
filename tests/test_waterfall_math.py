@@ -600,7 +600,7 @@ class TestSpectrumGeometry:
         panel_width() being even at every rate validate_sample_rate admits.
 
         This measures the width the window is actually built from rather than the bin
-        count it used to reduce to. The two stopped being the same thing once the panel
+        count it used to reduce to.  The two stopped being the same thing once the panel
         was widened to a whole number of scope divisions: rounding an even natural
         width up to a multiple of an odd division count can give an odd figure, and
         640 -> 648 happens not to.  _PANEL_WIDTH_MULTIPLE is what stops it, and this is
@@ -618,10 +618,10 @@ class TestSpectrumGeometry:
         odd = [rate for rate, width in widths.items() if width % 2]
         assert not odd, (
             f'{len(odd)} admitted sample rates give an odd frame width, starting at '
-            f'{odd[0]} Hz at {widths[odd[0]]} px. x264 refuses an odd dimension under '
-            'yuv420p and ffmpeg_command() does not pad. Either _PANEL_WIDTH_MULTIPLE '
+            f'{odd[0]} Hz at {widths[odd[0]]} px.  x264 refuses an odd dimension under '
+            'yuv420p and ffmpeg_command() does not pad.  Either _PANEL_WIDTH_MULTIPLE '
             'stopped forcing an even width, or the sample-rate band in config.py '
-            'widened past what the geometry holds for.')
+            'widened past the range this geometry holds.')
 
     @pytest.mark.parametrize('rate', RATES)
     def test_the_panel_divides_into_whole_scope_divisions(self, rate):
@@ -631,7 +631,7 @@ class TestSpectrumGeometry:
         width = panel_width(spectrum_geometry(rate).display_bins * _PIXELS_PER_BIN)
         assert width % H_DIVISIONS == 0, (
             f'At {rate} Hz the panel is {width} px, which {H_DIVISIONS} divisions do '
-            'not divide evenly, so one graticule cell is a pixel wider than the rest.')
+            'not divide evenly.  One graticule cell is therefore wider than the rest.')
 
     def test_the_panel_is_only_as_wide_as_it_has_to_be(self):
         """Rounded up to the next legal width, not to a comfortable one.  The margin

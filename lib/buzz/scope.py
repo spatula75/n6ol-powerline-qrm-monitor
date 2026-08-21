@@ -105,7 +105,7 @@ _PHOSPHOR_PULSES = 24
 # measured on the same scale with no headroom between them.  A gap conducts for as
 # long as instantaneous line voltage exceeds its breakdown threshold, which is 54
 # degrees when that threshold sits at 89% of peak and 130 degrees at 43%, so one
-# badly degraded phase spills into both neighbouring cells and can occupy all three.
+# badly degraded phase spills into both neighboring cells and can occupy all three.
 # Two phases are told apart from one wide burst by the dip between two peaks, not by
 # how many cells carry light.  AVG mode is what resolves that dip out of the noise.
 #

@@ -248,6 +248,20 @@ after all of it. In that order:
    ratchets a little closer to full compliance instead of drifting further from it one
    untouched sentence at a time.
 
+   **Run `python tools/ste_lint.py --changed` for the mechanical half of it.** That
+   catches em dashes, banned words, British spellings, wordy choices, the spacing
+   rule, and strict mode's caps, semicolons, contractions and trailing prepositions -
+   over extracted prose rather than raw lines, so identifiers and command syntax are
+   never mistaken for sentences. It exits 1 on a finding, so it belongs beside `ruff
+   check .` rather than after the suite. The three rules it cannot check stay a
+   reading job: sentence fragments, passive voice, and an `-ing` form used as the main
+   verb. A clean run is not a substitute for rereading what you wrote.
+
+   The spacing rule is scoped to prose somebody reads as prose - comments, docstrings,
+   and end-user documentation. `CHANGELOG.md`, `CLAUDE.md` and `schema.json` are
+   exempt from it and always have been in practice; every other rule still applies to
+   them.
+
    **This step is mandatory and unprompted, the same as ruff or the test suite below -
    run it before every commit, not only when asked.** The real goal is prose that
    already follows these rules on first draft, so the check should rarely find

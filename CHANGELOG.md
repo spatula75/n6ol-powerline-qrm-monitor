@@ -7,6 +7,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `tools/ste_lint.py`, which checks prose against the writing rules in `CLAUDE.md`
+  and `docs/ste-writing.md`. It reads comments, docstrings, the messages of `raise`,
+  `assert` and `logger.*`, Markdown outside code fences, and the operator-facing text
+  in `schema.json`, so identifiers and command syntax are never mistaken for
+  sentences. `--changed` limits it to the lines a diff added, and it exits 1 on a
+  finding so it can run beside `ruff check .`. It cannot check the three rules that
+  need a reader: sentence fragments, passive voice, and an `-ing` form used as the
+  main verb.
+
 ### Changed
 - The setup program edits a yes/no setting with a labeled pair of radio buttons
   rather than a switch. The switch was an unlabeled square that slid between two

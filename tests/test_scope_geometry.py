@@ -67,7 +67,7 @@ class TestTheTraceShowsTheSamePicture:
         geometry = sweep_geometry(rate, pulse_rate)
         assert geometry.ms_per_division == pytest.approx(expected_ms, rel=0.01), (
             f'At {rate} Hz / {pulse_rate} pps a division spans '
-            f'{geometry.ms_per_division:.3f} ms rather than {expected_ms:.3f}, so the '
+            f'{geometry.ms_per_division:.3f} ms rather than {expected_ms:.3f}.  The '
             'graticule no longer divides the pulse period into phase slots.')
 
     @pytest.mark.parametrize('rate,pulse_rate', COMBINATIONS)

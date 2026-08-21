@@ -194,7 +194,7 @@ class TestTheWaterfallSitsCenteredInItsPanel:
         left, right = lit_columns[0], width - 1 - lit_columns[-1]
         assert abs(left - right) <= 1, (
             f'The spectrum has {left} px of margin on the left and {right} on the '
-            f'right of a {width} px panel, so it is not centered under the scope.')
+            f'right.  It sits off center in its {width} px panel.')
 
 
 @pytest.mark.integration

@@ -308,7 +308,7 @@ class TestBuildGraticule:
                         else _GRATICULE_LINE)
             assert grid[0, column] == pytest.approx(expected), (
                 f'Division line {i} of {H_DIVISIONS} is at intensity '
-                f'{grid[0, column]:.3f} rather than {expected:.3f}. Lines on a whole '
+                f'{grid[0, column]:.3f} rather than {expected:.3f}.  Lines on a whole '
                 'pulse period take the bright rule and the phase slots the dim one.')
         assert _GRATICULE_LINE < _GRATICULE_AXIS
 
@@ -453,7 +453,7 @@ class TestPretrigger:
 
     def test_each_phase_slot_is_centered_on_its_burst(self):
         """1.5 divisions is half a pulse period, so the triggering burst sits at the
-        centre of a cell -- and the bursts of a second or third arcing phase, a third
+        center of a cell -- and the bursts of a second or third arcing phase, a third
         of a pulse period either side, sit at the centers of the cells next door.
         That is what lets the phases be counted by which cells carry a burst."""
         division_px = self.WIDTH / H_DIVISIONS
@@ -461,7 +461,7 @@ class TestPretrigger:
             column = self._column() + slot * division_px
             assert (column / division_px) % 1 == pytest.approx(0.5, abs=0.02), (
                 f'The phase slot {slot} cell away from the trigger carries its burst '
-                f'at column {column:.1f}, which is not the cell center. Either the '
+                f'at column {column:.1f}, which is not the cell center.  Either the '
                 'pretrigger or the division count has moved.')
 
     def test_matches_the_documented_position(self):

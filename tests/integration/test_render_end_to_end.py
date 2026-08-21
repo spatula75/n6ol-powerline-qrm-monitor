@@ -207,9 +207,9 @@ class TestTheControlsAreGone:
     def test_the_frame_is_the_window_without_its_toolbar(self, rendered):
         video = probe(rendered)['video']
         assert (video['width'], video['height']) == EXPECTED_SIZE, (
-            f"Rendered {video['width']}x{video['height']}, expected {EXPECTED_SIZE}. "
+            f"Rendered {video['width']}x{video['height']}, expected {EXPECTED_SIZE}.  "
             'The taller size (742x284) means the control strip was drawn into the '
-            'video; a different width means the panel geometry moved. MainWindow '
+            'video.  A different width means the panel geometry moved.  MainWindow '
             'takes show_controls=False for renders and drops the bar and its layout '
             'spacing together.')
 
