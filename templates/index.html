@@ -2,9 +2,6 @@
 <html>
 <head>
 <title>Utility Noise at {{callsign}}</title>
-    {% if not no_refresh %}
-<meta http-equiv="refresh" content="60">
-    {% endif %}
 <style type="text/css">
 body {
   background-color: #fff;
@@ -24,6 +21,9 @@ div.center-container p {
   text-align: center;
   font-family: Inter, "Open Sans", Verdana, Helvetica, Avenir, sans-serif;
 }
+span.paused {
+  color: #a00;
+}
 </style>
 </head>
 
@@ -36,14 +36,150 @@ Powerline arc noise ({{pulse_rate}} pulses per second) measured at {{callsign}}.
 Noise is very likely disruptive
 and trackable when the red line crosses the gray -86dB threshold dashed line (S7).
     <br />
-This page auto-refreshes once per minute.  Last data update at {{update_datetime}}
+    <span id="status">This page updates once per minute.</span>
     <br />
-    <img src="{{filename}}" alt="Noise plot at {{update_datetime}}" />
+    <img id="chart" src="{{chart_url}}" alt="Powerline noise plot at {{callsign}}" />
         <br/>
-Access to raw data and charts is available <a href="/noise/data/">here</a>.
+Access to raw data and charts is available <a href="data/">here</a>.
     </p>
 
   </div>
+
+<script>
+(function () {
+  'use strict';
+
+  // The chart lives at one fixed URL forever.  The dated charts keep their own names
+  // for the archive, but this page never learns any of them, which is what keeps every
+  // date calculation on the station's side rather than the browser's.
+  var CHART_URL = "{{chart_url}}";
+
+  // IANA zone of the station, not of whoever is reading.  The chart's underlying file
+  // rolls over at the station's midnight, so that is the only clock that can tell us a
+  // new day's chart has appeared.
+  var STATION_TIMEZONE = "{{station_timezone}}";
+
+  var REFRESH_MS = 60000;
+
+  var chart = document.getElementById('chart');
+  var status = document.getElementById('status');
+
+  // Set from the first response, then compared against every later one.  Taking the
+  // baseline from a Last-Modified header rather than from the reader's clock means a
+  // viewer in another timezone, or one whose clock is wrong, behaves the same as one
+  // sitting next to the receiver.
+  var firstChartDate = null;
+  var timer = null;
+
+  var MONTHS = {Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
+                Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11};
+
+  var HTTP_DATE = /^\w{3}, (\d{2}) (\w{3}) (\d{4}) (\d{2}):(\d{2}):(\d{2}) GMT$/;
+
+  // HTTP dates are IMF-fixdate (RFC 9110): "Fri, 21 Aug 2026 21:33:01 GMT", always GMT.
+  // Date.parse is only required to understand ISO 8601 and treats everything else as
+  // implementation-defined, so read the fields rather than trusting it.  Returns null
+  // on anything unexpected, which is where the caller decides what to do.
+  function parseHttpDate(header) {
+    var m = header ? HTTP_DATE.exec(header) : null;
+    if (!m) {
+      return null;
+    }
+    return new Date(Date.UTC(+m[3], MONTHS[m[2]], +m[1], +m[4], +m[5], +m[6]));
+  }
+
+  // Intl.DateTimeFormat has no pattern language, by design: it takes a request for
+  // fields and lets the locale decide how to present them.  formatToParts is the way
+  // it offers to build your own format, so the parts are assembled here and the
+  // locale never touches the result.  Gregorian and Latin digits are pinned because a
+  // few locales default to neither, which would quietly make the comparison meaningless.
+  //
+  // Temporal replaces this whole function with one expression once it is baseline in
+  // browsers.  Delete it then rather than maintaining it:
+  //   Temporal.Instant.fromEpochMilliseconds(ms).toZonedDateTimeISO(tz).toPlainDate()
+  var stationDateParts = new Intl.DateTimeFormat('en-US', {
+    timeZone: STATION_TIMEZONE,
+    calendar: 'gregory',
+    numberingSystem: 'latn',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  });
+
+  function stationDate(when) {
+    var parts = stationDateParts.formatToParts(when);
+    var fields = {};
+    for (var i = 0; i < parts.length; i++) {
+      fields[parts[i].type] = parts[i].value;
+    }
+    return fields.year + '-' + fields.month + '-' + fields.day;
+  }
+
+  function showPaused() {
+    clearInterval(timer);
+    status.innerHTML = '<span class="paused">Updating paused.  ' +
+                       'Refresh this page to resume.</span>';
+  }
+
+  function showChart(blob, modified) {
+    var previous = chart.src;
+    chart.src = URL.createObjectURL(blob);
+    // A page left open all day would otherwise hold every chart it ever fetched.
+    if (previous.indexOf('blob:') === 0) {
+      URL.revokeObjectURL(previous);
+    }
+    status.textContent = 'Last data update at ' +
+                         modified.toLocaleString(undefined, {timeZoneName: 'short'});
+  }
+
+  function refresh() {
+    // 'no-cache' revalidates rather than skipping the cache, so an unchanged chart
+    // costs a 304 and no image data.
+    //
+    // This asks for the same URL the <img> tag above already loaded, which looks
+    // wasteful and is not.  Servers send the chart with Last-Modified and no
+    // Cache-Control, so the browser applies heuristic freshness to it and will paint
+    // a cached copy without asking the server anything -- which is why a plain reload
+    // can show yesterday's chart while a shift-reload shows today's.  The tag's job
+    // is to put something on screen for a reader with no JavaScript.  This revalidates
+    // it, which both corrects any stale copy and reads the Last-Modified the page
+    // needs anyway, and on a first load the tag has just filled the cache, so this
+    // costs a 304 rather than a second download.
+    fetch(CHART_URL, {cache: 'no-cache'}).then(function (response) {
+      if (!response.ok) {
+        return;   // Keep showing the current chart and try again next minute.
+      }
+      var modified = parseHttpDate(response.headers.get('last-modified'));
+      if (modified === null) {
+        return;
+      }
+      var day = stationDate(modified);
+      if (firstChartDate === null) {
+        firstChartDate = day;
+      }
+      if (day !== firstChartDate) {
+        // The station has started a new day's chart, which holds one data point.
+        // Stop here without replacing the image or the timestamp, so the reader keeps
+        // the complete day they were looking at.  Last-Modified is upload time, so a
+        // 23:59 upload delayed past midnight would pause a minute early; the remedy
+        // is the refresh the message already asks for.
+        response.body.cancel();   // The headers were all this needed.
+        showPaused();
+        return;
+      }
+      return response.blob().then(function (blob) {
+        showChart(blob, modified);
+      });
+    }).catch(function () {
+      // A blip in the network is not worth reporting.  The chart on screen stays put
+      // and the next minute tries again.
+    });
+  }
+
+  refresh();
+  timer = setInterval(refresh, REFRESH_MS);
+})();
+</script>
 
 </body>
 </html>

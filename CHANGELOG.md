@@ -7,6 +7,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `[server] current_chart`, choosing how the fixed `data/current.png` address is
+  published. `copy` uploads the chart a second time under that name and works on any
+  web server, which is the default. `symlink` points the name at the day's dated chart
+  instead and saves the upload, but Apache serves it only with `FollowSymLinks` on the
+  upload directory, which some shared hosts refuse. An unrecognized value is refused at
+  startup rather than once per minute in the log.
+
+### Changed
+- The published page updates the chart in place once per minute instead of reloading
+  itself with a `<meta http-equiv="refresh">`. It fetches one fixed address,
+  `data/current.png`, and reads the update time from that response's `Last-Modified`
+  header, so it shows the moment the chart reached the web rather than a timestamp
+  rendered into the page. The time is displayed in the reader's own timezone.
+- The page no longer names a dated chart or carries a timestamp of its own, so it is
+  the same document all day and changes only when the callsign, pulse rate, or station
+  timezone changes.
+- At the station's midnight the page stops updating and says so, rather than following
+  the new day's chart down to its single data point. It detects this by comparing the
+  station-local date of each `Last-Modified` against the one it saw on load, so a
+  reader in another timezone sees the same behavior as one beside the receiver. A
+  refresh resumes it.
+- The 23:59 collection no longer suppresses the page's auto-refresh, which the browser
+  now decides for itself.
+
+### Fixed
+- A `[server] remote_path` without its trailing slash no longer misplaces every
+  upload. `/var/www/html/noise` was concatenated straight onto the first filename, so
+  the index went to `/var/www/html/noiseindex.html` and the data to
+  `/var/www/html/noisedata/`. Nothing failed: the transfer succeeded, nothing was
+  logged, and the page was simply never where the web server looked. The trailing
+  slash is added when it is missing. The publishing guide's own example omitted it,
+  which is now corrected.
+- The page's link to the data archive is relative rather than `/noise/data/`, which
+  was one station's own URL layout and gave everyone else a link to nothing.
+- Uploads write to a staging name and are renamed over the target, so a browser that
+  fetches a file mid-upload can no longer read a truncated one. `sftp.put()` overwrites
+  in place, which left a window of tens of milliseconds per file where a chart would
+  draw half-painted. Where the server has no `posix-rename` extension, the target is
+  removed first and renamed plainly. The staging name is one reused `.uploading` per
+  directory, so a transfer abandoned by a crash is overwritten by the next upload
+  rather than left behind, and its leading dot keeps it out of the directory listing.
+
 ## [1.5.2] - 2026-08-20
 
 ### Added

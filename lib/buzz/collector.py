@@ -120,14 +120,20 @@ class Collector:
 
         return [summary_all, summary_7d, summary_30d]
 
-    def _publish_outputs(self, now: datetime, output_dir: Path, smooth_plot_filename: Path,
+    def _publish_outputs(self, output_dir: Path, smooth_plot_filename: Path,
                          upload_files: list[Path]) -> None:
-        """Render the HTML index and SCP everything to the configured web server."""
+        """Render the HTML index and SCP everything to the configured web server.
+
+        The index is re-uploaded every cycle even though its content only changes when
+        the config does.  It costs about 2 kB per minute, and uploading it unconditionally
+        means a cycle whose upload failed repairs itself on the next one, where a
+        once-at-startup upload would leave the page missing until a restart.
+        """
         index_filename = output_dir / 'index.html'
-        image_path = 'data/' + smooth_plot_filename.name
-        self._publisher.generate_index(index_filename, now, image_path)
+        self._publisher.generate_index(index_filename)
         self._publisher.scp_to_server(
-            [(f, 'data/') for f in upload_files] + [(index_filename, '')]
+            [(f, 'data/') for f in upload_files] + [(index_filename, '')],
+            current_chart=smooth_plot_filename,
         )
 
     def _run_collection(self) -> None:
@@ -167,7 +173,7 @@ class Collector:
         # main.py wires a Publisher only when uploads are enabled, so the publisher's
         # presence is the single source of truth for whether to upload.
         if self._publisher is not None:
-            self._publish_outputs(now, output_dir, smooth_plot_filename, upload_files)
+            self._publish_outputs(output_dir, smooth_plot_filename, upload_files)
 
         logger.info(csv_str)
 

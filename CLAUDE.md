@@ -142,6 +142,13 @@ as the clock; muting switches clock sources without losing position.
 initiative, not even when the work is obviously finished and tests pass.
 
 - Feature work goes on a branch, then a PR, then squash-merge to `main`.
+- **Start every new set of work from a clean pull of `main`, on a fresh feature
+  branch** - `git checkout main && git pull && git checkout -b <name>` - before making
+  any change at all, including the first exploratory edit. Do this without being asked.
+  Starting on `main`, or on whatever branch the last piece of work left behind, is how
+  a change ends up mixed in with unrelated commits or based on a stale tree that
+  conflicts at merge time. The cost of the check is three seconds; the cost of missing
+  it is untangling two features from one diff.
 - Commit granularity varies - sometimes one commit per unit of work, sometimes a single
   sweep for a batch of PR fixes. Ask which is wanted.
 - Note `CHANGELOG.md` under `[Unreleased]` as part of the work, not at release time.
@@ -222,6 +229,27 @@ after all of it. In that order:
 5. **Hands-on verification.** Changes to the audio path, the display, or the charts get
    checked against a live radio before being committed - green tests are not the finish
    line for those.
+
+   **Changes to `templates/index.html` get checked in a browser with the Network panel
+   open, and every reload is a shift-reload.** The page has no test coverage at all -
+   there is no JavaScript engine on the dev machine - so a browser is the only thing
+   that runs it. Two traps make a broken page look like a working one, and both cost
+   a confusing half hour before they were understood:
+   - Servers send the chart with `Last-Modified` and no `Cache-Control`, so the browser
+     applies heuristic freshness and paints a **cached** image without asking the server
+     anything. A plain reload can show yesterday's chart indefinitely. "The page did not
+     update" and "the browser never asked" are indistinguishable without the Network
+     panel.
+   - A page that has deliberately stopped updating, a page whose script threw, and a
+     server that is not running all look identical on screen. Never conclude the pause
+     works from seeing nothing happen; drive the state back and confirm the page
+     **resumes**. Same shape as "a test must be able to fail" below - the observation
+     has to be able to come out the other way.
+
+   The way to drive it is a local `http.server` over a copy of the output directory,
+   with a script that rewrites `current.png` and moves its mtime, including forward past
+   the station's midnight. That exercises the 304, the 200, the pause, and the resume,
+   which is every path the page has.
 6. **Documentation drift.** A code or behavior change means checking `README.md`, the
    relevant page(s) under `docs/`, and `config.example.toml` for anything the change
    makes wrong - a described default that moved, a number that no longer holds, a flag

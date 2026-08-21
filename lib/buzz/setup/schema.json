@@ -219,6 +219,23 @@
             "Append ~/.buzz/buzz.pem.pub to the server account's ~/.ssh/authorized_keys. Confirm that the key works before you switch uploads on.",
             "On Windows, use forward slashes or double backslashes. TOML reads one backslash as the start of an escape sequence."
           ]
+        },
+        "current_chart": {
+          "type": "string",
+          "title": "Current chart link",
+          "description": "How the web page finds today's chart. The page reads one fixed address, data/current.png, so it never has to work out today's filename.",
+          "default": "copy",
+          "enum": ["copy", "symlink"],
+          "x-enum-titles": {
+            "copy": "Copy - upload the chart a second time under the fixed name",
+            "symlink": "Symlink - point the fixed name at today's chart"
+          },
+          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-notes": [
+            "Copy works on every web server and needs no configuration. It uploads one extra chart per minute, around 85 kB.",
+            "Symlink saves that upload, but the web server has to follow symbolic links. Apache needs FollowSymLinks for the upload directory, and some shared hosts refuse to allow it. Nginx and lighttpd follow links by default.",
+            "If the page shows a broken image after you choose symlink, the server is not following the link. Switch back to copy."
+          ]
         }
       },
       "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
