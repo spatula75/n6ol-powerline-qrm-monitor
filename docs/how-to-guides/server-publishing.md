@@ -62,3 +62,7 @@ Lastly, restart your monitor if it was already running.
 The page updates itself once per minute.  It replaces the chart in place rather than reloading, so it does not flicker.  The "Last data update" line shows the time in your own timezone, wherever you are reading from, taken from the moment the chart reached the server.
 
 At midnight in your station's timezone the monitor starts a new day's chart, which begins with a single data point.  Rather than replace a full day's chart with an empty one, the page stops updating and says "Updating paused.  Refresh this page to resume."  Refresh whenever you're ready to watch the new day.
+
+The page also gives up after an hour with no changes.  If the monitor stops uploading, or your server goes down, or the chart simply stops changing, the page says "No update since" the time it last saw, tells you it has stopped checking, and asks you to refresh to resume.  Without this it would keep asking once a minute for as long as the tab stayed open, which is wasted traffic for you and for anyone else reading the page.
+
+If your reader has JavaScript turned off, none of this happens.  There are no automatic updates, and no "Last data update" line.  The page says as much in place of the status line, and the chart it shows may be one the browser cached earlier.
