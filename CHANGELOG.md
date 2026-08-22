@@ -31,8 +31,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   refresh resumes it.
 - The 23:59 collection no longer suppresses the page's auto-refresh, which the browser
   now decides for itself.
+- The page's text scales with the screen, holding 16 px from about 711 px wide upward
+  and easing down to 13 px on a phone, so the wrapped paragraphs stop taking vertical
+  space the chart wants. The size mixes `rem` with `vw` rather than using `vw` alone,
+  which keeps the reader's own font-size setting in effect.
 
 ### Fixed
+- The published page fits a narrow screen. Three faults combined: no viewport meta tag,
+  so a phone laid the page out at a notional desktop width and scaled it down; no
+  `max-width` on the 1600 px chart, so it drew at full size whatever the screen; and a
+  centered flex item that overflows spills off both edges at once, leaving the left half
+  in negative scroll space that neither scrolling nor zooming can reach. That last one
+  is why the sides stayed cut off however far you scrolled. `width: 100vw` also counted
+  the scrollbar gutter and forced a horizontal scrollbar on desktop.
 - A `[server] remote_path` without its trailing slash no longer misplaces every
   upload. `/var/www/html/noise` was concatenated straight onto the first filename, so
   the index went to `/var/www/html/noiseindex.html` and the data to

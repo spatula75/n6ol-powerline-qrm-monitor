@@ -1,5 +1,6 @@
 """Tests for Publisher: index HTML generation and SCP upload logic."""
 
+import re
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -94,6 +95,38 @@ class TestGenerateIndex:
         output = tmp_path / 'index.html'
         pub.generate_index(output)
         assert 'http-equiv="refresh"' not in output.read_text()
+
+    def test_the_page_fits_a_narrow_screen(self, tmp_path):
+        """The chart is 1600 px wide and has to fit whatever screen it arrives on.
+
+        Three things together made it not fit, and any one of them coming back brings
+        the fault back: with no viewport tag a phone lays out at a notional desktop
+        width, with no max-width the image draws at its full size regardless, and an
+        overflowing flex item centered by justify-content spills off both edges with
+        the left half in negative scroll space that cannot be scrolled to.
+        """
+        pub = _make_publisher(tmp_path)
+        output = tmp_path / 'index.html'
+        pub.generate_index(output)
+        content = output.read_text()
+        assert 'name="viewport"' in content and 'width=device-width' in content, (
+            'Without the viewport meta tag a phone lays the page out at about 980 px '
+            'and scales it down.  The CSS below cannot then fit the real screen.'
+        )
+        assert 'max-width: 100%' in content, (
+            'The chart must be allowed to shrink to the screen.  At its intrinsic 1600 '
+            'px it overflows a centered flex container off both sides at once.'
+        )
+        assert 'width: 100vw' not in content, (
+            'width: 100vw counts the scrollbar gutter, so it is wider than the space '
+            'available and forces a horizontal scrollbar.'
+        )
+        # 'min-height: 100vh' contains 'height: 100vh', so this has to match the
+        # declaration rather than the substring.
+        assert not re.search(r'(?<!min-)(?<!max-)height:\s*100vh', content), (
+            'A fixed viewport height cannot grow, so a portrait phone pushes content '
+            'off the bottom.  Use min-height so the page extends instead.'
+        )
 
     def test_every_link_and_source_is_relative_to_the_page(self, tmp_path):
         """The page must not assume which URL the station publishes it at.

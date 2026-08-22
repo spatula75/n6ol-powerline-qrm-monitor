@@ -2,6 +2,7 @@
 <html>
 <head>
 <title>Utility Noise at {{callsign}}</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
 <style type="text/css">
 body {
   background-color: #fff;
@@ -12,14 +13,23 @@ div.center-container {
   display: flex;
   justify-content: center;
   align-items: center;
-  height: 100vh;
-  width: 100vw;
+  min-height: 100vh;
+  width: 100%;
   margin: 0;
   padding: 0;
 }
 div.center-container p {
   text-align: center;
   font-family: Inter, "Open Sans", Verdana, Helvetica, Avenir, sans-serif;
+  font-size: clamp(0.8rem, 0.6rem + 0.9vw, 1rem);
+  line-height: 1.35;
+  max-width: 100%;
+  box-sizing: border-box;
+  padding: 0 0.75rem;
+}
+img#chart {
+  max-width: 100%;
+  height: auto;
 }
 span.paused {
   color: #a00;
