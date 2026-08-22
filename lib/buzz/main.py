@@ -40,7 +40,12 @@ from buzz.analyzer import ContinuousAnalyzer
 from buzz.collector import Collector
 from buzz.config import CONFIG_PATH, BuzzConfig, validate_sample_rate
 from buzz.csv_store import CsvStore
-from buzz.playback import FilePlaybackPipeline, resolve_playback_path, sample_rate_of
+from buzz.playback import (
+    FilePlaybackPipeline,
+    resolve_playback_path,
+    sample_rate_of,
+    validate_playable_length,
+)
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher
 from buzz.recorder import EventRecorder
@@ -170,6 +175,7 @@ def check_playback_source(path: Path, config: BuzzConfig) -> None:
     """
     try:
         validate_sample_rate(sample_rate_of(path), path.name, config.audio.sample_rate)
+        validate_playable_length(path, path.name)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     except (OSError, wave.Error) as exc:

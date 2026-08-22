@@ -69,6 +69,7 @@ of a neighbor.
 - A radio receiver with an audio output connected to a sound card line input
 - An SSH-accessible web server for publishing output (optional but expected)
 - A [CumulusMX](https://cumulusmx.com/) weather station or Open-Meteo API access for weather data (optional)
+- ffmpeg installed on your system, if using playback with auto-gain, or when rendering to video
 
 **Platform support:** I develop and test on Windows. Linux and macOS should work with
 no code changes. The core DSP and collection code is cross-platform, and CI runs on

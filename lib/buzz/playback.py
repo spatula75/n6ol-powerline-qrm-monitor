@@ -54,6 +54,40 @@ def sample_rate_of(path: Path | str) -> int:
         return wav.getframerate()
 
 
+def validate_playable_length(path: Path | str, name: str) -> None:
+    """Refuse a recording holding less than the one chunk the feeder reads at a time.
+
+    Such a file plays nothing at all.  `FilePlaybackPipeline` drops the partial
+    trailing chunk, so a file shorter than one whole chunk has no chunks, and the
+    feeder reaches the end of the file before it has fed anything.  The pipeline
+    reports itself finished immediately, which is correct, and a render of it would
+    be a video with no frames.
+
+    Refused here rather than allowed through, because there is no useful answer to
+    give for a recording with no audio in it, and the operator is better told which
+    file was too short than handed an empty .mp4 to work that out from.  A header
+    read costs a few bytes, the same as the rate check beside it.
+    """
+    with wave.open(str(path), 'rb') as wav:
+        frames, rate = wav.getnframes(), wav.getframerate()
+    if frames >= RingBufferPipeline.CHUNK_SIZE:
+        return
+    if not rate:
+        # The wave module accepts a header claiming a rate of zero, which would make
+        # the arithmetic below a division by it.  Refused rather than passed over: a
+        # check that cannot reach a verdict must not report the file as playable, even
+        # though validate_sample_rate happens to run first everywhere this is called.
+        raise ValueError(
+            f'Cannot play back {name}: its header states a sample rate of zero, so the '
+            'length of the recording cannot be worked out.  The file is damaged.  '
+            'Choose another recording.')
+    raise ValueError(
+        f'Cannot play back {name}: it holds {frames / rate:.2f} s of audio, and '
+        f'playback reads {RingBufferPipeline.CHUNK_SIZE / rate:.2f} s at a time.  A '
+        'file this short usually means the monitor stopped part-way through writing '
+        'it.  Choose another recording.')
+
+
 def load_wav(path: Path | str) -> tuple[np.ndarray, int]:
     """Read a 16-bit PCM .wav into (int16 samples, sample rate).
 
@@ -435,6 +469,24 @@ class FilePlaybackPipeline(RingBufferPipeline):
             self._rebase()
         logger.debug('Playback output stream closed.')
 
+    def _note_end_of_file(self) -> None:
+        """Publish that the play position has reached the end, at most once.
+
+        There are two ways to arrive there, and only one of them is playing the last
+        chunk.  A file holding less than one whole chunk starts at the end, because
+        `_chunks` floors the division and is then zero, so the feeder parks without
+        ever feeding anything.  Setting the flag only after a chunk was consumed left
+        `finished` False forever for such a file, and --render waited on a replay that
+        could neither start nor end.  Publishing from the condition itself rather than
+        from one of the routes to it means both arrive at the same place.
+
+        The caller holds _state, and the flag is checked before it is set because
+        _wait_until_playable comes back here on every wake.
+        """
+        if self._index >= self._chunks and not self._finished.is_set():
+            self._finished.set()
+            logger.info('Playback finished: %s', self.path.name)
+
     def _wait_until_playable(self) -> bool:
         """Block while paused or sitting at the end; False once stopping.
 
@@ -450,6 +502,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
             with self._state:
                 if not (self._paused or self._index >= self._chunks):
                     return True
+                self._note_end_of_file()
                 self._state.wait()
         return False
 
@@ -483,9 +536,7 @@ class FilePlaybackPipeline(RingBufferPipeline):
                     continue
                 self._append(chunk)
                 self._index += 1
-                if self._index >= self._chunks:
-                    self._finished.set()
-                    logger.info('Playback finished: %s', self.path.name)
+                self._note_end_of_file()
 
     def close(self) -> None:
         """Stop the feeder and release the audio output, waiting briefly for both."""
