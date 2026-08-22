@@ -13,6 +13,7 @@ Every write goes to a staging name and is renamed over its target, so a browser
 fetching mid-upload cannot read a half-written file.
 """
 
+import errno
 import logging
 from pathlib import Path
 
@@ -92,9 +93,31 @@ class Publisher:
         Keeping it in the target's directory means the rename is always within one
         filesystem, which is what makes it atomic.  A single publisher uploads
         sequentially over one connection, so there is nothing to collide with.
+
+        rpartition rather than rsplit, because rsplit returns the whole string when it
+        finds no separator.  A target with no directory at all is the ordinary case for
+        index.html when [server] remote_path is empty, and it made the staging path
+        `index.html/.uploading`, which is a file used as a directory.  The put failed
+        every cycle and took the rest of the upload down with it.
         """
-        directory = remote_path.rsplit('/', 1)[0]
-        return f'{directory}/{_STAGING_NAME}'
+        directory, separator, _ = remote_path.rpartition('/')
+        # An empty directory with a separator present is the server's root, which is a
+        # real path; an empty one without is "wherever SSH put us", which is '.'.
+        return f'{directory if separator else "."}/{_STAGING_NAME}'
+
+    def _clear_staging(self, sftp: paramiko.SFTPClient, staging_path: str) -> None:
+        """Remove whatever an interrupted cycle left under the staging name.
+
+        A staging file is harmless, because put() overwrites it.  A staging *symlink*
+        is not: put() follows it and writes through to whatever it points at, so a
+        symlink abandoned by a dropped connection would send the next file's bytes into
+        the dated chart it was pointing at, and then rename the link itself over the
+        target.  Removing it first costs one round trip and cannot leave that state.
+        """
+        try:
+            sftp.remove(staging_path)
+        except IOError:
+            pass  # Nothing staged, which is the normal case.
 
     def _rename_over(self, sftp: paramiko.SFTPClient, staging_path: str, remote_path: str) -> None:
         """Move `staging_path` onto `remote_path`, replacing whatever is there.
@@ -105,16 +128,34 @@ class Publisher:
         target has to be removed first.  That leaves a window of a millisecond or so
         where the URL 404s, which the page already survives by keeping its current
         image, and is still far better than serving a truncated PNG.
+
+        The fallback tries the plain rename before removing anything, and that order is
+        the point.  paramiko raises IOError for every failed operation and gives only
+        "no such file" and "permission denied" an errno, so an unsupported extension is
+        indistinguishable by class from a full disk or a read-only directory.  Removing
+        first meant those failures deleted a good chart and then failed to replace it,
+        leaving the page showing a broken image until a later cycle succeeded, which is
+        worse than doing nothing at all.  Renaming first cannot: it either works, or it
+        fails with the target still in place.
         """
         try:
             sftp.posix_rename(staging_path, remote_path)
-        except IOError:
-            logger.debug('Server does not support posix-rename, falling back to remove and rename.')
-            try:
-                sftp.remove(remote_path)
-            except IOError:
-                pass  # First upload, so there is nothing there to replace.
+            return
+        except IOError as exc:
+            # These two carry an errno, so they are known to be real failures rather
+            # than a missing extension, and retrying by hand would only repeat them.
+            if exc.errno in (errno.EACCES, errno.ENOENT):
+                raise
+            logger.debug('posix-rename failed (%s), falling back to rename.', exc)
+        try:
             sftp.rename(staging_path, remote_path)
+            return
+        except IOError:
+            # Expected on the first fallback of every cycle after the first: plain
+            # rename refuses an existing target, which is exactly what a republish has.
+            pass
+        sftp.remove(remote_path)
+        sftp.rename(staging_path, remote_path)
 
     def _put_atomic(self, sftp: paramiko.SFTPClient, local_path: Path | str, remote_path: str) -> None:
         """Upload a file so that no reader can see it half-written.
@@ -125,6 +166,7 @@ class Publisher:
         previous chart or the complete new one.
         """
         staging_path = self._staging_path_for(remote_path)
+        self._clear_staging(sftp, staging_path)
         sftp.put(str(local_path), staging_path)
         self._rename_over(sftp, staging_path, remote_path)
 
@@ -135,12 +177,9 @@ class Publisher:
             self._put_atomic(sftp, chart, remote_path)
             return
         staging_path = self._staging_path_for(remote_path)
-        try:
-            # symlink() fails outright if the name exists, and the staging name is
-            # reused, so the previous cycle's copy has to go first.
-            sftp.remove(staging_path)
-        except IOError:
-            pass  # Nothing staged, which is the normal case.
+        # symlink() fails outright if the name exists, and the staging name is reused,
+        # so the previous cycle's copy has to go first.
+        self._clear_staging(sftp, staging_path)
         # A relative target resolves within the data directory, so the link survives the
         # whole tree being moved to a different path on the server.
         sftp.symlink(Path(chart).name, staging_path)

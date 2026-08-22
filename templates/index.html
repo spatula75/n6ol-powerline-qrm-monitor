@@ -35,6 +35,11 @@ span.paused {
   color: #a00;
 }
 </style>
+<noscript><style type="text/css">
+span#status {
+  display: none;
+}
+</style></noscript>
 </head>
 
 <body>
@@ -47,6 +52,9 @@ Noise is very likely disruptive
 and trackable when the red line crosses the gray -86dB threshold dashed line (S7).
     <br />
     <span id="status">This page updates once per minute.</span>
+    <noscript><span class="paused">This page needs JavaScript to update itself and to
+    show when the chart was last updated.  The chart below may be an old copy held by
+    the browser.  Reload with Ctrl+Shift+R to fetch the current one.</span></noscript>
     <br />
     <img id="chart" src="{{chart_url}}" alt="Powerline noise plot at {{callsign}}" />
         <br/>
@@ -70,6 +78,8 @@ Access to raw data and charts is available <a href="data/">here</a>.
   var STATION_TIMEZONE = "{{station_timezone}}";
 
   var REFRESH_MS = 60000;
+  var STALE_AFTER_MS = 3600000;
+  var UNCHANGED_LIMIT = STALE_AFTER_MS / REFRESH_MS;
 
   var chart = document.getElementById('chart');
   var status = document.getElementById('status');
@@ -80,6 +90,8 @@ Access to raw data and charts is available <a href="data/">here</a>.
   // sitting next to the receiver.
   var firstChartDate = null;
   var timer = null;
+  var shownModified = null;
+  var unchangedPolls = 0;
 
   var MONTHS = {Jan: 0, Feb: 1, Mar: 2, Apr: 3, May: 4, Jun: 5,
                 Jul: 6, Aug: 7, Sep: 8, Oct: 9, Nov: 10, Dec: 11};
@@ -107,16 +119,24 @@ Access to raw data and charts is available <a href="data/">here</a>.
   // Temporal replaces this whole function with one expression once it is baseline in
   // browsers.  Delete it then rather than maintaining it:
   //   Temporal.Instant.fromEpochMilliseconds(ms).toZonedDateTimeISO(tz).toPlainDate()
-  var stationDateParts = new Intl.DateTimeFormat('en-US', {
-    timeZone: STATION_TIMEZONE,
-    calendar: 'gregory',
-    numberingSystem: 'latn',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  });
+  var stationDateParts = null;
+  try {
+    stationDateParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: STATION_TIMEZONE,
+      calendar: 'gregory',
+      numberingSystem: 'latn',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    });
+  } catch (e) {
+    stationDateParts = null;
+  }
 
   function stationDate(when) {
+    if (stationDateParts === null) {
+      return null;
+    }
     var parts = stationDateParts.formatToParts(when);
     var fields = {};
     for (var i = 0; i < parts.length; i++) {
@@ -129,6 +149,29 @@ Access to raw data and charts is available <a href="data/">here</a>.
     clearInterval(timer);
     status.innerHTML = '<span class="paused">Updating paused.  ' +
                        'Refresh this page to resume.</span>';
+  }
+
+  function showStalled() {
+    clearInterval(timer);
+    var since = shownModified === null ? 'No update since this page opened.' :
+                'No update since ' + new Date(shownModified).toLocaleString(
+                  undefined, {timeZoneName: 'short'}) + '.';
+    status.innerHTML = '<span class="paused">' + since +
+                       '  This page has stopped checking.  ' +
+                       'Refresh this page to resume.</span>';
+  }
+
+  function noNewChart() {
+    unchangedPolls += 1;
+    if (unchangedPolls >= UNCHANGED_LIMIT) {
+      showStalled();
+    }
+  }
+
+  function discardBody(response) {
+    if (response.body) {
+      response.body.cancel();   // The headers were all this needed.
+    }
   }
 
   function showChart(blob, modified) {
@@ -157,10 +200,12 @@ Access to raw data and charts is available <a href="data/">here</a>.
     // costs a 304 rather than a second download.
     fetch(CHART_URL, {cache: 'no-cache'}).then(function (response) {
       if (!response.ok) {
-        return;   // Keep showing the current chart and try again next minute.
+        noNewChart();   // Keep showing the current chart and try again next minute.
+        return;
       }
       var modified = parseHttpDate(response.headers.get('last-modified'));
       if (modified === null) {
+        noNewChart();
         return;
       }
       var day = stationDate(modified);
@@ -173,16 +218,24 @@ Access to raw data and charts is available <a href="data/">here</a>.
         // the complete day they were looking at.  Last-Modified is upload time, so a
         // 23:59 upload delayed past midnight would pause a minute early; the remedy
         // is the refresh the message already asks for.
-        response.body.cancel();   // The headers were all this needed.
+        discardBody(response);
         showPaused();
         return;
       }
+      if (shownModified !== null && modified.getTime() === shownModified) {
+        discardBody(response);
+        noNewChart();
+        return;
+      }
+      unchangedPolls = 0;
       return response.blob().then(function (blob) {
+        shownModified = modified.getTime();
         showChart(blob, modified);
       });
     }).catch(function () {
       // A blip in the network is not worth reporting.  The chart on screen stays put
-      // and the next minute tries again.
+      // and the next minute tries again, until an hour of these gives up.
+      noNewChart();
     });
   }
 
