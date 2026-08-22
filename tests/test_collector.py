@@ -291,6 +291,40 @@ class TestRunCollectionUploads:
         call_args = collector._publisher.scp_to_server.call_args[0][0]
         assert len(call_args) >= 4
 
+    def test_the_smoothed_chart_is_the_one_published_as_current(self, tmp_path):
+        """The page's fixed URL must show the smoothed chart, matching what it showed
+        before the page stopped naming a file of its own.
+
+        The raw chart is uploaded too and stays browsable, so publishing the wrong one
+        would still produce a working page showing a noisier trace, which nothing but
+        this assertion would catch.
+        """
+        cfg = _make_config(tmp_path, server_enabled=True)
+        collector = _make_collector(cfg)
+        now = _setup_defaults(collector, tmp_path)
+        with patch('buzz.collector.datetime') as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            collector._run_collection()
+        current = collector._publisher.scp_to_server.call_args.kwargs['current_chart']
+        assert current.name == f'noise_plot_movavg.{now.strftime("%Y-%m-%d")}.png'
+
+    def test_the_index_is_rendered_without_a_chart_name_or_timestamp(self, tmp_path):
+        """generate_index takes only an output path now.
+
+        The page reads the filename and the update time from the fixed URL's headers,
+        so passing either in would reintroduce the staleness this design removed.
+        """
+        cfg = _make_config(tmp_path, server_enabled=True)
+        collector = _make_collector(cfg)
+        now = _setup_defaults(collector, tmp_path)
+        with patch('buzz.collector.datetime') as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            collector._run_collection()
+        args, kwargs = collector._publisher.generate_index.call_args
+        assert len(args) == 1 and not kwargs
+
 
 class TestCollectionLoop:
     def test_keyboard_interrupt_exits_loop(self, tmp_path):

@@ -121,6 +121,14 @@ class ServerConfig:
     username: str = ''                              # SSH username on the web server
     remote_path: str = ''                           # Remote path for uploaded data files
     key_path: str = str(Path.home() / '.buzz' / 'buzz.pem')   # SSH private key for SCP authentication
+    # How data/current.png, the fixed name the web page reads, is published.
+    # 'copy' uploads a second copy of the chart each cycle and works on any server.
+    # 'symlink' avoids that upload but needs the web server to follow symlinks, which
+    # Apache does only with FollowSymLinks and some shared hosts refuse.  Defaulting to
+    # 'copy' means a new station works with no server configuration at all; the
+    # duplicate upload is one chart per minute, which no link this program targets
+    # will notice.
+    current_chart: str = 'copy'
 
 
 @dataclass

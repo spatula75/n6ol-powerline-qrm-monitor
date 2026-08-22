@@ -7,6 +7,108 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `[server] current_chart`, choosing how the fixed `data/current.png` address is
+  published. `copy` uploads the chart a second time under that name and works on any
+  web server, which is the default. `symlink` points the name at the day's dated chart
+  instead and saves the upload, but Apache serves it only with `FollowSymLinks` on the
+  upload directory, which some shared hosts refuse. An unrecognized value is refused at
+  startup rather than once per minute in the log.
+
+### Changed
+- The published page updates the chart in place once per minute instead of reloading
+  itself with a `<meta http-equiv="refresh">`. It fetches one fixed address,
+  `data/current.png`, and reads the update time from that response's `Last-Modified`
+  header, so it shows the moment the chart reached the web rather than a timestamp
+  rendered into the page. The time is displayed in the reader's own timezone.
+- The page no longer names a dated chart or carries a timestamp of its own, so it is
+  the same document all day and changes only when the callsign, pulse rate, or station
+  timezone changes.
+- At the station's midnight the page stops updating and says so, rather than following
+  the new day's chart down to its single data point. It detects this by comparing the
+  station-local date of each `Last-Modified` against the one it saw on load, so a
+  reader in another timezone sees the same behavior as one beside the receiver. A
+  refresh resumes it. Neither half of this can stop the page updating: a browser whose
+  ICU build does not know the station's timezone loses the pause alone rather than the
+  whole script, since `Intl.DateTimeFormat` is built inside a `try` at the top of the
+  script where a throw would otherwise end it before the first fetch, and the
+  `response.body.cancel()` that discards the unread chart at the pause is skipped when
+  a response carries no body, which would otherwise throw into a `catch` that says
+  nothing and leave the reader polling a frozen page.
+- The page stops polling an hour after the last chart it was given, and says so: "No
+  update since 12:04 PM PDT. This page has stopped checking. Refresh this page to
+  resume." Stopping the requests after a bounded time is what the midnight pause was
+  for, and the pause alone could not deliver it, because it fires only when a fetched
+  `Last-Modified` carries a new station-local date. A station that stops uploading at
+  noon serves the same header forever, so the pause never came and a tab left open
+  polled once a minute indefinitely. Every poll that brings no new chart counts toward
+  the hour, including a server error, a `Last-Modified` that does not parse, and a
+  fetch that never completes, so a server that is down is given up on as well. The
+  limit is written as a duration divided by the poll interval rather than as a count
+  of 60, so changing how often the page polls cannot quietly change how long it waits.
+- An unchanged chart is no longer read or repainted. The poll costs a 304 already, and
+  the page was still reading the body and swapping in a new object URL for bytes that
+  were identical to the ones on screen.
+- The 23:59 collection no longer suppresses the page's auto-refresh, which the browser
+  now decides for itself.
+- A reader with JavaScript turned off no longer sees the page promise an update it
+  cannot make. Dropping the `<meta http-equiv="refresh">` left the status line claiming
+  a minute-by-minute update that only the script can perform, and the update time comes
+  from a `Last-Modified` header the script reads, so neither the refresh nor the
+  timestamp happens without it. A `<noscript>` in the head hides the status line with a
+  style rule, and a `<noscript>` beside it explains what the page cannot do. It also
+  says the chart may be an old copy held by the browser and gives the forced reload that
+  fetches the current one, because the chart is served without `Cache-Control` and a
+  plain reload can paint a cached one. The style rule keeps the sentence in the markup,
+  where somebody editing the wording will look for it, rather than in a
+  `document.write` string.
+- The page's text scales with the screen, holding 16 px from about 711 px wide upward
+  and easing down to 13 px on a phone, so the wrapped paragraphs stop taking vertical
+  space the chart wants. The size mixes `rem` with `vw` rather than using `vw` alone,
+  which keeps the reader's own font-size setting in effect.
+
+### Fixed
+- The published page fits a narrow screen. Three faults combined: no viewport meta tag,
+  so a phone laid the page out at a notional desktop width and scaled it down; no
+  `max-width` on the 1600 px chart, so it drew at full size whatever the screen; and a
+  centered flex item that overflows spills off both edges at once, leaving the left half
+  in negative scroll space that neither scrolling nor zooming can reach. That last one
+  is why the sides stayed cut off however far you scrolled. `width: 100vw` also counted
+  the scrollbar gutter and forced a horizontal scrollbar on desktop.
+- A `[server] remote_path` without its trailing slash no longer misplaces every
+  upload. `/var/www/html/noise` was concatenated straight onto the first filename, so
+  the index went to `/var/www/html/noiseindex.html` and the data to
+  `/var/www/html/noisedata/`. Nothing failed: the transfer succeeded, nothing was
+  logged, and the page was simply never where the web server looked. The trailing
+  slash is added when it is missing. The publishing guide's own example omitted it,
+  which is now corrected.
+- The page's link to the data archive is relative rather than `/noise/data/`, which
+  was one station's own URL layout and gave everyone else a link to nothing.
+- Uploads write to a staging name and are renamed over the target, so a browser that
+  fetches a file mid-upload can no longer read a truncated one. `sftp.put()` overwrites
+  in place, which left a window of tens of milliseconds per file where a chart would
+  draw half-painted. The staging name is one reused `.uploading` per directory, so a
+  transfer abandoned by a crash is overwritten by the next upload rather than left
+  behind, and its leading dot keeps it out of the directory listing. It is also removed
+  before each upload rather than merely overwritten, because a staging *symlink* left by
+  a dropped connection would otherwise be followed by the next `put()`, which would write
+  that file's bytes into the dated chart the link pointed at.
+
+  Where the server has no `posix-rename` extension, the plain rename is tried first and
+  the target is removed only if that fails. paramiko reports every failed operation as
+  `IOError` and gives an errno to just two of them, so a missing extension and a
+  read-only directory look alike. Removing first would let a permission or quota error
+  delete a good chart and then fail to replace it, which leaves the page showing a
+  broken image until a later cycle succeeds. A failure carrying `EACCES` or `ENOENT` is
+  now re-raised rather than treated as a missing extension.
+
+  The staging path is derived with `rpartition` rather than `rsplit`, which returns the
+  whole string when it finds no separator. A target with no directory, which is what
+  `index.html` is when `[server] remote_path` is unset, gave the staging path
+  `index.html/.uploading`. The upload failed on that every cycle and took the rest of
+  the cycle down with it, so `current.png` was never published and the page never
+  updated.
+
 ## [1.5.2] - 2026-08-20
 
 ### Added
