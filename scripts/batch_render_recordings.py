@@ -46,11 +46,14 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 import time
 import wave
-from concurrent.futures import ThreadPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
+from typing import BinaryIO
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / 'lib'))
@@ -154,9 +157,16 @@ def child_environment() -> dict[str, str]:
     because a headless render must not need a display server.  main.py sets that
     itself, and setting it here as well costs nothing and keeps this script honest if
     that ever moves.
+
+    lib/ is prepended to whatever PYTHONPATH the operator already had rather than
+    replacing it.  A value they set deliberately would otherwise vanish in every child,
+    and the failure would surface as an import error from inside a process whose
+    environment nobody chose.
     """
+    library_path = str(_REPO_ROOT / 'lib')
+    inherited = os.environ.get('PYTHONPATH')
     return {**os.environ,
-            'PYTHONPATH': str(_REPO_ROOT / 'lib'),
+            'PYTHONPATH': f'{library_path}{os.pathsep}{inherited}' if inherited else library_path,
             'QT_QPA_PLATFORM': 'offscreen'}
 
 
@@ -166,44 +176,111 @@ def render(job: Job) -> Outcome:
     A batch that stops on the first bad file is worse than useless: the operator comes
     back to an hour of nothing.  Every failure therefore becomes an Outcome, and the
     caller decides what to say about it.
+
+    The catch-all is what makes that promise true rather than merely intended.  A
+    render can fail in ways that are nobody's fault and nothing to do with the
+    recording: an OSError from spawning the child, a PermissionError from cleaning up
+    after it.  Any of those escaping here would travel up through the pool and out of
+    main() as a traceback, discarding every outcome already collected.
     """
     started = time.monotonic()
     try:
-        finished = subprocess.run(render_command(job), cwd=str(_REPO_ROOT),
-                                  env=child_environment(), capture_output=True,
-                                  text=True, timeout=job.timeout_s)
-    except subprocess.TimeoutExpired:
-        _discard_partial_output(job)
+        return _attempt_render(job, started)
+    except Exception as exc:
         return Outcome(job, False, time.monotonic() - started,
-                       f'no exit within {job.timeout_s:.0f} s')
-    elapsed = time.monotonic() - started
-    if finished.returncode == 0 and job.output.exists():
-        return Outcome(job, True, elapsed)
-    _discard_partial_output(job)
-    tail = (finished.stderr or finished.stdout or '').strip().splitlines()
-    return Outcome(job, False, elapsed,
-                   '\n'.join(tail[-_FAILURE_TAIL_LINES:])
-                   or f'exit code {finished.returncode}, and no file was written')
+                       f'The render of {job.source.name} failed with an unexpected '
+                       f'error: {exc}.  The usual causes are a missing python '
+                       f'interpreter, a recording the batch cannot read, and an output '
+                       f'directory it cannot write.  This recording counts as failed '
+                       f'and the rest of the batch continues.'
+                       + _discard_partial_output(job))
 
 
-def _discard_partial_output(job: Job) -> None:
-    """Remove what a failed render wrote, so a later run does not skip the recording."""
-    job.output.unlink(missing_ok=True)
+def _attempt_render(job: Job, started: float) -> Outcome:
+    """Run one child render through to an exit, a timeout, or a failure.
+
+    The child's output goes to a temporary file rather than a pipe, and that is what
+    makes the timeout dependable.  With a pipe, subprocess handles a timeout by killing
+    the direct child and then waiting for both pipes to close, and ffmpeg inherits the
+    same stderr from the render it runs inside.  A stalled ffmpeg is the likeliest
+    reason for a hang in the first place, and killing python does not free it, so the
+    wait meant to bound a hung render would never return.  A file has no such wait, so
+    kill() and wait() come back at once.
+    """
+    with tempfile.TemporaryFile() as captured:
+        process = subprocess.Popen(render_command(job), cwd=str(_REPO_ROOT),
+                                   env=child_environment(),
+                                   stdout=captured, stderr=subprocess.STDOUT)
+        try:
+            returncode = process.wait(timeout=job.timeout_s)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+            return Outcome(job, False, time.monotonic() - started,
+                           f'no exit within {job.timeout_s:.0f} s'
+                           + _discard_partial_output(job))
+        elapsed = time.monotonic() - started
+        if returncode == 0 and job.output.exists():
+            return Outcome(job, True, elapsed)
+        reported = (_output_tail(captured)
+                    or f'exit code {returncode}, and no file was written')
+        return Outcome(job, False, elapsed, reported + _discard_partial_output(job))
 
 
-def run_jobs(jobs: list[Job], workers: int, announce=print) -> list[Outcome]:
+def _output_tail(captured: BinaryIO) -> str:
+    """The last few lines the child wrote, for quoting back in a failure."""
+    captured.seek(0)
+    text = captured.read().decode('utf-8', errors='replace').strip()
+    return '\n'.join(text.splitlines()[-_FAILURE_TAIL_LINES:])
+
+
+def _discard_partial_output(job: Job) -> str:
+    """Remove what a failed render wrote, so a later run does not skip the recording.
+
+    Returns a note to append to the failure message when the file could not be removed,
+    and never raises.  unlink(missing_ok=True) swallows only FileNotFoundError, so a
+    video the operator happens to have open in a player raises PermissionError on
+    Windows, as does a read-only output directory anywhere.  Cleanup that throws would
+    turn one awkward file into a dead batch.
+    """
+    try:
+        job.output.unlink(missing_ok=True)
+        return ''
+    except OSError as exc:
+        return (f'\n    The partial video {job.output} could not be removed: {exc}.  '
+                f'A later run will skip {job.source.name}, because a file for it now '
+                f'exists.  Delete that file before the next batch.')
+
+
+def run_jobs(jobs: list[Job], workers: int,
+             announce: Callable[[str], None] = print) -> list[Outcome]:
     """Run the jobs, at most `workers` at a time, reporting each as it finishes.
 
     Threads rather than processes, because the work itself is already in a child
-    process: each thread does nothing but wait on one.  Results are reported as they
-    complete rather than in order, since with more than one worker there is no order
-    to preserve.
+    process: each thread does nothing but wait on one.
+
+    Results are reported as they complete rather than in order, which is why this
+    submits and gathers with as_completed rather than using Executor.map.  map yields
+    strictly in submission order, so one long recording at the head of the list holds
+    back the report of every short one behind it, and a failure stays invisible until
+    its turn arrives.  With --jobs 4 over a directory whose first file is a ten minute
+    recording, that meant ten minutes of silence with three renders already done.
+
+    The cancellation is not decoration.  Executor.map closes its generator on the way
+    out and drops whatever it has not started, and submitting by hand gives that up, so
+    the pool's own shutdown would sit and wait for every queued render instead.
+    Cancelling explicitly keeps Ctrl-C meaning what it meant before.
     """
     outcomes: list[Outcome] = []
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for outcome in pool.map(render, jobs):
-            outcomes.append(outcome)
-            announce(_progress_line(outcome, len(outcomes), len(jobs)))
+        futures = [pool.submit(render, job) for job in jobs]
+        try:
+            for future in as_completed(futures):
+                outcomes.append(future.result())
+                announce(_progress_line(outcomes[-1], len(outcomes), len(jobs)))
+        except BaseException:
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
     return outcomes
 
 
@@ -261,7 +338,24 @@ def default_recordings_directory() -> Path:
     return config.recording.directory_path(config.station)
 
 
+def _report_progress_promptly() -> None:
+    """Line-buffer stdout, so a redirected batch reports as it goes.
+
+    Python line-buffers stdout only when it is a terminal.  To a file or a pipe it
+    buffers about 8 kB, and a batch prints one short line per finished render, so
+    `... > batch.log` would show nothing for hours and then everything at once.  An
+    hours-long batch is exactly the thing somebody redirects and then tails.
+
+    Guarded because stdout is not always a real stream.  A test that captures it, or a
+    caller that replaced it, can supply something with no reconfigure at all, and
+    losing the buffering is not worth an exception.
+    """
+    if hasattr(sys.stdout, 'reconfigure'):
+        sys.stdout.reconfigure(line_buffering=True)
+
+
 def main(argv: list[str] | None = None) -> int:
+    _report_progress_promptly()
     args = _parse_args(argv)
     recordings = args.recordings or default_recordings_directory()
     output_dir = args.output_dir or recordings / DEFAULT_OUTPUT_NAME
