@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import time
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import available_timezones
@@ -23,6 +24,40 @@ def run(coro):
     return asyncio.run(coro)
 
 
+async def _wait_until(pilot, condition, description: str, timeout: float = 5.0) -> None:
+    """Pump the app until `condition()` holds, and fail saying what never happened.
+
+    Some dialogs fill themselves from a worker that leaves the event loop: the
+    timezone picker reads tzdata through asyncio.to_thread, the device picker probes
+    the sound card.  A single pilot.pause() only guarantees that the messages queued
+    so far were handled, not that such a worker finished, so a test that pauses once
+    and asserts is racing the worker.  It wins on a developer's machine and loses on a
+    loaded CI runner.
+
+    A fixed sleep is the obvious alternative, and this replaces one.  It has to be
+    long enough for the slowest machine that will ever run it, so every run pays that
+    cost, and it still fails on a machine slower than whoever picked the number.  This
+    returns as soon as the condition holds and spends the timeout only when something
+    is really wrong.
+
+    workers.wait_for_complete() cannot be used here.  The section screen's own
+    on_option_list_option_selected worker sits suspended awaiting the very dialog
+    under test, so waiting for every worker would never return.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        await pilot.pause()
+        if condition():
+            return
+        if time.monotonic() >= deadline:
+            raise AssertionError(
+                f'Waited {timeout:.0f} s for {description} and it never happened.  '
+                'The dialog fills itself from a background worker, so either that '
+                'worker failed or it now reports through a different route.  Check '
+                'the worker this dialog starts in on_mount.')
+        await asyncio.sleep(0.01)
+
+
 async def _open_field(pilot, app, section: str, field: str) -> None:
     """Walk from the main menu into one field's dialog, the way a keyboard would.
 
@@ -37,6 +72,19 @@ async def _open_field(pilot, app, section: str, field: str) -> None:
     fields.highlighted = fields.get_option_index(field)
     await pilot.press('enter')
     await pilot.pause()
+
+
+async def _open_the_timezone_picker(pilot, app) -> None:
+    """Open the timezone dialog, and wait for it to fill itself from tzdata.
+
+    Nine tests open this dialog, and every one of them has to wait before touching the
+    filter box or the list, because the zones arrive from a worker that leaves the
+    event loop.  Doing that by hand in each was how one of them came to pass on every
+    developer's machine and fail on CI.
+    """
+    await _open_field(pilot, app, 'station', 'timezone')
+    await _wait_until(pilot, lambda: app.screen.query_one('#value', OptionList).option_count > 0,
+                      'the timezone list to fill from tzdata')
 
 
 def _rendered_text(widget) -> str:
@@ -1163,12 +1211,10 @@ class TestSetupAppWalkthrough:
                 await pilot.press('enter')
                 await pilot.pause()
                 # The probe runs off the event loop (see device_picker.py's
-                # action_rescan), so pause() alone is not enough to see it finish -
-                # workers.wait_for_complete() cannot help either, since the section
-                # screen's own on_option_list_option_selected worker is still
-                # suspended awaiting this very dialog and would never resolve.
-                await asyncio.sleep(0.05)
-                await pilot.pause()
+                # action_rescan), so pause() alone cannot see it finish.  _wait_until
+                # says why workers.wait_for_complete() is no use here either.
+                await _wait_until(pilot, lambda: app.screen.query_one('#value', OptionList).option_count > 0,
+                                  'the device probe to fill the list')
 
                 value_list = app.screen.query_one('#value', OptionList)
                 assert value_list.option_count == 2
@@ -1215,8 +1261,8 @@ class TestSetupAppWalkthrough:
                 fields.highlighted = fields.get_option_index('input_device_name')
                 await pilot.press('enter')
                 await pilot.pause()
-                await asyncio.sleep(0.05)
-                await pilot.pause()
+                await _wait_until(pilot, lambda: app.screen.query_one('#value', OptionList).option_count > 0,
+                                  'the device probe to fill the list')
 
                 value_list = app.screen.query_one('#value', OptionList)
                 assert value_list.highlighted == 1
@@ -1245,16 +1291,15 @@ class TestSetupAppWalkthrough:
                 fields.highlighted = fields.get_option_index('input_device_name')
                 await pilot.press('enter')
                 await pilot.pause()
-                await asyncio.sleep(0.05)
-                await pilot.pause()
+                await _wait_until(pilot, lambda: 'Scanning' not in app.screen.query_one('#status').content,
+                                  'the device probe to report its result')
                 assert len(calls) == 1
                 assert 'No input devices found' in app.screen.query_one('#status').content
 
                 await pilot.press('r')
                 await pilot.pause()
-                await asyncio.sleep(0.05)
-                await pilot.pause()
-                assert len(calls) == 2
+                await _wait_until(pilot, lambda: len(calls) == 2,
+                                  'the rescan to probe the devices a second time')
 
         run(scenario())
 
@@ -1277,8 +1322,10 @@ class TestSetupAppWalkthrough:
                 fields.highlighted = fields.get_option_index('input_device_name')
                 await pilot.press('enter')
                 await pilot.pause()
-                await asyncio.sleep(0.05)
-                await pilot.pause()
+                # This station has no devices, so the list stays empty and the status
+                # line is the only thing that says the probe finished.
+                await _wait_until(pilot, lambda: 'Scanning' not in app.screen.query_one('#status').content,
+                                  'the device probe to report that it found nothing')
 
                 await pilot.press('escape')
                 await pilot.pause()
@@ -1314,8 +1361,9 @@ class TestSetupAppWalkthrough:
                 fields.highlighted = fields.get_option_index('input_device_name')
                 await pilot.press('enter')
                 await pilot.pause()
-                await asyncio.sleep(0.05)
-                await pilot.pause()
+                # No devices here either, so wait on the status rather than the list.
+                await _wait_until(pilot, lambda: 'Scanning' not in app.screen.query_one('#status').content,
+                                  'the device probe to report that it found nothing')
 
                 dialog = app.screen
                 await pilot.press('escape')
@@ -1352,11 +1400,11 @@ class TestSetupAppWalkthrough:
                 await pilot.press('enter')
                 await pilot.pause()
                 # The read loop runs forever until the dialog is dismissed (Textual
-                # cancels the worker on unmount - see Widget._on_unmount), so there
-                # is no worker completion to await here, only real elapsed time for
-                # at least one asyncio.to_thread round trip to finish.
-                await asyncio.sleep(0.05)
-                await pilot.pause()
+                # cancels the worker on unmount - see Widget._on_unmount), so there is
+                # no worker completion to await.  The meter replacing its 'Starting...'
+                # placeholder is the signal that a first reading arrived.
+                await _wait_until(pilot, lambda: 'Starting' not in app.screen.query_one('#meter').content,
+                                  'the calibration meter to take its first reading')
 
                 assert app.screen.query_one('#meter').content == _meter_block(_format_reading(-50.0))
 
@@ -1387,8 +1435,8 @@ class TestSetupAppWalkthrough:
                 fields.highlighted = fields.get_option_index('__calibrate__')
                 await pilot.press('enter')
                 await pilot.pause()
-                await asyncio.sleep(0.05)
-                await pilot.pause()
+                await _wait_until(pilot, lambda: 'Starting' not in app.screen.query_one('#meter').content,
+                                  'the calibration meter to take its first reading')
 
                 meter = app.screen.query_one('#meter').content
                 assert 'Could not open the input device' in meter
@@ -1421,8 +1469,8 @@ class TestSetupAppWalkthrough:
                 fields.highlighted = fields.get_option_index('audio_rf_conversion_db')
                 await pilot.press('enter')
                 await pilot.pause()
-                await asyncio.sleep(0.05)
-                await pilot.pause()
+                await _wait_until(pilot, lambda: 'Starting' not in app.screen.query_one('#meter').content,
+                                  'the calibration meter to take its first reading')
 
                 assert f'{before:+.1f} dB' in app.screen.query_one('#offset').content
                 assert app.screen.query_one('#meter').content == _meter_block(_format_reading(-50.0))
@@ -1462,8 +1510,8 @@ class TestSetupAppWalkthrough:
                 fields.highlighted = fields.get_option_index('audio_rf_conversion_db')
                 await pilot.press('enter')
                 await pilot.pause()
-                await asyncio.sleep(0.05)
-                await pilot.pause()
+                await _wait_until(pilot, lambda: 'Starting' not in app.screen.query_one('#meter').content,
+                                  'the calibration meter to take its first reading')
 
                 await pilot.press('up')
                 await pilot.press('up')
@@ -1499,8 +1547,8 @@ class TestSetupAppWalkthrough:
                 fields.highlighted = fields.get_option_index('audio_rf_conversion_db')
                 await pilot.press('enter')
                 await pilot.pause()
-                await asyncio.sleep(0.05)
-                await pilot.pause()
+                await _wait_until(pilot, lambda: 'Starting' not in app.screen.query_one('#meter').content,
+                                  'the calibration meter to take its first reading')
 
                 await pilot.press('up')
                 await pilot.pause()
@@ -1531,8 +1579,8 @@ class TestSetupAppWalkthrough:
                 fields.highlighted = fields.get_option_index('audio_rf_conversion_db')
                 await pilot.press('enter')
                 await pilot.pause()
-                await asyncio.sleep(0.05)
-                await pilot.pause()
+                await _wait_until(pilot, lambda: 'Starting' not in app.screen.query_one('#meter').content,
+                                  'the calibration meter to take its first reading')
 
                 meter = app.screen.query_one('#meter').content
                 assert 'Could not open the input device' in meter
@@ -1550,15 +1598,7 @@ class TestSetupAppWalkthrough:
         async def scenario():
             app = SetupApp(config_path=config_path)
             async with app.run_test() as pilot:
-                option_list = app.screen.query_one('#sections')
-                option_list.highlighted = option_list.get_option_index('station')
-                await pilot.press('enter')
-                await pilot.pause()
-
-                fields = app.screen.query_one('#fields')
-                fields.highlighted = fields.get_option_index('timezone')
-                await pilot.press('enter')
-                await pilot.pause()
+                await _open_the_timezone_picker(pilot, app)
 
                 zone_list = app.screen.query_one('#value')
                 assert zone_list.highlighted is not None
@@ -1572,8 +1612,10 @@ class TestSetupAppWalkthrough:
                 # zone highlighted but invisible below the fold, only revealed
                 # once something else forced a second scroll - which read as the
                 # row "jumping" into view on the first arrow key instead of the
-                # dialog opening on it already.
-                assert zone_list.scroll_offset.y > 0
+                # dialog opening on it already.  The scroll is scheduled with
+                # call_after_refresh, so this waits for it for the same reason.
+                await _wait_until(pilot, lambda: zone_list.scroll_offset.y > 0,
+                                  'the configured zone to be scrolled into view')
                 await pilot.press('enter')
                 await pilot.pause()
                 assert app.values['station']['timezone'] == 'America/Los_Angeles'
@@ -1594,15 +1636,7 @@ class TestSetupAppWalkthrough:
         async def scenario():
             app = SetupApp(config_path=config_path)
             async with app.run_test() as pilot:
-                option_list = app.screen.query_one('#sections')
-                option_list.highlighted = option_list.get_option_index('station')
-                await pilot.press('enter')
-                await pilot.pause()
-
-                fields = app.screen.query_one('#fields')
-                fields.highlighted = fields.get_option_index('timezone')
-                await pilot.press('enter')
-                await pilot.pause()
+                await _open_the_timezone_picker(pilot, app)
 
                 description = app.screen.query_one('#description')
                 assert 'America/Los_Angeles' in _rendered_text(description)
@@ -1618,15 +1652,7 @@ class TestSetupAppWalkthrough:
         async def scenario():
             app = SetupApp(config_path=config_path)
             async with app.run_test() as pilot:
-                option_list = app.screen.query_one('#sections')
-                option_list.highlighted = option_list.get_option_index('station')
-                await pilot.press('enter')
-                await pilot.pause()
-
-                fields = app.screen.query_one('#fields')
-                fields.highlighted = fields.get_option_index('timezone')
-                await pilot.press('enter')
-                await pilot.pause()
+                await _open_the_timezone_picker(pilot, app)
 
                 status = app.screen.query_one('#status')
                 assert status.size.height > 0
@@ -1640,15 +1666,7 @@ class TestSetupAppWalkthrough:
         async def scenario():
             app = SetupApp(config_path=config_path)
             async with app.run_test() as pilot:
-                option_list = app.screen.query_one('#sections')
-                option_list.highlighted = option_list.get_option_index('station')
-                await pilot.press('enter')
-                await pilot.pause()
-
-                fields = app.screen.query_one('#fields')
-                fields.highlighted = fields.get_option_index('timezone')
-                await pilot.press('enter')
-                await pilot.pause()
+                await _open_the_timezone_picker(pilot, app)
 
                 app.screen.query_one('#filter').value = 'Chicago'
                 await pilot.pause()
@@ -1672,15 +1690,7 @@ class TestSetupAppWalkthrough:
         async def scenario():
             app = SetupApp(config_path=config_path)
             async with app.run_test() as pilot:
-                option_list = app.screen.query_one('#sections')
-                option_list.highlighted = option_list.get_option_index('station')
-                await pilot.press('enter')
-                await pilot.pause()
-
-                fields = app.screen.query_one('#fields')
-                fields.highlighted = fields.get_option_index('timezone')
-                await pilot.press('enter')
-                await pilot.pause()
+                await _open_the_timezone_picker(pilot, app)
 
                 app.screen.query_one('#filter').value = 'UTC'
                 await pilot.pause()
@@ -1704,15 +1714,7 @@ class TestSetupAppWalkthrough:
         async def scenario():
             app = SetupApp(config_path=config_path)
             async with app.run_test() as pilot:
-                option_list = app.screen.query_one('#sections')
-                option_list.highlighted = option_list.get_option_index('station')
-                await pilot.press('enter')
-                await pilot.pause()
-
-                fields = app.screen.query_one('#fields')
-                fields.highlighted = fields.get_option_index('timezone')
-                await pilot.press('enter')
-                await pilot.pause()
+                await _open_the_timezone_picker(pilot, app)
 
                 app.screen.query_one('#filter').value = 'Chicago'
                 await pilot.pause()
@@ -1744,15 +1746,7 @@ class TestSetupAppWalkthrough:
         async def scenario():
             app = SetupApp(config_path=config_path)
             async with app.run_test(size=(80, 25)) as pilot:
-                option_list = app.screen.query_one('#sections')
-                option_list.highlighted = option_list.get_option_index('station')
-                await pilot.press('enter')
-                await pilot.pause()
-
-                fields = app.screen.query_one('#fields')
-                fields.highlighted = fields.get_option_index('timezone')
-                await pilot.press('enter')
-                await pilot.pause()
+                await _open_the_timezone_picker(pilot, app)
 
                 dialog = app.screen.query_one('#dialog')
                 assert dialog.region.y + dialog.region.height <= 25
@@ -1773,15 +1767,7 @@ class TestSetupAppWalkthrough:
         async def scenario():
             app = SetupApp(config_path=config_path)
             async with app.run_test() as pilot:
-                option_list = app.screen.query_one('#sections')
-                option_list.highlighted = option_list.get_option_index('station')
-                await pilot.press('enter')
-                await pilot.pause()
-
-                fields = app.screen.query_one('#fields')
-                fields.highlighted = fields.get_option_index('timezone')
-                await pilot.press('enter')
-                await pilot.pause()
+                await _open_the_timezone_picker(pilot, app)
 
                 app.screen.query_one('#filter').value = 'not a real place'
                 await pilot.pause()
@@ -1798,15 +1784,7 @@ class TestSetupAppWalkthrough:
         async def scenario():
             app = SetupApp(config_path=config_path)
             async with app.run_test() as pilot:
-                option_list = app.screen.query_one('#sections')
-                option_list.highlighted = option_list.get_option_index('station')
-                await pilot.press('enter')
-                await pilot.pause()
-
-                fields = app.screen.query_one('#fields')
-                fields.highlighted = fields.get_option_index('timezone')
-                await pilot.press('enter')
-                await pilot.pause()
+                await _open_the_timezone_picker(pilot, app)
 
                 app.screen.query_one('#filter').value = 'Chicago'
                 await pilot.pause()
