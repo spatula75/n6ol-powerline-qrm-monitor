@@ -16,6 +16,7 @@ from buzz.main import (
     _start_collector, _start_playback, _wait_until_interrupted, configure_logging,
     make_weather_client, open_playback_pipeline,
 )
+from buzz.sampler import RingBufferPipeline
 from buzz.weather import CumulusMXWeatherClient, NullWeatherClient, OpenMeteoWeatherClient
 
 
@@ -338,11 +339,13 @@ class TestOpenPlaybackPipeline:
             open_playback_pipeline(cfg, 'event.wav')
 
     def test_wrong_sample_width_exits_with_a_message(self, tmp_path):
+        # Long enough to get past the length check, so that the 8-bit sample width is
+        # what this file is refused for.
         with wave.open(str(tmp_path / 'event.wav'), 'wb') as wav:
             wav.setnchannels(1)
             wav.setsampwidth(1)
             wav.setframerate(16000)
-            wav.writeframes(b'\x00\x01')
+            wav.writeframes(b'\x01' * RingBufferPipeline.CHUNK_SIZE)
         cfg = BuzzConfig()
         cfg.recording.directory = str(tmp_path)
         with pytest.raises(SystemExit, match='16-bit'):
@@ -685,11 +688,14 @@ class TestCheckPlaybackSource:
     """
 
     def _wav(self, path, sample_rate) -> Path:
+        # A whole chunk, because a file shorter than one is refused for that reason
+        # instead, and these tests are about the sample rate.  A real recording is
+        # thousands of chunks; one is the smallest thing that is not a special case.
         with wave.open(str(path), 'wb') as handle:
             handle.setnchannels(1)
             handle.setsampwidth(2)
             handle.setframerate(sample_rate)
-            handle.writeframes(b'\x00\x00' * 128)
+            handle.writeframes(b'\x00\x00' * RingBufferPipeline.CHUNK_SIZE)
         return path
 
     def test_a_rate_in_the_band_passes(self, tmp_path):

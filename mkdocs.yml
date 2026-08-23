@@ -50,6 +50,7 @@ nav:
       - Publish to a web server: how-to-guides/server-publishing.md
       - Record events: how-to-guides/recording-events.md
       - Replay and render recordings: how-to-guides/replaying-recordings.md
+      - Render all of your recordings: how-to-guides/batch-rendering-recordings.md
   - Reference:
       - Configuration: reference/configuration.md
       - Command line: reference/cli.md

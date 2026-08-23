@@ -62,7 +62,7 @@ markers = [
 ]
 
 [tool.coverage.run]
-source = ["lib/buzz", "tools"]
+source = ["lib/buzz", "tools", "scripts"]
 omit = ["tests/*", "lib/buzz/setup/device_setup.py"]
 
 [tool.coverage.report]

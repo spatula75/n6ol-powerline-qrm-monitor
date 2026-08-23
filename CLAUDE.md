@@ -17,7 +17,11 @@ testability is usually not worth it - say so rather than building it.
 ## Layout
 
 - `lib/buzz/` - the application. One responsibility per module.
-- `tools/` - standalone diagnostic scripts.
+- `tools/` - standalone diagnostic scripts. Each answers a question about the code, and
+  the audience is whoever is working on it.
+- `scripts/` - programs an operator runs against their own station, not checks on the
+  code. `batch_render_recordings.py` is the first. Both directories are in the coverage
+  source, so anything here needs tests like the rest.
 - `tests/` - unit tests. `tests/integration/` is markered and deselected by default.
 - Interactive setup lives at `lib/buzz/setup/`, run with `python -m buzz.setup`.
 - `docs/`, `README.md` - user- and design-facing docs. `docs/` is the Diataxis-organized

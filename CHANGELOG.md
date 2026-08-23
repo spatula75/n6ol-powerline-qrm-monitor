@@ -8,6 +8,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `scripts/`, for programs an operator runs rather than a contributor. `tools/` holds
+  checks that answer a question about the code, and this is a different kind of thing.
+- `scripts/batch_render_recordings.py`, which renders every recording in the recording
+  directory to an `.mp4` under `renders/`, one per `.wav`, so a pile of events can be
+  skimmed for the interesting ones. Each render is one `buzz.main --playback --render`
+  run, and a render plays in real time, so the batch takes at least as long as the
+  recordings do. `--jobs` runs several at once and defaults to 1, since each one is a
+  whole monitor process with its own analysis thread and encoder. `--max-length` skips
+  anything longer than a given number of seconds and renders everything when it is not
+  given, `--limit` caps the count for a trial run, and `--recordings` and `--output-dir`
+  override the directories. An existing `.mp4` is skipped rather than re-rendered, so an
+  interrupted batch resumes, and a failed render deletes whatever it wrote so the retry
+  does not mistake it for finished work.
 - `[server] current_chart`, choosing how the fixed `data/current.png` address is
   published. `copy` uploads the chart a second time under that name and works on any
   web server, which is the default. `symlink` points the name at the day's dated chart
@@ -68,6 +81,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   which keeps the reader's own font-size setting in effect.
 
 ### Fixed
+- A recording too short to hold one whole chunk of audio no longer hangs playback
+  forever. `FilePlaybackPipeline` drops the partial trailing chunk, so a file under
+  about 32 ms at the 16 kHz default has no chunks at all and the feeder starts at the
+  end of it. The finished flag was set only just after a chunk was consumed, so such a
+  file never set it: the feeder parked, `finished` stayed false, and `--render` waited
+  on a replay that could neither start nor end, with only an outside timeout to stop
+  it. The end of the file is now published from the condition itself rather than from
+  one of the two routes to it. A recording that short is also refused up front, naming
+  its length and the length playback reads at a time, because there is nothing useful
+  to render from it and an empty `.mp4` is a poor way to find that out.
 - The published page fits a narrow screen. Three faults combined: no viewport meta tag,
   so a phone laid the page out at a notional desktop width and scaled it down; no
   `max-width` on the 1600 px chart, so it drew at full size whatever the screen; and a

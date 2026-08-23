@@ -1,5 +1,6 @@
 """Tests for .wav loading, path resolution, and the file-backed playback pipeline."""
 
+import struct
 import threading
 import time
 import wave
@@ -11,6 +12,7 @@ import pytest
 
 from buzz.playback import (
     FilePlaybackPipeline, apply_gain, load_wav, resolve_playback_path,
+    validate_playable_length,
 )
 from buzz.sampler import RingBufferPipeline
 
@@ -121,6 +123,57 @@ class TestResolvePlaybackPath:
         assert resolve_playback_path('./event.wav', Path('/rec')) == Path('./event.wav')
 
 
+class TestValidatePlayableLength:
+    """A recording with no whole chunk in it is refused before anything is built.
+
+    The pipeline handles such a file correctly now, by finishing at once, but there is
+    nothing useful to do with it: the render would be a video with no frames.  Saying
+    so, with the length in it, beats handing the operator an empty .mp4 to work it out
+    from.
+    """
+
+    def test_a_file_of_one_whole_chunk_passes(self, tmp_path):
+        path = _write_wav(tmp_path / 'a.wav', _ramp(1))
+        validate_playable_length(path, path.name)   # does not raise
+
+    @pytest.mark.parametrize('samples', [0, 1, CHUNK - 1])
+    def test_a_file_shorter_than_a_chunk_is_refused(self, tmp_path, samples):
+        path = _write_wav(tmp_path / 'short.wav', np.zeros(samples, dtype=np.int16))
+        with pytest.raises(ValueError, match='short.wav'):
+            validate_playable_length(path, path.name)
+
+    def test_a_header_claiming_no_sample_rate_is_refused_rather_than_divided_by(self, tmp_path):
+        """The wave module accepts a rate of zero, and the length maths would divide by it.
+
+        validate_sample_rate refuses such a file first everywhere this is called from,
+        so the only way here is a caller that skips it.  Passing the file would report
+        a verdict this check could not actually reach.
+        """
+        path = tmp_path / 'broken.wav'
+        header = struct.pack('<HHIIHH', 1, 1, 0, 0, 2, 16)
+        body = (b'fmt ' + struct.pack('<I', len(header)) + header
+                + b'data' + struct.pack('<I', 0))
+        path.write_bytes(b'RIFF' + struct.pack('<I', 4 + len(body)) + b'WAVE' + body)
+        with pytest.raises(ValueError, match='sample rate of zero'):
+            validate_playable_length(path, path.name)
+
+    def test_the_message_gives_both_durations(self, tmp_path):
+        """What the file holds and what playback needs, so the gap is visible.
+
+        A bare "too short" leaves the operator with no way to tell whether the file is
+        nearly usable or empty, and no idea what the threshold is.
+        """
+        path = _write_wav(tmp_path / 'short.wav', np.zeros(CHUNK // 2, dtype=np.int16),
+                          sample_rate=1000)
+        with pytest.raises(ValueError) as caught:
+            validate_playable_length(path, path.name)
+        message = str(caught.value)
+        assert '0.26 s' in message and '0.51 s' in message, (
+            f'The message must state the length of the file and the length of a chunk.  '
+            f'It said: {message}'
+        )
+
+
 class TestFilePlaybackPipeline:
     def test_exposes_the_files_sample_rate(self, tmp_path):
         path = _write_wav(tmp_path / 'a.wav', _ramp(2), sample_rate=16000)
@@ -164,6 +217,37 @@ class TestFilePlaybackPipeline:
         path = _write_wav(tmp_path / 'a.wav', _ramp(4), sample_rate=CHUNK * 4)
         with _playing(path) as pipeline:   # 4 s of audio: still playing
             assert pipeline.finished is False
+
+    @pytest.mark.parametrize('samples', [0, 1, CHUNK - 1])
+    def test_a_file_too_short_to_hold_a_chunk_still_finishes(self, tmp_path, samples):
+        """Reaching the end without playing anything is still reaching the end.
+
+        The partial trailing chunk is dropped, so a file shorter than one whole chunk
+        has no chunks at all and the feeder starts at the end.  The finished flag used
+        to be set only just after a chunk was consumed, so such a file never set it:
+        the feeder parked, `finished` stayed False, and --render waited forever on a
+        replay that could neither start nor end.  Only an outside timeout stopped it.
+
+        This is the pipeline's own guarantee, not main's.  A caller that skips the
+        header checks, which every test here does, must still be able to wait on a
+        replay and have that wait end.
+        """
+        path = _write_wav(tmp_path / 'a.wav', np.zeros(samples, dtype=np.int16))
+        with _playing(path) as pipeline:
+            assert _wait_for_finish(pipeline, timeout=2.0), (
+                f'A {samples}-sample file never reported itself finished.  Anything '
+                'waiting on this replay waits forever.'
+            )
+            assert pipeline.total_samples == 0, (
+                'A file with no whole chunks must feed nothing at all.'
+            )
+
+    def test_the_shortest_playable_file_is_one_whole_chunk(self, tmp_path):
+        """The boundary the case above sits one sample below."""
+        path = _write_wav(tmp_path / 'a.wav', _ramp(1))
+        with _playing(path) as pipeline:
+            assert _wait_for_finish(pipeline, timeout=2.0)
+            assert pipeline.total_samples == CHUNK
 
     def test_close_stops_the_feeder(self, tmp_path):
         path = _write_wav(tmp_path / 'a.wav', _ramp(40), sample_rate=CHUNK * 4)
