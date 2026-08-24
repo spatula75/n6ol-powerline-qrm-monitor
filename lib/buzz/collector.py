@@ -130,29 +130,30 @@ class Collector:
         """On the hour, regenerate the 7-day and 30-day summary graphs, and the all-time
         one where the station asked for it.
 
-        The two rolling windows carry no setting of their own because they need none:
-        each covers a fixed span ending today, so it follows the current situation
-        without anybody deciding when to move a start date.  The all-time graph is the
-        one that has to be chosen, since it keeps averaging in months the station may
-        have long since stopped resembling.
+        Only the all-time graph has a setting.  The other two cover a fixed span ending
+        today, so what they average changes with the station and no start date has to be
+        maintained.  The all-time span only grows, and averages every day since the
+        configured start date however little the recent ones resemble the first.
 
         Returns the paths just written, for the caller to add to its upload list.
         """
         today = datetime.now(zone).replace(hour=0, minute=0, second=0, microsecond=0)
 
-        summaries = []
+        summaries: list[Path] = []
         if self._config.station.enable_all_time_summary:
-            summary_all = output_dir / ALL_TIME_SUMMARY_NAME
-            self._plotter.generate_summary_graph(summary_all, self._summary_start_date)
-            summaries.append(summary_all)
+            summaries.append(self._write_summary(output_dir, ALL_TIME_SUMMARY_NAME,
+                                                 self._summary_start_date))
+        summaries.append(self._write_summary(output_dir, '_noise_probability_summary_7d.png',
+                                             today - timedelta(days=7)))
+        summaries.append(self._write_summary(output_dir, '_noise_probability_summary_30d.png',
+                                             today - timedelta(days=30)))
+        return summaries
 
-        summary_7d = output_dir / '_noise_probability_summary_7d.png'
-        self._plotter.generate_summary_graph(summary_7d, today - timedelta(days=7))
-
-        summary_30d = output_dir / '_noise_probability_summary_30d.png'
-        self._plotter.generate_summary_graph(summary_30d, today - timedelta(days=30))
-
-        return [*summaries, summary_7d, summary_30d]
+    def _write_summary(self, output_dir: Path, name: str, start: datetime) -> Path:
+        """Generate one summary graph covering `start` to now, and say where it went."""
+        path = output_dir / name
+        self._plotter.generate_summary_graph(path, start)
+        return path
 
     def _publish_outputs(self, output_dir: Path, smooth_plot_filename: Path,
                          upload_files: list[Path]) -> None:
