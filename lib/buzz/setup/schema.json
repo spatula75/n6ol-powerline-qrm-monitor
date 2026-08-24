@@ -112,8 +112,8 @@
           "description": "Publish a probability summary covering your whole data set, alongside the 7-day and 30-day ones.",
           "default": false,
           "x-notes": [
-            "The 7-day and 30-day summaries are always published. This adds a third chart, starting at summary_start_date_iso.",
-            "Turn it on where your noise situation is not changing. Older data otherwise dilutes the recent."
+            "The 7-day and 30-day summaries are always published. This adds a third chart, averaging every day since summary_start_date_iso.",
+            "Leave it off if your noise has changed since that date."
           ]
         },
         "summary_start_date_iso": {

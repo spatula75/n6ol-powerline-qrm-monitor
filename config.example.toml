@@ -105,10 +105,9 @@ audio_rf_conversion_db = -32.0
 # 7-day and 30-day ones.
 #
 # The 7-day and 30-day summaries are always published. This adds a third
-# chart, starting at summary_start_date_iso.
+# chart, averaging every day since summary_start_date_iso.
 #
-# Turn it on where your noise situation is not changing. Older data
-# otherwise dilutes the recent.
+# Leave it off if your noise has changed since that date.
 enable_all_time_summary = false
 
 # The ISO 8601 date that the all-time probability summary graph starts from.

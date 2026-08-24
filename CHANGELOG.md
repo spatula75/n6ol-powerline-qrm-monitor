@@ -10,9 +10,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 - `[station] enable_all_time_summary`, which publishes a probability summary over the
   whole data set alongside the 7-day and 30-day ones. It is off by default, which is a
-  change in behavior: that chart used to be published for everyone. Turn it on where
-  the noise situation is not changing. `summary_start_date_iso` sets where the chart
-  begins, and now applies only when this is on.
+  change in behavior: that chart used to be published for everyone. It averages every
+  day since `summary_start_date_iso`, which sets where the chart begins and now applies
+  only when this is on.
 
   Turning it off leaves the chart already written where it is, here and on the web
   server. Startup names the file once and says it will no longer be updated.
