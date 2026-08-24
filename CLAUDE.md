@@ -742,6 +742,28 @@ that call rather than quietly compiling another variant mid-flight.
   than wait for it.
 - Integration tests complement running the program by hand; they don't replace it.
   A lit button or a timer starting at the wrong number needs a person looking.
+- **A Textual test that pauses once and then asserts is racing a worker.** The setup
+  dialogs fill themselves from work that leaves the event loop - the timezone picker
+  reads tzdata, the device picker probes the sound card - and `pilot.pause()` only
+  guarantees the messages queued *so far* were handled, not that such a worker
+  finished. Eleven tests in `test_setup_app.py` were in that state, and CI showed one
+  of them, once, after the tree had already merged. Wait for the condition with
+  `_wait_until()` instead. A longer `asyncio.sleep()` is not the fix: it has to suit
+  the slowest machine that will ever run it, so every run pays for it, and it still
+  loses on a machine slower than whoever picked the number.
+  `workers.wait_for_complete()` is not available here either, because the section
+  screen's own worker sits suspended awaiting the dialog under test.
+
+  **Run `tools/slow_workers.py` over anything that drives such a dialog.** It delays
+  every `asyncio.to_thread` call, so a timing assumption fails there rather than
+  intermittently on somebody else's branch:
+
+      PYTHONPATH=tools pytest tests/test_setup_app.py -p slow_workers --no-cov
+
+  Every test should pass with it loaded. Wait on the signal that the work finished -
+  a list filling, a status line replacing "Scanning...", a meter replacing
+  "Starting..." - rather than on the value being asserted, or the assertion becomes
+  a tautology.
 
 ### Optional features must not hold coverage hostage
 

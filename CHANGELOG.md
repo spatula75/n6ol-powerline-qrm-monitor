@@ -8,6 +8,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `tools/slow_workers.py`, a pytest plugin that delays every `asyncio.to_thread` call
+  so a test racing a background worker fails reliably rather than intermittently. Load
+  it with `PYTHONPATH=tools pytest tests/test_setup_app.py -p slow_workers --no-cov`.
+  It found ten timing races beyond the one CI had reported.
+
 - `scripts/`, for programs an operator runs rather than a contributor. `tools/` holds
   checks that answer a question about the code, and this is a different kind of thing.
 - `scripts/batch_render_recordings.py`, which renders every recording in the recording
@@ -81,6 +86,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   which keeps the reader's own font-size setting in effect.
 
 ### Fixed
+- Eleven setup-program tests raced the workers that fill their dialogs. They paused the
+  app once and asserted, which passed on a developer's machine and failed on a loaded
+  runner, and one of them duly failed on `main` after merging. They now wait for the
+  condition they depend on, with a bounded timeout that says what never happened.
 - A recording too short to hold one whole chunk of audio no longer hangs playback
   forever. `FilePlaybackPipeline` drops the partial trailing chunk, so a file under
   about 32 ms at the 16 kHz default has no chunks at all and the feeder starts at the
