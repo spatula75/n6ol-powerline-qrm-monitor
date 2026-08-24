@@ -106,11 +106,23 @@
             "Set the radio up for measurement first: AGC off, widest filter, SSB, preamp and attenuator off. Tune where the antenna is resonant and bypass the tuner."
           ]
         },
+        "enable_all_time_summary": {
+          "type": "boolean",
+          "title": "All-time summary graph",
+          "description": "Publish a probability summary covering your whole data set, alongside the 7-day and 30-day ones. Off by default.",
+          "default": false,
+          "x-notes": [
+            "The 7-day and 30-day summaries are always published. They follow the current situation on their own, which is what makes them useful without any setting to tune.",
+            "A station that has run for more than a few months has usually seen the noise change. Averaging a fault that was repaired together with the quiet months since describes neither one.",
+            "Turn this on if you are confident your situation is not changing, or if you want the long baseline for its own sake."
+          ]
+        },
         "summary_start_date_iso": {
           "type": "string",
           "title": "Summary graph start date",
           "description": "The ISO 8601 date that the all-time probability summary graph starts from.",
-          "default": "2024-01-01T00:00:00+0000"
+          "default": "2024-01-01T00:00:00+0000",
+          "x-visible-when": {"field": "enable_all_time_summary", "equals": true}
         }
       }
     },

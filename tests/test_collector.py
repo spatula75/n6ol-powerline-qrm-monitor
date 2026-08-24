@@ -1,5 +1,6 @@
 """Tests for Collector: measurement averaging, hourly summaries, uploads, and loop resilience."""
 
+import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, Mock, patch
@@ -8,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from buzz.analyzer import AnalysisResult
-from buzz.collector import Collector
+from buzz.collector import ALL_TIME_SUMMARY_NAME, Collector
 from buzz.config import BuzzConfig
 
 _TZ = ZoneInfo('America/Los_Angeles')
@@ -242,7 +243,8 @@ class TestRunCollectionPlotting:
             collector._run_collection()
         collector._plotter.generate_summary_graph.assert_not_called()
 
-    def test_three_summary_graphs_generated_on_the_hour(self, tmp_path):
+    def test_two_summary_graphs_generated_on_the_hour(self, tmp_path):
+        """7-day and 30-day only, because the all-time graph is off by default."""
         cfg = _make_config(tmp_path)
         collector = _make_collector(cfg)
         now = _setup_defaults(collector, tmp_path, minute=0)
@@ -250,7 +252,125 @@ class TestRunCollectionPlotting:
             mock_dt.now.return_value = now
             mock_dt.fromisoformat = datetime.fromisoformat
             collector._run_collection()
-        assert collector._plotter.generate_summary_graph.call_count == 3
+        assert collector._plotter.generate_summary_graph.call_count == 2
+
+
+class TestTheAllTimeSummaryIsOptional:
+    """The rolling windows need no setting; the all-time graph does.
+
+    7 days and 30 days each end today, so they follow the station's current situation
+    on their own.  The all-time graph keeps averaging in months a station may have
+    stopped resembling long ago, which is why it is the one that has to be asked for.
+    """
+
+    def _run_on_the_hour(self, collector, tmp_path):
+        now = _setup_defaults(collector, tmp_path, minute=0)
+        with patch('buzz.collector.datetime') as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            collector._run_collection()
+
+    def _summary_paths(self, collector) -> list[str]:
+        return [Path(c.args[0]).name
+                for c in collector._plotter.generate_summary_graph.call_args_list]
+
+    def test_it_is_off_by_default(self, tmp_path):
+        assert BuzzConfig().station.enable_all_time_summary is False, (
+            'A station running for more than a few months is the common case, and '
+            'averaging its whole history describes neither the fault nor the repair.'
+        )
+
+    def test_the_all_time_graph_is_skipped_when_off(self, tmp_path):
+        collector = _make_collector(_make_config(tmp_path))
+        self._run_on_the_hour(collector, tmp_path)
+        assert self._summary_paths(collector) == ['_noise_probability_summary_7d.png',
+                                                  '_noise_probability_summary_30d.png']
+
+    def test_turning_it_on_adds_the_all_time_graph(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg.station.enable_all_time_summary = True
+        collector = _make_collector(cfg)
+        self._run_on_the_hour(collector, tmp_path)
+        assert ALL_TIME_SUMMARY_NAME in self._summary_paths(collector)
+
+    def test_the_all_time_graph_starts_at_the_configured_date(self, tmp_path):
+        """The start date is what the flag turns back on, so it has to still be used."""
+        cfg = _make_config(tmp_path)
+        cfg.station.enable_all_time_summary = True
+        cfg.station.summary_start_date_iso = '2019-03-04T00:00:00+0000'
+        collector = _make_collector(cfg)
+        self._run_on_the_hour(collector, tmp_path)
+        all_time = [c for c in collector._plotter.generate_summary_graph.call_args_list
+                    if Path(c.args[0]).name == ALL_TIME_SUMMARY_NAME][0]
+        assert all_time.args[1] == datetime.fromisoformat('2019-03-04T00:00:00+0000')
+
+    def test_the_all_time_graph_is_uploaded_when_on(self, tmp_path):
+        """One flag governs both, since a chart nobody publishes helps nobody."""
+        cfg = _make_config(tmp_path, server_enabled=True)
+        cfg.station.enable_all_time_summary = True
+        collector = _make_collector(cfg)
+        self._run_on_the_hour(collector, tmp_path)
+        uploaded = [Path(local).name for local, _ in
+                    collector._publisher.scp_to_server.call_args.args[0]]
+        assert ALL_TIME_SUMMARY_NAME in uploaded
+
+    def test_the_all_time_graph_is_not_uploaded_when_off(self, tmp_path):
+        cfg = _make_config(tmp_path, server_enabled=True)
+        collector = _make_collector(cfg)
+        self._run_on_the_hour(collector, tmp_path)
+        uploaded = [Path(local).name for local, _ in
+                    collector._publisher.scp_to_server.call_args.args[0]]
+        assert ALL_TIME_SUMMARY_NAME not in uploaded
+
+
+class TestAChartLeftBehindByTurningItOff:
+    """Turning the summary off stops it being updated; it does not delete it.
+
+    Nothing else in this program removes a file it published, and the operator may want
+    to keep the last one.  But a chart that stops updating and says nothing is a chart
+    that goes on looking current in the archive, which is the very thing this setting
+    exists to prevent, so startup mentions it once.
+    """
+
+    def _stale_chart(self, tmp_path: Path) -> Path:
+        chart = tmp_path / ALL_TIME_SUMMARY_NAME
+        chart.write_bytes(b'png')
+        return chart
+
+    def test_an_existing_chart_is_reported_once_at_startup(self, tmp_path, caplog):
+        self._stale_chart(tmp_path)
+        with caplog.at_level(logging.INFO, logger='buzz.collector'):
+            _make_collector(_make_config(tmp_path))
+        assert ALL_TIME_SUMMARY_NAME in caplog.text
+        assert 'no longer be updated' in caplog.text, (
+            'The operator has to be told the chart is now stale, and where to delete '
+            'it.  Otherwise it sits in the archive looking current for years.'
+        )
+
+    def test_the_chart_is_never_deleted(self, tmp_path, caplog):
+        chart = self._stale_chart(tmp_path)
+        with caplog.at_level(logging.INFO, logger='buzz.collector'):
+            _make_collector(_make_config(tmp_path))
+        assert chart.exists(), (
+            'Reporting is not permission to delete.  Nothing else in this program '
+            'removes a published file, and the last chart may be wanted.'
+        )
+
+    def test_nothing_is_said_when_the_summary_is_on(self, tmp_path, caplog):
+        self._stale_chart(tmp_path)
+        cfg = _make_config(tmp_path)
+        cfg.station.enable_all_time_summary = True
+        with caplog.at_level(logging.INFO, logger='buzz.collector'):
+            _make_collector(cfg)
+        assert ALL_TIME_SUMMARY_NAME not in caplog.text, (
+            'The chart is being kept current, so there is nothing to report.'
+        )
+
+    def test_nothing_is_said_when_there_is_no_chart(self, tmp_path, caplog):
+        """The ordinary case for a new station, which must start up quietly."""
+        with caplog.at_level(logging.INFO, logger='buzz.collector'):
+            _make_collector(_make_config(tmp_path))
+        assert ALL_TIME_SUMMARY_NAME not in caplog.text
 
 
 class TestRunCollectionUploads:

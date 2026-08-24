@@ -25,9 +25,12 @@ def rendered() -> str:
 class TestTheCommittedFileIsCurrent:
     def test_regenerating_reproduces_the_committed_file(self, rendered):
         assert EXAMPLE_PATH.read_text(encoding='utf-8') == rendered, (
-            'config.example.toml is out of date with lib/buzz/setup/schema.json. It is '
+            'config.example.toml is out of date with lib/buzz/setup/schema.json.  It is '
             'generated, not hand-edited: change the schema, then regenerate with\n'
-            '    PYTHONPATH=lib python -m buzz.setup.example_toml > config.example.toml')
+            '    PYTHONPATH=lib python -m buzz.setup.example_toml\n'
+            'It writes the file itself.  Redirecting its output over the file puts the '
+            '"Wrote ..." line where the header belongs, which is worse than the '
+            'staleness this message reports.')
 
     def test_it_says_it_is_generated(self, rendered):
         """Whoever opens it to make a change needs to know the edit will be lost."""
