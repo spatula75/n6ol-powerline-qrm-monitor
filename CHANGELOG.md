@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `[station] enable_all_time_summary`, which publishes a probability summary over the
+  whole data set alongside the 7-day and 30-day ones. It is off by default, which is a
+  change in behavior: that chart used to be published for everyone. It averages every
+  day since `summary_start_date_iso`, which sets where the chart begins and now applies
+  only when this is on.
+
+  Turning it off leaves the chart already written where it is, here and on the web
+  server. Startup names the file once and says it will no longer be updated.
 - `tools/slow_workers.py`, a pytest plugin that delays every `asyncio.to_thread` call
   so a test racing a background worker fails reliably rather than intermittently. Load
   it with `PYTHONPATH=tools pytest tests/test_setup_app.py -p slow_workers --no-cov`.

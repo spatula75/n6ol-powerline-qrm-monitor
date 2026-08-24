@@ -916,6 +916,36 @@ load-bearing line" is the line that matters; "the value lands at 128" is the val
   trims prose that restates the obvious - it does not license leaving hard-to-verify
   code unexplained. See "Don't overdrive your headlights"; the two rules meet at
   whether a reader can confirm the code is correct.
+- **You are not selling anything.** Describe what a feature or option does, in plain
+  terms, and stop. No case for why it is worth having, no history of what led to it, no
+  reassurance that it was a good idea. It exists because there was a use for it, and the
+  reader already knows that or they would not be reading its description. At most, add
+  one line saying when somebody would want it and when they would not. This covers
+  config descriptions, `schema.json` notes, `--help` text, docs, and release notes.
+
+  The failure looks like three paragraphs of rationale where the settings around it each
+  state their behavior in a sentence. `enable_all_time_summary` shipped that way and was
+  cut back; compare its notes with `stop_after_seconds` ("Raise it if one flickering
+  signal splits across several files. Lower it to trim dead air off the end.") for the
+  register to aim at.
+
+  The reasoning behind a *default* still belongs in the code comment beside it, where the
+  next maintainer is the audience. An operator reading a setting's description is not
+  deciding whether the option deserves to exist.
+
+  **Cutting the argument means replacing it with the fact, not compressing it.** The
+  first rewrite of that same note came out as "Older data otherwise dilutes the recent" -
+  the three paragraphs squeezed into six words, with a metaphor doing the work of a fact
+  and an adjective standing in for a noun. That is worse than the sales pitch, because at
+  least the pitch was readable. The fact was shorter than the compression anyway: the
+  chart averages every day since the start date. State that, and let the reader work out
+  what it means for their station.
+
+  The tells, when checking your own draft: an abstraction where a concrete noun belongs
+  ("the recent", "the situation"), a vague conditional ("where your noise situation is not
+  changing"), a metaphor carrying the meaning ("dilutes"), and any sentence the reader has
+  to decode before they can act on it. Ask what observable thing the sentence claims. If
+  the answer takes longer to work out than simply saying it would have, say it instead.
 - Where a comment explains the physics or the radio behavior behind a decision, the
   reasoning is authoritative and the wording is not. Tighten the prose; don't quietly
   change what it claims.

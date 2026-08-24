@@ -89,7 +89,13 @@ class StationConfig:
     # dB offset applied to audio amplitude to approximate RF level at the receiver input.
     # Hardware-specific: derived by calibrating against a known signal level.
     audio_rf_conversion_db: float = -32.0
-    # ISO 8601 start date for the all-time summary graph.
+    # Publish a probability summary over the whole data set, not just the last 7 and 30
+    # days.  Off by default because a station running more than a few months has usually
+    # seen the noise change, and the whole-history average then describes neither the
+    # fault nor the repair.
+    enable_all_time_summary: bool = False
+    # ISO 8601 start date for the all-time summary graph.  Used only when
+    # enable_all_time_summary is on.
     summary_start_date_iso: str = '2024-01-01T00:00:00+0000'
 
     @property

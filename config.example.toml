@@ -101,7 +101,17 @@ noise_min_snr = 12.0
 # the tuner.
 audio_rf_conversion_db = -32.0
 
+# Publish a probability summary covering your whole data set, alongside the
+# 7-day and 30-day ones.
+#
+# The 7-day and 30-day summaries are always published. This adds a third
+# chart, averaging every day since summary_start_date_iso.
+#
+# Leave it off if your noise has changed since that date.
+enable_all_time_summary = false
+
 # The ISO 8601 date that the all-time probability summary graph starts from.
+# It applies only when that graph is turned on.
 summary_start_date_iso = "2024-01-01T00:00:00+0000"
 
 

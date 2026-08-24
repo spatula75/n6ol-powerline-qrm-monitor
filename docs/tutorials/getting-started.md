@@ -62,7 +62,7 @@ To get the pulse rate setting, double your local electrical utility's alternatin
 
 Here is where you'll set your call sign, time zone, CSV, chart, and recording output base directory.  Time zones are given in IANA city-name format; choose the closest city to you from the list that follows the same time zone rules as you.  Daylight Saving Time is applied automatically, and the current offset from UTC is displayed alongside each zone.  For the United States, the most common time zones to choose are `America/New_York`, `America/Chicago`, `America/Denver`, `America/Los_Angeles`, `Pacific/Honolulu`, and `America/Anchorage`, though there are others as well, for example for cities that do not observe DST.
 
-For "Summary graph start date" enter today's date in ISO format (sorry, this will improve at some point).  For example, `2026-08-07T12:34:00-0700`.  It won't hurt anything if you don't set this, but it determines the earliest date on which the summary chart will look for historical CSV files, and it will check every day from this day until the present day (again, sorry, I promise to make this better!).
+The "all-time summary" graph is disabled unless you enable it, as changes over a long period of time tend to make only the more recent charts relevant for direction-finding and remediation by the electrical utility.  If you enable it, you can set "summary graph start date" to the date you want that chart to begin, in ISO format; for example, `2026-08-07T12:34:00-0700`.  That is the earliest date the chart looks for historical CSV files from, and it checks every day from then until today.
 
 ### Weather Configuration
 
@@ -100,7 +100,7 @@ Nothing deletes old CSV files at present.
 
 ## Charts
 
-Various charts are also produced at the time the CSV files are updated.  Every minute the two main plots are updated - one instantaneous, and one with a 6-point rolling average.  Once per hour, the summary graphs are also generated showing the relative probability of observing noise charted against the current time of day.
+Various charts are also produced at the time the CSV files are updated.  Every minute the two main plots are updated - one instantaneous, and one with a 6-point rolling average.  Once per hour, the summary graphs are also generated showing the relative probability of observing noise charted against the current time of day.  This includes the 7-day and 30-day charts, and the all-time chart if the all-time chart is enabled.
 
 Nothing deletes old charts at present.
 

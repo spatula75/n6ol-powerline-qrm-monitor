@@ -40,8 +40,9 @@ typically from both the positive and negative peaks in a full cycle.)
 
 It will log your average QRM signal, the estimated noise floor level, produce
 minute-by-minute charts, and summary charts giving the noise probability at different
-times of day over the last 7 days, 30 days, and full data set. Weather data can be
-optionally included in the logs.
+times of day over the last 7 days and 30 days.  A summary over your whole data set is
+available too, disabled by default, as changes over time tend to render older data
+obsolete.  Weather data can be optionally included in the logs.
 
 Optionally it can auto-record .wav files of detected events with configurable limits
 and publish your logs and charts to a web server. It can also render the analysis of
