@@ -23,12 +23,26 @@ a plugin that run does not.
 The delay comes from BUZZ_SLOW_WORKER_S, defaulting to 0.3 seconds.  Anything well
 past a single message-queue drain will do, and a larger value only makes the run
 slower rather than the check stricter.
+
+The patch is process-wide and is never undone: pytest_configure replaces
+asyncio.to_thread for the whole run, and nothing puts the original back.  That is
+fine for a plugin loaded on purpose for one command, and it has two consequences
+worth knowing before building on it.  Anything else in the same run that expects the
+real to_thread gets the delayed one instead.  Loading this twice under two names,
+`-p slow_workers` alongside `-p tools.slow_workers`, gives pytest two module objects
+it does not treat as one, so the wrapper wraps the wrapper and every call waits twice.
 """
 
 import asyncio
 import os
 from collections.abc import Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    # Only for the hint on pytest_configure.  Importing pytest at runtime would make a
+    # diagnostic aid in tools/ refuse to import without it, and this module is only
+    # ever loaded by pytest itself in the first place.
+    import pytest
 
 DEFAULT_DELAY_S = 0.3
 
@@ -59,12 +73,12 @@ def make_slow_to_thread(real_to_thread: Callable[..., Any], delay_s: float) -> C
     The wait happens on the event loop rather than in the thread, so it delays when the
     caller sees the result without changing what the called function does.
     """
-    async def slow_to_thread(func, /, *args, **kwargs):
+    async def slow_to_thread(func: Callable[..., Any], /, *args: Any, **kwargs: Any) -> Any:
         await asyncio.sleep(delay_s)
         return await real_to_thread(func, *args, **kwargs)
 
     return slow_to_thread
 
 
-def pytest_configure(config) -> None:  # pragma: no cover - pytest's own entry point
+def pytest_configure(config: 'pytest.Config') -> None:  # pragma: no cover - pytest's own entry point
     asyncio.to_thread = make_slow_to_thread(asyncio.to_thread, worker_delay_seconds())

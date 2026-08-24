@@ -8,6 +8,7 @@ from pathlib import Path
 from zoneinfo import available_timezones
 
 from textual import events
+from textual.css.query import NoMatches
 from textual.widgets import Button, OptionList, RadioButton, RadioSet
 from buzz.setup.device_setup import DeviceInfo
 from buzz.setup.screens.calibration import _format_reading, _meter_block
@@ -47,14 +48,24 @@ async def _wait_until(pilot, condition, description: str, timeout: float = 5.0) 
     deadline = time.monotonic() + timeout
     while True:
         await pilot.pause()
-        if condition():
-            return
+        try:
+            if condition():
+                return
+        except NoMatches:
+            # The dialog is not up yet, so the widget the condition asks about does not
+            # exist.  That is "not yet" rather than a failure, and it is the very race
+            # this helper exists for: the screen is pushed by an async worker in
+            # SectionMenuScreen.on_option_list_option_selected, so app.screen can still
+            # be the menu when the first check runs.  Letting NoMatches out would abort
+            # the test on the slow machine instead of waiting, which is backwards.
+            pass
         if time.monotonic() >= deadline:
             raise AssertionError(
                 f'Waited {timeout:.0f} s for {description} and it never happened.  '
-                'The dialog fills itself from a background worker, so either that '
-                'worker failed or it now reports through a different route.  Check '
-                'the worker this dialog starts in on_mount.')
+                'These dialogs fill themselves after mounting, from a background worker '
+                'or a refresh callback.  Either that step failed, or it now reports '
+                'through a different route.  Check whatever fills this dialog rather '
+                'than the assertion here.')
         await asyncio.sleep(0.01)
 
 
