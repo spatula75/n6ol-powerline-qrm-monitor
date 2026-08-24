@@ -916,6 +916,22 @@ load-bearing line" is the line that matters; "the value lands at 128" is the val
   trims prose that restates the obvious - it does not license leaving hard-to-verify
   code unexplained. See "Don't overdrive your headlights"; the two rules meet at
   whether a reader can confirm the code is correct.
+- **You are not selling anything.** Describe what a feature or option does, in plain
+  terms, and stop. No case for why it is worth having, no history of what led to it, no
+  reassurance that it was a good idea. It exists because there was a use for it, and the
+  reader already knows that or they would not be reading its description. At most, add
+  one line saying when somebody would want it and when they would not. This covers
+  config descriptions, `schema.json` notes, `--help` text, docs, and release notes.
+
+  The failure looks like three paragraphs of rationale where the settings around it each
+  state their behavior in a sentence. `enable_all_time_summary` shipped that way and was
+  cut back; compare its notes with `stop_after_seconds` ("Raise it if one flickering
+  signal splits across several files. Lower it to trim dead air off the end.") for the
+  register to aim at.
+
+  The reasoning behind a *default* still belongs in the code comment beside it, where the
+  next maintainer is the audience. An operator reading a setting's description is not
+  deciding whether the option deserves to exist.
 - Where a comment explains the physics or the radio behavior behind a decision, the
   reasoning is authoritative and the wording is not. Tighten the prose; don't quietly
   change what it claims.

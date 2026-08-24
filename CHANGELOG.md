@@ -8,22 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- `[station] enable_all_time_summary`, which publishes a probability summary covering
-  the whole data set alongside the 7-day and 30-day ones. It is off by default, and
-  that is a change in behavior: the all-time graph used to be published for everyone.
-  A station that has run for more than a few months has usually seen the noise change,
-  and averaging a fault that was repaired together with the quiet months since
-  describes neither one. Turn it on where the situation is known to be static, or where
-  the long baseline is wanted for its own sake. `summary_start_date_iso` still sets
-  where that graph begins, and now matters only when this is on.
+- `[station] enable_all_time_summary`, which publishes a probability summary over the
+  whole data set alongside the 7-day and 30-day ones. It is off by default, which is a
+  change in behavior: that chart used to be published for everyone. Turn it on where
+  the noise situation is not changing. `summary_start_date_iso` sets where the chart
+  begins, and now applies only when this is on.
 
-  The 7-day and 30-day summaries carry no setting of their own, deliberately. Each
-  covers a fixed span ending today, so it follows the current situation without anybody
-  deciding when to move a start date.
-
-  Turning it off does not delete the chart already written, here or on the web server.
-  Startup says so once, naming the file, rather than leaving a chart that stops
-  updating and goes on looking current in the archive.
+  Turning it off leaves the chart already written where it is, here and on the web
+  server. Startup names the file once and says it will no longer be updated.
 - `tools/slow_workers.py`, a pytest plugin that delays every `asyncio.to_thread` call
   so a test racing a background worker fails reliably rather than intermittently. Load
   it with `PYTHONPATH=tools pytest tests/test_setup_app.py -p slow_workers --no-cov`.

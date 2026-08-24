@@ -109,12 +109,11 @@
         "enable_all_time_summary": {
           "type": "boolean",
           "title": "All-time summary graph",
-          "description": "Publish a probability summary covering your whole data set, alongside the 7-day and 30-day ones. Off by default.",
+          "description": "Publish a probability summary covering your whole data set, alongside the 7-day and 30-day ones.",
           "default": false,
           "x-notes": [
-            "The 7-day and 30-day summaries are always published. They follow the current situation on their own, which is what makes them useful without any setting to tune.",
-            "A station that has run for more than a few months has usually seen the noise change. Averaging a fault that was repaired together with the quiet months since describes neither one.",
-            "Turn this on if you are confident your situation is not changing, or if you want the long baseline for its own sake."
+            "The 7-day and 30-day summaries are always published. This adds a third chart, starting at summary_start_date_iso.",
+            "Turn it on where your noise situation is not changing. Older data otherwise dilutes the recent."
           ]
         },
         "summary_start_date_iso": {
