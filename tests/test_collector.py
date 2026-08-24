@@ -304,6 +304,45 @@ class TestTheAllTimeSummaryIsOptional:
                     if Path(c.args[0]).name == ALL_TIME_SUMMARY_NAME][0]
         assert all_time.args[1] == datetime.fromisoformat('2019-03-04T00:00:00+0000')
 
+    def test_an_unreadable_start_date_does_not_stop_a_station_that_does_not_use_it(self, tmp_path):
+        """The start date only feeds the all-time chart, so it must not gate startup.
+
+        The setup program hides this field while the chart is off, so a station whose
+        summary_start_date_iso is empty or malformed had no way left to correct it: the
+        monitor died on every start, and the one place to edit the value no longer
+        showed it.
+        """
+        cfg = _make_config(tmp_path)
+        cfg.station.enable_all_time_summary = False
+        cfg.station.summary_start_date_iso = ''
+        collector = _make_collector(cfg)          # must not raise
+        self._run_on_the_hour(collector, tmp_path)
+        assert ALL_TIME_SUMMARY_NAME not in self._summary_paths(collector)
+
+    def test_an_unreadable_start_date_is_refused_at_startup_when_the_chart_is_on(self, tmp_path):
+        """A station that asked for the chart should hear about it now, not on the hour.
+
+        The failure would otherwise surface inside the collection loop, which logs and
+        carries on, so the chart would quietly never appear.
+        """
+        cfg = _make_config(tmp_path)
+        cfg.station.enable_all_time_summary = True
+        cfg.station.summary_start_date_iso = 'last Tuesday'
+        with pytest.raises(ValueError, match='summary_start_date_iso'):
+            _make_collector(cfg)
+
+    def test_the_refusal_says_what_to_do_about_it(self, tmp_path):
+        """fromisoformat names only the text it choked on, not the setting or the fix."""
+        cfg = _make_config(tmp_path)
+        cfg.station.enable_all_time_summary = True
+        cfg.station.summary_start_date_iso = 'last Tuesday'
+        with pytest.raises(ValueError) as raised:
+            _make_collector(cfg)
+        message = str(raised.value)
+        assert 'last Tuesday' in message
+        assert 'config.toml' in message
+        assert 'enable_all_time_summary' in message
+
     def test_the_all_time_graph_is_uploaded_when_on(self, tmp_path):
         """One flag governs both, since a chart nobody publishes helps nobody."""
         cfg = _make_config(tmp_path, server_enabled=True)

@@ -37,8 +37,31 @@ class Collector:
         self._store = store
         self._plotter = plotter
         self._publisher = publisher
-        self._summary_start_date = datetime.fromisoformat(config.station.summary_start_date_iso)
+        # Parsed here rather than at the top of the hour, so a station that asked for
+        # the all-time chart learns at startup that its start date is unreadable.
+        # Parsed only when that chart is on, because the setup program hides the field
+        # while it is off: a station carrying an empty or malformed date would
+        # otherwise die on every start with no way left to correct it.
+        self._summary_start_date = (self._parse_summary_start_date()
+                                    if config.station.enable_all_time_summary else None)
         self._report_any_stale_all_time_summary()
+
+    def _parse_summary_start_date(self) -> datetime:
+        """The date the all-time summary begins, refusing an unreadable one by name.
+
+        fromisoformat reports nothing but the text it choked on, which does not say
+        which setting the text came from or where to change it.
+        """
+        configured = self._config.station.summary_start_date_iso
+        try:
+            return datetime.fromisoformat(configured)
+        except ValueError as exc:
+            raise ValueError(
+                f'The [station] summary_start_date_iso setting is "{configured}", '
+                'which is not an ISO 8601 date.  The all-time summary graph starts '
+                'from that date and cannot be drawn without it.  Set it in '
+                '~/.buzz/config.toml in the form 2024-01-01T00:00:00+0000, or turn '
+                'off station.enable_all_time_summary.') from exc
 
     def _report_any_stale_all_time_summary(self) -> None:
         """Say once that an all-time chart is present but no longer being updated.
@@ -150,7 +173,7 @@ class Collector:
         return summaries
 
     def _write_summary(self, output_dir: Path, name: str, start: datetime) -> Path:
-        """Generate one summary graph covering `start` to now, and say where it went."""
+        """Generate one summary graph covering `start` to now, and return where it went."""
         path = output_dir / name
         self._plotter.generate_summary_graph(path, start)
         return path

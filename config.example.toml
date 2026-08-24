@@ -111,6 +111,7 @@ audio_rf_conversion_db = -32.0
 enable_all_time_summary = false
 
 # The ISO 8601 date that the all-time probability summary graph starts from.
+# It applies only when that graph is turned on.
 summary_start_date_iso = "2024-01-01T00:00:00+0000"
 
 

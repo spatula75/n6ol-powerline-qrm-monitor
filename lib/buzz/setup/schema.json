@@ -119,7 +119,7 @@
         "summary_start_date_iso": {
           "type": "string",
           "title": "Summary graph start date",
-          "description": "The ISO 8601 date that the all-time probability summary graph starts from.",
+          "description": "The ISO 8601 date that the all-time probability summary graph starts from. It applies only when that graph is turned on.",
           "default": "2024-01-01T00:00:00+0000",
           "x-visible-when": {"field": "enable_all_time_summary", "equals": true}
         }
