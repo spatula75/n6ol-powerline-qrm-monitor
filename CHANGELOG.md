@@ -7,6 +7,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [1.5.3] - 2026-08-24
+
 ### Added
 - `[station] enable_all_time_summary`, which publishes a probability summary over the
   whole data set alongside the 7-day and 30-day ones. It is off by default, which is a

@@ -1,6 +1,6 @@
 [project]
 name = "n6ol-powerline-qrm-monitor"
-version = "1.5.2"
+version = "1.5.3"
 description = "Continuous powerline interference monitor for ham radio operators"
 readme = "README.md"
 license = { file = "LICENSE" }
