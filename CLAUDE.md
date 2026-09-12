@@ -34,10 +34,11 @@ testability is usually not worth it - say so rather than building it.
 
 ## Environment
 
-Python 3.12+ (`requires-python = ">=3.12"`). CI pins 3.12; the local dev venv is
-`.venv314` on Python 3.14. `lib/` is not installed as a package - it has to be on the
-import path. `tests/conftest.py` inserts it for the suite; for a manual run set
-`PYTHONPATH=lib` (PyCharm run configurations have `lib` as a source root instead).
+Python 3.12+ (`requires-python = ">=3.12"`). CI pins 3.12; the local dev venv runs
+Python 3.14 and is named `.venv314` or `venv`, depending on the machine. `lib/` is
+not installed as a package - it has to be on the import path. `tests/conftest.py`
+inserts it for the suite; for a manual run set `PYTHONPATH=lib` (PyCharm run
+configurations have `lib` as a source root instead).
 
 Runtime deps are pinned in `requirements.txt`; `pyproject.toml` carries the looser
 ranges for packaging. `numpy` is capped below 2.5 by numba's own constraint - check
@@ -212,66 +213,56 @@ tagging again.
 ## Before every commit
 
 Judgement calls first, cheapest mechanical check next, most expensive last, human eyes
-after all of it. In that order:
+after all of it. Anything that can still change the shape of the code comes before the
+suite, so a rule break does not cost one test run and then a second one after the fix.
+In that order:
 
 1. **Dead code.** While you are already in the area, look for anything certainly
    unused - a function nothing calls, a branch nothing reaches, a path an earlier
    refactor left behind - and ask before removing it, ahead of the checks below. Ask
    rather than delete unasked and ask rather than leave it: whether it is truly dead or
    a hook for something not yet wired up is the user's call, not one to guess at.
-2. **Lint** - `ruff check .`. Runs before the test suite, every time, because it is
-   fast and cheap where tests are not - there is no reason to wait minutes for a test
-   failure that a two-second lint pass would already have caught. Must come back
-   completely clean, not merely free of *new* complaints. Fix what it reports rather
-   than suppressing it.
-3. **Unit suite with coverage** - `pytest --cov`. Must pass, and coverage must stay at
-   or above the 97% gate. Running plain `pytest` without `--cov` hides a coverage
-   failure that CI then catches; that has broken the build before.
-4. **Integration tier**, when the change touches audio, analysis, playback, recording,
-   or the display - `pytest -m integration --no-cov`. CI runs it on every PR, so
-   catching a failure locally is cheaper than catching it on GitHub.
-5. **Hands-on verification.** Changes to the audio path, the display, or the charts get
-   checked against a live radio before being committed - green tests are not the finish
-   line for those.
+2. **Read what you wrote against every rule in this file, before anything expensive
+   runs.** This means all of them, not the prose rules alone and not `ste_lint`'s
+   subset. First principle, Don't overdrive your headlights, Structure, Naming, Type
+   hints, Optimization, Tests, and Comments and documentation each state things no
+   tool checks, and each is as binding as ruff. Read the code this change added or
+   moved against the lot.
 
-   **Changes to `templates/index.html` get checked in a browser with the Network panel
-   open, and every reload is a shift-reload.** The page has no test coverage at all -
-   there is no JavaScript engine on the dev machine - so a browser is the only thing
-   that runs it. Two traps make a broken page look like a working one, and both cost
-   a confusing half hour before they were understood:
-   - Servers send the chart with `Last-Modified` and no `Cache-Control`, so the browser
-     applies heuristic freshness and paints a **cached** image without asking the server
-     anything. A plain reload can show yesterday's chart indefinitely. "The page did not
-     update" and "the browser never asked" are indistinguishable without the Network
-     panel.
-   - A page that has deliberately stopped updating, a page whose script threw, and a
-     server that is not running all look identical on screen. Never conclude the pause
-     works from seeing nothing happen; drive the state back and confirm the page
-     **resumes**. Same shape as "a test must be able to fail" below - the observation
-     has to be able to come out the other way.
+   It goes here rather than later because a break found at this point costs minutes,
+   where the same break found after the suite costs the suite. Moving a bare function
+   onto the class it belongs to changes the module and its tests together, so both
+   have to run again from the start.
 
-   The way to drive it is a local `http.server` over a copy of the output directory,
-   with a script that rewrites `current.png` and moves its mtime, including forward past
-   the station's midnight. That exercises the 304, the 200, the pause, and the resume,
-   which is every path the page has.
-6. **Documentation drift.** A code or behavior change means checking `README.md`, the
-   relevant page(s) under `docs/`, and `config.example.toml` for anything the change
-   makes wrong - a described default that moved, a number that no longer holds, a flag
-   or setting that changed shape. Docs go stale exactly like comments do, and nothing
-   else catches it; there is no test that fails when a README goes out of date.
+   These are the ones that actually get missed, so check them by name:
 
-   **Anything under `docs/` needs approval before it is written to disk.** Propose the
-   wording in the reply, get a yes, then edit. That tree is the published site and it
-   has a voice of its own, so it is not a place to make a judgement call unattended.
+   - a bare function that belonged on a class, or a helper sitting in the wrong module
+   - two names for one concept, which hides across modules rather than within one
+   - a magic constant with no name, or a named one with no note saying where the
+     value came from and whether it was measured
+   - a missing or loose type hint, and `Optional[X]` where `X | None` belongs
+   - a factual claim in a comment that nobody verified, and a comment elsewhere whose
+     reasoning this change has quietly invalidated
+   - a test that cannot fail, or one whose every number comes from the thing under
+     test
+   - a clever step with no equivalence test pinning it to an obvious one
+   - the prose tics: sales framing, saying something is "worth" doing, a claim
+     announced before its reason, a sentence past about 25 words, a fragment
 
-   **Match the prose already on the page** rather than this file's rules for code
-   comments. `docs/` addresses the operator directly in the second person, uses
-   contractions, and runs to longer explanatory paragraphs than a comment would. Read
-   the surrounding page first and write to it. The house bans on em dashes, banned
-   words, and one space after a period still hold. Detail that belongs to the
-   implementation does not: an operator wants to know what a setting does, not which
-   object the monitor builds when it is on.
-7. **STE compliance for touched prose.** Any docstring, comment, or user-facing string
+   Examples that reached a green suite before being caught: three module functions
+   that belonged on `IqToAudio`, two more that belonged on `IqBlock`, "dongle" and
+   "receiver" used for the same thing, and a claim-then-justification construct
+   running through eight docstrings.
+
+   **This step is mandatory and unprompted, and it is not only a commit gate.** Run
+   it before every commit and before reporting any unit of work as finished, because
+   both of those hand the code to somebody else. Being asked to check the code
+   against these rules means the step was skipped, so read that request as a bug
+   report about the process rather than as the trigger for it. Every rule in this
+   file was written down after somebody had to say it out loud. Saying it twice is
+   the thing the file exists to prevent, and presenting work that breaks one is the
+   same class of miss as presenting it with a known lint error.
+3. **STE compliance for touched prose.** Any docstring, comment, or user-facing string
    in a file this change touches - not the whole file, and not the whole repo - gets
    checked against `docs/ste-writing.md` and this file's own prose rules: banned words,
    em dashes, sentence fragments, two spaces after a period, active voice, semicolons
@@ -279,6 +270,24 @@ after all of it. In that order:
    with whatever change is already being made. Handled this way, every touched file
    ratchets a little closer to full compliance instead of drifting further from it one
    untouched sentence at a time.
+
+   **The three rules it cannot check need a deliberate reading pass, not a glance.**
+   Sentence fragments, passive voice, and an `-ing` form used as the main verb are
+   invisible to it, so a clean run says nothing at all about any of them. A first
+   draft of `lib/buzz/sdr.py` shipped eight fragments straight past a clean run,
+   among them "Deliberately almost empty." and "Good enough to start, not good
+   enough to publish." Both read fine in place, which is exactly why nothing catches
+   them but looking.
+
+   `--fragments` covers part of the first of those three and is off by default on
+   purpose. It cannot be made reliable: spotting a clause with no finite verb means
+   knowing which words are verbs, and that list has no end. Measured over this repo
+   it flagged 16 sentences of which about 9 were real, and every false alarm was a
+   verb the list did not know. Nine findings for seven false alarms is a good trade
+   when somebody chose to look, and a bad one in a gate that blocks a commit, since
+   a tool that calls correct prose wrong teaches people to ignore it. Run it over
+   what the change touched, read the handful it names, and never read its silence as
+   a verdict.
 
    **Run `python tools/ste_lint.py --changed` for the mechanical half of it.** That
    catches em dashes, banned words, British spellings, wordy choices, the spacing
@@ -304,7 +313,59 @@ after all of it. In that order:
    drafting the next sentence, not as proof the safety net is doing its job. Proposing
    a commit without having actually run this check against every touched file is the
    same class of miss as proposing one with a known lint error, not a smaller one.
-8. **Diff artifacts.** Read the actual diff before staging, not just the file as it
+4. **Lint** - `ruff check .`. Runs before the test suite, every time, because it is
+   fast and cheap where tests are not - there is no reason to wait minutes for a test
+   failure that a two-second lint pass would already have caught. Must come back
+   completely clean, not merely free of *new* complaints. Fix what it reports rather
+   than suppressing it.
+5. **Unit suite with coverage** - `pytest --cov`. Must pass, and coverage must stay at
+   or above the 97% gate. Running plain `pytest` without `--cov` hides a coverage
+   failure that CI then catches; that has broken the build before.
+6. **Integration tier**, when the change touches audio, analysis, playback, recording,
+   or the display - `pytest -m integration --no-cov`. CI runs it on every PR, so
+   catching a failure locally is cheaper than catching it on GitHub.
+7. **Hands-on verification.** Changes to the audio path, the display, or the charts get
+   checked against a live radio before being committed - green tests are not the finish
+   line for those.
+
+   **Changes to `templates/index.html` get checked in a browser with the Network panel
+   open, and every reload is a shift-reload.** The page has no test coverage at all -
+   there is no JavaScript engine on the dev machine - so a browser is the only thing
+   that runs it. Two traps make a broken page look like a working one, and both cost
+   a confusing half hour before they were understood:
+   - Servers send the chart with `Last-Modified` and no `Cache-Control`, so the browser
+     applies heuristic freshness and paints a **cached** image without asking the server
+     anything. A plain reload can show yesterday's chart indefinitely. "The page did not
+     update" and "the browser never asked" are indistinguishable without the Network
+     panel.
+   - A page that has deliberately stopped updating, a page whose script threw, and a
+     server that is not running all look identical on screen. Never conclude the pause
+     works from seeing nothing happen; drive the state back and confirm the page
+     **resumes**. Same shape as "a test must be able to fail" below - the observation
+     has to be able to come out the other way.
+
+   The way to drive it is a local `http.server` over a copy of the output directory,
+   with a script that rewrites `current.png` and moves its mtime, including forward past
+   the station's midnight. That exercises the 304, the 200, the pause, and the resume,
+   which is every path the page has.
+8. **Documentation drift.** A code or behavior change means checking `README.md`, the
+   relevant page(s) under `docs/`, and `config.example.toml` for anything the change
+   makes wrong - a described default that moved, a number that no longer holds, a flag
+   or setting that changed shape. Docs go stale exactly like comments do, and nothing
+   else catches it; there is no test that fails when a README goes out of date.
+
+   **Anything under `docs/` needs approval before it is written to disk.** Propose the
+   wording in the reply, get a yes, then edit. That tree is the published site and it
+   has a voice of its own, so it is not a place to make a judgement call unattended.
+
+   **Match the prose already on the page** rather than this file's rules for code
+   comments. `docs/` addresses the operator directly in the second person, uses
+   contractions, and runs to longer explanatory paragraphs than a comment would. Read
+   the surrounding page first and write to it. The house bans on em dashes, banned
+   words, and one space after a period still hold. Detail that belongs to the
+   implementation does not: an operator wants to know what a setting does, not which
+   object the monitor builds when it is on.
+9. **Diff artifacts.** Read the actual diff before staging, not just the file as it
    ends up. Editing in passes leaves residue that runs and lints clean and is only
    visible in the diff itself: a doubled blank line where a tool split one edit into
    two, a comment whose sentence now trails off because an insertion fell inside it
@@ -334,6 +395,11 @@ the interpreted one.
 ## Reporting finished work
 
 ### Summarize structural changes
+
+Work is not finished, and is not ready to describe, until step 2 of "Before every
+commit" has been done over it. Reporting it first and checking it after means the
+reader is reviewing something you have not, which is the state that rule exists to
+prevent.
 
 When a sizeable unit of work is done, **describe what changed structurally** before
 anything else: what was added, where it lives, and what it does. New modules, new
@@ -495,6 +561,14 @@ Practical consequences:
   one responsibility each. This codebase was deliberately dug out of a god object and
   should not drift back.
 - **Constructor injection** for collaborators, so everything is testable without patching.
+- **Encapsulate in a class by default.** A bare function in a module is the exception,
+  not the starting point. Anything closely tied to a class belongs on that class, as a
+  method or a `@staticmethod`, next to the state and the other operations it goes with.
+  The exceptions are a factory that builds something (`buzz.sdr.open_device`,
+  `buzz.main.open_live_source`), a private helper belonging to one of those factories,
+  and a module that is procedural by nature such as `main.py`. `buzz.iq.filter_length`
+  and `buzz.sdr.count_clipped` both started bare and were wrong that way: only
+  `IqToAudio` builds a filter, and only `IqBlock` holds raw bytes.
 - **Push, don't poll.** Components publish state changes to their listeners rather than
   reaching into another component to read its state - a lock is an event, not a level,
   and a poller misses any event that begins and ends between two polls. Publish from the
@@ -727,6 +801,25 @@ that call rather than quietly compiling another variant mid-flight.
   exhaustively where it is cheap (40,001 rates cost about a second), and name every way
   it can break in the message, since the fix differs and the assertion cannot tell which
   happened. See `test_every_admitted_rate_gives_an_encodable_frame`.
+- **Drift pins.** Where two files state the same fact and nothing makes them agree,
+  write the test that fails when they disagree, and call it a drift pin. The shape has
+  arrived four separate times: `tests/test_constants.py` ties `_BAR_WIDTH` to
+  `DB_PER_S_UNIT`, `TestSchemaMatchesTheDataclasses` ties `schema.json` to
+  `BuzzConfig`, `TestExampleConfigMatchesTheDataclasses` ties `config.example.toml` to
+  the same, and `TestTheShippedRtlSdrDefaultsAreUsable` ties `RtlSdrConfig` to the
+  rules `IqToAudio` enforces on it.
+
+  These earn their keep because the failure they catch is invisible by construction.
+  Each file is correct read on its own, and the program only breaks where the two
+  meet, usually at startup, usually for whoever never edited the default. Nothing else
+  in the suite goes red, since nothing else reads both files.
+
+  Reach for one whenever a value has to be restated somewhere it cannot be imported
+  from: a JSON schema, a TOML sample, a generated document, a comment quoting a
+  constant. Pin the behavior rather than the literal where you can. Building an
+  `IqToAudio` out of the shipped `[rtlsdr]` defaults covers the sideband spelling and
+  all three of the arithmetic rules at once, where asserting `sideband == UPPER` would
+  have covered only the first.
 - **Assert on transitions, not on polled state.** Register a listener
   (`ContinuousAnalyzer.add_state_listener`) and assert on the sequence it records; see
   `StateLog` in `tests/integration/harness.py`. Polling `analyzer.state` cannot see a
@@ -906,6 +999,53 @@ load-bearing line" is the line that matters; "the value lands at 128" is the val
   same way a changed API means checking every caller.
 - **Anticipate the reader's objection.** If someone would reasonably ask "why didn't you
   just do it the obvious way?", answer that in the comment.
+- **Say when a number came from measuring.** A reader cannot tell a measured constant
+  from a guessed one by looking at it, and the two deserve different amounts of trust:
+  one is a fact about this hardware, the other is somebody's starting point. Say so
+  plainly before quoting any figures - "the value came from measuring, not from
+  theory" - and then say what was measured and across what range. This is the same
+  job as de-magickifying a constant, carried one step further: the name says what the
+  number is for, and this says how much to believe it. `buzz.iq._SKIRT_FRACTION` is
+  the worked example.
+- **No length cap in flavored mode is not a license for 30-word sentences.** The rule
+  that still binds is "split any sentence that has to be read twice". It gets broken
+  by chaining clauses with *and*, *so* and *which* until four sentences are doing the
+  work of twelve, which reads as slop however accurate it is. A first draft of
+  `lib/buzz/iq.py` had thirteen sentences over 30 words and was sent back as hard to
+  parse. Check it while drafting rather than after: pull the docstrings and comments
+  out with `ast`, split on sentence ends, and reread anything past about 25 words.
+  The fix is nearly always to cut the chain at a conjunction and start a new sentence.
+- **Join a claim to its reason with "because" rather than announcing it first.** The
+  habit is a short declarative sentence, then a second one that exists only to explain
+  it. "Nothing here is allowed to raise.  This is called from C, where an exception has
+  nowhere sensible to go." The pause between the two reads as pretentious, as though
+  the claim wanted its own moment before the reason arrived. One sentence carries
+  both, and flows better: "Nothing here is allowed to raise, because this is called
+  from C, where an exception has nowhere sensible to go." The tell is that the second
+  sentence would accept "because" at the front with nothing else changed. `_on_block`
+  had three of these in one docstring and `_report_discard` opened with two.
+
+  This is not a ban on short sentences, and a separate thought still gets its own. It
+  applies where the second sentence does nothing but justify the first. Where joining
+  would produce something that has to be read twice, cut the chain somewhere else
+  instead. That rule and this one meet at the same requirement, which is that the
+  reader gets the claim and its reason in one pass.
+- **A comment explaining data flow at a call site is usually a missing argument.**
+  `iq.py`'s `convert` briefly read `self._filtered_and_decimated()  # reads from
+  self._pending from the prior calculation`. That is the call site apologizing for not
+  saying where its input came from. Passing the block instead removed the need for the
+  comment. It also gave `_pending` a single owner, where one method had been appending
+  and another dropping. The comment was the symptom and the split ownership was the
+  cause. Where a comment exists to say where a value came from, try passing it.
+- **A comment asserting behavior is usually a missing test.** The commonest comment
+  smell in the wild: a line stating what the code guarantees, sitting where nothing
+  will ever check it. "This must stay below X" and "these two always agree" are
+  claims. A claim no test makes goes quietly out of date the first time somebody
+  edits the code around it, and it then misleads instead of helping. See "Tests
+  express intent too" above for the principle. The diagnostic is to ask, of any
+  comment making a claim, what would fail if the claim stopped holding. If the honest
+  answer is nothing, write the test and keep whichever part of the comment the test
+  cannot say.
 - **Loud comments for truly weird necessities** - workarounds for upstream bugs need
   to explain themselves and say what would let them be removed.
 - Every module gets a docstring. Every public method over ~10 lines gets one.
@@ -946,6 +1086,24 @@ load-bearing line" is the line that matters; "the value lands at 128" is the val
   changing"), a metaphor carrying the meaning ("dilutes"), and any sentence the reader has
   to decode before they can act on it. Ask what observable thing the sentence claims. If
   the answer takes longer to work out than simply saying it would have, say it instead.
+- **Do not say something is "worth" doing.** The construct shows up as "worth
+  rate-limiting", "worth keeping apart", "worth explaining", and "not a cost worth
+  reasoning about". It argues for the code rather than describing it, which is the
+  sales habit above in miniature. At the density it reaches it also reads as a tic.
+  `sdr.py` carried five of them, two inside one four-line docstring. Say what the code
+  does and why, and let the reader decide what it was worth. Write "the log is
+  rate-limited because this will not happen once" rather than "worth rate-limiting
+  because it will not happen once". The occasional one is fine and the frequency is
+  the problem. "A block's worth of audio" is the other word, meaning a quantity, and
+  is not what this covers.
+
+  **The codebase does not follow this yet, and clearing it is a job of its own.** A
+  count on 2026-09-12 found 46 of them outside the RTL-SDR work, across 25 files, with
+  `analyzer.py`, `recorder.py` and `render.py` carrying five each. Let the ratchet in
+  "Before every commit" take them as those files get touched, or clear the lot in one
+  pass on a branch for that alone. Do not fold them into an unrelated change, because
+  the diff then buries whatever the change was for. The quantity sense accounts for
+  nine more and stays.
 - Where a comment explains the physics or the radio behavior behind a decision, the
   reasoning is authoritative and the wording is not. Tighten the prose; don't quietly
   change what it claims.

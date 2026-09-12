@@ -8,7 +8,8 @@ import pytest
 
 from buzz.config import (
     MAX_SAMPLE_RATE, MIN_SAMPLE_RATE, AudioConfig, BuzzConfig, RecordingConfig,
-    ServerConfig, StationConfig, WeatherConfig, _load_section, validate_sample_rate,
+    RtlSdrConfig, ServerConfig, StationConfig, WeatherConfig, _load_section,
+    validate_sample_rate,
 )
 
 _EXAMPLE = Path(__file__).resolve().parent.parent / 'config.example.toml'
@@ -272,3 +273,37 @@ class TestSampleRateAdmission:
         resample to 48 kHz, or the advice sends it to a rate nothing else here uses."""
         with pytest.raises(ValueError, match='resampling it to 48000 Hz'):
             validate_sample_rate(4000, 'slow.wav', 48000)
+
+
+class TestTheShippedRtlSdrDefaultsAreUsable:
+    """The [rtlsdr] defaults and IqToAudio's rules are written in two different files
+    and nothing made them agree.
+
+    IqToAudio refuses a decimation the IQ rate does not divide by, a bandwidth too
+    wide for the resulting audio, and a sideband it does not know.  Every one of
+    those is a value RtlSdrConfig supplies a default for, so a default that drifted
+    would raise at startup for anybody who never edited it.  The schema tests pin
+    schema.json to the dataclass; this pins the dataclass to the code that consumes
+    it, which is the third side of the triangle.
+    """
+
+    def test_the_default_settings_build_a_converter(self):
+        from buzz.iq import IqToAudio
+        s = RtlSdrConfig()
+        converter = IqToAudio(s.iq_sample_rate, s.decimation, s.bandwidth_hz,
+                              s.tuning_offset_hz, s.sideband)
+        assert converter.audio_sample_rate == s.iq_sample_rate // s.decimation
+
+    def test_every_sideband_the_setup_program_offers_is_one_the_converter_accepts(self):
+        """schema.json lists the choices the setup menu shows.  A choice IqToAudio
+        does not know would be offered, selected, written to the config, and only then
+        refused, on the next start, by a traceback naming a setting the operator
+        picked from a list.
+        """
+        from buzz.iq import IqToAudio
+        from buzz.setup.schema import field_schema, load_schema
+        offered = field_schema(load_schema(), 'rtlsdr', 'sideband')['enum']
+        s = RtlSdrConfig()
+        for sideband in offered:
+            IqToAudio(s.iq_sample_rate, s.decimation, s.bandwidth_hz,
+                      s.tuning_offset_hz, sideband)

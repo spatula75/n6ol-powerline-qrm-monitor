@@ -13,8 +13,15 @@
 # GENERATED FILE - edit lib/buzz/setup/schema.json and regenerate, do not edit here.
 
 
-# The sound card the receiver feeds, and what it sends.
+# Where live audio comes from, and what the analyzer expects of it.
 [audio]
+# Where live audio comes from, either a radio feeding a sound card or an
+# RTL-SDR receiver.
+#
+#   Sound card - a radio in SSB, wired to an audio input
+#   RTL-SDR - a receiver, set up in the RTL-SDR section
+source = "soundcard"
+
 # The sound card that carries the RF-to-audio converted signal.
 #
 # Choose this in Setup's Audio step. Do not type it. Setup probes every
@@ -115,8 +122,8 @@ enable_all_time_summary = false
 summary_start_date_iso = "2024-01-01T00:00:00+0000"
 
 
-# Weather readings logged beside each measurement. Arcing follows humidity
-# and wind, so these are worth keeping.
+# Weather readings logged beside each measurement. Arcing often follows
+# humidity and wind.
 [weather]
 # Where weather readings come from. Choose none to leave those CSV columns
 # empty.
@@ -317,3 +324,68 @@ min_lock_snr = 0.0
 # costs nothing.
 # Example: C:/Users/yourname/AppData/Local/Microsoft/WinGet/Links
 ffmpeg_path = ""
+
+
+# Settings for an RTL-SDR receiver. Used only when the audio source is set
+# to RTL-SDR.
+[rtlsdr]
+# The frequency to measure. Pick a quiet spot in a band where the noise is
+# audible.
+frequency_hz = 7074000
+
+# Snapped to the nearest step the tuner offers, since it accepts only a
+# fixed set.
+#
+# Choose the lowest gain at which band noise sits about 10 dB above the
+# receiver's own noise. Lower leaves more room for loud events. Higher
+# measures the receiver rather than the band.
+gain_db = 40.2
+
+# How fast the receiver samples. It must divide evenly by the decimation
+# below.
+#
+# 256000 divided by 16 gives 16000 Hz of audio, the rate a sound-card
+# station uses.
+iq_sample_rate = 256000
+
+# Receiver samples per audio sample. The audio rate is the receiver rate
+# divided by this.
+decimation = 16
+
+# How much of the band to measure, on one side of the listening frequency.
+#
+# 4000 Hz matches a typical SSB filter, so levels compare with a radio tuned
+# to the same spot.
+bandwidth_hz = 4000
+
+# How far from the listening frequency to tune the hardware. Undone in
+# software, so it changes nothing you measure.
+#
+# The receiver puts a false signal at its own tuning frequency, and this
+# moves that away from the measured band. Leave it alone unless you know why
+# you are changing it.
+tuning_offset_hz = 50000
+
+# Which side of the listening frequency to hear.
+#
+#   Upper - the spectrum above the listening frequency
+#   Lower - the spectrum below it, shown reversed
+sideband = "upper"
+
+# Which receiver to use when more than one is plugged in.
+device_index = 0
+
+# Added to the measured audio level to get signal level at the receiver
+# input. Leave it unset until you have calibrated.
+#
+# Unset means the monitor estimates it from the tuner gain. Expect the
+# reading to be a few dB out.
+#
+# To find the figure, read the noise floor on a radio you trust, on the same
+# antenna at the same time, with its filter set to match the bandwidth
+# above. The difference between the two readings is what goes here.
+#
+# It depends on the tuner gain, so changing that means finding it again.
+#
+# Unset by default.
+# audio_rf_conversion_db = -40.2

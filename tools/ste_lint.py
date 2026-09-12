@@ -102,9 +102,9 @@ BRITISH = re.compile(
 # Prefer the short common word.
 WORDY = {
     'commence': 'start', 'initiate': 'start', 'utilize': 'use', 'leverage': 'use',
-    'facilitate': 'help', 'ensure': 'make sure', 'ensures': 'make sure',
+    'facilitate': 'help',
     'prior to': 'before', 'subsequent to': 'after', 'regarding': 'about',
-    'concerning': 'about', 'obtain': 'get', 'acquire': 'get',
+    'concerning': 'about', 'obtain': 'get',
     'demonstrate': 'show', 'demonstrates': 'show', 'additionally': 'also',
     'furthermore': 'also', 'moreover': 'also',
 }
@@ -190,6 +190,7 @@ def _check_spacing(path: str, line: int, text: str, strict: bool) -> list[Findin
     # The lookahead is the whole test: one space and then a capital is the fault.
     # Two spaces do not match it, and neither does a newline, which is a paragraph
     # break rather than a missing space.
+    found = []
     for match in re.finditer(SENTENCE_END + r'(?= [A-Z])', text):
         before = text[:match.start()].rstrip()
         if before.endswith(('e.g', 'i.e', '.')):
@@ -197,9 +198,20 @@ def _check_spacing(path: str, line: int, text: str, strict: bool) -> list[Findin
         if LIST_MARKER.search(text[:match.start()]):
             continue
         excerpt = text[max(0, match.start() - 30):match.start() + 30]
-        return [Finding(path, line, 'one space after a period', excerpt.strip(),
-                        text, strict)]
-    return []
+        found.append(Finding(path, line, 'one space after a period', excerpt.strip(),
+                             text, strict))
+    return found
+
+
+def _distinct(pattern: re.Pattern[str], text: str) -> list[str]:
+    """Every different string `pattern` matches in `text`, in the order they appear.
+
+    Reporting one match per line meant fixing a fault and meeting the next one on the
+    following run, so a clean result after an edit only proved the first match had
+    gone.  Repeats of the same word collapse to one finding, because they get fixed
+    together anyway.
+    """
+    return list(dict.fromkeys(match.group(0) for match in pattern.finditer(text)))
 
 
 def _check_words(path: str, line: int, text: str, strict: bool) -> list[Finding]:
@@ -214,18 +226,18 @@ def _check_words(path: str, line: int, text: str, strict: bool) -> list[Finding]
     if path.endswith(RULE_BOOKS):
         return []
     found = []
-    for pattern, rule in ((BANNED, 'banned word'), (MARKETING, 'marketing adjective')):
-        hit = pattern.search(text)
-        if hit:
-            found.append(Finding(path, line, rule, f'"{hit.group(0)}"', text, strict))
-    hit = BRITISH.search(text)
-    if hit:
-        found.append(Finding(path, line, 'British spelling', f'"{hit.group(0)}"', text, strict))
-    hit = WORDY_RE.search(text)
-    if hit:
-        better = WORDY[hit.group(0).lower()]
-        found.append(Finding(path, line, 'wordy',
-                             f'"{hit.group(0)}" -> "{better}"', text, strict))
+    for pattern, rule in ((BANNED, 'banned word'), (MARKETING, 'marketing adjective'),
+                          (BRITISH, 'British spelling')):
+        found += [Finding(path, line, rule, f'"{word}"', text, strict)
+                  for word in _distinct(pattern, text)]
+    # The wordy list is a vocabulary restriction, and ste-writing.md applies those in
+    # strict mode only.  Flavored prose carries reasoning a strict vocabulary cannot
+    # express, which is the reason that override exists.  Checking it everywhere had
+    # the tool enforcing a rule its own specification exempts.
+    if strict:
+        found += [Finding(path, line, 'wordy',
+                          f'"{word}" -> "{WORDY[word.lower()]}"', text, strict)
+                  for word in _distinct(WORDY_RE, text)]
     return found
 
 
@@ -244,10 +256,8 @@ def _check_dashes(path: str, line: int, text: str, strict: bool) -> list[Finding
 
 def _check_strict(path: str, line: int, text: str) -> list[Finding]:
     """The rules that apply only to text a reader meets while stuck."""
-    found = []
-    hit = CONTRACTION.search(text)
-    if hit:
-        found.append(Finding(path, line, 'contraction', f'"{hit.group(0)}"', text, True))
+    found = [Finding(path, line, 'contraction', f'"{word}"', text, True)
+             for word in _distinct(CONTRACTION, text)]
     if ';' in text:
         found.append(Finding(path, line, 'semicolon', 'write two sentences', text, True))
     for sentence in sentences(text):
@@ -482,6 +492,127 @@ def changed_lines(base: str) -> dict[str, set[int]]:
     return added
 
 
+# ---------------------------------------------------------------------------
+# Sentence fragments, as an advisory rather than a rule
+# ---------------------------------------------------------------------------
+#
+# ste-writing.md lists three rules this tool cannot check: sentence fragments,
+# passive voice, and an -ing form used as the main verb.  This closes part of the
+# first one, and only part, which is why --fragments is off by default.
+#
+# A fragment is a clause with no finite verb, so detecting one means knowing which
+# words are verbs, and that list has no end.  Measured over lib/, tools/, scripts/
+# and tests/, a first pass flagged 16 sentences of which roughly 9 were real, and
+# every false alarm was a verb the list did not know: draws, differed, stood, agree,
+# opened, accounts.  Those are in it now, which lowers the noise without closing the
+# gap, because the next unknown verb is always one sentence away.  The list is a net
+# and not a proof.
+#
+# Nine real findings for seven false alarms is a good trade when somebody chose to
+# look, and a bad one in a gate that blocks a commit, because a tool that calls
+# correct prose wrong teaches people to ignore it.  So this runs when asked and never
+# otherwise, and the reading job in CLAUDE.md stays.
+
+# Openings that begin a fragment far more often than they begin a sentence: an
+# adjective, an adverb, a bare participle or a negation, with no subject behind it.
+# Narrowing to these took the false alarms from 210 to 7.
+FRAGMENT_OPENERS = frozenset("""
+worth not deliberately distinct good better best useful helpful similar same
+unlike rather hence hardly merely simply purely largely mostly chiefly enough
+measured taken given seen done said noted chosen written built made plenty
+""".split())
+
+# Finite verb forms.  Incomplete by construction; see above.
+FINITE_VERBS = frozenset("""
+is are was were be been being am has have had do does did can could will would
+shall should must may might needs need makes make takes take gives give gets get
+goes go comes come sets set puts put reads read writes write holds hold keeps keep
+wants want means mean leaves leave says say shows show knows know sits sit runs run
+costs cost counts count moves move works work fails fail adds add uses use
+depends depend arrives arrive reaches reach covers cover dominates dominate
+beats beat stays stay drops drop falls fall rises rise helps help lets let
+turns turn starts start ends end finds find picks pick sees see asks ask
+calls call passes pass carries carry produces produce returns return
+expects expect treats treat applies apply refuses refuse reports report
+records record scales scale divides divide matches match measures measure
+maps map derives derive folds fold lies lie exists exist remains remain
+contains contain includes include requires require allows allow draws draw
+changes change appears appear seems seem becomes become differs differ agrees agree
+stands stand stood opens open opened accounts account sends send sent
+differed agreed drew opened stayed dropped counted measured showed lasted
+""".split())
+
+_WORD = re.compile(r"[A-Za-z][A-Za-z'-]*")
+
+
+def looks_like_a_fragment(sentence: str) -> bool:
+    """Whether this reads as a clause with no finite verb.
+
+    Two gates, both narrow on purpose.  The sentence has to open with a word that
+    usually starts a fragment, and it has to contain no finite verb anywhere.  Either
+    alone flags far too much: the opener test alone catches every participial phrase
+    that turns out to have a main verb later, and the verb test alone flagged 210
+    sentences across this repo.
+    """
+    words = _WORD.findall(sentence)
+    if len(words) < 3 or words[0].lower() not in FRAGMENT_OPENERS:
+        return False
+    return not any(word.lower() in FINITE_VERBS for word in words)
+
+
+def fragments_in(path: Path) -> list[Finding]:
+    """Advisory findings for one file.  Python only, since it works on whole blocks.
+
+    A comment RUN is joined into one block before splitting into sentences, unlike
+    python_prose, which yields a line at a time.  A line at a time is right for every
+    other rule here and useless for this one: half a sentence has no verb in it, so
+    every wrapped comment would report as a fragment.
+
+    The first sentence of a block is skipped.  A docstring summary and a config
+    option's label are both noun phrases by convention in this project, so flagging
+    them would report the house style as an error.
+    """
+    if path.suffix != '.py':
+        return []
+    source = path.read_text(encoding='utf-8')
+    found = []
+    for line, text in _joined_blocks(source):
+        for position, sentence in enumerate(sentences(text)):
+            if position and looks_like_a_fragment(sentence):
+                found.append(Finding(path.as_posix(), line,
+                                     'reads as a sentence fragment (advisory)',
+                                     sentence[:70], sentence, False))
+    return found
+
+
+def _joined_blocks(source: str) -> list[tuple[int, str]]:
+    """(line, text) for each run of comment lines and each docstring."""
+    blocks: list[tuple[int, str]] = []
+    run: list[str] = []
+    start = 0
+    for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        if token.type == tokenize.COMMENT:
+            body = token.string.lstrip('#').strip()
+            if body and not body.startswith(DIRECTIVES):
+                start = start or token.start[0]
+                run.append(body)
+                continue
+        if token.type in (tokenize.NL, tokenize.COMMENT):
+            continue
+        if run:
+            blocks.append((start, ' '.join(run)))
+            run, start = [], 0
+    # No flush is needed after the loop.  tokenize always ends with an ENDMARKER,
+    # which is neither NL nor COMMENT, so the branch above closes the last run even
+    # in a file that is nothing but comments.
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)):
+            doc = ast.get_docstring(node, clean=True)
+            if doc:
+                blocks.append((node.body[0].lineno, doc))
+    return blocks
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
     parser.add_argument('paths', nargs='*', help='files to check')
@@ -489,7 +620,21 @@ def main(argv: list[str] | None = None) -> int:
                         help='check only the lines the diff against --base added')
     parser.add_argument('--base', default='HEAD',
                         help='what --changed compares against (default: HEAD)')
+    parser.add_argument('--fragments', action='store_true',
+                        help='also look for sentence fragments (advisory, noisy)')
     args = parser.parse_args(argv)
+
+    # Checking nothing must not read as finding nothing.  Without this, a bare
+    # invocation printed "clean: 0 file(s)" and exited 0, which is the same hole
+    # the --base failure below was fixed for, and what CLAUDE.md's "a gate that
+    # cannot run must not report a pass" is about.
+    if not args.paths and not args.changed:
+        print('This run has nothing to check, because no paths were named and '
+              '--changed was not passed.  Name the files to check, or pass '
+              '--changed to take them from the diff.  Checking nothing is not the '
+              'same as finding nothing, so this exits 2 rather than reporting '
+              'clean.', file=sys.stderr)
+        return 2
 
     added: dict[str, set[int]] = {}
     paths = [Path(p) for p in args.paths]
@@ -502,12 +647,16 @@ def main(argv: list[str] | None = None) -> int:
         if not paths:
             paths = [Path(p) for p in added]
 
-    findings = []
+    findings, missing = [], []
     for path in paths:
         if not path.exists():
+            missing.append(path)
             print(f'{path}: no such file', file=sys.stderr)
             continue
-        for finding in lint_file(path):
+        checks = lint_file(path)
+        if args.fragments:
+            checks += fragments_in(path)
+        for finding in checks:
             if added and not finding.touches(added.get(finding.path, set())):
                 continue
             findings.append(finding)
@@ -516,6 +665,14 @@ def main(argv: list[str] | None = None) -> int:
         print(finding.render())
     if findings:
         print(f'\n{len(findings)} finding(s). See docs/ste-writing.md.')
+    # A named path that is not there means the run covered less than it was asked
+    # to, so it cannot report clean and must not be mistaken for a pass.
+    if missing:
+        print(f'{len(missing)} named path(s) did not exist, so this run checked '
+              'less than it was asked to.  Fix the paths and run it again.',
+              file=sys.stderr)
+        return 2
+    if findings:
         return 1
     print(f'clean: {len(paths)} file(s)')
     return 0

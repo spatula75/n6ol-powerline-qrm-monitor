@@ -15,8 +15,8 @@ from pathlib import Path
 import pytest
 
 from tools.ste_lint import (
-    Finding, changed_lines, check, json_prose, lint_file, main, markdown_prose,
-    python_prose, sentences,
+    Finding, changed_lines, check, fragments_in, json_prose, lint_file,
+    looks_like_a_fragment, main, markdown_prose, python_prose, sentences,
 )
 
 TOOL = Path(__file__).resolve().parents[1] / 'tools' / 'ste_lint.py'
@@ -141,8 +141,8 @@ class TestBannedWords:
         ban them, so the rule book tripped on its own examples: 20 findings on the one
         file a contributor may not edit blind."""
         text = '*synchronised* and *quantisation*, and *utilize* rather than *use*'
-        assert not rules(check('docs/ste-writing.md', 1, text, False))
-        assert rules(check('docs/other.md', 1, text, False)) == {'British spelling', 'wordy'}
+        assert not rules(check('docs/ste-writing.md', 1, text, True))
+        assert rules(check('docs/other.md', 1, text, True)) == {'British spelling', 'wordy'}
 
     def test_a_rule_book_is_still_checked_for_punctuation(self):
         """The exemption covers vocabulary only.  A rule book is no freer to carry
@@ -150,8 +150,55 @@ class TestBannedWords:
         assert 'em dash' in rules(check('CLAUDE.md', 1, 'a — b', False))
 
     def test_wordy_choices_name_the_replacement(self):
-        found = [f for f in check('a.py', 1, 'utilize the buffer', False) if f.rule == 'wordy']
+        found = [f for f in check('a.py', 1, 'utilize the buffer', True) if f.rule == 'wordy']
         assert found and '"use"' in found[0].detail
+
+
+class TestTheWordyListIsStrictOnly:
+    """ste-writing.md gives flavored prose the sentence and active-voice rules and
+    withholds "the length caps or the vocabulary restrictions".  The wordy list is a
+    vocabulary restriction, so it belongs to strict text alone.  The tool checked it
+    everywhere for its whole life, which put it in the position of enforcing a rule
+    its own specification exempts.
+    """
+
+    def test_an_error_message_is_held_to_the_short_word(self):
+        assert 'wordy' in rules(check('a.py', 1, 'Utilize the buffer.', True))
+
+    def test_a_docstring_is_not(self):
+        assert 'wordy' not in rules(check('a.py', 1, 'Utilize the buffer.', False))
+
+    def test_the_other_word_rules_still_apply_to_flavored_prose(self):
+        """Only the substitution list moved.  Banned words, marketing adjectives and
+        British spellings are house rules rather than STE vocabulary, and they hold
+        everywhere.
+        """
+        assert 'banned word' in rules(check('a.py', 1, 'a genuine problem', False))
+        assert 'marketing adjective' in rules(check('a.py', 1, 'a seamless fix', False))
+        assert 'British spelling' in rules(check('a.py', 1, 'the centre of it', False))
+
+
+class TestEveryMatchOnALineIsReported:
+    """One finding per line meant fixing a fault and meeting the next one on the run
+    after, so a clean result following an edit only proved the first match had gone.
+    Found when "prior to" and "ensure" sat on the same line of a tutorial.
+    """
+
+    def test_two_different_banned_words_give_two_findings(self):
+        found = [f for f in check('a.py', 1, 'a genuine load-bearing thing', False)
+                 if f.rule == 'banned word']
+        assert {f.detail for f in found} == {'"genuine"', '"load-bearing"'}
+
+    def test_the_same_word_twice_gives_one_finding(self):
+        """They get fixed together, so reporting each occurrence is noise."""
+        found = [f for f in check('a.py', 1, 'a genuine, genuine thing', False)
+                 if f.rule == 'banned word']
+        assert len(found) == 1
+
+    def test_two_wordy_choices_on_one_line_are_both_named(self):
+        found = [f for f in check('a.py', 1, 'Utilize it prior to the scan.', True)
+                 if f.rule == 'wordy']
+        assert {f.detail for f in found} == {'"Utilize" -> "use"', '"prior to" -> "before"'}
 
 
 class TestDashes:
@@ -421,9 +468,24 @@ class TestMain:
         assert main([str(path)]) == 1
         assert 'one space after a period' in capsys.readouterr().out
 
-    def test_a_missing_file_is_named_rather_than_crashing(self, tmp_path, capsys):
-        assert main([str(tmp_path / 'gone.py')]) == 0
-        assert 'no such file' in capsys.readouterr().err
+    def test_a_missing_file_is_named_and_does_not_report_clean(self, tmp_path, capsys):
+        """A typo in a path used to print "no such file" and then exit 0, so a
+        mandatory gate could be skipped by misspelling its argument.  It has the same
+        shape as the --base failure below, and the same exit code.
+        """
+        assert main([str(tmp_path / 'gone.py')]) == 2
+        out = capsys.readouterr()
+        assert 'no such file' in out.err
+        assert 'clean' not in out.out
+
+    def test_checking_nothing_is_not_reporting_nothing(self, capsys):
+        """No paths and no --changed used to print "clean: 0 file(s)" and exit 0.
+        Whoever ran it to check the repo got a green light having checked no files.
+        """
+        assert main([]) == 2
+        out = capsys.readouterr()
+        assert 'clean' not in out.out
+        assert '--changed' in out.err
 
     def test_changed_restricts_to_added_lines(self, tmp_path, monkeypatch, capsys):
         """The whole point of --changed: an old fault on an untouched line is not
@@ -459,3 +521,80 @@ class TestMain:
         result = subprocess.run([sys.executable, str(TOOL), str(TOOL)],
                                 capture_output=True, text=True, encoding='utf-8')
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+class TestFragmentsAreAdvisoryOnly:
+    """The fragment check exists because ste-writing.md lists fragments as one of the
+    three rules this tool cannot check, and a reading job is easy to skip.  It is off
+    by default because it cannot be made reliable: detecting a clause with no finite
+    verb means knowing which words are verbs, and that list has no end.
+    """
+
+    def test_it_is_silent_unless_asked_for(self, tmp_path):
+        """A noisy check in the mandatory path teaches people to ignore the tool, so
+        the default run must not change when this is added.
+        """
+        source = tmp_path / 'thing.py'
+        source.write_text('"""Summary line.\n\nDeliberately not fatal.\n"""\n')
+        assert main([str(source)]) == 0
+        assert main([str(source), '--fragments']) == 1
+
+    def test_a_clause_with_no_verb_is_reported(self):
+        assert looks_like_a_fragment('Deliberately almost empty')
+        assert looks_like_a_fragment('Not merely tidiness')
+        assert looks_like_a_fragment('Worth counting rather than clamping')
+
+    def test_a_sentence_with_a_verb_is_not(self):
+        """Every one of these opens like a fragment and then turns out to have a main
+        verb.  Reporting them would be the tool inventing a fault, which its own test
+        file opens by warning against.
+        """
+        assert not looks_like_a_fragment('Measured both ways, the string draws the same')
+        assert not looks_like_a_fragment('Not every block is the same length')
+        assert not looks_like_a_fragment('Worth noting that the pool holds 960 ms')
+
+    def test_an_ordinary_sentence_is_never_examined(self):
+        """The opener test is what keeps this narrow.  Without it the verb list alone
+        flagged 210 sentences across this repo, nearly all of them correct.
+        """
+        assert not looks_like_a_fragment('The pool absorbs bursts')
+
+    def test_something_too_short_to_judge_is_left_alone(self):
+        assert not looks_like_a_fragment('Not fatal')
+
+    def test_a_comment_run_is_joined_before_it_is_split(self, tmp_path):
+        """python_prose yields one item per comment LINE, which is right for spacing
+        and useless here: half a sentence has no verb in it, so every wrapped comment
+        would report as a fragment.  This check joins the run first.
+        """
+        source = tmp_path / 'wrapped.py'
+        source.write_text(
+            '# A label for the value.\n'
+            '# The pool absorbs bursts and never\n'
+            '# drains while the consumer keeps up.\n'
+            'VALUE = 1\n')
+        assert fragments_in(source) == []
+
+    def test_the_first_sentence_of_a_block_is_left_alone(self, tmp_path):
+        """A docstring summary and a config option's label are both noun phrases by
+        convention here, so flagging them would report the house style as an error.
+        """
+        source = tmp_path / 'labels.py'
+        source.write_text('"""Number of taps in the filter."""\n')
+        assert fragments_in(source) == []
+
+    def test_only_python_is_examined(self, tmp_path):
+        """Markdown prose is not extracted in blocks the same way, so this would
+        report on text it had chopped up rather than on sentences.
+        """
+        page = tmp_path / 'page.md'
+        page.write_text('Deliberately not fatal.\n')
+        assert fragments_in(page) == []
+
+    def test_a_finding_names_the_file_and_says_it_is_advisory(self, tmp_path):
+        source = tmp_path / 'thing.py'
+        source.write_text('"""Summary.\n\nDeliberately not fatal.\n"""\n')
+        found = fragments_in(source)
+        assert len(found) == 1
+        assert 'advisory' in found[0].rule
+        assert found[0].path.endswith('thing.py')

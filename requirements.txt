@@ -20,3 +20,4 @@ jsonschema~=4.26.0
 # system dependency, unlike curses, which needs windows-curses on Windows.
 textual~=8.2.8
 
+pyrtlsdr[lib]

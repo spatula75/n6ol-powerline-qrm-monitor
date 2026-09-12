@@ -7,10 +7,13 @@ flowchart TB
     subgraph SOURCE["Audio source - one active at a time"]
         direction LR
         MIC["Sound card input<br/>(the radio)"]
+        SDR["RTL-SDR receiver<br/>(raw IQ)"]
         WAVFILE["Recorded .wav file<br/>(--playback)"]
     end
 
     MIC --> RB[("Ring Buffer<br/>9.6 s of audio")]
+    SDR --> IQ["IQ to audio<br/>mix, filter, decimate,<br/>take the real part"]
+    IQ --> RB
     WAVFILE --> RB
 
     RB -->|raw audio, on redraw| SCOPE["Oscilloscope<br/>phase-synced sweep"]
@@ -43,11 +46,30 @@ flowchart TB
 
 ## Operation fundamentals
 
-### Audio Capture
+### Source
+Audio can come from one of three places: a sound card, a librtlsdr-compatible USB receiver, or a wav file.
 
-In the case of sound card operation, the Python `sounddevice` module activates a callback whenever a block of audio sample data is available.  This data is then migrated into the audio ring buffer.  In the case of a .wav file source (i.e., with the `--playback` command line option), the wav file is read and its samples are chunked and fed into the ring buffer at a clocked rate.
+In all cases the API contract for getting sound data into the analysis phase (see below) is to make it
+available via a subclass of `RingBufferPipeline` and to use a `threading.Condition` to notify any interested
+parties downstream that audio is available for consumption.
 
-Whenever data has been added to the ring buffer, a `threading.Condition` notifies other interested parties that audio is available for consumption.
+The Analysis portion of the pipeline need not know where the audio data originated.  It is deliberately kept
+agnostic of the source.
+
+### Sound Card Audio Capture
+
+In the case of sound card operation, the Python `sounddevice` module activates a callback whenever a block of
+audio sample data is available.  This data is then migrated into the audio ring buffer.
+
+### SDR Audio Capture
+
+When operating with an SDR receiver, the Python `sdr` and `iq` modules are responsible for configuring the
+librtlsdr-compatible USB receiver for reception, retrieving complex samples from the receiver, converting
+them into time-domain audio samples, and then making those samples available in the audio ring buffer.
+
+### WAV file source
+In the case of a .wav file source (i.e., with the `--playback` command line option), the wav file is read
+and its samples are chunked and fed into the ring buffer at a clocked rate.
 
 ### Analysis
 
