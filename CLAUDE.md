@@ -34,6 +34,10 @@ testability is usually not worth it - say so rather than building it.
   what an experiment ruled out, how the hardware actually behaves. Committed, unlike
   `tmp/`, and unpublished, unlike `docs/`. See its own `README.md`, and the rules
   under "Before every commit" for what it is and is not exempt from.
+  `docs-notebook/todo.md` is the one forward-looking file there: work understood well
+  enough to describe and not yet done, each entry saying what stops it now. Add to it
+  whenever a piece of work leaves something named and undone, rather than letting the
+  fact live only in a reply the user has scrolled past.
 - `tmp/` - gitignored scratch space. Notes and bug reports live here, uncommitted.
 
 ## Environment
@@ -663,6 +667,23 @@ Practical consequences:
 - **Optional features are config sections with `enabled = false`,** and a matching
   command-line switch where it makes sense. Config is nested TOML by section
   (station, audio, weather, upload, record, …).
+- **A setting with a known set of acceptable values gets a picker, not a text box.**
+  If the program is going to reject what somebody types, or quietly change it to
+  something else, then typing was the wrong interaction: offer the values instead and
+  let them choose. A field that silently snaps 41.0 to 40.2 teaches an operator that
+  the number they entered is the number in use, which is the one thing it is not.
+
+  `[rtlsdr] gain_db` is the open case. The tuner accepts 29 fixed steps and anything
+  else is snapped to the nearest, and the setup program still presents a free-typed
+  number. It is not merely an oversight: the list lives on the hardware rather than
+  in the schema, so offering it means opening the receiver from a Textual worker,
+  which is the `pilot.pause()` race `tools/slow_workers.py` exists for. That is a
+  reason to do it carefully, not a reason to leave a text box that lies.
+
+  Where the values are known ahead of time, the schema's `enum` already does this and
+  `audio.source` and `[weather] source` both use it. Where they come from hardware,
+  the picker has to query it, and `RtlSdrSource.supported_gains_db` is what it would
+  ask.
 - **CSV is an append-only contract.** New columns go where they won't disturb parsing of
   existing rows, and readers must tolerate their absence in older files.
 - **A config key that moves between sections silently loses whatever an operator set.**
@@ -1062,6 +1083,22 @@ load-bearing line" is the line that matters; "the value lands at 128" is the val
   fragment into the sentence before it. An impersonal construction like "there
   are" is fine here even though it reads as passive-adjacent - stating a fact
   plainly beats forcing an agent onto a sentence that does not need one.
+- **Every sentence names what is doing the thing.** A sentence opening with a
+  participle and never saying who acted is the commonest way this breaks: "Snapped
+  to the nearest step the tuner offers" leaves nothing doing the snapping. It shipped
+  in `schema.json` as the description of `[rtlsdr] gain_db`, where an operator reads
+  it, and three more like it sat beside it. Write "the monitor snaps this to the
+  nearest step" instead.
+
+  This is not the fragment rule above wearing a different hat. A fragment has no
+  finite verb anywhere; these have two, both in subordinate clauses, which is exactly
+  why `--fragments` reported them clean. The defect is a main clause with no subject,
+  and it hides best in a sentence that is otherwise grammatical.
+
+  `ste_lint --fragments` now reports it, over Python and `schema.json`. Both checks
+  are advisory and both stay that way, because telling a participle from an
+  imperative needs a dictionary the tool does not have: "Set 0 to record every event"
+  is correct and looks identical until you notice the number.
 - **Two spaces after a period.** House style, not an STE rule - keep it in both
   strict and flavored text. The extra space is what makes prose easy to scan at
   a glance, sentence by sentence.

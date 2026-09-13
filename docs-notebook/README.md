@@ -25,6 +25,12 @@ though a person had.
 - Hardware behavior found by testing rather than from a datasheet.
 - Design decisions and the options that were rejected.
 
+`todo.md` is the exception to all of that, and the only forward-looking file here.
+It holds work understood well enough to describe and not yet done, each entry saying
+what stops it now.  It sits here because the reason something is undone is usually the
+same kind of fact as the rest of this folder: a measurement that was not taken, an
+answer nobody has yet.  Anybody may add to it, so its attribution line says so.
+
 ## What does not
 
 Anything an operator reads.  Tutorials, how-to guides and reference pages live in

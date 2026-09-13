@@ -583,6 +583,61 @@ differed agreed drew opened stayed dropped counted measured showed lasted
 
 _WORD = re.compile(r"[A-Za-z][A-Za-z'-]*")
 
+# Tokens for the subjectless-opener test below, which needs to see numbers.  "Set 0
+# to record every event" opens with an imperative, and dropping the 0 would leave
+# "Set to", which reads exactly like the participle this is hunting.
+_TOKEN = re.compile(r"[A-Za-z][A-Za-z'-]*|\d+")
+
+# What a subjectless sentence opens with: a past participle, then a preposition.
+#
+# "Snapped to the nearest step the tuner offers" has no noun doing the snapping.  The
+# fragment test above cannot see it, because it asks whether the sentence contains a
+# finite verb anywhere and this one contains two, both in subordinate clauses.  A
+# main clause with no subject is a different defect from a clause with no verb.
+#
+# The two-word shape is what keeps it quiet.  A participle alone flags every
+# imperative, since "set", "read" and "put" are both; requiring a preposition next
+# separates "Snapped to the nearest step" from "Set 0 to record every event".
+# Measured over schema.json it found four real cases and no false ones.
+_PARTICIPLE_IRREGULARS = frozenset("""
+built written chosen taken given made kept held left sent drawn shown known seen
+done found
+""".split())
+
+_AFTER_A_PARTICIPLE = frozenset("""
+to on in by from at for with into onto against over under after before through
+across rather as than about
+""".split())
+
+
+def looks_subjectless(sentence: str) -> bool:
+    """Whether this sentence opens with a participle and never says what did it.
+
+    Advisory, like the fragment test, and for the same reason: deciding whether a
+    word is a participle or an imperative needs a dictionary this does not have.
+    """
+    # The notebook attribution line is subjectless on purpose, and _check_attribution
+    # above requires it in exactly this form.  One rule in this file demanding a
+    # sentence another reports as a fault would make the tool argue with itself, the
+    # same reason a rule book is exempt from the vocabulary rules it quotes.
+    if sentence.lstrip().startswith(NOTEBOOK_ATTRIBUTION):
+        return False
+    # A label is not a sentence.  "Calibrated at gain (dB)" is a field title, a noun
+    # phrase by house convention, and the giveaway is that it carries no terminal
+    # punctuation where every real description ends in a period.  Without this the
+    # check reports the house style as an error, which is how a tool teaches people
+    # to ignore it.
+    if not sentence.rstrip().endswith(('.', '!', '?')):
+        return False
+    tokens = _TOKEN.findall(sentence)
+    if len(tokens) < 3:
+        return False
+    first, second = tokens[0], tokens[1].lower()
+    participle = (first[:1].isupper()
+                  and (first.lower().endswith('ed')
+                       or first.lower() in _PARTICIPLE_IRREGULARS))
+    return participle and second in _AFTER_A_PARTICIPLE
+
 
 def looks_like_a_fragment(sentence: str) -> bool:
     """Whether this reads as a clause with no finite verb.
@@ -600,26 +655,49 @@ def looks_like_a_fragment(sentence: str) -> bool:
 
 
 def fragments_in(path: Path) -> list[Finding]:
-    """Advisory findings for one file.  Python only, since it works on whole blocks.
+    """Advisory findings for one file: fragments, and openers with no subject.
 
-    A comment RUN is joined into one block before splitting into sentences, unlike
-    python_prose, which yields a line at a time.  A line at a time is right for every
-    other rule here and useless for this one: half a sentence has no verb in it, so
-    every wrapped comment would report as a fragment.
+    For Python, a comment RUN is joined into one block before splitting into
+    sentences, unlike python_prose, which yields a line at a time.  A line at a time
+    is right for every other rule here and useless for this one: half a sentence has
+    no verb in it, so every wrapped comment would report as a fragment.
 
-    The first sentence of a block is skipped.  A docstring summary and a config
-    option's label are both noun phrases by convention in this project, so flagging
-    them would report the house style as an error.
+    The first sentence of a Python block is skipped.  A docstring summary and a
+    config option's label are both noun phrases by convention in this project, so
+    flagging them would report the house style as an error.
+
+    schema.json goes through its own extractor.  It was excluded entirely until a
+    subjectless description reached the setup screen and the sample config, which is
+    prose an operator reads and this tool never looked at.  A JSON string is one
+    whole sentence run already, so it needs no joining, and none of it is a summary
+    line, so none of it is skipped.
+
+    Markdown is left alone, and that is a gap rather than a decision.  markdown_prose
+    yields a line at a time, so a wrapped paragraph arrives as halves of sentences and
+    every one of them reads as a fragment: three such false alarms came straight out
+    of docs-notebook/ the first time this was pointed at them.  Joining a Markdown
+    paragraph the way _joined_blocks joins a comment run would close it.
     """
-    if path.suffix != '.py':
+    if path.suffix == '.py':
+        blocks = [(line, text, 1) for line, text in _joined_blocks(path.read_text(encoding='utf-8'))]
+    elif path.suffix == '.json':
+        blocks = [(line, text, 0)
+                  for line, _end, text, _strict in json_prose(path.read_text(encoding='utf-8'))]
+    else:
         return []
-    source = path.read_text(encoding='utf-8')
     found = []
-    for line, text in _joined_blocks(source):
+    for line, text, skip in blocks:
         for position, sentence in enumerate(sentences(text)):
-            if position and looks_like_a_fragment(sentence):
+            if position < skip:
+                continue
+            if looks_like_a_fragment(sentence):
                 found.append(Finding(path.as_posix(), line,
                                      'reads as a sentence fragment (advisory)',
+                                     sentence[:70], sentence, False))
+            elif looks_subjectless(sentence):
+                found.append(Finding(path.as_posix(), line,
+                                     'opens with a participle and names no subject '
+                                     '(advisory)',
                                      sentence[:70], sentence, False))
     return found
 

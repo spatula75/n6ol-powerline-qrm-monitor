@@ -97,8 +97,57 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   an attribution line. A reader judging a measurement needs to know what produced it,
   and the rule was broken within minutes of being written, in the README that states
   it.
+- `lib/buzz/gain_sweep.py`, which chooses the receiver's tuner gain by measuring the
+  band rather than asking anyone to guess. The receiver section's "Auto-calibrate
+  gain..." row runs it, and takes the answer as the gain, the level offset, and the
+  calibration mark together.
+
+  Neither measurement it makes depends on a signal being present, because nobody can
+  promise an arc is running when the tool is opened. The level between bursts comes
+  from a low percentile of per-frame RMS, and the antenna's share of the noise floor
+  from the shape of the whole sweep. It walks every gain five times, alternating
+  direction, and takes the median floor and the worst peak, because an arc that comes
+  and goes makes a single pass measure every step in a different world.
+
+  It reports rather than guesses when the two bounds leave nothing: an antenna too
+  quiet to beat the receiver at any gain, a band loud enough to clip at every gain,
+  and the two crossing each get their own wording. A quiet station is told what its
+  antenna is doing instead of handed a number.
+- The setup program's level meters open the source the config actually names. An
+  RTL-SDR station reaching either meter used to open whatever sound card was named in
+  `[audio]`, meter that, and let an offset be calibrated against a device the monitor
+  was never going to use.
+- `[rtlsdr] gain_db` is chosen from a list of the steps the tuner reports rather than
+  typed. A tuner accepts a fixed set and snaps anything else to the nearest, so a
+  typed 41.0 became 40.2 with nothing said. Choosing a gain also moves the level
+  calibration with it, by the difference, so the reported dBm does not change and the
+  calibration stays describing the gain in use.
+- The level meter's offset moves by 0.1 dB on Up and Down and 1 dB on PageUp and
+  PageDown. Half a decibel could not reach the figure that matches a gain of 40.2,
+  which is the case anybody calibrating a receiver is in.
+- `BuzzConfig.level_offset_db` resolves the one level offset that applies, from the
+  playback override, then `[rtlsdr]`, then `[station]`. Everything that converts a
+  level reads it.
+- `_load_section` names any config key it does not recognize instead of dropping it in
+  silence. It is still ignored rather than fatal, so a file from another build starts,
+  but a misspelled setting no longer reverts to its default without a word.
+- Startup warns when the tuner gain has moved since the level calibration was
+  measured. `[rtlsdr] calibrated_at_gain_db` recorded that gain and nothing read it,
+  while the documentation said startup compared the two.
 
 ### Changed
+- `[rtlsdr]` frequencies are given in kHz: `frequency_khz`, `bandwidth_khz` and
+  `tuning_offset_khz` replace the Hz-denominated keys. Nobody wants to type three
+  zeroes on the end of every frequency.
+- `[rtlsdr] audio_rf_conversion_db` is now `calibrated_offset_db`. It was never the
+  same setting as `[station] audio_rf_conversion_db`, only the same name, and sharing
+  one read as a single setting stored in two places.
+- `[rtlsdr] gain_db` ships as 32.8 rather than 40.2, which is what the automatic
+  calibration chooses on the antenna this was developed against. It gives up some
+  noise-floor accuracy for headroom, which is the right way round: a clipped arc
+  cannot be recovered.
+- The receiver section sits directly below the audio section in the setup program and
+  second in `config.example.toml`, next to the source that selects it.
 - `tools/ste_lint.py` applies the wordy-word substitutions to strict text only, as
   `docs/ste-writing.md` has always specified. Flavored prose gets the sentence,
   active-voice and plain-verb rules; the vocabulary restrictions were never meant to
@@ -140,6 +189,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The analyzer's DC estimate weight is derived from the tick cadence and the time
   constant rather than written as 0.02, which was the answer for one cadence. The
   value is unchanged.
+- The setup program froze the whole interface on the way out of the level meter and
+  the gain sweep. Closing a receiver joins two threads with five second timeouts, and
+  that ran on the event loop. Both close on a worker thread now.
+- The gain sweep measured the receiver's DC offset along with the band. The monitor
+  tunes away from that spike and filters it out, so the sweep was sizing the gain
+  against something nothing downstream hears: an offset of 0.04 read 7.07 dB high, and
+  worst at low gain. The quiet level now removes it and the peak still counts it,
+  since clipping happens at the converter before any filtering.
+- `[station] audio_rf_conversion_db` is no longer written to an RTL-SDR station's
+  config file, and no longer overwritten at startup. It described a sound card, and a
+  receiver's file carried it looking live while the monitor ignored it.
+- Four descriptions in the setup program named no subject: "Snapped to the nearest
+  step the tuner offers" left nothing doing the snapping. `ste_lint --fragments`
+  reports the construct now, over Python and `schema.json`.
+- A finished gain sweep offered no way to decline the figure it measured except
+  Escape. It has a Cancel button beside "Use this gain" now, and the arrow keys move
+  between the two, which they did not.
+- `GainSweep` rounds an even number of passes up to an odd one. The floor is combined
+  with a median, and numpy's median of an even count averages the two middle values
+  instead of picking one, which gives up the outlier rejection the passes exist for.
+  Measured against a simulated arc: three, five and seven passes each recovered the
+  arc-free answer 25 times out of 25, and two passes recovered it in none of them.
 - `tools/ste_lint.py` exits 2 instead of reporting `clean` when it has checked nothing.
   A bare invocation with no paths and no `--changed`, or any named path that does not
   exist, used to print a clean line and exit 0. A mandatory gate could be skipped by
