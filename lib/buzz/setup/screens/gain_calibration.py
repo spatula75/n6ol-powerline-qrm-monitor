@@ -87,6 +87,10 @@ def _sweep_then_release(source: 'RtlSdrSource', sweep: GainSweep,
         # Assigned here and returned below rather than built into the return above,
         # because a return expression is evaluated before the finally runs, so the
         # tuple would have carried the value released had before the close.
+        # RtlSdrSource.close bounds itself, including the rtlsdr_close that can
+        # block inside libusb and never return.  See its own docstring; the bound
+        # lives there because every other path that closes a receiver needs it too,
+        # the atexit hook among them.
         released = source.close()
         if not released:
             logger.warning(

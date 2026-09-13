@@ -129,6 +129,15 @@ _THREAD_JOIN_TIMEOUT_SECONDS = 5.0
 # chosen short against the join above rather than against the block rate.
 _FEED_READ_TIMEOUT_SECONDS = 0.5
 
+# How long to wait for rtlsdr_close before giving up on the driver.
+#
+# Short, because nothing useful happens after it.  A close that has not returned by
+# now is inside libusb and is not coming back, and the operating system releases the
+# handle when the process ends regardless.  See
+# RtlSdrSource._shut_the_device_without_waiting_for_ever.
+_DEVICE_CLOSE_TIMEOUT_SECONDS = 3.0
+
+
 # How often the pipeline looks at its own health counters, in seconds.
 #
 # A minute matches the collector's own cadence, so a warning reaches the log beside
@@ -209,6 +218,49 @@ def open_device(index: int = 0) -> RtlSdrDevice:
         return RtlSdr(index)
     except Exception as exc:
         raise RuntimeError(_why_the_receiver_would_not_open(index, exc)) from exc
+
+
+def close_device(device: RtlSdrDevice) -> bool:
+    """Release a receiver, and stop waiting if the driver never comes back.
+
+    Paired with open_device, and for the same kind of reason: librtlsdr needs a
+    wrapper here that the rest of the program should not have to know about.
+
+    rtlsdr_close blocks inside libusb when transfers were never fully cancelled, and
+    does not return at all.  Whoever called it blocks too, and that reached everything
+    that touches a receiver.  A gain sweep reached its last step and stopped there,
+    showing the final step with no result and no error while the event loop stayed
+    perfectly responsive, because the block was in a worker thread.  The level meter
+    did it leaving its screen.  The gain picker did it after reading one list.  And
+    leaving the program took five minutes, because asyncio waits
+    THREAD_JOIN_TIMEOUT seconds for its default executor before giving up.
+
+    A daemon thread costs nothing at exit, since Python does not join one.  The device
+    stays held until the process ends, which is what happened anyway.  What changes is
+    that the program keeps working, and says the receiver is still held rather than
+    leaving somebody to meet LIBUSB_ERROR_ACCESS on the next run and read it as a
+    permissions problem.
+
+    Returns whether the device actually closed.
+    """
+    finished = threading.Event()
+
+    def shut() -> None:
+        try:
+            device.close()
+        except Exception:
+            logger.debug('Closing the receiver failed.', exc_info=True)
+        finally:
+            finished.set()
+
+    threading.Thread(target=shut, daemon=True, name='rtlsdr-close').start()
+    if finished.wait(_DEVICE_CLOSE_TIMEOUT_SECONDS):
+        return True
+    logger.warning(
+        'The receiver did not close within %.0f seconds and was left to the operating '
+        'system.  The driver can block inside libusb and never return, so waiting '
+        'longer would only hang this program.', _DEVICE_CLOSE_TIMEOUT_SECONDS)
+    return False
 
 
 def _why_the_receiver_would_not_open(index: int, exc: Exception) -> str:
@@ -417,6 +469,29 @@ class RtlSdrSource:
         Blocks already in the transfer pool still carry the old gain.  A caller
         measuring the result has to drop blocks_to_discard_after_gain_change of them
         first, which is why that number is public.
+
+        This writes the tuner from the calling thread, which is not free of risk and
+        is the least bad of the options measured so far.
+
+        Setting a gain is a pair of synchronous USB control transfers, and while
+        capture runs the capture thread is inside rtlsdr_read_async driving libusb's
+        event loop on the same device.  Two threads touching one device is a race, and
+        twice in a few dozen sweeps it ended with a transfer that never completed and
+        an rtlsdr_close that never returned.  close_device bounds that rather than
+        preventing it.
+
+        Moving the write into the callback was tried and is worse.  libusb's
+        synchronous API completes a transfer by pumping the event loop itself, so
+        calling it from inside a callback that libusb_handle_events is already running
+        re-enters event handling, which libusb does not allow.  On real hardware the
+        write simply failed, the gain never moved, and a sweep of a flat curve reached
+        no answer at all.  In a stand-in with no USB underneath it, the same code
+        passed every test.
+
+        The remaining option is to stop the async read around each change and restart
+        it, which removes the concurrency outright at the cost of a cancel and a pool
+        refill at every one of 145 steps.  cancel_read_async is itself implicated in
+        the hang, so that trade has not been taken without measuring it.
         """
         self._gain_db = self._nearest_supported_gain(gain_db, self.supported_gains_db)
         self._device.gain = self._gain_db
@@ -489,6 +564,29 @@ class RtlSdrSource:
         except queue.Empty:
             return None
 
+    def drain(self) -> int:
+        """Throw away every block already queued, and say how many that was.
+
+        There are two buffers between the tuner and a caller, and counting only one
+        of them is not enough.  blocks_to_discard_after_gain_change covers librtlsdr's
+        transfer pool, which is the buffering nobody here can see.  This queue is the
+        other one, and anything sitting in it when the gain changes was captured
+        before the change.
+
+        Without this, the counted discard spends itself on stale queue entries first
+        and lets that many true post-change callbacks through in their place, so
+        up to buffer_blocks blocks of the previous gain reach the measurement.  It is
+        worst at the first step of a sweep, where the queue has been filling since
+        start() with nobody reading.
+        """
+        dropped = 0
+        while True:
+            try:
+                self._blocks.get_nowait()
+            except queue.Empty:
+                return dropped
+            dropped += 1
+
     def close(self) -> bool:
         """Stop capture and release the device.
 
@@ -531,13 +629,8 @@ class RtlSdrSource:
                 'is still reading through.  The operating system releases it when this '
                 'process ends.', _THREAD_JOIN_TIMEOUT_SECONDS)
             return False
-        try:
-            self._device.close()
-        except Exception:
-            logger.debug('Closing the receiver failed during shutdown.', exc_info=True)
-            return False
-        self._released = True
-        return True
+        self._released = close_device(self._device)
+        return self._released
 
     # ----------------------------------------------------------------- private
 

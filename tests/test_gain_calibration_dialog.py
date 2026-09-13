@@ -5,6 +5,7 @@ the screen around it: that the row sits where the procedure needs it, that an an
 reaches the config, and that a sweep with no answer says so rather than writing a
 number picked from a rule that failed.
 """
+import threading
 import time
 from asyncio import run
 from pathlib import Path

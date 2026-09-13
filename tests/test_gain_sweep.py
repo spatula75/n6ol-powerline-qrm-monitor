@@ -68,6 +68,11 @@ class FakeReceiver:
         self.gains_set.append(self._gain)
         return self._gain
 
+    def drain(self) -> int:
+        """Nothing is queued here: every read builds a block on demand."""
+        self.drained = getattr(self, 'drained', 0) + 1
+        return 0
+
     def read(self, timeout: float = 1.0) -> IqBlock:
         self.reads += 1
         n = 2048

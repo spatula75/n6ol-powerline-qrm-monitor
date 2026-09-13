@@ -34,6 +34,37 @@ Of the two factors only the block size is cleanly ours.  `buf_num` is a pyrtlsdr
 attribute rather than a parameter, so changing it means reaching into a library
 constant.
 
+## Changing gain while capture runs
+
+Setting a gain is a pair of synchronous USB control transfers.  While capture runs the
+capture thread is inside `rtlsdr_read_async`, driving libusb's event loop on the same
+device, so a gain change from any other thread is two threads touching one device.
+
+Twice in a few dozen sweeps that ended badly: a transfer never completed, and
+`rtlsdr_close` waited on it and never returned.  Everything that closes a receiver
+then hung with it, including the atexit path, and the next run met
+LIBUSB_ERROR_ACCESS.  The monitor never shows this because it writes the tuner once
+before capture starts; a sweep writes it 145 times during.
+
+**Writing the gain from inside the callback does not work, and looks as though it
+does.**  It seems like the obvious answer, since the callback runs on the capture
+thread between transfer completions.  libusb's synchronous API completes a transfer by
+pumping the event loop itself, so calling it from a callback that
+`libusb_handle_events` is already running re-enters event handling, which libusb does
+not allow.  On hardware the write simply failed, the gain never moved, and the sweep
+measured a flat curve and reached no answer.
+
+The trap is that it passed every test.  A stand-in device has no USB underneath it, so
+the call succeeded there and the whole suite was green.  What now covers it is a sweep
+driven through a real `RtlSdrSource` over a device whose level follows the gain, in
+`TestASweepOverARealSource`: it asserts the measured curve actually rises, which a
+gain that never moves cannot do.
+
+What remains is the cross-thread write, with `close_device` bounding the hang rather
+than preventing it.  The untried option is to cancel the async read around each
+change and restart it, which removes the concurrency at the cost of a cancel and a
+pool refill at every step, and `cancel_read_async` is itself implicated in the hang.
+
 ## Three artifacts that follow the tuner
 
 All three sit at fixed offsets from wherever the device is tuned, rather than at fixed

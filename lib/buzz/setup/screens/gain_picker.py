@@ -45,14 +45,17 @@ def supported_gains(rtlsdr_values: SectionValues) -> list[float]:
     it.  Whatever this raises carries wording open_device wrote for whoever is
     standing at the radio.
     """
-    from buzz.sdr import open_device
+    from buzz.sdr import close_device, open_device
 
     settings = RtlSdrConfig(**(rtlsdr_values or {}))
     device = open_device(settings.device_index)
     try:
         return sorted(float(gain) for gain in device.valid_gains_db)
     finally:
-        device.close()
+        # close_device rather than device.close(), because rtlsdr_close can block
+        # inside libusb and never return, and this runs on a thread asyncio waits
+        # THREAD_JOIN_TIMEOUT seconds for before the program will exit.
+        close_device(device)
 
 
 class GainPickerDialog(ScopeModalScreen[Any]):

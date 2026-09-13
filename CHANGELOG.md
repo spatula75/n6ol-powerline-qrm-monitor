@@ -219,6 +219,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The gain sweep says the reserve leaves "at least" the headroom figure. The chosen
   gain is the lowest one where the antenna dominates, which is usually well below the
   highest the reserve allows, so the real margin is commonly a good deal more.
+- The gain sweep discards both buffers between the tuner and a measurement rather
+  than one. The counted discard covers librtlsdr's transfer pool; the receiver's own
+  queue was not covered, so the count spent itself on stale entries and let that many
+  post-change blocks through in their place. Worst at the first step of a sweep, where
+  the queue has been filling since the device opened.
 - The gain sweep could finish its last step, show nothing, and leave the receiver
   held. The release happened in the worker's `finally` as an awaited call, so the
   event loop decided whether it ran, and anything raised after the sweep died inside

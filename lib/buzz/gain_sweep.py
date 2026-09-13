@@ -59,6 +59,9 @@ class SweepSource(Protocol):
     def blocks_to_discard_after_gain_change(self) -> int:
         ...
 
+    def drain(self) -> int:
+        ...
+
     def set_gain(self, gain_db: float) -> float:
         ...
 
@@ -530,6 +533,11 @@ class GainSweep:
                      readings: dict[float, list[tuple[float, float, int]]]) -> None:
         """Set one gain, wait out the stale blocks, and record what follows."""
         actual = self._source.set_gain(gain_db)
+        # Two buffers stand between the tuner and this loop, and both hold data from
+        # before the change.  drain() empties the source's own queue, which the count
+        # below does not cover, and the count then waits out librtlsdr's transfer
+        # pool.  Draining first is what makes the count mean what it says.
+        self._source.drain()
         for _ in range(self._source.blocks_to_discard_after_gain_change):
             if self._source.read() is None:
                 return
