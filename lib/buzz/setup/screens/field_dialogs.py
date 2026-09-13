@@ -17,8 +17,12 @@ from textual.widgets import Button, Input, OptionList, RadioButton, RadioSet, St
 from textual.widgets.option_list import Option
 
 from buzz.setup.screens.base import CANCELLED, ScopeModalScreen
-from buzz.setup.screens.calibration import OffsetCalibrationDialog
+from buzz.setup.screens.calibration import (
+    OffsetCalibrationDialog,
+    level_offset_for,
+)
 from buzz.setup.screens.device_picker import DevicePickerDialog
+from buzz.setup.screens.gain_picker import UNAVAILABLE, GainPickerDialog
 from buzz.setup.screens.timezone_picker import TimezonePickerDialog
 
 
@@ -29,8 +33,8 @@ def _types(spec: dict[str, Any]) -> list[str]:
 
 
 def _kind(spec: dict[str, Any]) -> str:
-    """Which dialog a field needs: 'boolean', 'calibration', 'device-picker', 'enum', 'number',
-    'text', or 'timezone-picker'.
+    """Which dialog a field needs: 'boolean', 'calibration', 'device-picker',
+    'enum', 'gain-picker', 'number', 'text', or 'timezone-picker'.
 
     An explicit `x-widget` always wins over the type-driven default - see
     schema.py's module docstring for the fields that set one.
@@ -342,11 +346,33 @@ async def open_field_dialog(screen, spec: dict[str, Any], current: Any) -> Any:
         sample_rate = screen.app.values['audio']['sample_rate']
         return await screen.app.push_screen_wait(DevicePickerDialog(spec, current, sample_rate))
     if kind == 'calibration':
-        # Only ever set on station.audio_rf_conversion_db, which needs to know the
-        # in-progress audio section to know which device to open - same reasoning
-        # as device-picker above.
+        # Set on station.audio_rf_conversion_db and on the receiver's own copy of it.
+        # Either needs the in-progress audio section to know which source to open, and
+        # the receiver settings besides, since for an SDR the device is described
+        # there rather than by a sound card name - same reasoning as device-picker.
+        #
+        # The receiver's field defaults to null, meaning "estimate it from the tuner
+        # gain", so both the starting reading and what Space resets to come from
+        # level_offset_for rather than from the schema.  Opening at nothing would
+        # be opening at a TypeError.
+        audio_values = screen.app.values['audio']
+        rtlsdr_values = screen.app.values.get('rtlsdr')
+        estimate = level_offset_for(audio_values, screen.app.values['station'],
+                                    rtlsdr_values)
+        fallback = estimate if spec.get('default') is None else spec['default']
         return await screen.app.push_screen_wait(
-            OffsetCalibrationDialog(spec, current, screen.app.values['audio']))
+            OffsetCalibrationDialog(spec, estimate if current is None else current,
+                                    audio_values, rtlsdr_values, default_db=fallback))
+    if kind == 'gain-picker':
+        # The steps live on the receiver, so this one opens hardware to build its
+        # list.  A receiver that will not answer hands back UNAVAILABLE rather than
+        # CANCELLED, and the plain number box takes over: somebody has to be able to
+        # set a gain before the device is working, and refusing would lock out the
+        # station that most needs to type one.
+        chosen = await screen.app.push_screen_wait(
+            GainPickerDialog(spec, current, screen.app.values.get('rtlsdr')))
+        if chosen is not UNAVAILABLE:
+            return chosen
     if kind == 'timezone-picker':
         return await screen.app.push_screen_wait(TimezonePickerDialog(spec, current))
     return await screen.app.push_screen_wait(TextFieldDialog(spec, current))

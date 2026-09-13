@@ -497,7 +497,7 @@ class SoundCardLevelStream(LevelStream):
     """
 
     def __init__(self, config: BuzzConfig, device_index: int, blocksize: int) -> None:
-        super().__init__(config.station.audio_rf_conversion_db,
+        super().__init__(config.level_offset_db,
                          config.audio.sample_rate, blocksize)
         self._stream = sd.InputStream(
             device=device_index,
