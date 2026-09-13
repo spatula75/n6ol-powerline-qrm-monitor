@@ -1,13 +1,15 @@
 """The submenu for one config section: a row per visible field, each opening an edit dialog."""
 
-from typing import Any
+import dataclasses
+from typing import Any, NamedTuple
 
 from textual import work
 from textual.containers import Vertical
 from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
-from buzz.setup.schema import field_names, field_schema, is_visible
+from buzz.config import RtlSdrConfig
+from buzz.setup.schema import SectionValues, field_schema, menu_field_names
 from buzz.setup.screens.base import CANCELLED, ScopeScreen, scope_header
 from buzz.setup.screens.calibration import CalibrationMeterDialog
 from buzz.setup.screens.field_dialogs import open_field_dialog
@@ -19,6 +21,28 @@ from buzz.setup.screens.field_dialogs import open_field_dialog
 # main_menu.py's _FINISH_ID, for the same reason: a row on_option_list_option_selected
 # needs to recognize as not a real field before it looks one up in the schema.
 _CALIBRATE_ID = '__calibrate__'
+
+
+class _ActionRow(NamedTuple):
+    """A menu row that runs something instead of editing a value.
+
+    `after` names the field the row follows, or is None to put it at the end.  A
+    position is needed because an action can be a step in a procedure rather than an
+    afterthought: calibrating the receiver's gain belongs between choosing a frequency
+    and reading back the gain it chose, not below everything.
+    """
+
+    id: str
+    label: str
+    after: str | None
+
+
+# Keyed by section.  Kept here rather than in the schema because the handler for each
+# row is Python, and a schema entry naming a dialog it cannot open would be a second
+# place to keep in step with this file.
+_ACTIONS: dict[str, tuple[_ActionRow, ...]] = {
+    'audio': (_ActionRow(_CALIBRATE_ID, 'Calibration meter...', None),),
+}
 
 
 def display_value(spec: dict[str, Any], value: Any) -> str:
@@ -33,6 +57,28 @@ def display_value(spec: dict[str, Any], value: Any) -> str:
     if 'enum' not in spec and spec['type'] == 'boolean':
         return 'On' if value else 'Off'
     return str(value)
+
+
+def row_value(section: str, field: str, spec: dict[str, Any],
+              section_values: SectionValues) -> str:
+    """The same thing, except that an unset field which something derives shows what
+    the monitor will actually use.
+
+    `(unset)` is honest and unhelpful for the receiver's level calibration, because
+    the monitor does not run without an offset.  It estimates one from the tuner gain,
+    and an operator deciding whether to go and calibrate wants to see the figure they
+    would be accepting.  The marker says where it came from, so a borrowed number and
+    a measured one never look alike.
+
+    The estimate is read from `RtlSdrConfig.level_offset_db` rather than worked out
+    here.  Writing `-gain_db` a second time would be a second place to keep in step
+    with the first, and nothing would notice them drifting apart.
+    """
+    if section == 'rtlsdr' and field == 'audio_rf_conversion_db'             and section_values.get(field) is None:
+        known = {f.name for f in dataclasses.fields(RtlSdrConfig)}
+        settings = RtlSdrConfig(**{k: v for k, v in section_values.items() if k in known})
+        return f'{settings.level_offset_db:g} (estimated)'
+    return display_value(spec, section_values[field])
 
 
 class SectionMenuScreen(ScopeScreen[None]):
@@ -82,15 +128,21 @@ class SectionMenuScreen(ScopeScreen[None]):
         schema = self.app.schema
         section_values = self.app.values[self.section]
         options: list[Option | None] = []
-        for field in field_names(schema, self.section):
-            if not is_visible(schema, self.section, field, section_values):
-                continue
+        actions = _ACTIONS.get(self.section, ())
+        for field in menu_field_names(schema, self.section, section_values):
             spec = field_schema(schema, self.section, field)
-            label = f"{spec['title']}: {display_value(spec, section_values[field])}"
+            label = f"{spec['title']}: {row_value(self.section, field, spec, section_values)}"
             options.append(Option(label, id=field))
-        if self.section == 'audio':
-            options.append(None)  # a separator, per OptionList.add_option's own convention
-            options.append(Option('Calibration meter...', id=_CALIBRATE_ID))
+            for action in actions:
+                if action.after == field:
+                    options.append(Option(action.label, id=action.id))
+        for action in actions:
+            if action.after is None:
+                # A separator earns its place only at the end, where it marks the
+                # break between the settings and what can be done with them.  One in
+                # the middle of a procedure would cut the procedure in half.
+                options.append(None)  # a separator, per OptionList.add_option's own convention
+                options.append(Option(action.label, id=action.id))
         option_list = self.query_one('#fields', OptionList)
         option_list.clear_options()
         option_list.add_options(options)

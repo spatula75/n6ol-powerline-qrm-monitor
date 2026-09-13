@@ -329,9 +329,10 @@ ffmpeg_path = ""
 # Settings for an RTL-SDR receiver. Used only when the audio source is set
 # to RTL-SDR.
 [rtlsdr]
-# The frequency to measure. Pick a quiet spot in a band where the noise is
-# audible.
-frequency_hz = 7074000
+# The frequency to listen on. The receiver tunes 50 kHz above it and the
+# difference is undone in software, so this is the frequency that gets
+# measured.
+frequency_hz = 3588000
 
 # Snapped to the nearest step the tuner offers, since it accepts only a
 # fixed set.
@@ -340,6 +341,37 @@ frequency_hz = 7074000
 # receiver's own noise. Lower leaves more room for loud events. Higher
 # measures the receiver rather than the band.
 gain_db = 40.2
+
+# Added to the measured audio level to get signal level at the receiver
+# input. Leave it unset until you have calibrated.
+#
+# Unset means the monitor estimates it from the tuner gain. Expect the
+# reading to be a few dB out.
+#
+# To find the figure, read the noise floor on a radio you trust, on the same
+# antenna at the same time, with its filter set to match the bandwidth
+# above. The difference between the two readings is what goes here.
+#
+# It depends on the tuner gain, so changing that means finding it again.
+#
+# Unset by default.
+# audio_rf_conversion_db = -40.2
+
+# The tuner gain the level calibration was measured against. Written by the
+# calibration tool, not set by hand.
+#
+# The calibration tool writes this when it measures the level calibration
+# above.
+#
+# Change the tuner gain afterwards and the calibration is wrong by roughly
+# the difference, so startup compares the two and says so. Run the
+# calibration again rather than editing this.
+#
+# Unset by default.
+# calibrated_at_gain_db = 40.2
+
+# Which receiver to use when more than one is plugged in.
+device_index = 0
 
 # How fast the receiver samples. It must divide evenly by the decimation
 # below.
@@ -380,21 +412,3 @@ tuning_offset_hz = 50000
 #   Upper - the spectrum above the listening frequency
 #   Lower - the spectrum below it, shown reversed
 sideband = "upper"
-
-# Which receiver to use when more than one is plugged in.
-device_index = 0
-
-# Added to the measured audio level to get signal level at the receiver
-# input. Leave it unset until you have calibrated.
-#
-# Unset means the monitor estimates it from the tuner gain. Expect the
-# reading to be a few dB out.
-#
-# To find the figure, read the noise floor on a radio you trust, on the same
-# antenna at the same time, with its filter set to match the bandwidth
-# above. The difference between the two readings is what goes here.
-#
-# It depends on the tuner gain, so changing that means finding it again.
-#
-# Unset by default.
-# audio_rf_conversion_db = -40.2

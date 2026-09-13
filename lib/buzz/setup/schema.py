@@ -143,3 +143,37 @@ def is_visible(schema: dict[str, Any], section: str, field: str,
     if condition is None:
         return True
     return section_values.get(condition['field']) == condition['equals']
+
+
+def section_is_visible(schema: dict[str, Any], section: str,
+                       values: ConfigValues) -> bool:
+    """Whether to show `section` at all, given what is set elsewhere.
+
+    A section with no `x-visible-when` always shows.  Unlike a field gate, this one
+    names the section it reads as well as the field, because the setting that decides
+    whether a whole section applies is rarely inside that section.  `[rtlsdr]` stays
+    hidden until the audio source is set to `rtlsdr`, and the source cannot live in
+    `[rtlsdr]`, since it is what chooses between the receiver and the sound card.
+    """
+    condition = schema['properties'][section].get('x-visible-when')
+    if condition is None:
+        return True
+    return values.get(condition['section'], {}).get(condition['field']) == condition['equals']
+
+
+def menu_field_names(schema: dict[str, Any], section: str,
+                     section_values: SectionValues) -> list[str]:
+    """The fields of `section` the setup program offers, in order.
+
+    Two things take a field out of the menu.  `x-file-only` marks a setting that is
+    real and documented in `config.example.toml` but that nobody should meet in a
+    menu, such as the decimation.  `x-visible-when` hides one that does not apply to
+    the choices already made, such as the sound card device when the source is a
+    receiver.
+
+    Both screens go through here rather than filtering for themselves, so a field
+    cannot be offered on one and withheld on the other.
+    """
+    return [field for field in field_names(schema, section)
+            if not field_schema(schema, section, field).get('x-file-only')
+            and is_visible(schema, section, field, section_values)]

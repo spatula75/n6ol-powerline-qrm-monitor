@@ -77,6 +77,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   knowing which words are verbs, and measured over this repo the pass flagged 16
   sentences of which about 9 were fragments. That is a good trade when somebody
   chose to look and a bad one in a gate that blocks a commit.
+- The setup program knows which audio source it is configuring. The source moved to
+  the main menu, above the sections, because it decides which of them apply.
+  `[rtlsdr]` hides for a sound-card station, and the sound card device and rate hide
+  for a receiver.
+- The RTL-SDR section lists the steps of its procedure in order and nothing else:
+  the listening frequency, the tuner gain, the level calibration, and which receiver.
+  An uncalibrated level shows the figure the monitor will actually use and says it is
+  an estimate, so a borrowed number and a measured one no longer look alike.
+- `[rtlsdr] calibrated_at_gain_db`, written by the calibration tool rather than set by
+  hand. Changing the tuner gain afterwards leaves the calibration wrong by roughly the
+  difference, and nothing else would notice.
 
 ### Changed
 - `tools/ste_lint.py` applies the wordy-word substitutions to strict text only, as
@@ -91,6 +102,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the reasons differ: `ensure` is a disagreement with the source, and `acquire` is
   domain vocabulary here, since this program acquires a lock rather than obtaining an
   object.
+- `[rtlsdr] frequency_hz` defaults to 3.588 MHz rather than 7.074. The receiver tunes
+  50 kHz above it, so the whole 256 kHz span falls inside 80m and clear of the CW DX
+  window. Powerline noise is generally worse low in HF. An existing config keeps
+  whatever it already says.
+- Settings that exist but that nobody should meet in a menu are marked `x-file-only`
+  in the schema. They stay documented in `config.example.toml`, which is the only way
+  anybody could edit them by hand. The five are the receiver's sample rate,
+  decimation, bandwidth, tuning offset and sideband.
 
 ### Fixed
 - `tools/ste_lint.py` exits 2 instead of reporting `clean` when it has checked nothing.

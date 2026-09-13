@@ -58,15 +58,49 @@ RTLSDR = 'rtlsdr'
 
 @dataclass
 class RtlSdrConfig:
+    """Settings for an RTL-SDR receiver.
+
+    The fields are ordered as the setup program shows them, because the menu follows
+    the schema and the schema follows this class.  The four an operator sets come
+    first, in the order they are set, and the ones nobody should touch come after.
+    """
+
     # Frequency to listen on, in Hz.  The receiver is tuned away from this by
     # tuning_offset_hz and the difference is undone in software, so this is the
     # frequency that is measured rather than the one the hardware sits at.
-    frequency_hz: int = 7_074_000
+    #
+    # The default puts the whole sampled span inside 80m and clear of the CW DX
+    # window.  The device tunes 50 kHz above this, so the 256 kHz span runs from
+    # 3.510 to 3.766 MHz.  Powerline noise is generally worse low in HF, which is why
+    # the default sits on 80m rather than higher.
+    frequency_hz: int = 3_588_000
     # Tuner gain in dB.  Snapped to the nearest step the tuner offers, since it accepts
     # only a fixed set.  Measured on an RTL-SDR Blog V4, the useful range starts
     # around 22.9 dB, because below that the output is the converter's own noise
     # rather than anything from the antenna.
     gain_db: float = 40.2
+    # dB added to the measured audio level to get signal level at the receiver input,
+    # the same job station.audio_rf_conversion_db does for a sound card.  It lives here
+    # rather than there because the figure depends on gain_db above, so the two belong
+    # together.
+    #
+    # Unset means estimate it as the negative of gain_db, which puts a new station
+    # within a few dB with no equipment at all.  That is a place to start from and not
+    # a substitute for calibrating.  See level_offset_db for how far the estimate
+    # drifts.  SNR, lock, phase and grid frequency do not depend on it either way,
+    # since the offset cancels in a difference.  Only absolute levels and the S-meter
+    # move.
+    audio_rf_conversion_db: float | None = None
+    # The gain audio_rf_conversion_db was calibrated against, written by the setup
+    # program rather than chosen.  Changing gain_db afterwards leaves the offset wrong
+    # by roughly the difference, and nothing else would notice, so startup compares
+    # the two and says so.  The estimate needs no such check, because it is computed
+    # from gain_db every time.
+    calibrated_at_gain_db: float | None = None
+    # Which receiver to use when more than one is plugged in.  Two identical receivers
+    # cannot be told apart, since the serial reads 00000001 on both unless somebody
+    # reprogrammed it.  Try one, and use the other if the wrong receiver answers.
+    device_index: int = 0
     # Rate the receiver samples at, in Hz.  256000 divides by 16 to give exactly 16000
     # Hz of audio, matching what a sound-card station uses.  The hardware cannot
     # produce every rate exactly, so the figure is read back after it is set.
@@ -81,25 +115,16 @@ class RtlSdrConfig:
     # false signal at exactly its own tuning frequency, so this moves that artifact out
     # of the measured band.  Undone in software, so it costs nothing but coverage on
     # one side.
+    #
+    # Measured on an RTL-SDR Blog V4, it also clears two spurs that ride the tuner: one
+    # about 32 dB over the floor at the bottom band edge, and a pair about 24 dB over
+    # it at plus and minus 10 kHz.  That was luck rather than design, and it is worth
+    # rechecking before this value moves.
     tuning_offset_hz: int = 50_000
     # Which side of frequency_hz to listen to: 'upper' or 'lower'.  Either works for
     # measuring an arc.  A receiver in LSB shows the spectrum reversed, so the two
     # differ in how a waterfall reads rather than in what is measured.
     sideband: str = 'upper'
-    # Which receiver to use when more than one is plugged in.
-    device_index: int = 0
-    # dB added to the measured audio level to get signal level at the receiver input,
-    # the same job station.audio_rf_conversion_db does for a sound card.  It lives here
-    # rather than there because the figure depends on gain_db above, so the two belong
-    # together.
-    #
-    # Unset means estimate it as the negative of gain_db, which puts a new station
-    # within a few dB with no equipment at all.  That is a place to start from and not
-    # a substitute for calibrating.  See level_offset_db for how far the estimate
-    # drifts.  SNR, lock, phase and grid frequency do not depend on it either way,
-    # since the offset cancels in a difference.  Only absolute levels and the S-meter
-    # move.
-    audio_rf_conversion_db: float | None = None
 
     @property
     def level_offset_db(self) -> float:

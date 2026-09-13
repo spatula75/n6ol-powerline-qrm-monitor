@@ -15,6 +15,8 @@ from buzz.config import BuzzConfig
 from buzz.setup.schema import (
     SCHEMA_PATH,
     defaults,
+    menu_field_names,
+    section_is_visible,
     field_names,
     field_schema,
     from_config,
@@ -115,6 +117,35 @@ class TestSchemaIsWellFormed:
                     assert gate['field'] in siblings, (
                         f'{section}.{field} is gated on {gate["field"]}, which is not '
                         f'a field of [{section}]')
+
+    def test_every_section_gate_names_a_section_and_field_that_exist(self, schema):
+        """The same hazard the field-gate test guards, one level up.  A section gate
+        pointing at something that is not there would hide the whole section for ever,
+        because the lookup would simply never match.
+        """
+        for section in section_names(schema):
+            gate = schema['properties'][section].get('x-visible-when')
+            if gate is None:
+                continue
+            assert gate['section'] in section_names(schema), (
+                f'[{section}] is gated on section [{gate["section"]}], which does not exist')
+            assert gate['field'] in field_names(schema, gate['section']), (
+                f'[{section}] is gated on {gate["section"]}.{gate["field"]}, which is '
+                f'not a field of [{gate["section"]}]')
+
+    def test_a_gated_section_names_a_value_the_gating_field_allows(self, schema):
+        """A gate on a value outside the field's enum never matches either, and is
+        the same invisible failure by a different route.
+        """
+        for section in section_names(schema):
+            gate = schema['properties'][section].get('x-visible-when')
+            if gate is None:
+                continue
+            allowed = field_schema(schema, gate['section'], gate['field']).get('enum')
+            if allowed is not None:
+                assert gate['equals'] in allowed, (
+                    f'[{section}] is gated on {gate["section"]}.{gate["field"]} being '
+                    f'{gate["equals"]!r}, which is not one of {allowed}')
 
     def test_enum_titles_cover_every_choice(self, schema):
         for section in section_names(schema):
@@ -273,3 +304,48 @@ class TestIsVisible:
     def test_a_missing_gate_field_hides_rather_than_crashes(self, schema):
         """A half-built form has not filled in the gate yet; hiding is the safe answer."""
         assert is_visible(schema, 'server', 'host', {}) is False
+
+
+class TestWhatTheMenuOffers:
+    """`menu_field_names` is the one place that decides what a section shows, so the
+    two screens cannot disagree about whether a field is offered.
+    """
+
+    def test_a_file_only_field_is_not_offered(self, schema):
+        """Real, documented in config.example.toml, and no business in a menu."""
+        assert 'decimation' in field_names(schema, 'rtlsdr')
+        assert 'decimation' not in menu_field_names(schema, 'rtlsdr', {})
+
+    def test_the_receiver_section_offers_the_four_steps_in_order(self, schema):
+        """The order is the procedure: pick a frequency, calibrate the gain, check it,
+        then calibrate the level against it.
+        """
+        assert menu_field_names(schema, 'rtlsdr', {}) == [
+            'frequency_hz', 'gain_db', 'audio_rf_conversion_db', 'device_index']
+
+    def test_the_sound_card_fields_go_away_for_a_receiver(self, schema):
+        card = menu_field_names(schema, 'audio', {'source': 'soundcard'})
+        sdr = menu_field_names(schema, 'audio', {'source': 'rtlsdr'})
+        assert 'input_device_name' in card and 'input_device_name' not in sdr
+        assert 'sample_rate' in card and 'sample_rate' not in sdr
+
+    def test_the_pulse_rate_survives_either_source(self, schema):
+        """It describes the mains, not the receiver."""
+        for source in ('soundcard', 'rtlsdr'):
+            assert 'pulse_rate' in menu_field_names(schema, 'audio', {'source': source})
+
+
+class TestWhetherASectionShowsAtAll:
+
+    def test_the_receiver_section_hides_for_a_sound_card(self, schema):
+        assert not section_is_visible(schema, 'rtlsdr', {'audio': {'source': 'soundcard'}})
+
+    def test_and_shows_for_a_receiver(self, schema):
+        assert section_is_visible(schema, 'rtlsdr', {'audio': {'source': 'rtlsdr'}})
+
+    def test_an_ungated_section_always_shows(self, schema):
+        assert section_is_visible(schema, 'station', {})
+
+    def test_a_missing_value_hides_rather_than_crashes(self, schema):
+        """Half-built values reach this during editing, so it must not raise."""
+        assert not section_is_visible(schema, 'rtlsdr', {})

@@ -12,11 +12,16 @@ from textual.css.query import NoMatches
 from textual.widgets import Button, OptionList, RadioButton, RadioSet
 from buzz.setup.device_setup import DeviceInfo
 from buzz.setup.screens.calibration import _format_reading, _meter_block
-from buzz.setup.screens.field_dialogs import _kind, _parse_number
+from buzz.setup.screens.field_dialogs import EnumFieldDialog, _kind, _parse_number
 from buzz.setup.screens.finish import backup_path, changed_fields, toml_ready
 from buzz.setup.screens.main_menu import MainMenuScreen
-from buzz.setup.screens.section_menu import display_value
+from buzz.setup.screens.section_menu import (
+    SectionMenuScreen,
+    display_value,
+    row_value,
+)
 from buzz.setup.screens.timezone_picker import _canonical_zone_names, _utc_offset_label
+from buzz.config import RtlSdrConfig
 from buzz.setup.app import SetupApp
 
 
@@ -275,10 +280,18 @@ class TestSetupAppWalkthrough:
             app = SetupApp(config_path=config_path)
             async with app.run_test() as pilot:
                 assert app.screen.query_one('#sections').highlighted == 0
+                # Row 0 is the audio-source row, which decides which sections apply,
+                # so Enter on it opens that field's dialog rather than a section.
                 await pilot.press('enter')
                 await pilot.pause()
-                # Row 0 is a section (never the Finish row or the separator), so
-                # Enter with nothing touched must have opened a section screen.
+                assert isinstance(app.screen, EnumFieldDialog)
+                await pilot.press('escape')
+                await pilot.pause()
+                # Two rows down is past the separator and onto the first section,
+                # which is what proves Enter reaches a section with no arrow keys
+                # beyond moving the highlight.
+                await pilot.press('down', 'down', 'enter')
+                await pilot.pause()
                 assert app.visited != set()
 
         run(scenario())
@@ -357,7 +370,9 @@ class TestSetupAppWalkthrough:
         async def scenario():
             app = SetupApp(config_path=config_path)
             async with app.run_test() as pilot:
-                await pilot.press('enter')  # into whichever section row 0 is
+                # Row 0 is the audio-source row and row 1 the separator, so the
+                # first section sits at row 2.
+                await pilot.press('down', 'down', 'enter')
                 await pilot.pause()
                 assert app.screen.query_one('#fields').highlighted == 0
 
@@ -1813,3 +1828,126 @@ class TestMainEntryPoint:
     def test_importing_does_not_launch_the_app(self):
         import buzz.setup.__main__ as entry_point
         assert entry_point.SetupApp is SetupApp
+
+
+class TestTheAudioSourceRowOnTheMainMenu:
+    """The source decides which sections apply, so it sits above them rather than
+    inside one of the two answers it chooses between.
+    """
+
+    @staticmethod
+    def _section_ids(app):
+        rows = app.screen.query_one('#sections', OptionList)
+        return [rows.get_option_at_index(i).id for i in range(rows.option_count)]
+
+    def test_it_is_the_first_row_and_shows_the_current_value(self, tmp_path):
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test():
+                rows = app.screen.query_one('#sections', OptionList)
+                first = rows.get_option_at_index(0)
+                assert first.id == '__source__'
+                assert 'soundcard' in str(first.prompt)
+        run(scenario())
+
+    def test_the_receiver_section_is_hidden_for_a_sound_card(self, tmp_path):
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test():
+                assert app.values['audio']['source'] == 'soundcard'
+                assert 'rtlsdr' not in self._section_ids(app)
+                assert 'audio' in self._section_ids(app)
+        run(scenario())
+
+    def test_choosing_the_receiver_makes_its_section_appear(self, tmp_path):
+        """The whole point of putting the choice on the main menu: what you are
+        configuring changes as soon as you answer it.
+        """
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test() as pilot:
+                assert 'rtlsdr' not in self._section_ids(app)
+                app.values['audio']['source'] = 'rtlsdr'
+                app.screen._refresh_options()
+                await pilot.pause()
+                ids = self._section_ids(app)
+                assert 'rtlsdr' in ids, (
+                    f'the receiver section stayed hidden after choosing it: {ids}')
+        run(scenario())
+
+    def test_selecting_it_opens_the_enum_dialog(self, tmp_path):
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test() as pilot:
+                await pilot.press('enter')
+                await pilot.pause()
+                assert isinstance(app.screen, EnumFieldDialog)
+        run(scenario())
+
+
+class TestTheReceiverSectionMenu:
+
+    def test_it_offers_the_four_steps_and_hides_the_rest(self, tmp_path):
+        """The five file-only settings stay documented in config.example.toml, and
+        simply have no business in a menu.
+        """
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test() as pilot:
+                app.values['audio']['source'] = 'rtlsdr'
+                # Pushed directly rather than through the menu: push_screen_wait
+                # needs a worker, and the rows are what this is about.
+                await app.push_screen(SectionMenuScreen('rtlsdr'))
+                await pilot.pause()
+                rows = app.screen.query_one('#fields', OptionList)
+                ids = [rows.get_option_at_index(i).id for i in range(rows.option_count)]
+                assert ids == ['frequency_hz', 'gain_db', 'audio_rf_conversion_db',
+                               'device_index'], ids
+        run(scenario())
+
+
+class TestTheLevelCalibrationRow:
+    """`(unset)` is honest and unhelpful here, because the monitor does not run
+    without an offset.  It estimates one from the tuner gain, so the row shows the
+    figure the operator would be accepting and says where it came from.
+    """
+
+    SPEC = {'type': ['number', 'null'], 'title': 'Level calibration (dB)'}
+
+    def _values(self, **overrides):
+        values = {'gain_db': 40.2, 'audio_rf_conversion_db': None}
+        values.update(overrides)
+        return values
+
+    def test_an_uncalibrated_row_shows_the_estimate_and_says_so(self):
+        assert row_value('rtlsdr', 'audio_rf_conversion_db', self.SPEC,
+                         self._values()) == '-40.2 (estimated)'
+
+    def test_the_estimate_follows_the_gain(self):
+        """Which is what proves it is derived rather than copied.  A second copy of
+        `-gain_db` in the menu would keep showing -40.2 after the gain moved.
+        """
+        assert row_value('rtlsdr', 'audio_rf_conversion_db', self.SPEC,
+                         self._values(gain_db=43.9)) == '-43.9 (estimated)'
+
+    def test_a_calibrated_row_carries_no_marker(self):
+        """The marker exists to flag a number the operator did not supply."""
+        assert row_value('rtlsdr', 'audio_rf_conversion_db', self.SPEC,
+                         self._values(audio_rf_conversion_db=-38.5)) == '-38.5'
+
+    def test_the_row_shows_what_the_monitor_will_actually_use(self):
+        """A drift pin.  The menu and the running program each decide what an unset
+        offset means, and an operator calibrating against a figure the monitor does
+        not use would bake the difference into every level the station ever logs.
+        """
+        for gain in (22.9, 40.2, 49.6):
+            values = self._values(gain_db=gain)
+            shown = row_value('rtlsdr', 'audio_rf_conversion_db', self.SPEC, values)
+            used = RtlSdrConfig(**values).level_offset_db
+            assert shown == f'{used:g} (estimated)', (
+                f'the menu shows {shown} at gain {gain} where the monitor uses {used}')
+
+    def test_every_other_field_is_unaffected(self):
+        """Only the one derived field is special-cased; the rest read as before."""
+        values = {'gain_db': 40.2}
+        assert row_value('rtlsdr', 'gain_db', {'type': 'number'}, values) == '40.2'

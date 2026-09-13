@@ -5,13 +5,22 @@ from textual.containers import Vertical
 from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
-from buzz.setup.schema import section_names
-from buzz.setup.screens.base import ScopeScreen, scope_header
+from buzz.setup.schema import field_schema, section_is_visible, section_names
+from buzz.setup.screens.base import CANCELLED, ScopeScreen, scope_header
 from buzz.setup.screens.confirm import ConfirmDialog
+from buzz.setup.screens.field_dialogs import open_field_dialog
 from buzz.setup.screens.finish import FinishScreen, changed_fields
-from buzz.setup.screens.section_menu import SectionMenuScreen
+from buzz.setup.screens.section_menu import SectionMenuScreen, display_value
 
 _FINISH_ID = '__finish__'
+
+# audio.source sits on the main menu rather than inside a section, because it decides
+# which sections apply at all.  Leaving it inside [audio] would bury the choice in one
+# of the two answers it picks between, and a reader arriving at a menu wants to know
+# what they are configuring before they start.  It costs this one special case, since
+# every other row on this screen is a section.
+_SOURCE_SECTION, _SOURCE_FIELD = 'audio', 'source'
+_SOURCE_ID = '__source__'
 
 _NEW_CONFIG_HELP = (
     'Because you are creating a new configuration, be sure to step through each '
@@ -79,7 +88,14 @@ class MainMenuScreen(ScopeScreen[None]):
     def _refresh_options(self) -> None:
         schema = self.app.schema
         options: list[Option | None] = []
+        spec = field_schema(schema, _SOURCE_SECTION, _SOURCE_FIELD)
+        current = self.app.values[_SOURCE_SECTION][_SOURCE_FIELD]
+        options.append(Option(f"{spec['title']}: {display_value(spec, current)}",
+                              id=_SOURCE_ID))
+        options.append(None)  # a separator, per OptionList.add_option's own convention
         for section in section_names(schema):
+            if not section_is_visible(schema, section, self.app.values):
+                continue
             mark = _VISITED_MARK if section in self.app.visited else _UNVISITED_MARK
             title = schema['properties'][section]['title']
             options.append(Option(f'[{mark}] {title}', id=section))
@@ -91,14 +107,22 @@ class MainMenuScreen(ScopeScreen[None]):
         # clear_options() always drops the highlight, and OptionList otherwise starts
         # with nothing highlighted at all - so without this, the first screen a user
         # sees offers no visible cue that Enter does anything until they press an
-        # arrow key first.  Row 0 is always a section, never the separator.
+        # arrow key first.  Row 0 is the source row, never the separator.
         option_list.highlighted = 0
 
     @work
     async def on_option_list_option_selected(self, event) -> None:
         # push_screen_wait suspends this handler until the pushed screen dismisses,
         # which Textual only allows inside a worker - see the @work decorator above.
-        if event.option.id == _FINISH_ID:
+        if event.option.id == _SOURCE_ID:
+            # Changing this changes which sections exist, so the menu is rebuilt
+            # below rather than the row being patched in place.
+            spec = field_schema(self.app.schema, _SOURCE_SECTION, _SOURCE_FIELD)
+            current = self.app.values[_SOURCE_SECTION][_SOURCE_FIELD]
+            chosen = await open_field_dialog(self, spec, current)
+            if chosen is not CANCELLED:
+                self.app.values[_SOURCE_SECTION][_SOURCE_FIELD] = chosen
+        elif event.option.id == _FINISH_ID:
             await self.app.push_screen_wait(FinishScreen())
         else:
             await self.app.push_screen_wait(SectionMenuScreen(event.option.id))
