@@ -114,44 +114,20 @@ _QUIET_FRAME_SECONDS = 0.001
 #
 # The bias matters less than it looks, because it is the same at every gain.  A curve
 # shifted equally throughout leaves KneeFit's antenna and converter terms scaled
-# together and the share between them unchanged, so the dominance bound does not move.
+# together and the share between them unchanged, so the floor bound does not move.
 # Only the headroom bound sees it, against a reserve of 32 dB.
 _MIN_QUIET_FRAME_SAMPLES = 64
 
-# The share of the noise floor that has to come from the antenna before the gain
-# counts as usable.
+# The antenna's share of the reported noise floor to aim for.
 #
-# One half is the knee itself rather than a threshold near it.  The share at gain g is
-# A*10^(g/10) / (A*10^(g/10) + C), so asking for one half is asking for
-# A*10^(g/10) >= C: the point where the antenna's noise power equals the converter's,
-# which is the bend KneeFit exists to find.  The rule this constant expresses is
-# therefore "sit at the knee", and any other value is an offset past it: 0.8 is the
-# antenna at four times the converter, six dB up, and 0.9 is nine times, nine and a
-# half dB up.
-#
-# Below the knee the station is mostly measuring its own receiver, which is the case
-# the mag loop in the notebook showed: 5.0 dB below converter noise at every gain the
-# tuner offered.
-#
-# Sitting exactly on the knee would cost 3.01 dB of floor accuracy, since half the
-# reported power would be the converter's.  In practice it costs less, because the
-# tuner's steps are coarse and the chosen one sits above the knee rather than on it.
-# Against the station's broadband antenna, whose shape the notebook records, the knee
-# falls at 30.1 dB and the lowest step at or above it is 32.8 dB, which delivers a
-# share of 0.65 and an error of 1.87 dB.  The whole range of bars, on that antenna:
-#
-#     bar    gain picked    reported floor reads high by
-#     0.5       32.8 dB               1.87 dB
-#     0.7       33.8 dB               1.54 dB
-#     0.8       36.4 dB               0.92 dB
-#     0.9       40.2 dB               0.41 dB
-#
-# A higher bar buys floor accuracy with headroom, and 0.8 would reproduce the 36.4 dB
-# that station settled on by hand.  The knee is deliberate anyway: clipping is the
-# failure that cannot be recovered from, so the spare 3.6 dB above the reserve is
-# worth more than the decibel of floor accuracy it costs, and a lower bar also finds
-# an answer on quieter antennas where a higher one finds none.
-_ANTENNA_SHARE_FLOOR = 0.5
+# The converter's own noise adds to the antenna's and the sum is what gets reported,
+# so this share is the whole quantity the lower bound is about.  One half is the knee
+# of the curve, where the antenna and the converter contribute equally.
+_ANTENNA_SHARE_TARGET = 0.5
+
+# The same figure as the error it costs, which is what anybody weighing it thinks in.
+# It is derived rather than written as 3.0, so the two can never disagree.
+_FLOOR_ERROR_TARGET_DB = -10.0 * np.log10(_ANTENNA_SHARE_TARGET)
 
 
 @dataclass(frozen=True)
@@ -184,8 +160,8 @@ class SweepResult:
     chosen_db: float | None
     reason: str
     antenna_share: float
-    lowest_usable_db: float | None
-    highest_safe_db: float | None
+    floor_bound_db: float | None
+    headroom_bound_db: float | None
     measurements: tuple[GainMeasurement, ...]
 
     @property
@@ -193,8 +169,8 @@ class SweepResult:
         """How much high the reported noise floor reads at the chosen gain.
 
         The converter's own noise adds to the antenna's, and the sum is what gets
-        reported, so this is the whole point of the dominance bound.  An antenna share
-        of one half is 3.01 dB, nine tenths is 0.46 dB.
+        reported, so this is the whole point of the floor bound.  An antenna share of
+        one half is 3.01 dB, nine tenths is 0.46 dB.
         """
         if self.antenna_share <= 0.0:
             return float('inf')
@@ -304,8 +280,8 @@ class KneeFit:
         so an unweighted solve is dominated by the top of the range: the residual at
         the highest gain is larger than C itself, and C is left almost unconstrained.
         Measured on a synthetic curve with 5% noise, an unweighted fit recovered C 76
-        times too large while getting A right, and C is the term the dominance
-        decision rests on.
+        times too large while getting A right, and C is the term the floor bound
+        rests on.
 
         Dividing both the basis and the target by P makes each residual relative, so a
         5% error costs the same at either end.  It stays one linear solve.
@@ -337,23 +313,51 @@ class KneeFit:
             return 0.0
         return antenna / total
 
-    def lowest_gain_where_the_antenna_dominates(self, gains_db: list[float]) -> float | None:
-        """The smallest offered gain whose antenna share clears the bar, or None.
+    def floor_error_db(self, gain_db: float) -> float:
+        """How much high the reported noise floor reads at this gain.
 
-        Lowest rather than highest on purpose.  Every dB of gain above what the
-        antenna needs is a dB of headroom an arc no longer has, so the cheapest gain
-        that still measures the band is the one to want.
-
-        The candidates are the gains the tuner actually reported, so the answer is one
-        of them by construction.  Nothing computes the knee as a continuous number and
-        rounds it: the fitted share is evaluated at each real step and the first one
-        that clears the bar is returned, which is the next step at or above the knee.
-        A rounded knee could name a gain the hardware does not have.
+        The converter's own noise adds to the antenna's and the sum is what gets
+        reported, so a share of one half reads 3.01 dB high and nine tenths 0.46 dB.
         """
-        for gain in sorted(gains_db):
-            if self.antenna_share(gain) >= _ANTENNA_SHARE_FLOOR:
-                return gain
-        return None
+        share = self.antenna_share(gain_db)
+        if share <= 0.0:
+            return float('inf')
+        return float(-10.0 * np.log10(share))
+
+    def gain_nearest_the_floor_target(self, gains_db: list[float]) -> float | None:
+        """The offered gain whose reported floor sits closest to the target error.
+
+        Nearest rather than the lowest gain inside a budget, which is what this was
+        first.  A budget is a bar, and a bar decides by which side of it a step falls,
+        so two steps 2.2 dB apart can sit either side of it and a fit that moves by
+        half a decibel between runs moves the answer by a whole step.  A station near
+        the bar saw exactly that: the same antenna gave 25.4 dB under one budget and
+        20.7 under another, where the step between them was the reasonable answer
+        throughout.  Measuring distance to a target instead makes the fit's own wobble
+        cost a fraction of a step rather than all of one.
+
+        It also bounds what the rule can spend.  The budget let the floor error run to
+        whatever the next step down happened to cost, where the worst a target can
+        accept is half the gap between two steps.  Swept over curve shapes with the
+        converter between 1 and 100,000 times the antenna at unity gain, the chosen
+        error stayed between 2.04 and 3.98 dB against a 3.01 dB target.
+
+        None when even the highest gain leaves the antenna short of the target, which
+        is an antenna too quiet for this converter rather than a failure of the sweep.
+        Without that guard a fit that separated nothing would report every gain as
+        equally far off and the lowest one would win a tie it should not be in.
+
+        The candidates are the gains the tuner reported, so the answer is one of them
+        by construction.  Nothing computes the knee as a continuous number and rounds
+        it, because a rounded knee could name a gain the hardware does not have.
+        """
+        ordered = sorted(gains_db)
+        if not ordered or self.antenna_share(ordered[-1]) < _ANTENNA_SHARE_TARGET:
+            return None
+        # Ascending, so min() breaks a tie towards the lower gain.  That is the side to
+        # err on, because the decibel it costs the floor is one an arc gets to use.
+        return min(ordered, key=lambda gain: abs(
+            self.floor_error_db(gain) - _FLOOR_ERROR_TARGET_DB))
 
 
 class GainChooser:
@@ -361,15 +365,15 @@ class GainChooser:
 
     Two bounds, from opposite directions:
 
-      * The **dominance bound** is the lowest gain at which the antenna, rather than
-        the converter, is most of what the floor is made of.  Below it the station
-        measures its own receiver.
+      * The **floor bound** is the gain whose reported noise floor reads closest to
+        _FLOOR_ERROR_TARGET_DB above the truth.  Below it too much of what the station
+        reports is its own receiver.
       * The **headroom bound** is the highest gain at which the quiet level still
         leaves `headroom_db` before a sample reaches the rail.  Above it an arc clips.
 
-    The answer is the dominance bound, checked against the headroom bound.  Lowest
-    rather than highest, because every dB above what the antenna needs is a dB an arc
-    no longer has.
+    The answer is the floor bound, checked against the headroom bound.  It sits at
+    the knee rather than comfortably above it, because every dB above what the antenna
+    needs is a dB an arc no longer has.
 
     They can cross.  An antenna quiet enough to need most of the tuner's range to beat
     the converter may need more gain than the headroom allows.
@@ -398,14 +402,14 @@ class GainChooser:
         gains = [m.gain_db for m in self._measurements]
         fit = KneeFit(np.array(gains),
                       np.array([self._power_of(m) for m in self._measurements]))
-        lowest_usable = fit.lowest_gain_where_the_antenna_dominates(gains)
-        highest_safe = self._highest_gain_with_headroom()
+        floor_bound = fit.gain_nearest_the_floor_target(gains)
+        headroom_bound = self._highest_gain_with_headroom()
 
-        # Headroom first, because it is measured directly where dominance comes from
-        # a fit.  A band loud enough to clip at every gain also gives the fit nothing
-        # to separate, so checking dominance first would report a puzzled fit instead
-        # of the concrete thing an operator can act on.
-        if highest_safe is None:
+        # Headroom first, because it is measured directly where the floor bound comes
+        # from a fit.  A band loud enough to clip at every gain gives the fit nothing
+        # to separate, so checking the floor bound first would report a puzzled fit
+        # instead of the concrete thing an operator can act on.
+        if headroom_bound is None:
             return SweepResult(
                 None,
                 f'Even the lowest gain leaves less than {self._headroom_db:.0f} dB '
@@ -414,37 +418,45 @@ class GainChooser:
                 'is weaker, or a frequency further from where the antenna is '
                 'resonant.  An attenuator ahead of the receiver is the last resort '
                 'and the only one that helps if every band is this loud.',
-                fit.antenna_share(min(gains)), lowest_usable, None, self._measurements)
-        # Below here the two bounds are not the same kind of thing, and the answer
-        # follows from that.  Headroom is a hard limit, because clipping is nonlinear
-        # and cannot be undone: a clipped arc reads small and lifts the apparent floor
-        # in the same capture.  Dominance is a preference that degrades a decibel at a
-        # time, and how much it has degraded is a number this can report.
+                fit.antenna_share(min(gains)), floor_bound, None, self._measurements)
+        # The two bounds are not the same kind of thing, and the answer follows from
+        # that.  Headroom is a hard limit, because clipping is nonlinear and cannot be
+        # undone: a clipped arc reads small and lifts the apparent floor in the same
+        # capture.  The floor bound is a preference that degrades a decibel at a time,
+        # and how far it has degraded is a number this can report.
         #
         # So when they conflict, headroom wins and the floor pays, and the reply says
         # what it paid.  Refusing instead was tried and is worse: a station near the
         # crossing then gets no gain at all, and its operator sets one by hand anyway,
         # making exactly this trade without the figures to make it on.
-        if lowest_usable is None or lowest_usable > highest_safe:
-            share = fit.antenna_share(highest_safe)
-            penalty = -10.0 * np.log10(share) if share > 0.0 else float('inf')
+        if floor_bound is None or floor_bound > headroom_bound:
             return SweepResult(
-                highest_safe,
-                f'{highest_safe:.1f} dB is the most this band allows before an arc '
-                f'would clip, and the antenna is not the whole story at that gain: it '
-                f'supplies {share * 100:.0f}% of the noise floor, so the floor reads '
-                f'about {penalty:.1f} dB high.  A larger or better matched antenna is '
-                f'what would improve it.  Clipping is not recoverable and a floor '
-                f'that reads high is, which is why the gain went this way.',
-                share, lowest_usable, highest_safe, self._measurements)
+                headroom_bound,
+                f'{headroom_bound:.1f} dB is the most this band allows before an arc '
+                f'would clip, which is below what the antenna needs, so the reported '
+                f'noise floor will read about '
+                f'{fit.floor_error_db(headroom_bound):.1f} dB high.  A larger or '
+                f'better matched antenna is what would improve that.  Clipping cannot '
+                f'be undone and a floor that reads high can, which is why the gain '
+                f'went this way.',
+                fit.antenna_share(headroom_bound), floor_bound, headroom_bound,
+                self._measurements)
 
-        share = fit.antenna_share(lowest_usable)
+        # Both bounds are named, not just the one that won.  An operator whose arcs
+        # clip at the chosen gain has no way to act otherwise: the remedy is to raise
+        # [rtlsdr] arc_headroom_db until the headroom bound falls below this one, and
+        # that is impossible to judge without knowing where it currently sits.
         return SweepResult(
-            lowest_usable,
-            f'{lowest_usable:.1f} dB is the lowest gain where the antenna is most of '
-            f'the noise floor, and it leaves at least {self._headroom_db:.0f} dB for '
-            'an arc.',
-            share, lowest_usable, highest_safe, self._measurements)
+            floor_bound,
+            f'{floor_bound:.1f} dB is the gain whose reported noise floor comes '
+            f'closest to the {_FLOOR_ERROR_TARGET_DB:.1f} dB target, reading about '
+            f'{fit.floor_error_db(floor_bound):.1f} dB high.  It leaves at least '
+            f'{self._headroom_db:.0f} dB for an arc, where clipping alone would have '
+            f'allowed up to {headroom_bound:.1f} dB, so the floor is what set this.  If '
+            f'arcs still clip at this gain, raise [rtlsdr] arc_headroom_db to bring '
+            f'that {headroom_bound:.1f} dB down.',
+            fit.antenna_share(floor_bound), floor_bound, headroom_bound,
+            self._measurements)
 
     def _highest_gain_with_headroom(self) -> float | None:
         """The largest gain that leaves room for an arc, by both the model and the
@@ -506,6 +518,15 @@ class GainSweep:
     DEFAULT_PASSES = 5
     DEFAULT_SECONDS_PER_STEP = 0.25
 
+    # What a step costs beyond the samples it collects: the gain write, the blocks
+    # thrown away while the tuner settles, and the USB turnaround on every read.
+    #
+    # The value came from measuring rather than from theory.  A V4 at 256 kHz swept
+    # its 29 gains five times in about 75 seconds, which is 145 steps at 0.52 s each
+    # against 0.25 s of samples.  It is here only to estimate how long a sweep will
+    # take, so it does not have to be better than about right.
+    _STEP_OVERHEAD_SECONDS = 0.27
+
     def __init__(self, source: SweepSource, headroom_db: float, *,
                  passes: int = DEFAULT_PASSES,
                  seconds_per_step: float = DEFAULT_SECONDS_PER_STEP) -> None:
@@ -522,6 +543,21 @@ class GainSweep:
         self._passes = passes + 1 if passes % 2 == 0 else passes
         self._seconds_per_step = seconds_per_step
         self._cancelled = False
+
+    @property
+    def passes(self) -> int:
+        """How many times each gain gets measured, after the rounding above."""
+        return self._passes
+
+    def estimated_seconds(self, gain_count: int) -> float:
+        """About how long a sweep of this many gains will take.
+
+        Derived rather than stated, because the gain count belongs to the tuner.  A
+        V4 offers 29 steps and other receivers offer more or fewer, so any fixed
+        figure is right for one device and wrong for the rest.
+        """
+        return (self._passes * gain_count
+                * (self._seconds_per_step + self._STEP_OVERHEAD_SECONDS))
 
     def cancel(self) -> None:
         """Ask the sweep to stop at the next step.  Safe from another thread."""

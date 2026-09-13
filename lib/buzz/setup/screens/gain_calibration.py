@@ -159,16 +159,8 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
     def compose(self):
         yield Vertical(
             Static('Calibrate receiver gain', id='title'),
-            # Standing advice, in its own widget.  It shared one with the progress
-            # line until somebody pointed out that it vanished before it could be
-            # read: the first step overwrote it about four hundred milliseconds in.
-            # Worded so that it still reads correctly after the sweep has finished.
-            Static('This measures the band at every gain the tuner offers, five '
-                   'times over, and takes a little over a minute.  Leave the antenna '
-                   'connected and the receiver tuned where it will run.  Calibrate '
-                   'when the band is quiet if you can.  A running arc raises the noise '
-                   'floor, so the sweep sees a louder band than usual and picks a gain '
-                   'that is then too low once the arc stops.', id='instructions'),
+            Static(self._instructions('every gain the tuner offers, several times '
+                                      'over'), id='instructions'),
             Static('Starting...', id='status'),
             Static('', id='outcome'),
             Horizontal(
@@ -195,6 +187,14 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
             self._finish()
             return
         self._sweep = sweep
+        # Now that the receiver has answered, say how many gains it offers and how
+        # long that will take.  Both figures belong to the device: a V4 has 29 steps
+        # and another tuner has its own count, so the opening text cannot state either
+        # of them before the device is open.
+        gain_count = len(source.supported_gains_db)
+        self._set('#instructions', self._instructions(
+            f'each of the {gain_count} gains the tuner offers, {sweep.passes} times '
+            f'over, which takes {self._duration_phrase(sweep.estimated_seconds(gain_count))}'))
         try:
             result, released = await asyncio.to_thread(
                 _sweep_then_release, source, sweep,
@@ -214,6 +214,35 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
             self._set('#outcome', f'The sweep finished and the result would not '
                                   f'display: {exc}')
             self._finish()
+
+    @staticmethod
+    def _instructions(what_it_measures: str) -> str:
+        """The standing advice, with what the sweep is about to do written into it.
+
+        It sits in its own widget rather than in the progress line, because the two
+        shared one until somebody pointed out that the first step overwrote the advice
+        about four hundred milliseconds in.  Worded so that it still reads correctly
+        after the sweep has finished.
+        """
+        return (f'This measures the band at {what_it_measures}.  Leave the antenna '
+                'connected and the receiver tuned where it will run.  Calibrate when '
+                'the band is quiet if you can.  A running arc raises the noise floor, '
+                'so the sweep sees a louder band than usual and picks a gain that is '
+                'then too low once the arc stops.')
+
+    @staticmethod
+    def _duration_phrase(seconds: float) -> str:
+        """Round a sweep estimate to a figure somebody can plan around.
+
+        The estimate is a per-step figure times a step count, so it is not accurate to
+        the second and saying 75 of them would claim it was.  Anything under three
+        quarters of a minute is rounded to a quarter minute, and anything above it to
+        a half minute.
+        """
+        if seconds < 45.0:
+            return f'about {max(15, round(seconds / 15.0) * 15)} seconds'
+        minutes = max(2, round(seconds / 30.0)) / 2.0
+        return f'about {minutes:g} minute' + ('' if minutes == 1.0 else 's')
 
     def _progress_reporter(self, loop: asyncio.AbstractEventLoop) -> ProgressCallback:
         """A progress callback the sweep's own thread can use without waiting.
@@ -256,12 +285,11 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
             self._set('#outcome', result.reason + self._held_note(released))
             self._finish()
             return
+        # Just the reason.  This used to append the antenna's share of the floor and
+        # the decibels the floor reads high, which are one figure said twice, and the
+        # reason already carries the decibels.
         self._set('#status', f'Measured gain: {result.chosen_db:.1f} dB')
-        self._set('#outcome',
-                  f'{result.reason}  The antenna supplies '
-                  f'{result.antenna_share * 100:.0f}% of the noise floor at this '
-                  f'gain, so the reported floor reads about '
-                  f'{result.floor_error_db:.1f} dB high.{self._held_note(released)}')
+        self._set('#outcome', result.reason + self._held_note(released))
         self._finish(accept=True)
 
     @staticmethod

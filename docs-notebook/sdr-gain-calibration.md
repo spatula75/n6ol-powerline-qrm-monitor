@@ -81,11 +81,11 @@ cannot be recovered once it clips.
 
 The reserve decides the highest gain.  A second bound decides the lowest, because a
 gain too small leaves the converter making most of the noise the station reports.
-`buzz.gain_sweep._ANTENNA_SHARE_FLOOR` is where that bar sits, and the sweep picks the
-lowest gain that clears it.
+`buzz.gain_sweep._ANTENNA_SHARE_TARGET` is where that bound sits, and the sweep picks
+the gain nearest to it.
 
 At one half the antenna equals the converter and the reported floor reads 3.01 dB
-high.  The bar is a choice rather than a measurement, and against the broadband
+high.  The figure is a choice rather than a measurement, and against the broadband
 antenna above it decides the answer:
 
     bar    gain picked    reported floor reads high by
@@ -96,12 +96,82 @@ antenna above it decides the answer:
 
 0.8 would reproduce the 36.4 dB this station settled on by hand.  0.5 was chosen
 anyway, on the same reasoning as the reserve: clipping is the failure that cannot be
-recovered from, so the spare 3.6 dB above the reserve is worth more than the decibel
-of floor accuracy it costs.  A lower bar also finds an answer on quieter antennas
+recovered from, so the spare 3.6 dB above the reserve buys more than the decibel of
+floor accuracy it costs.  A lower figure also finds an answer on quieter antennas
 where a higher one finds none, and the antennas that need help are the quiet ones.
 
 The two bounds can cross, and on a quiet antenna they do.  The sweep reports that
 rather than picking a number from a rule that failed.
+
+## Nearest a target, not lowest inside a budget
+
+**2026-09-13.**  The floor bound was first written as a budget: the lowest gain whose
+reported floor stayed inside so many dB of the truth.  It was 3.01 dB, the knee, and a
+station running a wire antenna on 80 m came out one step higher than its operator
+wanted, so the budget went to 4.5 dB to buy that step.
+
+The station then came out two steps lower instead, and moved between the two on
+repeated runs of the same sweep:
+
+    budget      run 1     run 2     what the operator wanted
+    3.01 dB     25.4 dB   25.4 dB           22.9 dB
+    4.50 dB     20.7 dB   22.9 dB           22.9 dB
+
+A budget is a bar, and a bar decides by which side of it a step falls.  The V4 ladder
+puts 20.7, 22.9 and 25.4 dB within 4.7 dB of each other, so the fitted knee has to
+move by only a fraction of a decibel for a step to cross the bar, and the answer then
+moves by a whole step.  No value of the budget fixes that.  Reconstructing the
+station's curve from what it reported, a budget of 3.01 dB gives 25.4 dB and one of
+4.5 dB gives 20.7 or 22.9 depending on the run, with no setting in between that gives
+22.9 every time.
+
+Measuring the distance to a target instead makes the same drift cost a fraction of a
+step rather than all of one.  Against that reconstructed curve, nearest-to-3.01 dB
+gives 22.9 dB whichever way the fit moves, and the fit has to shift by more than half
+the gap between two steps before the answer changes at all.
+
+The target also bounds what the rule can spend, which the budget never did.  A budget
+spends whatever the next step down happens to cost, so a wide gap in the ladder can
+take the floor error well past the figure written down.  A target can never sit
+further from itself than half the gap between two steps.  Swept over 19,839 curve
+shapes with the converter between 1 and 100,000 times the antenna at unity gain, the
+chosen floor error stayed between 2.04 and 3.98 dB against the 3.01 dB target.
+
+So the constant is the knee again, and it is now `10 * log10(2)` derived from a share
+of one half rather than written as 3.0, because the two are the same fact.
+
+## What it reads beside the sound-card path
+
+**2026-09-13.**  The one antenna was moved between the two receivers and both monitors
+were read at the gain the sweep picks:
+
+    path                     noise floor      arc      SNR
+    RTL-SDR Blog V4             -90 dBm    -66 dBm    24 dB
+    KX3 into a sound card       -88 dBm    -67 dBm    21 dB
+
+The two were read one after the other rather than at the same time, because one
+antenna fed one receiver at a time.  The arc varies minute to minute, so read these as
+agreeing to within a decibel or two rather than as exact figures.
+
+The arc is the part that tests the calibrations.  It sits more than 20 dB above either
+noise floor, so neither chain's own noise moves it, and the two paths reporting it
+within 1 dB says the two level calibrations agree to about that.  The 2 dB between the
+floors is therefore mostly floor rather than calibration offset, and it falls the way
+the hardware predicts, because the sound card's chain adds noise through two audio
+amplifiers that the SDR path does not have.
+
+Taking the knee fit at its word carries that further.  The receiver reads 3.01 dB above
+the true antenna floor by construction at the knee, which puts the antenna near
+-93 dBm and the sound-card chain about 5 dB above it.  That last figure rests on the
+model rather than on a measurement, so read it as the shape of the thing rather than as
+a number.
+
+The practical answer is that the two paths measure the same station to within the arc's
+own variation, and the floor target stays at the knee.  Moving it to a share of 0.8
+would buy 2.04 dB of floor accuracy and cost 6.02 dB of gain, because a share of 0.8
+asks the antenna to beat the converter four times over rather than once.  That is two
+or three steps of headroom on a V4, and this comparison says the accuracy is not
+needed.
 
 ## The sweep has to interleave
 

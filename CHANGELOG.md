@@ -109,6 +109,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   direction, and takes the median floor and the worst peak, because an arc that comes
   and goes makes a single pass measure every step in a different world.
 
+  It picks the tuner step whose reported noise floor comes closest to reading 3.01 dB
+  high, which is the knee where the antenna and the converter contribute equally.
+  Nearest to a target rather than lowest inside a budget: a budget is a bar, so half a
+  decibel of drift in the fit moves a step across it, and one station's answer moved
+  between 20.7 and 25.4 dB on repeated runs of the same sweep. A target also bounds
+  what the rule can spend, where a budget spends whatever the next step down happens
+  to cost.
+
+  The dialog works out how long the sweep will take from the number of gains the tuner
+  reports, rather than quoting a figure measured on one model of receiver.
+
   It reports rather than guesses when the two bounds leave nothing: an antenna too
   quiet to beat the receiver at any gain, a band loud enough to clip at every gain,
   and the two crossing each get their own wording. A quiet station is told what its

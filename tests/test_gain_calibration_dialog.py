@@ -30,7 +30,7 @@ RTLSDR_VALUES = {'frequency_khz': 3588.0, 'gain_db': 40.2, 'device_index': 0,
 
 def _result(chosen=36.4, reason='Measured.', share=0.81):
     return SweepResult(chosen_db=chosen, reason=reason, antenna_share=share,
-                       lowest_usable_db=chosen, highest_safe_db=44.5,
+                       floor_bound_db=chosen, headroom_bound_db=44.5,
                        measurements=(GainMeasurement(36.4, -41.0, -12.0, 0, 5),))
 
 
@@ -48,10 +48,15 @@ async def _wait_until(pilot, condition, description, timeout=5.0):
 class _FakeSweep:
     """Stands in for GainSweep, so the dialog is tested without the arithmetic."""
 
+    passes = 5
+
     def __init__(self, result):
         self._result = result
         self.cancelled = False
         self.progress_reported = []
+
+    def estimated_seconds(self, gain_count):
+        return gain_count * 2.6
 
     def run(self, on_progress=None):
         if on_progress is not None:
@@ -64,6 +69,9 @@ class _FakeSweep:
 
 
 class _FakeSource:
+    # Fewer steps than a V4, so a test can tell a derived count from a hard-coded one.
+    supported_gains_db = [0.0, 14.4, 25.4, 32.8, 40.2, 49.6]
+
     def __init__(self):
         self.closed = False
 
@@ -127,10 +135,14 @@ class TestTheDialogReportsWhatTheSweepFound:
         return run(scenario())
 
     def test_a_measured_gain_is_shown_with_what_it_cost(self, tmp_path):
+        """The cost comes from the sweep's own reason rather than being appended here.
+        The dialog used to add the antenna's share of the floor and the decibels it
+        reads high, which are one figure said twice.
+        """
         status, outcome, label, offers = self._open(tmp_path, _FakeSweep(_result()))
         assert '36.4' in status
-        assert '81%' in outcome
-        assert 'dB high' in outcome
+        assert outcome.startswith('Measured.'), outcome
+        assert '%' not in outcome, 'the share is the decibels said again'
         assert offers, 'the measured gain was not offered'
         assert label == 'Cancel', (
             'a measured gain has to be refusable without pressing Escape')
@@ -665,6 +677,39 @@ class TestTheInstructionsStayOnScreen:
     def test_they_survive_a_sweep_that_found_nothing(self, tmp_path):
         nothing = SweepResult(None, 'The antenna is too quiet.', 0.1, None, 49.6, ())
         assert 'antenna' in self._shown(tmp_path, _FakeSweep(nothing))
+
+    def test_the_gain_count_and_the_duration_come_from_the_device(self, tmp_path):
+        """A V4 offers 29 steps and another tuner offers its own number, so a fixed
+        "five times over, a little over a minute" is right for one receiver and wrong
+        for the rest.  The stand-in offers six gains at 2.6 seconds each.
+        """
+        instructions = self._shown(tmp_path, _FakeSweep(_result()))
+        assert 'each of the 6 gains' in instructions
+        assert '5 times over' in instructions
+        assert 'about 15 seconds' in instructions, instructions
+
+    def test_the_opening_text_claims_no_duration_before_the_device_answers(self):
+        """Nothing knows how many gains there are until the receiver is open, and a
+        figure stated before that would be a guess.
+        """
+        opening = GainCalibrationDialog._instructions(
+            'every gain the tuner offers, several times over')
+        assert 'minute' not in opening and 'second' not in opening
+        assert 'Leave the antenna connected' in opening
+
+    @pytest.mark.parametrize('seconds, expected', [
+        (3.0, 'about 15 seconds'),      # never rounds away to nothing
+        (26.0, 'about 30 seconds'),
+        (44.9, 'about 45 seconds'),
+        (60.0, 'about 1 minute'),       # singular
+        (75.4, 'about 1.5 minutes'),    # the V4, measured at about 75 seconds
+        (130.0, 'about 2 minutes'),
+    ])
+    def test_the_duration_is_rounded_to_something_worth_reading(self, seconds, expected):
+        """The estimate is a per-step figure times a step count, so saying 75 seconds
+        would claim an accuracy it does not have.
+        """
+        assert GainCalibrationDialog._duration_phrase(seconds) == expected
 
     def test_progress_and_instructions_are_different_widgets(self, tmp_path):
         """The defect stated directly: one widget cannot hold both, because the

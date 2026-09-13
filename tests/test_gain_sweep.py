@@ -9,6 +9,7 @@ import numpy as np
 import pytest
 
 from buzz.gain_sweep import (
+    _FLOOR_ERROR_TARGET_DB,
     BandMeasurement,
     GainChooser,
     GainMeasurement,
@@ -37,6 +38,13 @@ def _curve(gains, antenna_at_unity, converter):
     """Quiet levels in dBFS for an antenna and converter of known size."""
     power = antenna_at_unity * 10 ** (np.array(gains) / 10) + converter
     return [_measurement(g, float(10 * np.log10(p))) for g, p in zip(gains, power)]
+
+
+def _fit_of(antenna_at_unity, converter):
+    """The fit the chooser builds for the same curve, so a test can ask it directly."""
+    measurements = _curve(V4_GAINS, antenna_at_unity, converter)
+    return KneeFit(np.array(V4_GAINS),
+                   np.array([10 ** (m.quiet_dbfs / 10) for m in measurements]))
 
 
 class FakeReceiver:
@@ -187,13 +195,21 @@ class TestTheChooserWeighsBothBounds:
     its own wording rather than one "calibration failed".
     """
 
-    def test_it_picks_the_lowest_gain_where_the_antenna_dominates(self):
-        """Lowest rather than highest: every dB above what the antenna needs is a dB
-        an arc no longer has.
+    def test_it_picks_the_offered_step_nearest_the_floor_target(self):
+        """No other step the tuner has sits closer to the target, which is the whole
+        rule.  The comparison runs against the fit rather than against the chooser, so
+        the two figures do not both come from the thing under test.
         """
-        result = GainChooser(tuple(_curve(V4_GAINS, 1e-6, 1e-4)), 32.0).choose()
+        antenna, converter = 1e-6, 1e-4
+        result = GainChooser(tuple(_curve(V4_GAINS, antenna, converter)), 32.0).choose()
         assert result.chosen_db is not None
-        assert result.antenna_share >= 0.5
+        fit = _fit_of(antenna, converter)
+        distance = {gain: abs(fit.floor_error_db(gain) - _FLOOR_ERROR_TARGET_DB)
+                    for gain in V4_GAINS}
+        nearest = min(distance, key=lambda gain: distance[gain])
+        assert result.chosen_db == nearest, (
+            f'{result.chosen_db} dB sits {distance[result.chosen_db]:.2f} dB from the '
+            f'target where {nearest} dB sits {distance[nearest]:.2f} dB from it')
         lower = [m.gain_db for m in result.measurements if m.gain_db < result.chosen_db]
         assert lower, 'the chosen gain is the lowest offered, so nothing was ruled out'
 
@@ -208,8 +224,8 @@ class TestTheChooserWeighsBothBounds:
         antenna = 1e-14      # far below the converter at every gain the tuner offers
         result = GainChooser(tuple(_curve(V4_GAINS, antenna, 1e-4)), 32.0).choose()
         assert result.chosen_db in V4_GAINS
-        assert result.chosen_db == result.highest_safe_db
-        assert result.lowest_usable_db is None
+        assert result.chosen_db == result.headroom_bound_db
+        assert result.floor_bound_db is None
         assert 'antenna' in result.reason
         assert 'high' in result.reason, 'the floor penalty has to be stated'
 
@@ -238,24 +254,32 @@ class TestTheChooserWeighsBothBounds:
         amount in a known direction, so it is what pays.
         """
         # Dominance needs high gain; headroom allows only low.
-        curve = _curve(V4_GAINS, 2e-11, 1e-8)
-        raised = tuple(GainMeasurement(m.gain_db, m.quiet_dbfs + 45.0, m.peak_dbfs,
+        # A quiet antenna on a loud band: the floor bound wants 48.0 dB and clipping
+        # allows only 44.5.  Found by scanning rather than guessed, since the floor
+        # target decides how far apart the two have to be before they cross at all.
+        curve = _curve(V4_GAINS, 2e-13, 1e-8)
+        raised = tuple(GainMeasurement(m.gain_db, m.quiet_dbfs + 46.0, m.peak_dbfs,
                                        m.clipped, m.passes) for m in curve)
         result = GainChooser(raised, 32.0).choose()
-        assert result.lowest_usable_db > result.highest_safe_db, 'fixture must cross'
-        assert result.chosen_db == result.highest_safe_db
+        assert result.floor_bound_db > result.headroom_bound_db, 'fixture must cross'
+        assert result.chosen_db == result.headroom_bound_db
         assert result.floor_error_db > 3.0, 'a crossing costs floor accuracy'
 
     def test_a_crossing_says_how_much_floor_it_gave_up(self):
         """The figure is the whole point of choosing rather than refusing: an operator
         deciding whether to live with it needs to know what it costs.
         """
-        curve = _curve(V4_GAINS, 2e-11, 1e-8)
-        raised = tuple(GainMeasurement(m.gain_db, m.quiet_dbfs + 45.0, m.peak_dbfs,
+        # A quiet antenna on a loud band: the floor bound wants 48.0 dB and clipping
+        # allows only 44.5.  Found by scanning rather than guessed, since the floor
+        # target decides how far apart the two have to be before they cross at all.
+        curve = _curve(V4_GAINS, 2e-13, 1e-8)
+        raised = tuple(GainMeasurement(m.gain_db, m.quiet_dbfs + 46.0, m.peak_dbfs,
                                        m.clipped, m.passes) for m in curve)
         reason = GainChooser(raised, 32.0).choose().reason
         assert 'dB high' in reason
-        assert '% of the noise floor' in reason
+        assert '%' not in reason, (
+            'the share and the decibels are one figure said twice, and the decibels '
+            'are the half that names a remedy')
 
     def test_headroom_is_never_given_up_for_the_floor(self):
         """The asymmetry stated as a property.  Whatever the antenna is doing, the
@@ -263,11 +287,11 @@ class TestTheChooserWeighsBothBounds:
         """
         for antenna in (1e-14, 2e-11, 1e-6, 1e-3):
             result = GainChooser(tuple(_curve(V4_GAINS, antenna, 1e-8)), 32.0).choose()
-            if result.chosen_db is None or result.highest_safe_db is None:
+            if result.chosen_db is None or result.headroom_bound_db is None:
                 continue
-            assert result.chosen_db <= result.highest_safe_db, (
+            assert result.chosen_db <= result.headroom_bound_db, (
                 f'antenna {antenna:g} chose {result.chosen_db} above the headroom '
-                f'bound of {result.highest_safe_db}')
+                f'bound of {result.headroom_bound_db}')
 
     def test_the_chosen_gain_really_does_leave_the_reserve(self):
         """The bound stated as the property it exists to guarantee, so a change to how
@@ -420,8 +444,8 @@ class TestTheDegenerateAnswers:
         """Rather than a logarithm of zero.  It is the honest number: none of the
         reading is the band, so the error against the band is unbounded.
         """
-        result = SweepResult(None, 'x', antenna_share=0.0, lowest_usable_db=None,
-                             highest_safe_db=None, measurements=())
+        result = SweepResult(None, 'x', antenna_share=0.0, floor_bound_db=None,
+                             headroom_bound_db=None, measurements=())
         assert result.floor_error_db == float('inf')
 
     @pytest.mark.parametrize('share,expected_db', [(1.0, 0.0), (0.5, 3.01), (0.9, 0.46)])
@@ -456,23 +480,82 @@ class TestTheAnswerIsAlwaysAGainTheTunerHas:
         cross, so a figure the hardware never had would be quoted in the reason.
         """
         result = GainChooser(tuple(_curve(V4_GAINS, 1e-6, 1e-4)), 32.0).choose()
-        for bound in (result.lowest_usable_db, result.highest_safe_db):
+        for bound in (result.floor_bound_db, result.headroom_bound_db):
             assert bound is None or bound in V4_GAINS
 
-    def test_the_knee_is_not_rounded_into_an_answer(self):
-        """The continuous knee generally falls between two steps.  The chooser has to
-        return the step at or above it rather than the knee itself, which is a number
-        the tuner cannot be set to.
+    def test_the_target_is_not_rounded_into_an_answer(self):
+        """The gain that hits the target exactly falls between two steps, and the
+        chooser has to return a step rather than that figure, which the tuner cannot
+        be set to.
+        """
+        result = GainChooser(tuple(_curve(V4_GAINS, 1e-6, 1e-4)), 32.0).choose()
+        assert result.chosen_db in V4_GAINS
+        assert result.floor_error_db != pytest.approx(_FLOOR_ERROR_TARGET_DB, abs=0.01), (
+            'no step on this curve sits on the target.  An exact hit means the '
+            'answer is the target itself rather than a gain the tuner has')
+
+    @pytest.mark.parametrize('ratio', [2, 10, 60, 210, 900, 4000, 20000])
+    def test_the_floor_error_stays_within_half_a_step_of_the_target(self, ratio):
+        """What the target buys over the budget it replaced.  A budget spends whatever
+        the next step down happens to cost, where a target can never sit further from
+        itself than half the gap between two steps.
+
+        The widest gap in the V4 ladder below 40 dB is 4.0 dB, so 2.0 dB either side is
+        the bound asserted here.
+        """
+        # A quiet converter, so that even the widest ratio here leaves every gain
+        # with headroom and the floor bound is the only thing deciding.
+        result = GainChooser(tuple(_curve(V4_GAINS, 1e-10, 1e-10 * ratio)),
+                             32.0).choose()
+        assert result.chosen_db is not None
+        assert abs(result.floor_error_db - _FLOOR_ERROR_TARGET_DB) <= 2.0, (
+            f'a converter {ratio} times the antenna chose {result.chosen_db} dB, '
+            f'reading {result.floor_error_db:.2f} dB high')
+
+    def test_a_fit_that_moves_a_little_moves_the_answer_a_little(self):
+        """The failure that replaced the budget.  A budget is a bar, so two steps
+        2.2 dB apart can sit either side of it, and half a decibel of drift in the fit
+        then moves the answer by a whole step.  A station near the bar saw exactly
+        that, reading 25.4 dB on one run and 20.7 dB on the next.
+
+        Against a target the same drift moves how far a step sits from the target
+        rather than which side of anything it falls on.
+        """
+        chosen = {GainChooser(tuple(_curve(V4_GAINS, 1e-6, ratio * 1e-6)),
+                              32.0).choose().chosen_db
+                  for ratio in (190, 200, 210, 220, 230)}
+        assert len(chosen) <= 2, (
+            f'a 20 percent spread in the converter term gave {sorted(chosen)}')
+
+    def test_an_antenna_the_tuner_cannot_lift_to_the_target_has_no_floor_bound(self):
+        """Without the guard, a fit that separated nothing would rate every gain
+        equally far from the target, and the lowest would win a tie it should not be
+        in.
+        """
+        assert _fit_of(1e-14, 1e-4).gain_nearest_the_floor_target(V4_GAINS) is None
+
+    def test_a_tie_goes_to_the_lower_gain(self):
+        """The decibel a tie costs the floor is one an arc gets to use, so the lower
+        gain is the side to err on.  The target is moved to the midpoint between two
+        steps, which is the only way to make a tie out of a continuous curve.
+        """
+        fit = _fit_of(1e-6, 1e-4)
+        lower, higher = 20.7, 22.9
+        midway = (fit.floor_error_db(lower) + fit.floor_error_db(higher)) / 2.0
+        assert (abs(fit.floor_error_db(lower) - midway)
+                == pytest.approx(abs(fit.floor_error_db(higher) - midway), abs=1e-9))
+        assert min([lower, higher],
+                   key=lambda gain: abs(fit.floor_error_db(gain) - midway)) == lower
+
+    def test_the_result_and_the_fit_report_the_same_floor_error(self):
+        """A drift pin.  SweepResult works the figure out from the share it was handed
+        and KneeFit works it out from the gain, so nothing else would notice the two
+        coming apart.
         """
         antenna, converter = 1e-6, 1e-4
-        knee_db = 10 * np.log10(converter / antenna)
-        assert knee_db not in V4_GAINS, 'pick a fixture whose knee misses every step'
         result = GainChooser(tuple(_curve(V4_GAINS, antenna, converter)), 32.0).choose()
-        assert result.chosen_db in V4_GAINS
-        assert result.chosen_db >= knee_db
-        below = [g for g in V4_GAINS if g < result.chosen_db]
-        assert not below or max(below) < knee_db, (
-            'a lower offered step also cleared the knee, so this is not the lowest')
+        assert result.floor_error_db == pytest.approx(
+            _fit_of(antenna, converter).floor_error_db(result.chosen_db), abs=0.01)
 
     def test_what_the_sweep_records_is_what_the_device_accepted(self):
         """The property that makes all of the above true.  Recording the request
@@ -674,3 +757,43 @@ class TestTheFloorSurvivesARunningArc:
         """
         assert BandMeasurement.frame_samples(8_000) == 64
         assert BandMeasurement.frame_samples(1) == 64
+
+
+class TestTheAnswerSaysWhichBoundDecidedIt:
+    """An operator whose arcs still clip at the chosen gain has to be able to act.
+    The remedy is arc_headroom_db, which only helps once the headroom bound falls
+    below the dominance one, and that is impossible to judge without being told where
+    the headroom bound currently sits.
+    """
+
+    def _reason(self, headroom=32.0):
+        return GainChooser(tuple(_curve(V4_GAINS, 1e-6, 1e-4)), headroom).choose().reason
+
+    def test_it_names_the_bound_that_was_not_binding(self):
+        result = GainChooser(tuple(_curve(V4_GAINS, 1e-6, 1e-4)), 32.0).choose()
+        assert f'{result.headroom_bound_db:.1f} dB' in result.reason
+
+    def test_it_says_which_one_decided(self):
+        assert 'the floor is what set this' in self._reason()
+
+    def test_it_names_the_setting_that_moves_the_other_one(self):
+        assert 'arc_headroom_db' in self._reason()
+
+    def test_raising_the_reserve_lowers_the_headroom_bound(self):
+        """The property the advice rests on.  If this stopped holding, the advice
+        would be sending somebody to a knob that does nothing.
+        """
+        curve = tuple(_curve(V4_GAINS, 1e-6, 1e-4))
+        bounds = [GainChooser(curve, h).choose().headroom_bound_db
+                  for h in (26.0, 32.0, 38.0)]
+        present = [b for b in bounds if b is not None]
+        assert present == sorted(present, reverse=True), bounds
+
+    def test_a_large_enough_reserve_makes_headroom_the_deciding_bound(self):
+        """Which is the whole point of telling somebody about the knob: turned far
+        enough, it takes the decision away from the antenna.
+        """
+        curve = tuple(_curve(V4_GAINS, 1e-6, 1e-4))
+        relaxed = GainChooser(curve, 26.0).choose()
+        strict = GainChooser(curve, 44.0).choose()
+        assert strict.chosen_db is None or strict.chosen_db < relaxed.chosen_db
