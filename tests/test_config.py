@@ -8,7 +8,7 @@ import pytest
 
 from buzz.config import (
     AudioConfig, BuzzConfig, RecordingConfig, RtlSdrConfig, ServerConfig,
-    StationConfig, WeatherConfig, _load_section, validate_sample_rate,
+    StationConfig, WeatherConfig, _load_section, is_runtime, validate_sample_rate,
 )
 from buzz.constants import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 
@@ -155,8 +155,13 @@ class TestExampleConfigMatchesTheDataclasses:
         return keys
 
     def _defined(self) -> dict[str, set[str]]:
+        """Section name to field names, skipping BuzzConfig's runtime state.
+
+        A field marked config.RUNTIME is not a setting and is deliberately absent from
+        the sample config, so counting it here would report the design as drift.
+        """
         return {f.name: set(getattr(BuzzConfig(), f.name).__dataclass_fields__)
-                for f in fields(BuzzConfig())}
+                for f in fields(BuzzConfig()) if not is_runtime(f)}
 
     def test_every_section_is_documented(self):
         assert set(self._documented()) == set(self._defined())
@@ -177,7 +182,7 @@ class TestExampleConfigMatchesTheDataclasses:
         example, defaults = BuzzConfig.from_toml(_EXAMPLE), BuzzConfig()
         differing = {
             (section.name, option)
-            for section in fields(BuzzConfig())
+            for section in fields(BuzzConfig()) if not is_runtime(section)
             for option in getattr(defaults, section.name).__dataclass_fields__
             if getattr(getattr(example, section.name), option)
             != getattr(getattr(defaults, section.name), option)

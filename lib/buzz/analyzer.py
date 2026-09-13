@@ -333,7 +333,7 @@ class ContinuousAnalyzer:
         audio                   = config.audio
         self._sample_rate       = audio.sample_rate
         self._pulse_rate        = audio.pulse_rate
-        self._offset_db         = config.station.audio_rf_conversion_db
+        self._offset_db         = config.level_offset_db
         self._window_samples    = audio.sample_rate    # 1 s analysis window
         self._scan_pulses       = audio.pulse_rate // 2   # half a second of pulses (full kernel)
         self._samples_per_pulse = audio.sample_rate / audio.pulse_rate

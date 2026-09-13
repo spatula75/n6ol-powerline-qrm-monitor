@@ -197,7 +197,7 @@ class EventRecorder:
         # either wrong changes what the replay measures - see wavmeta.
         self._callsign         = config.station.callsign
         self._pulse_rate       = config.audio.pulse_rate
-        self._rf_conversion_db = config.station.audio_rf_conversion_db
+        self._rf_conversion_db = config.level_offset_db
         # Both limits in samples, on the audio clock, and both clamped: a nonsensical
         # setting should degrade to the nearest sensible behavior rather than into
         # something surprising.  A negative cap would drive the write position back

@@ -574,7 +574,7 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         # _update_color_range() replaces it with the real, live level once actual
         # data starts arriving.
         floor_seed = (config.station.noise_floor
-                      - config.station.audio_rf_conversion_db
+                      - config.level_offset_db
                       - self._geometry.noise_correction)
         # Audio pulled per display row, rounded up to whole ring-buffer chunks so
         # consecutive rows overlap slightly (4 chunks = 128 ms per 100 ms row at

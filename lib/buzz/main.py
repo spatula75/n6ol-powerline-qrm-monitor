@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, TypeVar
 from buzz import wavmeta
 from buzz.analyzer import ContinuousAnalyzer
 from buzz.collector import Collector
-from buzz.config import CONFIG_PATH, RTLSDR, SOUNDCARD, BuzzConfig, validate_sample_rate
+from buzz.config import CONFIG_PATH, RTLSDR, SOUNDCARD, BuzzConfig, RtlSdrConfig, validate_sample_rate
 from buzz.csv_store import CsvStore
 from buzz.playback import (
     FilePlaybackPipeline,
@@ -217,12 +217,15 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
     pulse_rate = wavmeta.setting(settings, 'pulse_rate', int)
     calibration = wavmeta.setting(settings, 'audio_rf_conversion_db', float)
 
-    audio, station = config.audio, config.station
+    audio = config.audio
     audio.sample_rate = _adopt(
         'sample rate', path.name, audio.sample_rate, pipeline.sample_rate)
     audio.pulse_rate = _adopt('pulse rate', path.name, audio.pulse_rate, pulse_rate)
-    station.audio_rf_conversion_db = _adopt(
-        'level calibration', path.name, station.audio_rf_conversion_db, calibration)
+    # Into the override rather than over this station's own setting, so the figure a
+    # recording carries never becomes something the config appears to hold.  See
+    # BuzzConfig.level_offset_db.
+    config.level_offset_override_db = _adopt(
+        'level calibration', path.name, config.level_offset_db, calibration)
 
     # Any .wav plays, including one this monitor never made, but it cannot be
     # analyzed with any authority.  The operator is the only one who can judge whether
@@ -240,7 +243,7 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
         else:
             logger.info('Using %.1f dB from --audio-rf-conversion-db to convert audio '
                         'levels to signal levels for this replay.', rf_conversion_db)
-        station.audio_rf_conversion_db = rf_conversion_db
+        config.level_offset_override_db = rf_conversion_db
 
     # Two separate warnings rather than one, because they have different consequences
     # and different remedies.  A wrong pulse rate means nothing locks; a wrong
@@ -260,8 +263,36 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
             'dBm and S-unit readings may be wrong by any amount, though lock, phase '
             'and burst shape do not depend on it. Pass --audio-rf-conversion-db if you '
             'know the figure at which it was recorded.',
-            path.name, station.audio_rf_conversion_db)
+            path.name, config.level_offset_db)
     return pipeline
+
+
+def _warn_if_the_calibration_predates_the_gain(settings: RtlSdrConfig) -> None:
+    """Say so when the tuner gain has moved since the level offset was measured.
+
+    The offset is mostly the negative of the gain, so changing one without the other
+    leaves every dBm reading wrong by the difference.  Nothing else notices: lock,
+    SNR, phase and burst shape all survive an offset error, because it cancels in a
+    difference, so the monitor runs perfectly and reports the wrong levels.
+
+    The setup program moves the two together, so this fires only for a config file
+    edited by hand.  That is a supported thing to do, which is why the check exists.
+
+    A calibration with no recorded gain is left alone.  It came from a file written
+    before the figure was stored, or from somebody who set the offset directly, and
+    neither is evidence of drift.
+    """
+    measured_at = settings.calibrated_at_gain_db
+    if measured_at is None or measured_at == settings.gain_db:
+        return
+    logger.warning(
+        'The level calibration was measured at %.1f dB of tuner gain.  The gain is '
+        'now %.1f dB, so every level will read about %.1f dB out.  Nothing else will '
+        'look wrong, because lock and SNR do not depend on it.  Run the calibration '
+        'again, or set [rtlsdr] calibrated_offset_db to %.1f to carry the old '
+        'measurement across.',
+        measured_at, settings.gain_db, abs(settings.gain_db - measured_at),
+        settings.level_offset_db - (settings.gain_db - measured_at))
 
 
 def open_live_source(config: BuzzConfig) -> RingBufferPipeline:
@@ -278,10 +309,9 @@ def open_live_source(config: BuzzConfig) -> RingBufferPipeline:
     A source this does not recognize is refused rather than treated as a sound card.
     Nothing else checks the setting.  The schema states the two values it allows and
     the setup program enforces them, but _load_section copies whatever the file holds.
-    [rtlsdr] has no setup screen yet either, so that section reaches the file by hand
-    and a neighboring typo in [audio] arrives the same way.  A misspelling would
-    otherwise open the sound card named in [audio] input_device_name and log a day of
-    whatever that input is hearing.
+    The setup program does enforce it, but a config file is still edited by hand and a
+    misspelling there would otherwise open the sound card named in [audio]
+    input_device_name and log a day of whatever that input is hearing.
     """
     if config.audio.source not in (SOUNDCARD, RTLSDR):
         raise RuntimeError(
@@ -310,23 +340,19 @@ def open_live_source(config: BuzzConfig) -> RingBufferPipeline:
     # seconds by dividing samples by this figure.
     config.audio.sample_rate = converter.audio_sample_rate
 
-    # The receiver has its own dB offset, because the figure depends on the tuner gain
-    # and the sound card's has nothing to do with it.  The analyzer reads whichever is
-    # in station, so the chosen one is put there.
-    config.station.audio_rf_conversion_db = settings.level_offset_db
-
     logger.info('Listening on %.4f MHz with an RTL-SDR tuned to %.4f MHz, %.1f dB '
                 'gain, %d Hz of %s sideband, %d Hz audio.',
                 settings.frequency_hz / 1e6, source.tuned_hz / 1e6, source.gain_db,
                 settings.bandwidth_hz, settings.sideband, converter.audio_sample_rate)
-    if settings.audio_rf_conversion_db is not None:
+    if settings.calibrated_offset_db is not None:
+        _warn_if_the_calibration_predates_the_gain(settings)
         logger.info('Levels are offset by %+.1f dB, the calibrated figure for this '
                     'station.', settings.level_offset_db)
     else:
         logger.warning(
             'This receiver has not been calibrated, so levels are offset by %+.1f dB, '
             'estimated from the tuner gain.  Expect them to be a few dB out, and the '
-            'error to change if the gain does.  Set [rtlsdr] audio_rf_conversion_db '
+            'error to change if the gain does.  Set [rtlsdr] calibrated_offset_db '
             'once you have compared against a receiver you trust on the same antenna.',
             settings.level_offset_db)
     return RtlSdrPipeline(source, converter)
@@ -601,10 +627,11 @@ def main() -> None:  # pragma: no cover
             logger.warning('--mute and --playback-gain are ignored outside playback; '
                            'the monitor never sends live audio to an output device.')
         if args.audio_rf_conversion_db is not None:
-            logger.warning('--audio-rf-conversion-db is ignored outside playback; live '
-                           'audio is calibrated by station.audio_rf_conversion_db in '
-                           'the config, which is the figure this station was set up '
-                           'with. Change it there rather than per run.')
+            logger.warning('--audio-rf-conversion-db is ignored outside playback.  '
+                           'Live audio is calibrated in the config, by [rtlsdr] '
+                           'calibrated_offset_db for a receiver and [station] '
+                           'audio_rf_conversion_db for a sound card.  Change it '
+                           'there rather than per run.')
         # open_live_source fails with a message written for whoever is standing at the
         # radio: which driver to install, what else holds the device, which setting is
         # wrong.  A traceback would bury all of it, so this gets the same treatment

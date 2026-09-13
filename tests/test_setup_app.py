@@ -12,6 +12,7 @@ from textual.css.query import NoMatches
 from textual.widgets import Button, OptionList, RadioButton, RadioSet
 from buzz.setup.device_setup import DeviceInfo
 from buzz.setup.screens.calibration import (
+    _NUDGE_STEP_DB,
     CalibrationMeterDialog,
     _format_reading,
     _meter_block,
@@ -1513,13 +1514,13 @@ class TestSetupAppWalkthrough:
                 await pilot.press('up')
                 await pilot.pause()
 
-                assert f'{before + 1.0:+.1f} dB' in app.screen.query_one('#offset').content
-                assert _FakeLevelStream.instances[-1].offset_db == before + 1.0
+                assert f'{before + 2 * _NUDGE_STEP_DB:+.1f} dB' in app.screen.query_one('#offset').content
+                assert _FakeLevelStream.instances[-1].offset_db == before + 2 * _NUDGE_STEP_DB
 
                 await pilot.press('enter')
                 await pilot.pause()
 
-                assert app.values['station']['audio_rf_conversion_db'] == before + 1.0
+                assert app.values['station']['audio_rf_conversion_db'] == before + 2 * _NUDGE_STEP_DB
 
         run(scenario())
 
@@ -1895,9 +1896,13 @@ class TestTheAudioSourceRowOnTheMainMenu:
 
 class TestTheReceiverSectionMenu:
 
-    def test_it_offers_the_four_steps_and_hides_the_rest(self, tmp_path):
+    def test_it_offers_the_steps_in_order_and_hides_the_rest(self, tmp_path):
         """The five file-only settings stay documented in config.example.toml, and
         simply have no business in a menu.
+
+        The gain sweep is a row among the fields rather than below them, because it is
+        the second step of the procedure the section lists: tune, measure a gain, read
+        back what it chose, then say which receiver.
         """
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
@@ -1909,8 +1914,8 @@ class TestTheReceiverSectionMenu:
                 await pilot.pause()
                 rows = app.screen.query_one('#fields', OptionList)
                 ids = [rows.get_option_at_index(i).id for i in range(rows.option_count)]
-                assert ids == ['frequency_hz', 'gain_db', 'audio_rf_conversion_db',
-                               'device_index'], ids
+                assert ids == ['frequency_khz', '__sweep__', 'gain_db',
+                               'calibrated_offset_db', 'device_index'], ids
         run(scenario())
 
 
@@ -1923,25 +1928,25 @@ class TestTheLevelCalibrationRow:
     SPEC = {'type': ['number', 'null'], 'title': 'Level calibration (dB)'}
 
     def _values(self, **overrides):
-        values = {'gain_db': 40.2, 'audio_rf_conversion_db': None}
+        values = {'gain_db': 40.2, 'calibrated_offset_db': None}
         values.update(overrides)
         return values
 
     def test_an_uncalibrated_row_shows_the_estimate_and_says_so(self):
-        assert row_value('rtlsdr', 'audio_rf_conversion_db', self.SPEC,
+        assert row_value('rtlsdr', 'calibrated_offset_db', self.SPEC,
                          self._values()) == '-40.2 (estimated)'
 
     def test_the_estimate_follows_the_gain(self):
         """Which is what proves it is derived rather than copied.  A second copy of
         `-gain_db` in the menu would keep showing -40.2 after the gain moved.
         """
-        assert row_value('rtlsdr', 'audio_rf_conversion_db', self.SPEC,
+        assert row_value('rtlsdr', 'calibrated_offset_db', self.SPEC,
                          self._values(gain_db=43.9)) == '-43.9 (estimated)'
 
     def test_a_calibrated_row_carries_no_marker(self):
         """The marker exists to flag a number the operator did not supply."""
-        assert row_value('rtlsdr', 'audio_rf_conversion_db', self.SPEC,
-                         self._values(audio_rf_conversion_db=-38.5)) == '-38.5'
+        assert row_value('rtlsdr', 'calibrated_offset_db', self.SPEC,
+                         self._values(calibrated_offset_db=-38.5)) == '-38.5'
 
     def test_the_row_shows_what_the_monitor_will_actually_use(self):
         """A drift pin.  The menu and the running program each decide what an unset
@@ -1950,7 +1955,7 @@ class TestTheLevelCalibrationRow:
         """
         for gain in (22.9, 40.2, 49.6):
             values = self._values(gain_db=gain)
-            shown = row_value('rtlsdr', 'audio_rf_conversion_db', self.SPEC, values)
+            shown = row_value('rtlsdr', 'calibrated_offset_db', self.SPEC, values)
             used = RtlSdrConfig(**values).level_offset_db
             assert shown == f'{used:g} (estimated)', (
                 f'the menu shows {shown} at gain {gain} where the monitor uses {used}')

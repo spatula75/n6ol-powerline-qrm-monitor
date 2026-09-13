@@ -132,17 +132,24 @@ def validate(schema: dict[str, Any], values: ConfigValues) -> list[str]:
 
 
 def is_visible(schema: dict[str, Any], section: str, field: str,
-               section_values: SectionValues) -> bool:
-    """Whether to show `field`, given what else in its section is set.
+               values: ConfigValues) -> bool:
+    """Whether to show `field`, given what is set anywhere.
 
     A field with no `x-visible-when` always shows.  A field that has one shows only
     when the field it names holds the stated value.  The whole of [server] therefore
     stays out of the way until you switch uploads on.
+
+    The condition may name a `section`, and defaults to the field's own.  Most gates
+    are local, and one is not: station.audio_rf_conversion_db describes a sound card
+    and is overwritten at startup when the source is a receiver, so it has to read
+    audio.source to know whether it applies at all.  This is the same shape
+    section_is_visible already uses, rather than a second spelling of one idea.
     """
     condition = field_schema(schema, section, field).get('x-visible-when')
     if condition is None:
         return True
-    return section_values.get(condition['field']) == condition['equals']
+    where = values.get(condition.get('section', section), {})
+    return where.get(condition['field']) == condition['equals']
 
 
 def section_is_visible(schema: dict[str, Any], section: str,
@@ -162,7 +169,7 @@ def section_is_visible(schema: dict[str, Any], section: str,
 
 
 def menu_field_names(schema: dict[str, Any], section: str,
-                     section_values: SectionValues) -> list[str]:
+                     values: ConfigValues) -> list[str]:
     """The fields of `section` the setup program offers, in order.
 
     Two things take a field out of the menu.  `x-file-only` marks a setting that is
@@ -176,4 +183,4 @@ def menu_field_names(schema: dict[str, Any], section: str,
     """
     return [field for field in field_names(schema, section)
             if not field_schema(schema, section, field).get('x-file-only')
-            and is_visible(schema, section, field, section_values)]
+            and is_visible(schema, section, field, values)]

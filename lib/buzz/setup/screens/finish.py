@@ -14,7 +14,7 @@ import tomli_w
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Footer, Static
 
-from buzz.setup.schema import ConfigValues, field_names, section_names
+from buzz.setup.schema import ConfigValues, field_names, is_visible, section_names
 from buzz.setup.screens.base import ScopeScreen, scope_header
 
 _BACKUP_TIMESTAMP = '%Y%m%d-%H%M%S'
@@ -45,10 +45,31 @@ def backup_path(config_path: Path, now: datetime | None = None) -> Path:
     return config_path.with_name(f'config-{now:{_BACKUP_TIMESTAMP}}.toml.bak')
 
 
-def toml_ready(values: ConfigValues) -> dict[str, dict[str, Any]]:
-    """`values` with every unset (None) field dropped.  TOML cannot spell "unset"."""
-    return {section: {k: v for k, v in fields.items() if v is not None}
-            for section, fields in values.items()}
+def toml_ready(values: ConfigValues,
+               schema: dict[str, Any] | None = None) -> dict[str, dict[str, Any]]:
+    """`values` ready to write: no unset fields, and nothing that does not apply.
+
+    TOML cannot spell "unset", so a None is dropped rather than written.
+
+    A setting hidden by `x-visible-when` is dropped too, when a schema is given.  Two
+    sections carry a level offset and exactly one is ever used, so writing both
+    left a receiver's config file holding a live-looking [station] figure that the
+    monitor ignores.  A value nobody can act on is worse than a missing one,
+    because it invites somebody to edit it and watch nothing happen.
+
+    The schema is optional so that a caller with only values still gets the None
+    filtering, which is the older of the two jobs.
+    """
+    if schema is None:
+        return {section: {k: v for k, v in fields.items() if v is not None}
+                for section, fields in values.items()}
+    return {section: {name: field_values[name]
+                      for name in field_names(schema, section)
+                      if name in field_values
+                      and field_values[name] is not None
+                      and is_visible(schema, section, name, values)}
+            for section, field_values in values.items()
+            if section in section_names(schema)}
 
 
 class FinishScreen(ScopeScreen[None]):
@@ -147,5 +168,5 @@ class FinishScreen(ScopeScreen[None]):
 
         config_path.parent.mkdir(parents=True, exist_ok=True)
         with open(config_path, 'wb') as handle:
-            tomli_w.dump(toml_ready(self.app.values), handle)
+            tomli_w.dump(toml_ready(self.app.values, self.app.schema), handle)
         self.app.exit(message=f'Config saved to {config_path}')

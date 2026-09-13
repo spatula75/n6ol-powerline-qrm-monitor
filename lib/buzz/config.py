@@ -5,16 +5,20 @@ BuzzConfig is the top-level config object, composed of seven section dataclasses
 AudioConfig, StationConfig, WeatherConfig, ServerConfig, RecordingConfig,
 RenderConfig and RtlSdrConfig.  Each maps directly to a [section] in
 ~/.buzz/config.toml.  BuzzConfig.from_toml() reads the file and populates the
-dataclasses.  Unknown keys are silently ignored, so old config files do not break
-when new fields are added.
+dataclasses.  An unknown key is ignored rather than fatal, so a config file does not
+break when settings come and go, but _load_section says which key it dropped: silence
+there hid a renamed setting reverting to its default.
 """
 
+import logging
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 
 from buzz.constants import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
+
+logger = logging.getLogger(__name__)
 
 _T = TypeVar('_T')
 
@@ -55,6 +59,19 @@ def validate_sample_rate(sample_rate: int, source: str, configured_rate: int) ->
 SOUNDCARD = 'soundcard'
 RTLSDR = 'rtlsdr'
 
+# Marks a BuzzConfig field that holds runtime state rather than a configured setting.
+#
+# Such a field has no place in schema.json or config.example.toml, since nobody sets
+# it and writing it to a file would invite somebody to try.  The drift pins that tie
+# the dataclasses, the schema and the sample config together skip anything carrying
+# it, so adding another needs no edit to those tests.
+RUNTIME = {'runtime': True}
+
+
+def is_runtime(field_info: Any) -> bool:
+    """Whether a dataclass field holds runtime state rather than a setting."""
+    return bool(field_info.metadata.get('runtime'))
+
 
 @dataclass
 class RtlSdrConfig:
@@ -65,7 +82,7 @@ class RtlSdrConfig:
     first, in the order they are set, and the ones nobody should touch come after.
     """
 
-    # Frequency to listen on, in Hz.  The receiver is tuned away from this by
+    # Frequency to listen on, in kHz.  The receiver is tuned away from this by
     # tuning_offset_hz and the difference is undone in software, so this is the
     # frequency that is measured rather than the one the hardware sits at.
     #
@@ -73,16 +90,33 @@ class RtlSdrConfig:
     # window.  The device tunes 50 kHz above this, so the 256 kHz span runs from
     # 3.510 to 3.766 MHz.  Powerline noise is generally worse low in HF, which is why
     # the default sits on 80m rather than higher.
-    frequency_hz: int = 3_588_000
-    # Tuner gain in dB.  Snapped to the nearest step the tuner offers, since it accepts
-    # only a fixed set.  Measured on an RTL-SDR Blog V4, the useful range starts
-    # around 22.9 dB, because below that the output is the converter's own noise
-    # rather than anything from the antenna.
-    gain_db: float = 40.2
+    #
+    # In kHz because that is how an operator says a frequency, and typing three
+    # zeroes on the end of every one is a way to get a band wrong by a factor of ten.
+    # Everything below this line stays in Hz, since the hardware and the arithmetic
+    # both work there; frequency_hz converts once, at the boundary.
+    frequency_khz: float = 3588.0
+    # Tuner gain in dB.  The monitor snaps this to the nearest step the tuner offers,
+    # since the tuner accepts only a fixed set.  Measured on an RTL-SDR Blog V4, the
+    # useful range starts around 22.9 dB, because below that the output is the
+    # converter's own noise rather than anything from the antenna.
+    #
+    # 32.8 is what the automatic calibration chooses on the broadband antenna this was
+    # developed against, which makes it a shipped figure somebody arrived at rather
+    # than a guess.  It is the lowest step at or above that antenna's knee, which sits
+    # at 30.1 dB, and it leaves 11.7 dB more headroom than the reserve asks for.
+    # Every antenna differs, so run the calibration rather than trusting this.
+    gain_db: float = 32.8
     # dB added to the measured audio level to get signal level at the receiver input,
     # the same job station.audio_rf_conversion_db does for a sound card.  It lives here
     # rather than there because the figure depends on gain_db above, so the two belong
     # together.
+    #
+    # Named differently from the sound card's on purpose.  The two are different
+    # quantities: that one describes a radio and its wiring, this one is mostly the
+    # negative of the tuner gain and moves whenever the gain does.  Sharing a name
+    # across two sections read as one setting stored twice, which is what somebody
+    # took it for.
     #
     # Unset means estimate it as the negative of gain_db, which puts a new station
     # within a few dB with no equipment at all.  That is a place to start from and not
@@ -90,8 +124,8 @@ class RtlSdrConfig:
     # drifts.  SNR, lock, phase and grid frequency do not depend on it either way,
     # since the offset cancels in a difference.  Only absolute levels and the S-meter
     # move.
-    audio_rf_conversion_db: float | None = None
-    # The gain audio_rf_conversion_db was calibrated against, written by the setup
+    calibrated_offset_db: float | None = None
+    # The gain calibrated_offset_db was calibrated against, written by the setup
     # program rather than chosen.  Changing gain_db afterwards leaves the offset wrong
     # by roughly the difference, and nothing else would notice, so startup compares
     # the two and says so.  The estimate needs no such check, because it is computed
@@ -131,20 +165,21 @@ class RtlSdrConfig:
     # IQ samples per audio sample.  Must divide iq_sample_rate exactly, so that the
     # audio rate is a whole number of samples per second.
     decimation: int = 16
-    # How much of the band to keep, in Hz, on one side of frequency_hz.  4000 matches a
-    # typical SSB filter, which is what makes levels comparable with a receiver.
-    bandwidth_hz: int = 4_000
-    # How far from frequency_hz to tune the hardware, in Hz.  A receiver puts a strong
-    # false signal at exactly its own tuning frequency, so this moves that artifact out
-    # of the measured band.  Undone in software, so it costs nothing but coverage on
-    # one side.
+    # How much of the band to keep, in kHz, on one side of the listening frequency.
+    # 4 kHz matches a typical SSB filter, which is what makes levels comparable with a
+    # receiver.
+    bandwidth_khz: float = 4.0
+    # How far from the listening frequency to tune the hardware, in kHz.  A receiver
+    # puts a strong false signal at exactly its own tuning frequency, so this moves
+    # that artifact out of the measured band.  Undone in software, so it costs nothing
+    # but coverage on one side.
     #
     # Measured on an RTL-SDR Blog V4, it also clears two spurs that ride the tuner: one
     # about 32 dB over the floor at the bottom band edge, and a pair about 24 dB over
-    # it at plus and minus 10 kHz.  That was luck rather than design, and it is worth
-    # rechecking before this value moves.
-    tuning_offset_hz: int = 50_000
-    # Which side of frequency_hz to listen to: 'upper' or 'lower'.  Either works for
+    # it at plus and minus 10 kHz.  That was luck rather than design, so recheck it
+    # before this value moves.
+    tuning_offset_khz: float = 50.0
+    # Which side of the listening frequency to listen to: 'upper' or 'lower'.  Either works for
     # measuring an arc.  A receiver in LSB shows the spectrum reversed, so the two
     # differ in how a waterfall reads rather than in what is measured.
     sideband: str = 'upper'
@@ -175,9 +210,34 @@ class RtlSdrConfig:
         estimate beats zero anywhere, but the residual has been measured exactly
         once.
         """
-        if self.audio_rf_conversion_db is not None:
-            return self.audio_rf_conversion_db
+        if self.calibrated_offset_db is not None:
+            return self.calibrated_offset_db
         return -self.gain_db
+
+    @property
+    def frequency_hz(self) -> int:
+        """The listening frequency in Hz, which is what the receiver is set in."""
+        return self._as_hz(self.frequency_khz)
+
+    @property
+    def bandwidth_hz(self) -> int:
+        """The kept bandwidth in Hz, which is what the filter is designed in."""
+        return self._as_hz(self.bandwidth_khz)
+
+    @property
+    def tuning_offset_hz(self) -> int:
+        """The tuning offset in Hz, which is what the mixer is stepped in."""
+        return self._as_hz(self.tuning_offset_khz)
+
+    @staticmethod
+    def _as_hz(khz: float) -> int:
+        """kHz to whole Hz.
+
+        Rounded rather than truncated, so a figure typed to the nearest hundred Hz
+        arrives exactly: 3588.1 kHz is 3588100 Hz and not 3588099.  Neither the tuner
+        nor the arithmetic downstream has any use for a fraction of a Hz.
+        """
+        return round(khz * 1000)
 
 
 @dataclass
@@ -313,12 +373,49 @@ class RenderConfig:
 @dataclass
 class BuzzConfig:
     audio: AudioConfig = field(default_factory=AudioConfig)
+    # Second, matching the schema, because the setup program walks the sections in
+    # that order and a receiver is configured immediately after the source that
+    # selects it.  tests/test_setup_schema.py pins the two together.
+    rtlsdr: RtlSdrConfig = field(default_factory=RtlSdrConfig)
     station: StationConfig = field(default_factory=StationConfig)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
-    rtlsdr: RtlSdrConfig = field(default_factory=RtlSdrConfig)
+    # Set at runtime rather than from the file, and read only through
+    # level_offset_db below.  Playback uses it to adopt the figure a recording was
+    # made with, or the one --audio-rf-conversion-db supplies, neither of which
+    # describes this station's own hardware.
+    #
+    # RUNTIME marks it as not a setting, which is what keeps it out of schema.json
+    # and config.example.toml.  The drift pins tying those three together read the
+    # marker rather than a list of exceptions, so the next one costs nothing.
+    level_offset_override_db: float | None = field(default=None, metadata=RUNTIME)
+
+    @property
+    def level_offset_db(self) -> float:
+        """The dB added to an audio level to get a signal level at the receiver input.
+
+        One question with one answer, resolved here rather than stored.  Two sections
+        carry a figure because the two mean different things: a sound card's is a
+        property of the wiring and the radio, and a receiver's depends on the tuner
+        gain that sits beside it.  Only one can apply, and which one is decided by
+        [audio] source.
+
+        Everything that converts a level reads this, so the two cannot be set
+        independently and have the program follow the wrong one.  Before it existed,
+        startup copied the receiver's figure over the sound card's, and a config file
+        then held two settings of the same name with only one in use and nothing
+        saying which.  That is what this exists to make impossible.
+
+        A playback override beats both, because it is the only figure anybody
+        deliberately supplied for the file being replayed.
+        """
+        if self.level_offset_override_db is not None:
+            return self.level_offset_override_db
+        if self.audio.source == RTLSDR:
+            return self.rtlsdr.level_offset_db
+        return self.station.audio_rf_conversion_db
 
     @classmethod
     def from_toml(cls, path: Path | str = CONFIG_PATH) -> 'BuzzConfig':
@@ -326,15 +423,33 @@ class BuzzConfig:
             data = tomllib.load(f)
         return cls(
             audio=_load_section(data, 'audio', AudioConfig),
+            rtlsdr=_load_section(data, 'rtlsdr', RtlSdrConfig),
             station=_load_section(data, 'station', StationConfig),
             weather=_load_section(data, 'weather', WeatherConfig),
             server=_load_section(data, 'server', ServerConfig),
             recording=_load_section(data, 'recording', RecordingConfig),
             render=_load_section(data, 'render', RenderConfig),
-            rtlsdr=_load_section(data, 'rtlsdr', RtlSdrConfig),
         )
 
 
 def _load_section(data: dict[str, Any], key: str, cls: type[_T]) -> _T:
+    """Build one section, keeping only the keys it declares and reporting the rest.
+
+    An unknown key is still ignored rather than fatal, so a file written by a newer
+    build, or one carrying a setting since removed, still starts.  What changed is
+    that it no longer happens in silence.
+
+    Silence was costing more than it saved.  A key renamed during development left a
+    receiver's calibration behind without a word: the figure reverted to the default,
+    the menu went on describing an estimate as an estimate, and nothing anywhere said
+    a line had been dropped.  A typo does exactly the same thing, which is the case
+    this keeps catching after the renaming stops.
+    """
     known = set(cls.__dataclass_fields__)
-    return cls(**{k: v for k, v in data.get(key, {}).items() if k in known})
+    section = data.get(key, {})
+    for unknown in sorted(set(section) - known):
+        logger.warning(
+            '[%s] %s is not a setting this program knows, so it was ignored and the '
+            'default used instead.  Check the spelling against config.example.toml.',
+            key, unknown)
+    return cls(**{k: v for k, v in section.items() if k in known})
