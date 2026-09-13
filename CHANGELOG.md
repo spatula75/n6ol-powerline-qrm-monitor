@@ -206,6 +206,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A finished gain sweep offered no way to decline the figure it measured except
   Escape. It has a Cancel button beside "Use this gain" now, and the arrow keys move
   between the two, which they did not.
+- The gain sweep's noise-floor measurement is thrown off by a running arc far less
+  than it was. Its frames were 4 ms, the same order as a 120 pps burst, so nearly
+  every frame straddled one and there was no quiet frame for the percentile to find:
+  a 6 ms burst 25 dB over the floor read 21 dB high. A frame is 1 ms now, derived from
+  the receiver's sample rate, which fits inside the 2.3 ms gap between bursts and
+  brings that to 0.01 dB. It costs 0.17 dB on a clean band, and the same at every
+  gain, so it leaves the gain the sweep picks unmoved.
+
+  An arc dense enough to leave no gap is still measured as the floor, correctly: there
+  is nothing else there to measure. Calibrate when the band is quiet.
+- The gain sweep says the reserve leaves "at least" the headroom figure. The chosen
+  gain is the lowest one where the antenna dominates, which is usually well below the
+  highest the reserve allows, so the real margin is commonly a good deal more.
 - The gain sweep could finish its last step, show nothing, and leave the receiver
   held. The release happened in the worker's `finally` as an awaited call, so the
   event loop decided whether it ran, and anything raised after the sweep died inside

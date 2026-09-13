@@ -19,6 +19,9 @@ from buzz.gain_sweep import (
 from buzz.sdr import IqBlock
 
 # The 29 steps an RTL-SDR Blog V4 reports, which is what the real sweep walks.
+# The receiver rate these captures stand for, which sets the frame length.
+IQ_RATE = 256_000
+
 V4_GAINS = [0.0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6, 19.7, 20.7,
             22.9, 25.4, 28.0, 29.7, 32.8, 33.8, 36.4, 37.2, 38.6, 40.2, 42.1, 43.4,
             43.9, 44.5, 48.0, 49.6]
@@ -140,7 +143,7 @@ class TestTheQuietLevelStepsOverBursts:
         return rng.normal(0, sigma, n) + 1j * rng.normal(0, sigma, n)
 
     def test_it_measures_the_level_of_plain_noise(self):
-        quiet = BandMeasurement.quiet_dbfs(self._noise(0.01))
+        quiet = BandMeasurement.quiet_dbfs(self._noise(0.01), IQ_RATE)
         assert quiet == pytest.approx(20 * np.log10(0.01), abs=0.5)
 
     def test_an_arc_on_a_tenth_of_the_capture_barely_moves_it(self):
@@ -151,8 +154,8 @@ class TestTheQuietLevelStepsOverBursts:
         with_arc = clean.copy()
         frames = len(with_arc) // 10
         with_arc[:frames] *= 10 ** (30 / 20)
-        assert (BandMeasurement.quiet_dbfs(with_arc)
-                == pytest.approx(BandMeasurement.quiet_dbfs(clean), abs=0.5))
+        assert (BandMeasurement.quiet_dbfs(with_arc, IQ_RATE)
+                == pytest.approx(BandMeasurement.quiet_dbfs(clean, IQ_RATE), abs=0.5))
 
     def test_the_peak_does_notice_the_arc(self):
         """The peak exists precisely to see what the quiet level ignores, so the two
@@ -164,11 +167,13 @@ class TestTheQuietLevelStepsOverBursts:
         assert BandMeasurement.peak_dbfs(with_arc) > BandMeasurement.peak_dbfs(clean) + 20
 
     def test_silence_reads_as_negative_infinity_rather_than_raising(self):
-        assert BandMeasurement.quiet_dbfs(np.zeros(4096, dtype=complex)) == float('-inf')
+        assert (BandMeasurement.quiet_dbfs(np.zeros(4096, dtype=complex), IQ_RATE)
+                == float('-inf'))
         assert BandMeasurement.peak_dbfs(np.zeros(4096, dtype=complex)) == float('-inf')
 
     def test_a_capture_shorter_than_one_frame_reads_as_silence(self):
-        assert BandMeasurement.quiet_dbfs(np.ones(4, dtype=complex)) == float('-inf')
+        assert (BandMeasurement.quiet_dbfs(np.ones(4, dtype=complex), IQ_RATE)
+                == float('-inf'))
 
 
 class TestTheChooserWeighsBothBounds:
@@ -502,8 +507,8 @@ class TestTheReceiverDcOffsetDoesNotReachTheFloor:
     def test_the_quiet_level_ignores_it(self, offset):
         """Before the fix, an offset of 0.04 read 7.07 dB high."""
         noise = self._noise()
-        assert (BandMeasurement.quiet_dbfs(noise + complex(offset, offset))
-                == pytest.approx(BandMeasurement.quiet_dbfs(noise), abs=0.01))
+        assert (BandMeasurement.quiet_dbfs(noise + complex(offset, offset), IQ_RATE)
+                == pytest.approx(BandMeasurement.quiet_dbfs(noise, IQ_RATE), abs=0.01))
 
     def test_the_peak_still_sees_it(self, offset=0.2):
         """The two measurements differ on purpose.  Clipping happens at the converter
@@ -567,3 +572,70 @@ class TestThePassCountStaysOdd:
         clean, arcing = 10.0, 24.0
         assert np.median([clean, clean, arcing]) == clean
         assert np.median([clean, clean, arcing, arcing]) == (clean + arcing) / 2
+
+
+class TestTheFloorSurvivesARunningArc:
+    """The percentile can only see the band underneath an arc if a frame fits inside
+    the gap between two bursts.  At 4 ms it did not: a frame was the same order as a
+    burst, so nearly every one straddled a burst and the reported floor read up to
+    21 dB high, which dragged the knee down and gave a different gain every run.
+    """
+
+    FLOOR_RMS = 0.01
+
+    def _band(self, seed, burst_ms=None, arc_db=None, pulse_rate=120, n=1 << 19):
+        rng = np.random.default_rng(seed)
+        sigma = self.FLOOR_RMS / np.sqrt(2)
+        samples = rng.normal(0, sigma, n) + 1j * rng.normal(0, sigma, n)
+        if arc_db is None:
+            return samples
+        period = IQ_RATE / pulse_rate
+        width = int(burst_ms / 1000 * IQ_RATE)
+        for index in range(int(n / period) + 1):
+            start = int(index * period)
+            samples[start:start + width] *= 10 ** (arc_db / 20)
+        return samples
+
+    def _error(self, **kwargs):
+        """How far the reported floor sits from the floor that is really there."""
+        measured = BandMeasurement.quiet_dbfs(self._band(**kwargs), IQ_RATE)
+        return measured - 20 * np.log10(self.FLOOR_RMS)
+
+    @pytest.mark.parametrize('burst_ms,arc_db', [(4.0, 10.0), (6.0, 10.0),
+                                                 (6.0, 25.0), (2.5, 30.0)])
+    def test_a_120_pps_arc_barely_moves_it(self, burst_ms, arc_db):
+        """At 4 ms frames these read +2.3, +6.7, +21.2 and +1.0 dB high."""
+        assert abs(self._error(seed=0, burst_ms=burst_ms, arc_db=arc_db)) < 0.6
+
+    def test_a_100_pps_arc_barely_moves_it(self):
+        """The other grid.  A frame that fits in a gap does not care how the frame
+        length happens to align with the pulse period, which is what made the old
+        setting read correctly at 100 pps and 21 dB high at 120.
+        """
+        assert abs(self._error(seed=0, burst_ms=6.0, arc_db=25.0,
+                               pulse_rate=100)) < 0.6
+
+    def test_a_clean_band_still_reads_true(self):
+        """The cost of the shorter frame, which is a systematic pull downward from the
+        percentile of a noisier per-frame estimate.
+        """
+        assert -0.6 < self._error(seed=1) < 0.0
+
+    def test_an_arc_with_no_gap_is_not_rejected_and_should_not_be(self):
+        """7.5 ms of an 8.33 ms period leaves no quiet band to measure, so reporting
+        the arc is the honest answer.  No frame length fixes this, which is why the
+        documentation says to calibrate when the band is quiet.
+        """
+        assert self._error(seed=0, burst_ms=7.5, arc_db=25.0) > 15.0
+
+    def test_the_frame_is_a_millisecond_at_any_rate(self):
+        for rate in (250_000, 256_000, 1_024_000):
+            assert BandMeasurement.frame_samples(rate) / rate == pytest.approx(
+                0.001, rel=0.01)
+
+    def test_it_never_shrinks_to_measuring_its_own_estimator(self):
+        """Below about 64 samples the reading describes the spread of the estimate
+        rather than the band: measured bias is 0.74 dB at 64, 1.07 at 32, 2.35 at 8.
+        """
+        assert BandMeasurement.frame_samples(8_000) == 64
+        assert BandMeasurement.frame_samples(1) == 64

@@ -168,6 +168,65 @@ not as well behaved as any of this.  And one pass scoring 25 of 25 is a limit of
 model rather than a defence of one pass: the hardware measurement above is what one
 pass actually did.
 
+## Calibrate when the band is quiet
+
+Found by running the sweep several times over one evening while an intermittent arc
+came and went.  Each run chose a lower gain than the one before, from 28.0 dB down to
+19.7 dB, which is what a rising noise floor looks like to the dominance bound: the
+louder the antenna, the less gain it needs to beat the converter.
+
+That was partly the measurement's own fault, and the frame length was why.  A
+percentile can only find the band underneath an arc if a frame fits inside the gap
+between two bursts.  A 120 pps train is bursts of 2.5 to 6 ms inside an 8.33 ms
+period, so the gap is 2.3 ms at worst, and the frame was 4 ms: the same order as a
+burst, so nearly every frame straddled one and there was no clean frame to find.
+
+Error in the reported floor, against a floor that is really there:
+
+    arc                        1 ms frame    4 ms frame
+    120 pps, 4 ms, +10 dB        -0.22 dB      +2.29 dB
+    120 pps, 6 ms, +10 dB        -0.00 dB      +6.72 dB
+    120 pps, 6 ms, +25 dB        +0.01 dB     +21.18 dB
+    100 pps, 6 ms, +25 dB        -0.19 dB      -0.00 dB
+    120 pps, 7.5 ms, +25 dB     +21.99 dB     +23.89 dB
+    clean band                   -0.36 dB      -0.18 dB
+
+The frame is 1 ms now, derived from the receiver's sample rate rather than written in
+samples.  It costs 0.17 dB on a clean band, because a shorter frame estimates its own
+RMS less precisely and the percentile of a wider spread sits further below the truth.
+That bias is the same at every gain, so it scales KneeFit's two terms together and
+leaves the share between them unchanged, which is why the dominance bound does not
+move.  Below about 64 samples the reading is mostly describing its own estimator: the
+bias is 0.74 dB at 64, 1.07 at 32 and 2.35 at 8, so 64 is the floor.
+
+The 100 pps row is the one to read twice.  The old setting was correct there and 21 dB
+wrong at 120, because the error depended on how the frame length happened to align
+with the pulse period.  A frame that fits inside a gap does not depend on the
+alignment at all, which is worth more than the numbers alone suggest.
+
+The last row is what no frame length fixes.  A burst 7.5 ms of an 8.33 ms period is
+90% duty, and there is no quiet band to measure.  The reading is then the arc, and
+reporting it is the honest answer.
+
+So the instruction is to calibrate on a quiet band, and it follows from the two bounds
+needing different conditions rather than from the arc being a nuisance:
+
+- The **dominance bound** asks whether the antenna beats the converter.  Ask it at the
+  quietest the station gets, because that is when the converter is most able to take
+  over the floor.  A gain chosen during an arc is too low for the hours around it.
+- The **headroom bound** does not need the arc at all.  32 dB came from a year of
+  logged events, so the reserve already covers the loud case without one being present
+  to measure.
+
+The original constraint stands and is a different claim.  The sweep still works on a
+dead band, which is what "neither measurement may depend on a signal being present"
+was about.  What this adds is that a dead band is not merely sufficient but preferred.
+
+Nothing in the tool detects an arc while sweeping.  Recognizing a 120 pps train is the
+monitor's whole job and is far more than a gain sweep should carry, so this is guidance
+rather than a check.  An operator who suspects one can watch the level meter, or run
+the monitor and see whether it locks, before calibrating.
+
 ## What the two antennas showed
 
 **A mag loop resonant at 3.530 MHz.**  Too quiet to swamp an 8-bit converter at any

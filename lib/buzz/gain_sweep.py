@@ -42,8 +42,9 @@ ProgressCallback = Callable[[int, int, float], None]
 class SweepSource(Protocol):
     """The part of RtlSdrSource a sweep uses.
 
-    Declared rather than imported so that the whole sweep runs against a stand-in with
-    no receiver attached, the same reason RtlSdrDevice exists one layer down.
+    This is declared rather than imported so that the whole sweep runs against a
+    stand-in with no receiver attached, the same reason RtlSdrDevice exists one layer
+    down.
     """
 
     @property
@@ -73,12 +74,46 @@ class SweepSource(Protocol):
 # what defends against an arc that runs for a whole pass.
 _QUIET_PERCENTILE = 10.0
 
-# Samples per frame for that percentile.
+# How long one frame of that percentile covers, in seconds.
 #
-# Short against a burst, so a burst spoils few frames, and long enough that the RMS of
-# one frame is a stable number: 1024 samples is 4 ms at 256 kHz and averages hundreds
-# of independent noise samples.
-_FRAME_SAMPLES = 1024
+# A frame has to fit inside the gap between two bursts, which is the whole reason the
+# percentile can see the band underneath an arc at all.  A 120 pps train is bursts of
+# 2.5 to 6 ms inside an 8.33 ms period, so the gap is 2.3 ms at worst, and a frame of
+# 1 ms sits inside it with margin to spare.
+#
+# It was 1024 samples, which is 4 ms at 256 kHz and therefore the same order as a
+# burst, so nearly every frame straddled one and the percentile had no clean frame to
+# find.  Measured against a simulated train, error in the reported floor:
+#
+#     arc                       1 ms frame    4 ms frame
+#     120 pps, 4 ms, +10 dB       -0.22 dB      +2.29 dB
+#     120 pps, 6 ms, +10 dB       -0.00 dB      +6.72 dB
+#     120 pps, 6 ms, +25 dB       +0.01 dB     +21.18 dB
+#
+# The 4 ms column is also fragile in a way the figures hide: its error depends on how
+# the frame length happens to align with the pulse period, so the same setting reads
+# correctly at 100 pps and 21 dB high at 120.  A frame that fits in a gap does not
+# care about the alignment.
+#
+# What no frame length fixes is an arc with no gap.  At 7.5 ms of an 8.33 ms period
+# every size above reads about 22 dB high, correctly: there is no quiet band to
+# measure.  That is the case the documentation covers by saying to calibrate when the
+# band is quiet.
+_QUIET_FRAME_SECONDS = 0.001
+
+# The fewest samples a frame may hold, whatever the rate works out to.
+#
+# A short frame estimates its own RMS badly, and the percentile of a wider spread sits
+# further below the true floor, so the reading is dragged low.  Measured on clean
+# noise, the bias against the real floor: 0.36 dB at 256 samples, 0.74 at 64, 1.07 at
+# 32 and 2.35 at 8.  Below about 64 the measurement is mostly describing the noise of
+# its own estimator rather than the band.
+#
+# The bias matters less than it looks, because it is the same at every gain.  A curve
+# shifted equally throughout leaves KneeFit's antenna and converter terms scaled
+# together and the share between them unchanged, so the dominance bound does not move.
+# Only the headroom bound sees it, against a reserve of 32 dB.
+_MIN_QUIET_FRAME_SAMPLES = 64
 
 # The share of the noise floor that has to come from the antenna before the gain
 # counts as usable.
@@ -171,7 +206,12 @@ class BandMeasurement:
     """
 
     @staticmethod
-    def quiet_dbfs(samples: np.ndarray) -> float:
+    def frame_samples(sample_rate: int) -> int:
+        """Samples per frame at this rate, never fewer than the floor above."""
+        return max(round(_QUIET_FRAME_SECONDS * sample_rate), _MIN_QUIET_FRAME_SAMPLES)
+
+    @staticmethod
+    def quiet_dbfs(samples: np.ndarray, sample_rate: int) -> float:
         """The level between bursts, in dB relative to a full-scale sine.
 
         Takes the RMS of each frame and then a low percentile across frames.  The
@@ -194,10 +234,11 @@ class BandMeasurement:
         ContinuousAnalyzer._capture takes a median instead because its input has been
         rectified, and there a 120 pps train pulls the mean well away from zero.
         """
-        usable = len(samples) // _FRAME_SAMPLES * _FRAME_SAMPLES
+        frame = BandMeasurement.frame_samples(sample_rate)
+        usable = len(samples) // frame * frame
         if usable == 0:
             return float('-inf')
-        frames = samples[:usable].reshape(-1, _FRAME_SAMPLES)
+        frames = samples[:usable].reshape(-1, frame)
         frames = frames - np.mean(samples[:usable])
         # abs() before the mean, so this is power per frame rather than the mean of a
         # complex number, which for noise is approximately zero whatever its level.
@@ -379,10 +420,15 @@ class GainChooser:
                 self._measurements)
 
         share = fit.antenna_share(lowest_usable)
+        # "At least", because the reserve is a floor rather than what the gain
+        # actually leaves.  The chosen gain is the lowest one where the antenna
+        # dominates, which is usually well below the highest the reserve allows, so
+        # the real margin is commonly a good deal more than the figure quoted.
         return SweepResult(
             lowest_usable,
             f'{lowest_usable:.1f} dB is the lowest gain where the antenna is most of '
-            f'the noise floor, and it leaves {self._headroom_db:.0f} dB for an arc.',
+            f'the noise floor, and it leaves at least {self._headroom_db:.0f} dB for '
+            'an arc.',
             share, lowest_usable, highest_safe, self._measurements)
 
     def _highest_gain_with_headroom(self) -> float | None:
@@ -491,7 +537,8 @@ class GainSweep:
         if len(samples) == 0:
             return
         readings.setdefault(actual, []).append(
-            (BandMeasurement.quiet_dbfs(samples), BandMeasurement.peak_dbfs(samples), clipped))
+            (BandMeasurement.quiet_dbfs(samples, self._source.iq_sample_rate),
+             BandMeasurement.peak_dbfs(samples), clipped))
 
     def _collect(self, gain_db: float) -> tuple[np.ndarray, int]:
         """Gather about seconds_per_step of samples at the gain already set."""
