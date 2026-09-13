@@ -11,7 +11,7 @@ to reach - an internal sound device, for instance - where the offset is the only
 knob left.  Up and Down nudge it, Space resets it to the schema default, and Enter
 confirms, all against the same live reading the other dialog only shows.
 
-Both open LevelStream directly rather than going through AudioSampler, which also
+Both open the stream directly rather than going through AudioSampler, which also
 opens a second input stream on the same device for the continuous-analysis
 pipeline - a pipeline neither of these dialogs has any use for.
 """
@@ -26,18 +26,20 @@ from textual.css.query import NoMatches
 from textual.widgets import Button, Static
 
 from buzz.config import AudioConfig, BuzzConfig, StationConfig
-from buzz.sampler import LevelStream
+from buzz.dsp import SILENCE_DBFS
+from buzz.sampler import SoundCardLevelStream
 from buzz.setup.schema import SectionValues
 from buzz.setup.screens.base import CANCELLED, ScopeModalScreen
 from buzz.setup.smeter import SCALE_ROW, TENS_ROW, dbm_to_s_string, s_meter_bar
 
-# 20 ms at 16 kHz - matches LevelStream's own default in AudioSampler.level_stream().
+# 20 ms at 16 kHz - matches the default in AudioSampler.level_stream().
 _METER_BLOCKSIZE = 320
 _NUDGE_STEP_DB = 0.5
 
 
-def _open_level_stream(audio_values: SectionValues, offset_db: float) -> LevelStream:
-    """Open a LevelStream on `audio_values`, starting at `offset_db`.
+def _open_level_stream(audio_values: SectionValues,
+                       offset_db: float) -> SoundCardLevelStream:
+    """Open a sound card level stream on `audio_values`, starting at `offset_db`.
 
     Raises whatever sd.query_devices() or sd.InputStream() raise - a device that no
     longer exists, or will not open - which both callers turn into an on-screen
@@ -46,7 +48,20 @@ def _open_level_stream(audio_values: SectionValues, offset_db: float) -> LevelSt
     config = BuzzConfig(audio=AudioConfig(**audio_values),
                         station=StationConfig(audio_rf_conversion_db=offset_db))
     device = sd.query_devices(config.audio.input_device_name, 'input')
-    return LevelStream(config, device['index'], _METER_BLOCKSIZE)
+    return SoundCardLevelStream(config, device['index'], _METER_BLOCKSIZE)
+
+
+def _stalled_reading() -> str:
+    """The reading line when no audio has arrived for a second.
+
+    Built to the same width as _format_reading rather than written out, because
+    _meter_block's parent Static is sized to its widest line: a shorter stall line
+    would shrink the widget and shift the whole block sideways the moment the source
+    stopped, which is the one instant the operator is trying to read it.
+    """
+    bar = ' ' * len(s_meter_bar(SILENCE_DBFS))
+    tail = len(_format_reading(SILENCE_DBFS)) - len(bar) - 2   # minus the brackets
+    return f'[{bar}]{"no audio":^{tail}}'
 
 
 def _meter_block(reading_line: str) -> str:
@@ -145,7 +160,8 @@ class CalibrationMeterDialog(ScopeModalScreen[None]):
         try:
             while True:
                 dbm = await asyncio.to_thread(stream.read)
-                self._show(_meter_block(_format_reading(dbm)))
+                reading = _stalled_reading() if dbm is None else _format_reading(dbm)
+                self._show(_meter_block(reading))
         finally:
             stream.close()
 
@@ -226,7 +242,7 @@ class OffsetCalibrationDialog(ScopeModalScreen[Any]):
         self._spec = spec
         self._audio_values = audio_values
         self._offset = float(current)
-        self._stream: LevelStream | None = None
+        self._stream: SoundCardLevelStream | None = None
 
     def compose(self):
         yield Vertical(
@@ -254,7 +270,8 @@ class OffsetCalibrationDialog(ScopeModalScreen[Any]):
         try:
             while True:
                 dbm = await asyncio.to_thread(self._stream.read)
-                self._show(_meter_block(_format_reading(dbm)))
+                reading = _stalled_reading() if dbm is None else _format_reading(dbm)
+                self._show(_meter_block(reading))
         finally:
             self._stream.close()
 

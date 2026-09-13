@@ -375,6 +375,18 @@ gain_db = 40.2
 # Unset by default.
 # calibrated_at_gain_db = 40.2
 
+# Room the gain calibration keeps above the quiet band noise, so that an arc
+# has somewhere to go before it clips.
+#
+# Measured rather than chosen. Over 11147 locked minutes at one station the
+# loudest arc reached 30.95 dB above its own noise floor, and nothing
+# reached 35. The extra covers the wider bandwidth the receiver clips
+# across.
+#
+# Raising it lowers the gain the calibration will pick, so more of the
+# reported noise floor becomes the receiver's own rather than the band's.
+arc_headroom_db = 32.0
+
 # Which receiver to use when more than one is plugged in.
 device_index = 0
 

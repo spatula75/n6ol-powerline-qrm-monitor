@@ -97,6 +97,29 @@ class RtlSdrConfig:
     # the two and says so.  The estimate needs no such check, because it is computed
     # from gain_db every time.
     calibrated_at_gain_db: float | None = None
+    # dB of room the gain calibration keeps above the quiet band noise, so that an
+    # arc has somewhere to go.  Measured above the level *between* bursts rather than
+    # during one, which is what lets the calibration run on a dead band: sizing from
+    # an observed peak needs an arc to be present, and nothing arranges that.
+    #
+    # The value came from measuring, not from theory.  Over 11147 locked minutes at
+    # one station the loudest arc reached 30.95 dB above its own noise floor, with
+    # 3.7% of minutes past 25 dB and nothing at all past 35.  Those logs were taken
+    # through a 4 kHz SSB filter, while clipping happens across the whole 256 kHz,
+    # where the crest of a burst runs a decibel or two higher.  32 covers the worst
+    # logged arc and that difference.
+    #
+    # Raising it costs noise-floor accuracy, because the gain it permits is lower and
+    # more of the measured floor is then the converter's own.  On the antenna these
+    # figures came from, 30 gives 88% of the floor to the antenna and 32 gives 81%,
+    # a difference of 0.37 dB in the reported floor.
+    #
+    # That trade goes this way because clipping is not recoverable and floor error is.
+    # Clipping is nonlinear, so it does not merely under-read the arc: it puts
+    # products across the whole span that lift the apparent floor in the same capture.
+    # Both numbers are then wrong and nothing in the data says so.  A converter-limited
+    # floor is wrong by a bounded amount in a known direction.
+    arc_headroom_db: float = 32.0
     # Which receiver to use when more than one is plugged in.  Two identical receivers
     # cannot be told apart, since the serial reads 00000001 on both unless somebody
     # reprogrammed it.  Try one, and use the other if the wrong receiver answers.

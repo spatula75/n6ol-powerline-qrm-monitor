@@ -531,6 +531,19 @@
             "Change the tuner gain afterwards and the calibration is wrong by roughly the difference, so startup compares the two and says so. Run the calibration again rather than editing this."
           ]
         },
+        "arc_headroom_db": {
+          "type": "number",
+          "title": "Arc headroom (dB)",
+          "description": "Room the gain calibration keeps above the quiet band noise, so that an arc has somewhere to go before it clips.",
+          "default": 32.0,
+          "minimum": 6.0,
+          "maximum": 48.0,
+          "x-file-only": true,
+          "x-notes": [
+            "Measured rather than chosen. Over 11147 locked minutes at one station the loudest arc reached 30.95 dB above its own noise floor, and nothing reached 35. The extra covers the wider bandwidth the receiver clips across.",
+            "Raising it lowers the gain the calibration will pick, so more of the reported noise floor becomes the receiver's own rather than the band's."
+          ]
+        },
         "device_index": {
           "type": "integer",
           "title": "Receiver number",

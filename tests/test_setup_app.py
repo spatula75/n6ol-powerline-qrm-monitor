@@ -11,7 +11,12 @@ from textual import events
 from textual.css.query import NoMatches
 from textual.widgets import Button, OptionList, RadioButton, RadioSet
 from buzz.setup.device_setup import DeviceInfo
-from buzz.setup.screens.calibration import _format_reading, _meter_block
+from buzz.setup.screens.calibration import (
+    CalibrationMeterDialog,
+    _format_reading,
+    _meter_block,
+    _stalled_reading,
+)
 from buzz.setup.screens.field_dialogs import EnumFieldDialog, _kind, _parse_number
 from buzz.setup.screens.finish import backup_path, changed_fields, toml_ready
 from buzz.setup.screens.main_menu import MainMenuScreen
@@ -132,14 +137,17 @@ class _FakeLevelStream:
     """
 
     instances: list['_FakeLevelStream'] = []
+    # Set by a test to make read() report a stall, the way the real one does when
+    # nothing has arrived for a second.
+    stalls = False
 
     def __init__(self, config, device_index, blocksize) -> None:
         self.offset_db = config.station.audio_rf_conversion_db
         self.closed = False
         _FakeLevelStream.instances.append(self)
 
-    def read(self) -> float:
-        return -50.0
+    def read(self, timeout=None) -> float | None:
+        return None if _FakeLevelStream.stalls else -50.0
 
     def close(self) -> None:
         self.closed = True
@@ -1409,7 +1417,7 @@ class TestSetupAppWalkthrough:
         config_path = tmp_path / 'config.toml'
         monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
                             lambda name, kind: {'index': 0})
-        monkeypatch.setattr('buzz.setup.screens.calibration.LevelStream', _FakeLevelStream)
+        monkeypatch.setattr('buzz.setup.screens.calibration.SoundCardLevelStream', _FakeLevelStream)
 
         async def scenario():
             app = SetupApp(config_path=config_path)
@@ -1479,7 +1487,7 @@ class TestSetupAppWalkthrough:
         _FakeLevelStream.instances.clear()
         monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
                             lambda name, kind: {'index': 0})
-        monkeypatch.setattr('buzz.setup.screens.calibration.LevelStream', _FakeLevelStream)
+        monkeypatch.setattr('buzz.setup.screens.calibration.SoundCardLevelStream', _FakeLevelStream)
 
         async def scenario():
             app = SetupApp(config_path=config_path)
@@ -1519,7 +1527,7 @@ class TestSetupAppWalkthrough:
         config_path = tmp_path / 'config.toml'
         monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
                             lambda name, kind: {'index': 0})
-        monkeypatch.setattr('buzz.setup.screens.calibration.LevelStream', _FakeLevelStream)
+        monkeypatch.setattr('buzz.setup.screens.calibration.SoundCardLevelStream', _FakeLevelStream)
 
         async def scenario():
             app = SetupApp(config_path=config_path)
@@ -1557,7 +1565,7 @@ class TestSetupAppWalkthrough:
         config_path = tmp_path / 'config.toml'
         monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
                             lambda name, kind: {'index': 0})
-        monkeypatch.setattr('buzz.setup.screens.calibration.LevelStream', _FakeLevelStream)
+        monkeypatch.setattr('buzz.setup.screens.calibration.SoundCardLevelStream', _FakeLevelStream)
 
         async def scenario():
             app = SetupApp(config_path=config_path)
@@ -1951,3 +1959,45 @@ class TestTheLevelCalibrationRow:
         """Only the one derived field is special-cased; the rest read as before."""
         values = {'gain_db': 40.2}
         assert row_value('rtlsdr', 'gain_db', {'type': 'number'}, values) == '40.2'
+
+
+class TestAStalledMeterSaysSo:
+    """A meter frozen on a number that stopped being true is worse than one saying
+    it has nothing, because the operator cannot tell the difference by looking.
+    """
+
+    def test_the_stall_line_is_exactly_as_wide_as_a_reading(self):
+        """_meter_block's Static is sized to its widest line, so a narrower stall
+        line would shrink the widget and shift the whole block sideways at the one
+        moment somebody is trying to read it.
+        """
+        assert len(_stalled_reading()) == len(_format_reading(-45.0))
+
+    def test_it_says_what_is_wrong_rather_than_showing_a_number(self):
+        line = _stalled_reading()
+        assert 'no audio' in line
+        assert 'dBm' not in line
+
+    def test_the_dialog_shows_it_when_the_stream_stalls(self, tmp_path, monkeypatch):
+        config_path = tmp_path / 'config.toml'
+        _FakeLevelStream.instances.clear()
+        _FakeLevelStream.stalls = True
+        monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
+                            lambda name, kind: {'index': 0})
+        monkeypatch.setattr('buzz.setup.screens.calibration.SoundCardLevelStream',
+                            _FakeLevelStream)
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                screen = CalibrationMeterDialog(app.values['audio'], -32.0)
+                await app.push_screen(screen)
+                await _wait_until(
+                    pilot,
+                    lambda: 'no audio' in app.screen.query_one('#meter').content,
+                    'the meter never showed the stall line')
+
+        try:
+            run(scenario())
+        finally:
+            _FakeLevelStream.stalls = False

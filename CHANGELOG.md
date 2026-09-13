@@ -88,6 +88,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `[rtlsdr] calibrated_at_gain_db`, written by the calibration tool rather than set by
   hand. Changing the tuner gain afterwards leaves the calibration wrong by roughly the
   difference, and nothing else would notice.
+- `docs-notebook/`, an engineering notebook for why a constant holds the value it
+  does, what an experiment ruled out, and how the hardware behaved when tested. It is
+  committed, unlike `tmp/`, and unpublished, unlike `docs/`. Its first three documents
+  cover the gain calibration, the receiver's measured artifacts, and the shape of the
+  setup screens.
+- `tools/ste_lint.py` requires every Markdown file under `docs-notebook/` to open with
+  an attribution line. A reader judging a measurement needs to know what produced it,
+  and the rule was broken within minutes of being written, in the README that states
+  it.
 
 ### Changed
 - `tools/ste_lint.py` applies the wordy-word substitutions to strict text only, as
@@ -115,6 +124,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `# latitude =` and `# longitude =` in `config.example.toml` had nothing after the
   equals sign, so uncommenting either was a TOML syntax error. Both carry an example
   now, and the example is the Holmdel horn antenna.
+- The setup program's level meters said nothing when audio stopped arriving. A read
+  now gives up after a second and the meter says "no audio" instead of holding the
+  last number it saw, which an operator had no way to tell from a live reading. The
+  stall line is built to the width of a reading, so the block does not shift.
+- The level meter's DC estimate used a weight that was correct for one block size and
+  one sample rate, and quietly meant a different time constant for any other. It is
+  computed from both now. The sound card's figure is unchanged.
 - `tools/ste_lint.py` exits 2 instead of reporting `clean` when it has checked nothing.
   A bare invocation with no paths and no `--changed`, or any named path that does not
   exist, used to print a clean line and exit 0. A mandatory gate could be skipped by

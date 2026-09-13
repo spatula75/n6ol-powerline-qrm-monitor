@@ -61,7 +61,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 
-from buzz.sampler import RingBufferPipeline
+from buzz.sampler import LevelStream, RingBufferPipeline
 
 if TYPE_CHECKING:
     from buzz.iq import IqToAudio
@@ -114,6 +114,11 @@ _DISCARD_LOG_EVERY = 100
 # times either, so a thread still running afterwards is stuck rather than slow, and
 # RtlSdrSource.close treats it that way.
 _THREAD_JOIN_TIMEOUT_SECONDS = 5.0
+
+# How long a draining thread waits for a block before it rechecks its stop flag.
+# It sets how quickly close() returns on a receiver that has gone quiet, so it is
+# chosen short against the join above rather than against the block rate.
+_FEED_READ_TIMEOUT_SECONDS = 0.5
 
 # How often the pipeline looks at its own health counters, in seconds.
 #
@@ -356,6 +361,16 @@ class RtlSdrSource:
         return min(supported, key=lambda candidate: abs(candidate - gain_db))
 
     # ------------------------------------------------------------------ public
+
+    @property
+    def block_samples(self) -> int:
+        """Complex samples per callback, which is how long one block lasts.
+
+        Public because the block duration is the deadline every consumer of this
+        class works against, and because it sets the time constant of anything
+        smoothing across blocks.
+        """
+        return self._block_samples
 
     @property
     def iq_sample_rate(self) -> int:
@@ -603,7 +618,7 @@ class RtlSdrPipeline(RingBufferPipeline):
         """Drain the source until told to stop."""
         while not self._stop.is_set():
             try:
-                block = self._source.read(timeout=0.5)
+                block = self._source.read(timeout=_FEED_READ_TIMEOUT_SECONDS)
                 if block is not None:
                     self._consume(block)
             except Exception:
@@ -711,3 +726,62 @@ class RtlSdrPipeline(RingBufferPipeline):
         for start in range(0, whole, self.CHUNK_SIZE):
             self._append(pending[start:start + self.CHUNK_SIZE])
         self._leftover = pending[whole:]
+
+
+class SdrLevelStream(LevelStream):
+    """A live level in dBm, fed by a receiver, for the setup program's meter.
+
+    This owns a thread rather than reaching through RtlSdrPipeline, because a meter
+    wants the newest reading rather than a history.  The ring buffer would only add
+    its own latency to a number somebody is watching while they turn a knob.
+
+    Everything that turns a block into a reading stays in LevelStream, and none of it
+    is overridden here.  That is the point of the split: an operator calibrating
+    against this meter has to be calibrating against the figure the monitor itself
+    would report.
+    """
+
+    def __init__(self, source: RtlSdrSource, converter: 'IqToAudio',
+                 offset_db: float) -> None:
+        # One IQ block converts to one audio block, so they last the same time and
+        # either one gives the smoothing its time constant.
+        block_seconds = source.block_samples / source.iq_sample_rate
+        super().__init__(offset_db, converter.audio_sample_rate,
+                         round(block_seconds * converter.audio_sample_rate))
+        self._source = source
+        self._converter = converter
+        self._stopping = threading.Event()
+        self._thread = threading.Thread(target=self._drain, daemon=True,
+                                        name='sdr-level')
+        self._source.start()
+        self._thread.start()
+
+    def _drain(self) -> None:  # pragma: no cover -- thread body; _consume is tested directly
+        """Read from the receiver until told to stop."""
+        while not self._stopping.is_set():
+            try:
+                block = self._source.read(timeout=_FEED_READ_TIMEOUT_SECONDS)
+                if block is not None:
+                    self._consume(block)
+            except Exception:
+                logger.exception(
+                    'Converting a block for the level meter failed.  The reading is '
+                    'now stale, and the meter keeps running.')
+
+    def _consume(self, block: IqBlock) -> None:
+        """Convert one block and fold it into the reading.
+
+        An empty result is normal rather than an error: the filter needs samples it
+        has not been given yet, which is always true of the first call.  Passing an
+        empty block on would take the median of nothing and poison the reading with
+        a NaN that never clears.
+        """
+        audio = self._converter.convert(block.as_complex())
+        if len(audio):
+            self._on_block(audio)
+
+    def _stop(self) -> None:
+        self._stopping.set()
+        self._source.close()
+        if self._thread.is_alive():
+            self._thread.join(timeout=_THREAD_JOIN_TIMEOUT_SECONDS)
