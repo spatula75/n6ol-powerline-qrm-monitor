@@ -686,7 +686,7 @@ class TestTheInstructionsStayOnScreen:
 
     def test_they_say_to_calibrate_on_a_quiet_band(self, tmp_path):
         """The one piece of advice that is not obvious from the screen: a running arc
-        raises the floor, the sweep measures that as the band, and the gain comes out
-        low for the hours either side.
+        raises the floor, so the sweep picks a gain for a louder band than the station
+        usually has, and that gain is too low once the arc stops.
         """
         assert 'quiet' in self._shown(tmp_path, _FakeSweep(_result()))

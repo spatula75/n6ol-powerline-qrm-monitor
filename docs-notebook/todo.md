@@ -116,9 +116,10 @@ Three pages carry a `TODO` comment waiting on code that now exists:
 Points the SDR pages need to make, as notes rather than draft prose:
 
 - **Calibrate the gain when the band is quiet.**  A running arc raises the broadband
-  floor, the sweep measures that as the band, and the gain comes out lower than it
-  should be for the hours either side.  Observed: 28.0, then 19.7, then 25.4 dB across
-  one evening as an intermittent arc came and went.  The reserve already covers the
+  floor, so the sweep measures a louder band than the station usually has and picks a
+  gain to match.  Once the arc stops, that gain is too low and the converter takes
+  over more of the noise floor.  Observed: 28.0, then 19.7, then 25.4 dB across one
+  evening as an intermittent arc came and went.  The reserve already covers the
   loud case, so the measurement wants the quiet one.  See
   `sdr-gain-calibration.md` for why the percentile cannot reject a raised floor.
 - **Clipping applies across the whole sampled span**, not just the 4 kHz being

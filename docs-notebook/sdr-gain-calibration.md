@@ -213,7 +213,8 @@ needing different conditions rather than from the arc being a nuisance:
 
 - The **dominance bound** asks whether the antenna beats the converter.  Ask it at the
   quietest the station gets, because that is when the converter is most able to take
-  over the floor.  A gain chosen during an arc is too low for the hours around it.
+  over the floor.  A gain chosen while an arc runs is too low once it stops, which
+  is most of the time.
 - The **headroom bound** does not need the arc at all.  32 dB came from a year of
   logged events, so the reserve already covers the loud case without one being present
   to measure.

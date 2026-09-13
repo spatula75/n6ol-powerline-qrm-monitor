@@ -166,9 +166,9 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
             Static('This measures the band at every gain the tuner offers, five '
                    'times over, and takes a little over a minute.  Leave the antenna '
                    'connected and the receiver tuned where it will run.  Calibrate '
-                   'when the band is quiet if you can: a running arc raises the '
-                   'noise floor, and the gain then comes out low for the hours '
-                   'either side.', id='instructions'),
+                   'when the band is quiet if you can.  A running arc raises the noise '
+                   'floor, so the sweep sees a louder band than usual and picks a gain '
+                   'that is then too low once the arc stops.', id='instructions'),
             Static('Starting...', id='status'),
             Static('', id='outcome'),
             Horizontal(
