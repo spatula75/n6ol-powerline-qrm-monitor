@@ -131,6 +131,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The level meter's DC estimate used a weight that was correct for one block size and
   one sample rate, and quietly meant a different time constant for any other. It is
   computed from both now. The sound card's figure is unchanged.
+- The analyzer's Tier-3a screening window was a fixed 4000 samples while the kernel it
+  has to hold grows with the sample rate, so above about 34 kHz at 120 pps the kernel
+  no longer fitted. `fftconvolve` accepts that and returns the swapped arrangement
+  rather than raising, so re-acquisition was gated on a meaningless number over a
+  third of the supported rate band. The window is counted in pulse periods now and
+  comes to the same 4000 samples at 16 kHz.
+- The analyzer's DC estimate weight is derived from the tick cadence and the time
+  constant rather than written as 0.02, which was the answer for one cadence. The
+  value is unchanged.
 - `tools/ste_lint.py` exits 2 instead of reporting `clean` when it has checked nothing.
   A bare invocation with no paths and no `--changed`, or any named path that does not
   exist, used to print a clean line and exit 0. A mandatory gate could be skipped by

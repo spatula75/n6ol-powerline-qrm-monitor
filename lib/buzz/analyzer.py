@@ -26,9 +26,8 @@ ContinuousAnalyzer runs on a daemon thread and maintains a three-state machine:
                   around _peak_phase using Numba amplitude averaging.  This is
                   ~40x cheaper than an FFT and handles slow grid-frequency drift.
                 Tier 3a (5 s): _fast_scan() runs a short-kernel FFT (FAST_SCAN_PULSES
-                  pulses, FAST_SCAN_SAMPLES audio) as a cheap candidate detector.
-                  It costs ~6x less than the full FFT and skips Tier 3b when
-                  nothing is present.
+                  pulses over FAST_SCAN_WINDOW_PULSES of audio) as a cheap candidate
+                  detector.  It skips Tier 3b when nothing is present.
                 Tier 3b (on Tier-3a hit, or every SIGNAL_LOST_REFINE as safety net):
                   _full_analysis() with the full kernel to confirm and refresh phases.
 
@@ -244,7 +243,22 @@ class ContinuousAnalyzer:
     # real changed.
     PHASE_MOVE_MARGIN   = 1.05
     FAST_SCAN_PULSES    = 15    # pulses in the Tier-3a screening kernel (~1/4 of full)
-    FAST_SCAN_SAMPLES   = 4000  # audio window for Tier-3a (~0.25 s at 16 kHz)
+    # Tier-3a's window, counted in pulse periods rather than samples.  The kernel
+    # spans FAST_SCAN_PULSES of them and the remainder is room to slide it, so the
+    # fit array covers every phase several times over.
+    #
+    # It was the literal 4000, which is what this comes to at 16 kHz and 120 pps and
+    # which was a defect at any other rate.  A kernel scales with the sample rate and
+    # a fixed window does not, so above about 34 kHz at 120 pps, or 28.5 kHz at 100,
+    # the kernel no longer fitted inside the window.  That does not raise: scipy's
+    # fftconvolve accepts mode='valid' with either argument longer and quietly
+    # returns the other arrangement, so calculate_pps_fit_array handed back a full
+    # array of scores taken by sliding the data along the kernel rather than the
+    # kernel along the data.  Tier-3a then gated re-acquisition on a number with no
+    # meaning, over 34% of the legal rate band at 120 pps and 49% at 100.  A direct
+    # correlation over the same inputs has no valid positions at all there, which is
+    # the honest answer the FFT path was papering over.
+    FAST_SCAN_WINDOW_PULSES = 2 * FAST_SCAN_PULSES
     FAST_SCAN_INTERVAL  = 5.0   # s  - Tier-3a cadence in SIGNAL_LOST
     # dB - Tier-3a hit threshold; triggers Tier-3b full FFT.  This statistic is a
     # peak/trough ratio over a short fit array, so it has a large noise-only floor:
@@ -254,12 +268,32 @@ class ContinuousAnalyzer:
     # tuned against audio carrying a DC pedestal, which compressed the ratio; real
     # zero-mean audio never looked like that.)  8.0 clears the noise floor while
     # still admitting signals at LOCK_ACQUIRE_SNR, which measure 8.8 dB and up.
+    #
+    # Those figures are 16 kHz figures, and the floor is not flat across the band.
+    # The statistic is a peak/trough ratio over the fit array, so a longer array
+    # gives the extremes more chances: measured over 60 noise-only windows, the mean
+    # rises from 5.9 dB at 8 kHz to 7.1 dB at 48 kHz, and the maximum passes 8.0 from
+    # about 32 kHz upward.  A station above that rate therefore sees Tier 3a fire on
+    # noise and stop saving the full FFT, which is the same failure the 4.0 threshold
+    # had at every rate.  Deriving the threshold from the array length would fix it
+    # and has not been done, because nothing has run this at those rates in anger.
     FAST_SCAN_SNR       = 8.0
     CAPTURE_TIMEOUT     = 2.0   # s  - max wait for the pipeline to supply a window
-    # EMA weight for the input DC estimate.  At the ~5 Hz capture cadence 0.02 is a
-    # ~10 s time constant: slow enough to average out per-window estimation noise,
-    # fast enough to follow sound-card thermal drift and receiver AGC baseline wander.
-    DC_EMA_ALPHA        = 0.02
+    # How long the DC estimate takes to follow a change, in seconds.  Slow enough to
+    # average out per-window estimation noise, fast enough to follow sound-card
+    # thermal drift and receiver AGC baseline wander.
+    DC_TIME_CONSTANT_SECONDS = 10.0
+    # EMA weight for the input DC estimate, as one over the number of ticks the time
+    # constant spans.  The weight applies once per capture, so what it means in
+    # seconds depends entirely on the tick cadence, and writing it as a literal
+    # states the answer for one cadence while hiding which one.  This states the
+    # quantity that was actually chosen, which is the ten seconds above.
+    #
+    # LOCKED and SIGNAL_LOST both capture once per FAST_TICK_INTERVAL, so ten seconds
+    # is what those states get.  SEARCHING ticks at SEARCH_INTERVAL, five times
+    # slower, which stretches the constant to about 50 s.  That state publishes no
+    # measurement, so the estimate only has to be warm by the time one locks.
+    DC_EMA_ALPHA        = FAST_TICK_INTERVAL / DC_TIME_CONSTANT_SECONDS
 
     # --- Drift tracking ----------------------------------------------------
     #
@@ -306,6 +340,9 @@ class ContinuousAnalyzer:
         self._kernel            = build_pulse_kernel(audio.sample_rate, audio.pulse_rate)
         self._fast_kernel       = build_pulse_kernel(
             audio.sample_rate, audio.pulse_rate, n_pulses=self.FAST_SCAN_PULSES)
+        # 4000 at the 16 kHz default, which is the literal this replaces.
+        self._fast_scan_samples = round(self.FAST_SCAN_WINDOW_PULSES
+                                        * self._samples_per_pulse)
         # Snapshot alignment: the smallest whole-sample interval that is an exact
         # number of pulse periods (400 samples = 3 periods at 16 kHz / 120 pps).
         # Windows ending on multiples of this share a phase origin, so phases
@@ -916,13 +953,17 @@ class ContinuousAnalyzer:
     def _fast_scan(self) -> bool:
         """Short-kernel FFT screening: cheaply detect whether a signal candidate exists.
 
-        Uses FAST_SCAN_PULSES and FAST_SCAN_SAMPLES (~0.25 s), so the FFT costs ~6x
-        less than the full analysis.  Returns True when the best-phase fit score
-        exceeds the worst by FAST_SCAN_SNR dB, a weak hint that something is worth
-        confirming.  This does not publish or propose a state; it only gates whether
-        Tier 3b runs.
+        The kernel spans FAST_SCAN_PULSES and the window FAST_SCAN_WINDOW_PULSES,
+        both counted in pulse periods, so the saving holds at every sample rate
+        rather than at the one the numbers were picked for.  Measured on this
+        machine, the fit array alone costs 3.4x less than the full analysis at
+        16 kHz and 6.7x less at 48 kHz.
+
+        Returns True when the best-phase fit score exceeds the worst by
+        FAST_SCAN_SNR dB, a weak hint that something is present.  This does not
+        publish or propose a state; it only gates whether Tier 3b runs.
         """
-        abs_data = self._capture(self.FAST_SCAN_SAMPLES)
+        abs_data = self._capture(self._fast_scan_samples)
         if abs_data is None:
             return False
         fit = calculate_pps_fit_array(abs_data, self._fast_kernel, self.FAST_SCAN_PULSES)
