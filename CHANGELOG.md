@@ -112,6 +112,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   decimation, bandwidth, tuning offset and sideband.
 
 ### Fixed
+- `# latitude =` and `# longitude =` in `config.example.toml` had nothing after the
+  equals sign, so uncommenting either was a TOML syntax error. Both carry an example
+  now, and the example is the Holmdel horn antenna.
 - `tools/ste_lint.py` exits 2 instead of reporting `clean` when it has checked nothing.
   A bare invocation with no paths and no `--changed`, or any named path that does not
   exist, used to print a clean line and exit 0. A mandatory gate could be skipped by

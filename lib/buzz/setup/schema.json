@@ -203,9 +203,9 @@
             "field": "source",
             "equals": "openmeteo"
           },
-          "x-example": 40.391,
+          "x-example": 40.3907178,
           "x-notes": [
-            "The example is the Holmdel horn antenna in New Jersey, where Penzias and Wilson spent a year eliminating noise sources, pigeons included, before the hiss that was left turned out to be the cosmic microwave background."
+            "The example is the Holmdel horn antenna in New Jersey, a National Historic Landmark, where Penzias and Wilson spent a year eliminating noise sources, pigeons included, before the hiss that was left turned out to be the cosmic microwave background."
           ]
         },
         "longitude": {
@@ -222,7 +222,7 @@
             "field": "source",
             "equals": "openmeteo"
           },
-          "x-example": -74.185
+          "x-example": -74.1848613
         }
       },
       "if": {
