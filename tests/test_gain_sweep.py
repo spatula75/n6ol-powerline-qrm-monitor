@@ -197,14 +197,21 @@ class TestTheChooserWeighsBothBounds:
         lower = [m.gain_db for m in result.measurements if m.gain_db < result.chosen_db]
         assert lower, 'the chosen gain is the lowest offered, so nothing was ruled out'
 
-    def test_a_quiet_antenna_gets_told_so_rather_than_given_a_number(self):
-        """The mag loop case.  A gain picked from a rule that failed is worse than
-        being told the antenna is the problem.
+    def test_a_quiet_antenna_gets_the_best_gain_available_and_is_told_the_cost(self):
+        """The mag loop case.  Refusing was the first design: a station whose antenna
+        never dominates got no gain at all and set one by hand anyway, making this
+        trade without the figures to make it on.
+
+        Headroom is still honoured, so the gain is the most the band allows, and the
+        reply says how much of the floor is the receiver rather than the band.
         """
         antenna = 1e-14      # far below the converter at every gain the tuner offers
         result = GainChooser(tuple(_curve(V4_GAINS, antenna, 1e-4)), 32.0).choose()
-        assert result.chosen_db is None
+        assert result.chosen_db in V4_GAINS
+        assert result.chosen_db == result.highest_safe_db
+        assert result.lowest_usable_db is None
         assert 'antenna' in result.reason
+        assert 'high' in result.reason, 'the floor penalty has to be stated'
 
     def test_a_band_too_loud_for_any_gain_asks_for_an_attenuator(self):
         """A real antenna, loud enough that the quiet level is already inside the
@@ -225,19 +232,42 @@ class TestTheChooserWeighsBothBounds:
         loud = tuple(_measurement(g, -5.0) for g in V4_GAINS)
         assert 'attenuator' in GainChooser(loud, 32.0).choose().reason
 
-    def test_bounds_that_cross_are_reported_as_crossing(self):
-        """Neither bound is unreachable on its own, and together they leave nothing.
-        This is the case the notebook predicted for a quiet antenna on a live band.
+    def test_bounds_that_cross_give_up_floor_rather_than_headroom(self):
+        """The two are not the same kind of bound.  Clipping is nonlinear and cannot
+        be undone, so headroom wins; a floor that reads high is wrong by a known
+        amount in a known direction, so it is what pays.
         """
         # Dominance needs high gain; headroom allows only low.
         curve = _curve(V4_GAINS, 2e-11, 1e-8)
         raised = tuple(GainMeasurement(m.gain_db, m.quiet_dbfs + 45.0, m.peak_dbfs,
                                        m.clipped, m.passes) for m in curve)
         result = GainChooser(raised, 32.0).choose()
-        assert result.chosen_db is None
-        assert result.lowest_usable_db is not None and result.highest_safe_db is not None
-        assert result.lowest_usable_db > result.highest_safe_db
-        assert 'do not overlap' in result.reason
+        assert result.lowest_usable_db > result.highest_safe_db, 'fixture must cross'
+        assert result.chosen_db == result.highest_safe_db
+        assert result.floor_error_db > 3.0, 'a crossing costs floor accuracy'
+
+    def test_a_crossing_says_how_much_floor_it_gave_up(self):
+        """The figure is the whole point of choosing rather than refusing: an operator
+        deciding whether to live with it needs to know what it costs.
+        """
+        curve = _curve(V4_GAINS, 2e-11, 1e-8)
+        raised = tuple(GainMeasurement(m.gain_db, m.quiet_dbfs + 45.0, m.peak_dbfs,
+                                       m.clipped, m.passes) for m in curve)
+        reason = GainChooser(raised, 32.0).choose().reason
+        assert 'dB high' in reason
+        assert '% of the noise floor' in reason
+
+    def test_headroom_is_never_given_up_for_the_floor(self):
+        """The asymmetry stated as a property.  Whatever the antenna is doing, the
+        chosen gain never exceeds what the band allows before clipping.
+        """
+        for antenna in (1e-14, 2e-11, 1e-6, 1e-3):
+            result = GainChooser(tuple(_curve(V4_GAINS, antenna, 1e-8)), 32.0).choose()
+            if result.chosen_db is None or result.highest_safe_db is None:
+                continue
+            assert result.chosen_db <= result.highest_safe_db, (
+                f'antenna {antenna:g} chose {result.chosen_db} above the headroom '
+                f'bound of {result.highest_safe_db}')
 
     def test_the_chosen_gain_really_does_leave_the_reserve(self):
         """The bound stated as the property it exists to guarantee, so a change to how

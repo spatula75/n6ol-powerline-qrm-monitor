@@ -372,10 +372,18 @@ class GainChooser:
     no longer has.
 
     They can cross.  An antenna quiet enough to need most of the tuner's range to beat
-    the converter may need more gain than the headroom allows, and then there is no
-    number that satisfies both.  Saying so is the right output: "your antenna is quiet
-    enough that the noise floor will be partly mine" is something an operator can act
-    on, where a number picked from a rule that failed is not.
+    the converter may need more gain than the headroom allows.
+
+    They are not the same kind of bound, and that decides what happens then.  Headroom
+    is hard, because clipping is nonlinear and cannot be undone: a clipped arc reads
+    small and lifts the apparent floor in the same capture, so both numbers are wrong
+    and nothing says so.  Dominance degrades a decibel at a time, and how far it has
+    degraded is a figure this can measure and report.
+
+    So headroom wins and the floor pays, and the answer says what it paid.  Refusing
+    outright was the first design and is worse: a station near the crossing got no
+    gain at all, and its operator then set one by hand, making this very trade without
+    the figures needed to make it.
     """
 
     def __init__(self, measurements: tuple[GainMeasurement, ...], headroom_db: float) -> None:
@@ -402,31 +410,35 @@ class GainChooser:
                 None,
                 f'Even the lowest gain leaves less than {self._headroom_db:.0f} dB '
                 'before clipping, so the band is loud enough that an arc would clip '
-                'whatever this is set to.  An attenuator ahead of the receiver is the '
-                'fix.',
+                'whatever this is set to.  Try a higher band, where powerline noise '
+                'is weaker, or a frequency further from where the antenna is '
+                'resonant.  An attenuator ahead of the receiver is the last resort '
+                'and the only one that helps if every band is this loud.',
                 fit.antenna_share(min(gains)), lowest_usable, None, self._measurements)
-        if lowest_usable is None:
+        # Below here the two bounds are not the same kind of thing, and the answer
+        # follows from that.  Headroom is a hard limit, because clipping is nonlinear
+        # and cannot be undone: a clipped arc reads small and lifts the apparent floor
+        # in the same capture.  Dominance is a preference that degrades a decibel at a
+        # time, and how much it has degraded is a number this can report.
+        #
+        # So when they conflict, headroom wins and the floor pays, and the reply says
+        # what it paid.  Refusing instead was tried and is worse: a station near the
+        # crossing then gets no gain at all, and its operator sets one by hand anyway,
+        # making exactly this trade without the figures to make it on.
+        if lowest_usable is None or lowest_usable > highest_safe:
+            share = fit.antenna_share(highest_safe)
+            penalty = -10.0 * np.log10(share) if share > 0.0 else float('inf')
             return SweepResult(
-                None,
-                'No gain this tuner offers makes the antenna louder than the receiver '
-                'itself, so the noise floor would be mostly the receiver at any '
-                'setting.  A larger or better matched antenna is the only fix.',
-                fit.antenna_share(max(gains)), None, highest_safe, self._measurements)
-        if lowest_usable > highest_safe:
-            return SweepResult(
-                None,
-                f'The antenna needs {lowest_usable:.1f} dB before it beats the '
-                f'receiver, and clipping allows at most {highest_safe:.1f} dB.  The '
-                'two do not overlap, so this station has to accept either a noise '
-                'floor that is partly the receiver or an arc that clips.',
-                fit.antenna_share(lowest_usable), lowest_usable, highest_safe,
-                self._measurements)
+                highest_safe,
+                f'{highest_safe:.1f} dB is the most this band allows before an arc '
+                f'would clip, and the antenna is not the whole story at that gain: it '
+                f'supplies {share * 100:.0f}% of the noise floor, so the floor reads '
+                f'about {penalty:.1f} dB high.  A larger or better matched antenna is '
+                f'what would improve it.  Clipping is not recoverable and a floor '
+                f'that reads high is, which is why the gain went this way.',
+                share, lowest_usable, highest_safe, self._measurements)
 
         share = fit.antenna_share(lowest_usable)
-        # "At least", because the reserve is a floor rather than what the gain
-        # actually leaves.  The chosen gain is the lowest one where the antenna
-        # dominates, which is usually well below the highest the reserve allows, so
-        # the real margin is commonly a good deal more than the figure quoted.
         return SweepResult(
             lowest_usable,
             f'{lowest_usable:.1f} dB is the lowest gain where the antenna is most of '
@@ -435,15 +447,29 @@ class GainChooser:
             share, lowest_usable, highest_safe, self._measurements)
 
     def _highest_gain_with_headroom(self) -> float | None:
-        """The largest gain whose quiet level still clears the reserve.
+        """The largest gain that leaves room for an arc, by both the model and the
+        evidence.
 
-        Measured from the level *between* bursts rather than from an observed peak,
-        which is what lets this run on a dead band: sizing from a peak needs an arc to
-        be present and nothing arranges that.  The reserve stands in for the arc that
-        has not arrived.
+        The model is the reserve above the quiet level, measured between bursts rather
+        than from an observed peak, which is what lets this run on a dead band: sizing
+        from a peak needs an arc to be present and nothing arranges that.
+
+        The evidence is any clipping the sweep actually saw.  A gain that clipped is
+        not a prediction about arcs, it is one that happened, so it outranks the
+        reserve and so does every gain above it.  The five passes are what make this
+        worth consulting: an intermittent arc that fires during any one of them is
+        caught, where a single pass would usually miss it.
+
+        Both are needed.  The reserve alone let a station settle one step too high,
+        because the sweep ran between bursts and the reserve turned out slightly tight
+        for the initiation transient.  Clipping alone would say nothing on a dead
+        band, which is most of the time.
         """
+        clipping_started_at = min(
+            (m.gain_db for m in self._measurements if m.clipped), default=None)
         safe = [m.gain_db for m in self._measurements
-                if m.quiet_dbfs + self._headroom_db <= 0.0]
+                if m.quiet_dbfs + self._headroom_db <= 0.0
+                and (clipping_started_at is None or m.gain_db < clipping_started_at)]
         return max(safe) if safe else None
 
     @staticmethod

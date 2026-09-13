@@ -227,6 +227,44 @@ monitor's whole job and is far more than a gain sweep should carry, so this is g
 rather than a check.  An operator who suspects one can watch the level meter, or run
 the monitor and see whether it locks, before calibrating.
 
+## The first burst of an intermittent arc is the loud one
+
+Observed on 13 September 2026 at the station this was developed against, and it
+explains why the reserve turned out slightly tight.
+
+Running at the calibrated gain, the monitor reported clipping in bursts of several
+hundred raw values a minute, and the clipping arrived as an intermittent arc started
+rather than while it ran.  Stepping the gain down once took it from seven hundred a
+minute to under twenty.  Stepping down again left single digits, still arriving at the
+moment an arc initiated.
+
+That points at the reserve's evidence rather than at the reserve.  32 dB came from
+11147 locked minutes of logged SNR, and a logged minute is an average over a running,
+locked train.  An initiation transient is one burst, in a minute that may not lock at
+all, so the figure it contributed to is diluted or missing.  The reserve covers the
+arc it was measured from and not the first crack of one starting up.
+
+Two consequences, and the second is the useful one.
+
+The station sits close to where the two bounds cross.  Its antenna needs about 25.4 dB
+before it beats the converter, and its loudest initiations want about 22.9.  Which
+side a sweep chooses depends on whether an arc happened to be running while it ran.
+
+**So the sweep now uses the clipping it sees.**  Every step already recorded a clipped
+count and the choice ignored it.  A gain that clipped during the sweep is not a
+prediction about arcs, it is one that happened, so it rules that gain out and every
+gain above it.  The five passes are what make it worth consulting, since an
+intermittent arc that fires during any one of them is caught.  On the curve above,
+that is exactly the difference between 25.4 and 22.9: one step, from evidence rather
+than from a fudge factor.
+
+Chasing the last few clipped values is not worth it either way.  Fourteen raw values
+in sixty seconds at 256 kHz is 0.46 parts per million and moves an averaged burst
+amplitude by eight millionths of a decibel, where a gain step below the knee costs one
+to three decibels on every noise floor reported afterwards.  The monitor's warning
+threshold is set from that: 4 parts per million, about 123 values a minute at
+256 kHz.
+
 ## What the two antennas showed
 
 **A mag loop resonant at 3.530 MHz.**  Too quiet to swamp an 8-bit converter at any

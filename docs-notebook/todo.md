@@ -125,8 +125,16 @@ Points the SDR pages need to make, as notes rather than draft prose:
   measured, which is why the reserve is as large as it is.
 - **Re-run the calibration after changing the tuner gain**, or carry the level
   calibration across by the difference.  Startup warns if the two disagree.
-- **A quiet antenna may have no usable gain at all**, and the sweep says so rather
-  than picking a number.  That is a statement about the antenna, not a failure.
+- **A quiet antenna cannot have both**, and the sweep gives up floor accuracy rather
+  than headroom, saying how much it gave up.  Clipping cannot be undone and a floor
+  that reads high can.
+- **Remedies for clipping, in the order they cost least.**  Lowering the gain is the
+  obvious one and the most expensive, because a step below the knee costs one to
+  three decibels on every noise floor reported afterwards.  Cheaper first: move to a
+  higher band, since powerline noise amplitude declines with frequency; or shift the
+  listening frequency away from where the antenna is resonant, so it delivers less.
+  An attenuator ahead of the receiver is the last resort and the only one that helps
+  when the whole band is loud.
 
 `docs/` needs the wording approved before anything is written to it, so these are for
 the author rather than for a model to fill in unattended.

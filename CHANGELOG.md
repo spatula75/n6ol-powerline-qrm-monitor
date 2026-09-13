@@ -219,6 +219,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The gain sweep says the reserve leaves "at least" the headroom figure. The chosen
   gain is the lowest one where the antenna dominates, which is usually well below the
   highest the reserve allows, so the real margin is commonly a good deal more.
+- The gain sweep uses the clipping it observes, which it recorded and then ignored. A
+  gain that clipped during the sweep is not a prediction about arcs but one that
+  happened, so it rules that gain out and every gain above it. The five passes are
+  what make it worth consulting: an intermittent arc firing during any one of them is
+  caught. On the station this was developed against that is the difference between
+  25.4 and 22.9 dB, which is the step its operator had been taking by hand.
+- The gain sweep gives up noise-floor accuracy rather than headroom when the two
+  cannot both be had, and says how much it gave up. It used to refuse outright, and a
+  station near the crossing then got no gain at all and set one by hand anyway,
+  making that trade without the figures to make it on. Clipping is nonlinear and
+  cannot be undone; a floor that reads high is wrong by a known amount in a known
+  direction.
+- The monitor no longer warns about every clipped sample. It reports above 4 parts
+  per million, about 123 values a minute at 256 kHz, and says to run the calibration
+  rather than to lower the gain a step. A handful a minute comes from the first burst
+  of an intermittent arc, moves an averaged burst amplitude by eight millionths of a
+  decibel, and acting on it costs a gain step, which below the knee costs one to three
+  decibels on every noise floor reported afterwards.
+- The clipping message offers the cheaper remedies before the expensive one: a higher
+  band, where powerline noise is weaker, or a frequency further from where the antenna
+  is resonant.
 - The gain sweep reads the receiver synchronously on one thread rather than streaming
   it. Changing gain during an async stream is two threads touching one device: the
   capture thread sits inside librtlsdr driving libusb's event loop while the gain goes

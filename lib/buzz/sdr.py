@@ -137,6 +137,21 @@ _FEED_READ_TIMEOUT_SECONDS = 0.5
 # RtlSdrSource._shut_the_device_without_waiting_for_ever.
 _DEVICE_CLOSE_TIMEOUT_SECONDS = 3.0
 
+# The share of raw values that has to clip before it is worth telling anybody.
+#
+# A fraction rather than a count, so it means the same thing at any sample rate and
+# over any reporting interval.  4 parts per million is 123 values a minute at 256 kHz,
+# which is the figure the one station running this settled on as the boundary between
+# noise and news: it saw over seven hundred a minute when its gain really was a step
+# too high, and single digits once it was not.
+#
+# What that costs if it is wrong is small and known.  123 clipped values is at most
+# 6% of a single 4 ms burst, so the worst that slips through unreported is a fraction
+# of a decibel on one event.  What the old behavior of reporting everything cost was
+# larger: it advised lowering the gain a step for 0.46 parts per million, and a step
+# below the knee is one to three decibels on every noise floor from then on.
+_CLIPPING_WORTH_REPORTING = 4e-6
+
 # A USB bulk transfer on this hardware moves whole 512-byte packets, and
 # rtlsdr_read_sync asks for a buffer rather than negotiating one.  pyrtlsdr says as
 # much and leaves it there: "FIXME: librtlsdr may not be able to read an arbitrary
@@ -982,27 +997,41 @@ class RtlSdrPipeline(RingBufferPipeline):
         self._warn_about_drift(elapsed)
 
     def _warn_about_clipping(self, elapsed: float) -> None:
-        """Report any sample that hit a rail, at the receiver or at the int16 output.
+        """Report clipping at a rate that could move a measurement, and not below it.
 
-        The two are counted apart because they have separate causes.  A raw value at
-        the converter's rail means the antenna is louder than the tuner gain allows.
-        A clipped output sample can happen without that, because the filter can leave
-        a peak slightly above where its input sat.
+        The two counts are kept apart because they have separate causes.  A raw value
+        at the converter's rail means the antenna is louder than the tuner gain
+        allows.  A clipped output sample can happen without that, because the filter
+        can leave a peak slightly above where its input sat.
 
-        Any movement at all is reported.  A threshold would need a figure nobody has
-        measured, and on a quiet band the honest count is zero, so a single clipped
-        sample is already news.
+        Every clipped sample used to be reported, with advice to lower the gain a
+        step.  The docstring said a threshold would need a figure nobody had measured,
+        which was true when it was written.  It is not now, and the figures say the
+        advice was costing more than it saved.
+
+        A station running at its calibrated gain saw a handful of clipped values a
+        minute, from the first burst of an intermittent arc, which is far louder than
+        the train that follows.  Fourteen raw values in sixty seconds at 256 kHz is
+        0.46 parts per million, and moves an averaged burst amplitude by eight
+        millionths of a decibel.  Acting on it costs a whole gain step, and a step
+        below the knee costs one to three decibels on every noise floor the station
+        reports from then on.  That is a bad trade in every direction.
+
+        Hundreds a minute is different and worth acting on, which is what the
+        threshold separates.
         """
         clipped = max(0, self._clipped - self._clipped_reported)
         saturated = max(0, self._converter.saturated_samples - self._saturated_reported)
         self._clipped_reported = self._clipped
         self._saturated_reported = self._converter.saturated_samples
-        if not clipped and not saturated:
+        raw_values = elapsed * self._source.iq_sample_rate * _BYTES_PER_SAMPLE
+        if clipped < raw_values * _CLIPPING_WORTH_REPORTING and not saturated:
             return
         logger.warning(
             'The receiver clipped %d raw value(s) in the last %.0f seconds, and the '
             'conversion clipped %d output sample(s).  Loud events are measured smaller '
-            'than they are.  Lower [rtlsdr] gain_db by one step.',
+            'than they are.  Run the gain calibration again on a quiet band, which '
+            'measures what [rtlsdr] gain_db should be rather than guessing a step.',
             clipped, elapsed, saturated)
 
     def _warn_about_drift(self, elapsed: float) -> None:
