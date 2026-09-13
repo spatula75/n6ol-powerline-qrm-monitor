@@ -307,6 +307,7 @@ class RtlSdrSource:
 
         self._stopping = threading.Event()
         self._closed = False
+        self._released = False
         self._thread = threading.Thread(target=self._run, daemon=True, name='rtlsdr')
 
         self._tuned_hz = frequency_hz + tuning_offset_hz
@@ -488,7 +489,7 @@ class RtlSdrSource:
         except queue.Empty:
             return None
 
-    def close(self) -> None:
+    def close(self) -> bool:
         """Stop capture and release the device.
 
         Cancelling makes read_bytes_async return, which lets the capture thread end,
@@ -498,9 +499,15 @@ class RtlSdrSource:
         Safe to call more than once, and it will be.  The explicit call happens during
         an orderly shutdown, and the atexit hook fires afterwards regardless, so the
         second one has to be a no-op rather than a second attempt at a closed device.
+
+        Returns whether the device was actually released.  False means it is still
+        held, and the consequence falls on whatever opens a receiver next: libusb
+        refuses with LIBUSB_ERROR_ACCESS, which reads as a permissions problem and is
+        not one.  A caller about to reopen the device has to be able to say so, rather
+        than leave somebody to work it out from that.
         """
         if self._closed:
-            return
+            return self._released
         self._closed = True
         atexit.unregister(self.close)
         self._stopping.set()
@@ -523,11 +530,14 @@ class RtlSdrSource:
                 'device was left open.  Closing it now would free a handle that thread '
                 'is still reading through.  The operating system releases it when this '
                 'process ends.', _THREAD_JOIN_TIMEOUT_SECONDS)
-            return
+            return False
         try:
             self._device.close()
         except Exception:
             logger.debug('Closing the receiver failed during shutdown.', exc_info=True)
+            return False
+        self._released = True
+        return True
 
     # ----------------------------------------------------------------- private
 

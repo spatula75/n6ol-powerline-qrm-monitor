@@ -116,8 +116,8 @@ class TestTheKneeFitRecoversWhatItWasGiven:
         weighted = KneeFit(gains, power)
         assert weighted.converter == pytest.approx(converter, rel=0.15)
         assert unweighted[1] > converter * 10, (
-            'the unweighted solve is supposed to be the bad one here; if it has become '
-            'accurate then the weighting no longer earns its complexity')
+            'the unweighted solve is supposed to be the bad one here.  If it has become '
+            'accurate then the weighting no longer earns its complexity.')
 
     def test_a_fit_that_cannot_separate_them_reports_a_share_rather_than_a_negative(self):
         """Noise can push a coefficient below zero, which is not a physical answer.

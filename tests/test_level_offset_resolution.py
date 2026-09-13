@@ -183,7 +183,7 @@ class TestAStaleCalibrationIsReported:
 
     def test_it_offers_the_figure_that_carries_the_measurement_across(self, caplog):
         """The same arithmetic the setup program applies when the gain changes there,
-        so an operator fixing it by hand lands on the value the tool would have set.
+        so an operator fixing it by hand arrives at the value the tool would have set.
         """
         messages = self._check(caplog, gain_db=32.8, calibrated_offset_db=-38.5,
                                calibrated_at_gain_db=40.2)

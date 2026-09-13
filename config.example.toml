@@ -78,7 +78,7 @@ frequency_khz = 3588.0
 # Choose the lowest gain at which band noise sits about 10 dB above the
 # receiver's own noise. Lower leaves more room for loud events. Higher
 # measures the receiver rather than the band.
-gain_db = 32.8
+gain_db = 28.0
 
 # The offset that converts audio amplitude to RF level at the receiver
 # input, the same job [station] audio_rf_conversion_db does for a sound
@@ -100,7 +100,7 @@ gain_db = 32.8
 # It depends on the tuner gain, so changing that means finding it again.
 #
 # Unset by default.
-# calibrated_offset_db = -32.8
+# calibrated_offset_db = -28.0
 
 # The tuner gain the level calibration was measured against. The calibration
 # tool writes this, and nobody sets it by hand.
@@ -113,7 +113,7 @@ gain_db = 32.8
 # calibration again rather than editing this.
 #
 # Unset by default.
-# calibrated_at_gain_db = 32.8
+# calibrated_at_gain_db = 28.0
 
 # Room the gain calibration keeps above the quiet band noise, so that an arc
 # has somewhere to go before it clips.

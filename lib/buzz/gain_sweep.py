@@ -211,8 +211,8 @@ class BandMeasurement:
 
         The DC offset stays in, where quiet_dbfs takes it out, and the two differ
         because they answer different questions.  Clipping happens at the converter,
-        before any filtering, so an offset genuinely does use up headroom and belongs
-        in the figure that decides whether an arc has room.  The noise floor is what
+        before any filtering, so an offset does use up headroom and belongs in the
+        figure that decides whether an arc has room.  The noise floor is what
         the monitor reports after filtering, and the spike never reaches that.
         """
         if len(samples) == 0:

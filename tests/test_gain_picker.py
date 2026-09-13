@@ -474,7 +474,18 @@ class TestLeavingTheMeterDoesNotFreezeTheUi:
         assert 'stream.close()' not in source
         assert source.count('close_without_blocking_the_ui') == 3
 
-    def test_the_sweep_dialog_closes_off_the_loop_too(self, tmp_path):
+    def test_the_sweep_dialog_closes_in_the_sweeps_own_thread(self, tmp_path):
+        """Stronger than closing off the loop, and it replaced that.  A shielded close
+        still left the event loop deciding whether it ran, and it did not always run:
+        a sweep that failed after its last step left the receiver held, and the next
+        attempt to open one came back as LIBUSB_ERROR_ACCESS.
+
+        In the sweep's own thread the close cannot be skipped, because a thread
+        asyncio.to_thread started runs to completion whatever happens to the task.
+        """
         source = Path(
             'lib/buzz/setup/screens/gain_calibration.py').read_text(encoding='utf-8')
-        assert 'asyncio.shield(asyncio.to_thread(source.close))' in source
+        assert 'def _sweep_then_release(' in source
+        assert 'source.close()' in source
+        assert 'asyncio.shield' not in source, (
+            'the shielded close left the loop deciding whether the device came back')

@@ -146,6 +146,22 @@ whether the sweep still reaches the answer it reaches on a quiet band:
 
 `GainSweep` rounds an even request up to the next odd number for that reason.
 
+## What the finished sweep measured, 13 September 2026
+
+The first end-to-end run against the broadband antenna chose **28.0 dB**, which is the
+lowest step the tuner offers at or above that antenna's knee.  The knee therefore
+falls between 25.4 and 28.0 dB.  That figure is now the shipped default, replacing a
+guess.
+
+A model of the same antenna, fitted to the 81% share at 36.4 dB recorded earlier in
+this document, had predicted 32.8 dB.  The measurement came in 4.8 dB below it.
+
+Keep that gap in mind before believing anything else the model says about this
+station, including the pass-count table above.  The simulation was built to reproduce
+a failure that had already been seen on hardware, and it reproduces that one; it is
+not evidence about cases nobody has measured.  Five passes stay the default for the
+same reason, rather than the three the table would allow.
+
 Two other things that table says.  Three passes would do in simulation, and five is
 kept because the figure came from hardware rather than from a model, where the arc is
 not as well behaved as any of this.  And one pass scoring 25 of 25 is a limit of the

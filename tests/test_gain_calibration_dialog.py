@@ -7,7 +7,10 @@ number picked from a rule that failed.
 """
 import time
 from asyncio import run
+from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from textual.widgets import Button, OptionList, Static
 
@@ -489,3 +492,135 @@ class TestTheKeyboardReachesBothButtons:
         rather than in place of it.
         """
         assert self._after_sweep(tmp_path, ['tab', 'enter'])['value'] is CANCELLED
+
+
+class TestTheReceiverIsAlwaysReleased:
+    """A sweep that reached its last step and then failed anywhere afterwards left the
+    device held, and the next attempt to open one came back as LIBUSB_ERROR_ACCESS: a
+    permissions error that is nothing of the sort.
+
+    The release is in the same thread as the work now, after a finally no task
+    cancellation can skip, because a thread asyncio.to_thread started runs to
+    completion whatever happens to the task awaiting it.
+    """
+
+    class _Source:
+        def __init__(self, released=True):
+            self._released = released
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+            return self._released
+
+    def test_a_sweep_that_raises_still_releases_it(self):
+        from buzz.setup.screens.gain_calibration import _sweep_then_release
+
+        source = self._Source()
+
+        class _Exploding:
+            def run(self, on_progress=None):
+                raise RuntimeError('the tuner stopped')
+
+        with pytest.raises(RuntimeError):
+            _sweep_then_release(source, _Exploding(), lambda *a: None)
+        assert source.closed
+
+    def test_it_reports_whether_the_device_came_back(self):
+        from buzz.setup.screens.gain_calibration import _sweep_then_release
+
+        for released in (True, False):
+            _, reported = _sweep_then_release(
+                self._Source(released), _FakeSweep(_result()), lambda *a: None)
+            assert reported is released
+
+    def test_the_release_value_is_read_after_the_close_not_before(self):
+        """A return expression is evaluated before the finally runs, so building the
+        tuple inside the try would have carried whatever the flag held beforehand.
+        """
+        from buzz.setup.screens.gain_calibration import _sweep_then_release
+
+        _, reported = _sweep_then_release(
+            self._Source(released=True), _FakeSweep(_result()), lambda *a: None)
+        assert reported is True
+
+    def test_a_held_receiver_is_said_on_screen(self):
+        """The consequence falls on the next run as a libusb error that sends people
+        to Zadig for something Zadig cannot fix.  Saying it where it happened costs a
+        line.
+        """
+        note = GainCalibrationDialog._held_note(released=False)
+        assert 'still held' in note
+        assert GainCalibrationDialog._held_note(released=True) == ''
+
+    def test_a_failure_showing_the_result_reaches_the_screen(self, tmp_path):
+        """It used to die inside the worker, which Textual reports nowhere an operator
+        can see: the dialog sat there having measured everything and said nothing.
+        """
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test() as pilot:
+                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                           return_value=(_FakeSource(), _FakeSweep(_result()))), \
+                     patch.object(GainCalibrationDialog, '_show_result',
+                                  side_effect=ValueError('cannot format that')):
+                    app.push_screen(GainCalibrationDialog(dict(RTLSDR_VALUES)))
+                    await _wait_until(
+                        pilot,
+                        lambda: 'would not display' in app.screen.query_one(
+                            '#outcome', Static).content,
+                        'the display failure to be reported')
+
+        run(scenario())
+
+
+class TestProgressDoesNotBlockTheSweep:
+    """App.call_from_thread waits until the loop has run the callback.  A loop that is
+    shutting down never runs it, so the sweep thread waited for ever, and CPython's
+    ThreadPoolExecutor joins every worker it made during interpreter exit.  One stuck
+    thread hangs the whole process, which is what exiting the program did.
+    """
+
+    def test_it_posts_rather_than_waiting(self, tmp_path):
+        posted = []
+
+        class _Loop:
+            def call_soon_threadsafe(self, fn, *args):
+                posted.append(args)
+
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test():
+                dialog = GainCalibrationDialog(dict(RTLSDR_VALUES))
+                report = dialog._progress_reporter(_Loop())
+                report(0, 145, 32.8)
+
+        run(scenario())
+        assert posted, 'nothing was posted to the loop'
+        assert '1 of 145' in posted[0][1]
+
+    def test_a_dead_loop_does_not_stop_the_sweep(self, tmp_path):
+        """The loop being gone is not a reason to stop sweeping, and certainly not a
+        reason to raise inside a thread nobody is watching.
+        """
+        class _DeadLoop:
+            def call_soon_threadsafe(self, fn, *args):
+                raise RuntimeError('Event loop is closed')
+
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test():
+                dialog = GainCalibrationDialog(dict(RTLSDR_VALUES))
+                dialog._progress_reporter(_DeadLoop())(0, 145, 32.8)
+
+        run(scenario())
+
+    def test_the_blocking_bridge_is_not_called(self):
+        """The blocking call is the defect, so its absence is what is worth pinning.
+        The name still appears in a docstring saying why it is not used, so this looks
+        for the call rather than the mention.
+        """
+        source = Path(
+            'lib/buzz/setup/screens/gain_calibration.py').read_text(encoding='utf-8')
+        assert '.call_from_thread(' not in source
+        assert '.call_soon_threadsafe(' in source

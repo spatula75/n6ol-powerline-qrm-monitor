@@ -142,8 +142,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `[rtlsdr] audio_rf_conversion_db` is now `calibrated_offset_db`. It was never the
   same setting as `[station] audio_rf_conversion_db`, only the same name, and sharing
   one read as a single setting stored in two places.
-- `[rtlsdr] gain_db` ships as 32.8 rather than 40.2, which is what the automatic
-  calibration chooses on the antenna this was developed against. It gives up some
+- `[rtlsdr] gain_db` ships as 28.0 rather than 40.2, which is what the automatic
+  calibration measured on the antenna this was developed against. It gives up some
   noise-floor accuracy for headroom, which is the right way round: a clipped arc
   cannot be recovered.
 - The receiver section sits directly below the audio section in the setup program and
@@ -206,6 +206,23 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A finished gain sweep offered no way to decline the figure it measured except
   Escape. It has a Cancel button beside "Use this gain" now, and the arrow keys move
   between the two, which they did not.
+- The gain sweep could finish its last step, show nothing, and leave the receiver
+  held. The release happened in the worker's `finally` as an awaited call, so the
+  event loop decided whether it ran, and anything raised after the sweep died inside
+  the worker where Textual reports it nowhere the operator can see. The release now
+  happens in the sweep's own thread, which no task cancellation can skip, and a
+  failure past that point reaches the screen. A receiver the program could not release
+  is said on screen too, since the consequence otherwise falls on the next run as
+  LIBUSB_ERROR_ACCESS: a permissions error that is nothing of the sort.
+- Exiting the setup program could hang after a gain sweep. Progress crossed back to
+  the interface with `App.call_from_thread`, which waits until the loop has run the
+  callback, and a loop that is shutting down never runs it. CPython joins every
+  thread-pool worker at interpreter exit, so one waiting thread hung the process
+  rather than the dialog that orphaned it.
+- `tools/ste_lint.py --changed` checks files git has not seen yet. A new file does not
+  appear in `git diff`, so the gate read it as nothing to check and reported clean.
+  Three findings sat in two new files through several green runs and surfaced only
+  once the files were committed, which is the wrong moment.
 - `GainSweep` rounds an even number of passes up to an odd one. The floor is combined
   with a median, and numpy's median of an even count averages the two middle values
   instead of picking one, which gives up the outlier rejection the passes exist for.

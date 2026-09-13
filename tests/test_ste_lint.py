@@ -730,3 +730,62 @@ class TestSubjectlessOpenersAreReported:
         path.write_text('Snapped to the nearest step the tuner offers, since it\n'
                         'accepts only a fixed set.\n', encoding='utf-8')
         assert fragments_in(path) == []
+
+
+class TestUntrackedFilesAreChecked:
+    """A file git has never seen does not appear in `git diff`, so --changed checked
+    nothing in it and reported the run clean.
+
+    Three findings sat in two new files through several green runs of this gate and
+    surfaced only when the files were committed, which is the wrong moment: the gate
+    exists to catch them before that.  Same shape as the failed-diff guard, and the
+    same rule behind it, that a check deriving its verdict from the absence of
+    something has to ask what happens when its input never arrives.
+    """
+
+    def _repo(self, tmp_path):
+        import subprocess
+
+        def git(*args):
+            subprocess.run(['git', *args], cwd=tmp_path, check=True,
+                           capture_output=True)
+
+        git('init', '-b', 'main')
+        git('config', 'user.email', 'test@example.invalid')
+        git('config', 'user.name', 'Test')
+        (tmp_path / 'seed.md').write_text('A seed.\n', encoding='utf-8')
+        git('add', '-A')
+        git('commit', '-m', 'seed')
+        return tmp_path
+
+    def test_a_new_file_is_counted_as_added_in_full(self, tmp_path, monkeypatch):
+        repo = self._repo(tmp_path)
+        (repo / 'new.md').write_text('One.\nTwo.\nThree.\n', encoding='utf-8')
+        monkeypatch.chdir(repo)
+        assert changed_lines('main').get('new.md') == {1, 2, 3}
+
+    def test_a_finding_in_a_new_file_is_reported(self, tmp_path, monkeypatch):
+        repo = self._repo(tmp_path)
+        (repo / 'new.md').write_text('A note.  This is genuinely so.\n', encoding='utf-8')
+        monkeypatch.chdir(repo)
+        findings = [f for f in lint_file(Path('new.md'))
+                    if f.line in changed_lines('main').get('new.md', set())]
+        assert any('genuinely' in f.detail for f in findings), findings
+
+    def test_a_file_type_it_cannot_read_is_skipped(self, tmp_path, monkeypatch):
+        """Binary and unreadable types have no prose, and reading one to count its
+        lines would be work for nothing.
+        """
+        repo = self._repo(tmp_path)
+        (repo / 'blob.bin').write_bytes(b'\x00\x01\x02')
+        monkeypatch.chdir(repo)
+        assert 'blob.bin' not in changed_lines('main')
+
+    def test_an_ignored_file_stays_ignored(self, tmp_path, monkeypatch):
+        """--exclude-standard, so a scratch file under tmp/ does not become a gate."""
+        repo = self._repo(tmp_path)
+        (repo / '.gitignore').write_text('scratch/\n', encoding='utf-8')
+        (repo / 'scratch').mkdir()
+        (repo / 'scratch' / 'notes.md').write_text('Genuinely.\n', encoding='utf-8')
+        monkeypatch.chdir(repo)
+        assert 'scratch/notes.md' not in changed_lines('main')

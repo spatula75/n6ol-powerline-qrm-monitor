@@ -95,7 +95,7 @@
           "type": "number",
           "title": "Tuner gain (dB)",
           "description": "The monitor snaps this to the nearest step the tuner offers, since the tuner accepts only a fixed set.",
-          "default": 32.8,
+          "default": 28.0,
           "x-widget": "gain-picker",
           "x-notes": [
             "Choose the lowest gain at which band noise sits about 10 dB above the receiver's own noise. Lower leaves more room for loud events. Higher measures the receiver rather than the band."
@@ -110,7 +110,7 @@
           "description": "The offset that converts audio amplitude to RF level at the receiver input, the same job [station] audio_rf_conversion_db does for a sound card. Leave it unset until you have calibrated.",
           "default": null,
           "x-widget": "calibration",
-          "x-example": -32.8,
+          "x-example": -28.0,
           "x-notes": [
             "This replaces [station] audio_rf_conversion_db whenever [audio] source is rtlsdr. The two carry different names because they are different quantities: that one describes a radio and its wiring, this one is mostly the negative of the tuner gain above and moves whenever the gain does.",
             "Unset means the monitor estimates it as the negative of the tuner gain. Expect the reading to be a few dB out. The [station] figure is not a fallback and is never used for a receiver.",
@@ -127,7 +127,7 @@
           "description": "The tuner gain the level calibration was measured against. The calibration tool writes this, and nobody sets it by hand.",
           "default": null,
           "x-file-only": true,
-          "x-example": 32.8,
+          "x-example": 28.0,
           "x-notes": [
             "The calibration tool writes this when it measures the level calibration above.",
             "Change the tuner gain afterwards and the calibration is wrong by roughly the difference, so startup compares the two and says so. Run the calibration again rather than editing this."

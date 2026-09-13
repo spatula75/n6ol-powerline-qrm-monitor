@@ -101,12 +101,17 @@ class RtlSdrConfig:
     # useful range starts around 22.9 dB, because below that the output is the
     # converter's own noise rather than anything from the antenna.
     #
-    # 32.8 is what the automatic calibration chooses on the broadband antenna this was
-    # developed against, which makes it a shipped figure somebody arrived at rather
-    # than a guess.  It is the lowest step at or above that antenna's knee, which sits
-    # at 30.1 dB, and it leaves 11.7 dB more headroom than the reserve asks for.
+    # 28.0 is what the automatic calibration measured on the broadband antenna this was
+    # developed against, so the shipped figure is one the tool arrived at rather than a
+    # guess.  It is the lowest step at or above that antenna's knee, which therefore
+    # sits between 25.4 and 28.0 dB.
+    #
+    # A model of the same antenna had predicted 32.8, and the measurement came in
+    # 4.8 dB below it.  Worth remembering before trusting anything else the model says
+    # about this station: it under-predicts where the knee falls.
+    #
     # Every antenna differs, so run the calibration rather than trusting this.
-    gain_db: float = 32.8
+    gain_db: float = 28.0
     # dB added to the measured audio level to get signal level at the receiver input,
     # the same job station.audio_rf_conversion_db does for a sound card.  It lives here
     # rather than there because the figure depends on gain_db above, so the two belong

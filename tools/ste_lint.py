@@ -504,8 +504,31 @@ def _released_from(source: str) -> int:
     return sys.maxsize
 
 
+def _untracked_files() -> list[str]:
+    """Paths git is not tracking yet, which a diff cannot show.
+
+    A new file is invisible to `git diff` until it is added, so `--changed` checked
+    nothing in it and reported the run clean.  Three findings sat in two new files
+    through several green runs of this gate and surfaced only once the files were
+    committed, which is the wrong moment: the point of the gate is to catch them
+    before that.
+
+    Same shape as the failed-diff guard below.  A check that derives its verdict from
+    the absence of something has to ask what happens when its input never arrives.
+    """
+    result = subprocess.run(['git', 'ls-files', '--others', '--exclude-standard'],
+                            capture_output=True, text=True, encoding='utf-8')
+    if result.returncode != 0:
+        reason = (result.stderr.strip().splitlines() or ['git printed no reason'])[0]
+        raise RuntimeError(f'git could not list untracked files: {reason}')
+    return [line for line in result.stdout.splitlines() if line]
+
+
 def changed_lines(base: str) -> dict[str, set[int]]:
-    """Line numbers the working tree and its commits have added since `base`."""
+    """Line numbers the working tree and its commits have added since `base`.
+
+    A file git has never seen counts as added in full, since every line of it is new.
+    """
     result = subprocess.run(['git', 'diff', '-U0', base], capture_output=True,
                             text=True, encoding='utf-8')
     # A failed diff gives an empty stdout, which parses as "nothing changed" and
@@ -528,6 +551,12 @@ def changed_lines(base: str) -> dict[str, set[int]]:
             match = re.search(r'\+(\d+)(?:,(\d+))?', line)
             start, count = int(match.group(1)), int(match.group(2) or 1)
             added.setdefault(path, set()).update(range(start, start + count))
+    for name in _untracked_files():
+        path_object = Path(name)
+        if path_object.suffix not in EXTRACTORS or not path_object.is_file():
+            continue
+        line_count = len(path_object.read_text(encoding='utf-8').splitlines())
+        added.setdefault(name, set()).update(range(1, line_count + 1))
     return added
 
 
