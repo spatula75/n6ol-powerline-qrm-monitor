@@ -58,21 +58,6 @@ decide what a row means when the floor is the sentinel, and either refuse to wri
 or mark it, rather than letting the arithmetic run.  See `sdr-gain-calibration.md`,
 which uses the same scan for the arc headroom figure.
 
-### Changing gain during capture races libusb
-
-Two threads touch one device: the sweep writes the tuner while the capture thread
-drives libusb's event loop inside `rtlsdr_read_async`.  Twice in a few dozen sweeps a
-transfer never completed and `rtlsdr_close` never returned.  `close_device` bounds the
-hang rather than preventing it.
-
-Writing from the callback was tried and is worse, because libusb forbids a synchronous
-call from inside an event callback.  See `rtl-sdr-hardware.md`.
-
-The untried option is to cancel the async read around each change and restart it.  It
-removes the concurrency outright, and costs a cancel and a pool refill at each of 145
-steps, on an operation that is itself implicated in the hang.  Worth measuring before
-adopting.
-
 ### The gain sweep has not met a quiet antenna in anger
 
 Each of the three outcomes it can report is covered by a test against a simulated

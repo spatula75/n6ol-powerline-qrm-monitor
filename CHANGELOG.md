@@ -219,6 +219,21 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - The gain sweep says the reserve leaves "at least" the headroom figure. The chosen
   gain is the lowest one where the antenna dominates, which is usually well below the
   highest the reserve allows, so the real margin is commonly a good deal more.
+- The gain sweep reads the receiver synchronously on one thread rather than streaming
+  it. Changing gain during an async stream is two threads touching one device: the
+  capture thread sits inside librtlsdr driving libusb's event loop while the gain goes
+  out as control transfers from somewhere else. Twice in a few dozen sweeps a transfer
+  never completed, after which closing the receiver never returned and the program
+  hung. There is no second thread now, so there is nothing to race, and no outstanding
+  transfer for the close to wait on.
+
+  A sweep can afford it: it throws away most of what it reads and measures a
+  statistical property of noise, so samples missed between reads cost it nothing. The
+  monitor still streams, because it cannot miss a sample.
+
+  A synchronous read has to be a whole number of 512-byte USB packets, which pyrtlsdr
+  documents as a FIXME and does not enforce. A bad size closes the device and raises a
+  libusb error that says nothing about sizes, so it is refused up front instead.
 - The gain sweep discards both buffers between the tuner and a measurement rather
   than one. The counted discard covers librtlsdr's transfer pool; the receiver's own
   queue was not covered, so the count spent itself on stale entries and let that many

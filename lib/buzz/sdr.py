@@ -137,6 +137,38 @@ _FEED_READ_TIMEOUT_SECONDS = 0.5
 # RtlSdrSource._shut_the_device_without_waiting_for_ever.
 _DEVICE_CLOSE_TIMEOUT_SECONDS = 3.0
 
+# A USB bulk transfer on this hardware moves whole 512-byte packets, and
+# rtlsdr_read_sync asks for a buffer rather than negotiating one.  pyrtlsdr says as
+# much and leaves it there: "FIXME: librtlsdr may not be able to read an arbitrary
+# number of bytes".  A request that is not a whole number of packets is undefined
+# rather than refused, so validate_sweep_block turns it into an error here.
+_USB_PACKET_BYTES = 512
+
+# Samples per synchronous read during a sweep.
+#
+# 2048 samples is 4096 bytes, eight USB packets, and 8 ms at 256 kHz.  Small enough
+# that the discard after a gain change costs little, large enough that the per-read
+# overhead is not what the sweep spends its time on.
+DEFAULT_SWEEP_BLOCK_SAMPLES = 2048
+
+
+def validate_sweep_block(block_samples: int) -> None:
+    """Refuse a block that is not a whole number of USB packets.
+
+    The constraint holds and is undocumented, which is the combination that makes it
+    worth asserting rather than trusting.  A bad size does not fail loudly: librtlsdr
+    reads what it can, pyrtlsdr sees a short read, closes the device and raises, and
+    the sweep ends with a libusb error that says nothing about block sizes.
+    """
+    wanted = _USB_PACKET_BYTES // _BYTES_PER_SAMPLE
+    if block_samples > 0 and block_samples % wanted == 0:
+        return
+    raise ValueError(
+        f'A sweep block of {block_samples} samples is {block_samples * _BYTES_PER_SAMPLE} '
+        f'bytes, and a synchronous read has to be a whole number of {_USB_PACKET_BYTES}'
+        f'-byte USB packets.  Use a multiple of {wanted} samples, such as '
+        f'{DEFAULT_SWEEP_BLOCK_SAMPLES}.')
+
 
 # How often the pipeline looks at its own health counters, in seconds.
 #
@@ -263,6 +295,47 @@ def close_device(device: RtlSdrDevice) -> bool:
     return False
 
 
+def configure_device(device: RtlSdrDevice, *, gain_db: float, iq_sample_rate: int,
+                     tuned_hz: int) -> tuple[int, float]:
+    """Set the rate, the tuning and the gain, and turn both gain controls off.
+
+    Shared by every way of reading this hardware, so a sweep and the monitor set the
+    receiver up identically.  Two of these are easy to leave out and neither announces
+    itself.
+
+    The RTL2832U has a digital AGC of its own, separate from the tuner's manual gain,
+    and it is off by default only by convention.  An AGC riding on the impulses would
+    compress exactly what this program measures while leaving the noise floor looking
+    healthy, so it is disabled explicitly.
+
+    This reads the rate back, because the device derives it from a 28.8 MHz divider
+    and cannot hit every request.  Measured on this hardware, 256000 comes back
+    exactly, where 250000 comes back as 250000.000414.
+
+    Returns the rate the device settled on and the gain it was actually given.
+    """
+    device.sample_rate = iq_sample_rate
+    actual = float(device.sample_rate)
+    settled = int(round(actual))
+    if settled != iq_sample_rate:
+        logger.warning(
+            'Asked the receiver for %d Hz and got %.6f Hz.  Everything downstream '
+            'will treat the audio as %d Hz.  A rate the hardware cannot produce '
+            'exactly is normal, and the difference here is %.1f ppm.',
+            iq_sample_rate, actual, settled,
+            abs(actual - iq_sample_rate) / iq_sample_rate * 1e6)
+
+    device.center_freq = tuned_hz
+    device.set_agc_mode(False)
+
+    gain = RtlSdrSource._nearest_supported_gain(gain_db, list(device.valid_gains_db))
+    device.gain = gain
+    if gain != gain_db:
+        logger.info('Receiver gain %.1f dB is not one the tuner offers, so %.1f dB '
+                    'was used instead.', gain_db, gain)
+    return settled, gain
+
+
 def _why_the_receiver_would_not_open(index: int, exc: Exception) -> str:
     """Turn a libusb failure into something that names what to try.
 
@@ -375,39 +448,10 @@ class RtlSdrSource:
         atexit.register(self.close)
 
     def _configure(self, gain_db: float, iq_sample_rate: int) -> None:
-        """Set the rate, the tuning and the gain, and turn both gain controls off.
-
-        Order matters less than completeness here, but two of these are easy to leave
-        out and neither announces itself.
-
-        The RTL2832U has a digital AGC of its own, separate from the tuner's manual
-        gain, and it is off by default only by convention.  An AGC riding on the
-        impulses would compress exactly what this program measures while leaving the
-        noise floor looking healthy, so it is disabled explicitly.
-
-        This reads the rate back, because the device derives it from a 28.8 MHz
-        divider and cannot hit every request.  Measured on this hardware, 256000 comes back
-        exactly, where 250000 comes back as 250000.000414.
-        """
-        self._device.sample_rate = iq_sample_rate
-        actual = float(self._device.sample_rate)
-        self._iq_sample_rate = int(round(actual))
-        if self._iq_sample_rate != iq_sample_rate:
-            logger.warning(
-                'Asked the receiver for %d Hz and got %.6f Hz.  Everything downstream '
-                'will treat the audio as %d Hz.  A rate the hardware cannot produce '
-                'exactly is normal, and the difference here is %.1f ppm.',
-                iq_sample_rate, actual, self._iq_sample_rate,
-                abs(actual - iq_sample_rate) / iq_sample_rate * 1e6)
-
-        self._device.center_freq = self._tuned_hz
-        self._device.set_agc_mode(False)
-
-        self._gain_db = self._nearest_supported_gain(gain_db, list(self._device.valid_gains_db))
-        self._device.gain = self._gain_db
-        if self._gain_db != gain_db:
-            logger.info('Receiver gain %.1f dB is not one the tuner offers, so %.1f dB '
-                        'was used instead.', gain_db, self._gain_db)
+        """Set the rate, the tuning and the gain.  See configure_device."""
+        self._iq_sample_rate, self._gain_db = configure_device(
+            self._device, gain_db=gain_db, iq_sample_rate=iq_sample_rate,
+            tuned_hz=self._tuned_hz)
 
     @staticmethod
     def _nearest_supported_gain(gain_db: float, supported: list[float]) -> float:
@@ -696,6 +740,133 @@ class RtlSdrSource:
                 'thread fell behind.  The audio now has gaps in it, so levels and '
                 'grid frequency from this period are both suspect.  Something else on '
                 'this machine is probably taking the CPU.', self._discarded)
+
+
+class SweepReader:
+    """Reads IQ one block at a time, on the calling thread, for a gain sweep.
+
+    The monitor cannot miss a sample, so it streams asynchronously and a callback
+    hands blocks to a queue.  A sweep is the opposite: it throws away most of what it
+    reads, measures a statistical property of noise, and has no deadline at all.  So
+    it reads synchronously and runs on one thread, and the difference is not an
+    optimization but the removal of a defect.
+
+    Changing gain during an async stream is two threads touching one device.  The
+    capture thread sits inside rtlsdr_read_async driving libusb's event loop, and the
+    gain is a pair of synchronous control transfers from somewhere else.  Twice in a
+    few dozen sweeps a transfer never completed, rtlsdr_close then waited on it and
+    never returned, and everything that closes a receiver hung.  Writing the gain from
+    inside the callback looks like the fix and is worse: libusb completes a
+    synchronous transfer by pumping the event loop, so calling one from a callback
+    that libusb_handle_events is already running re-enters event handling.  On
+    hardware that failed silently and the gain never moved.
+
+    Here there is no second thread, so there is nothing to race.  rtlsdr_read_sync
+    completes its bulk transfer before returning, which also means rtlsdr_close has no
+    outstanding transfer to wait on.
+
+    What it gives up is continuity.  Samples between one read and the next are simply
+    missed, which costs a sweep nothing and would ruin the monitor.
+    """
+
+    def __init__(self, device: RtlSdrDevice, *, frequency_hz: int, gain_db: float,
+                 iq_sample_rate: int, tuning_offset_hz: int,
+                 block_samples: int = DEFAULT_SWEEP_BLOCK_SAMPLES) -> None:
+        validate_sweep_block(block_samples)
+        self._device = device
+        self._block_samples = block_samples
+        self._produced = 0
+        self._closed = False
+        self._released = False
+        self._tuned_hz = frequency_hz + tuning_offset_hz
+        self._iq_sample_rate, self._gain_db = configure_device(
+            device, gain_db=gain_db, iq_sample_rate=iq_sample_rate,
+            tuned_hz=self._tuned_hz)
+        atexit.register(self.close)
+
+    @property
+    def supported_gains_db(self) -> list[float]:
+        """Every tuner gain this device offers, in the order it reports them."""
+        return list(self._device.valid_gains_db)
+
+    @property
+    def iq_sample_rate(self) -> int:
+        """The rate the device settled on, rounded to whole samples."""
+        return self._iq_sample_rate
+
+    @property
+    def gain_db(self) -> float:
+        """The gain last written, which is the only figure a V4 will ever admit to."""
+        return self._gain_db
+
+    @property
+    def blocks_to_discard_after_gain_change(self) -> int:
+        """Blocks to read and throw away after moving the gain.
+
+        Two, where the async path needs seventeen.  There is no transfer pool to
+        drain: a synchronous read takes what the device has now.  What is left is the
+        tuner settling and whatever the USB pipe already held, and the count is
+        deliberately more than the one block that covers it.
+        """
+        return 2
+
+    def set_gain(self, gain_db: float) -> float:
+        """Move the tuner gain, and return the value actually set.
+
+        Nothing else is touching the device, so this is an ordinary call.  That is the
+        whole point of reading synchronously.
+        """
+        self._gain_db = RtlSdrSource._nearest_supported_gain(
+            gain_db, self.supported_gains_db)
+        self._device.gain = self._gain_db
+        return self._gain_db
+
+    def drain(self) -> int:
+        """Nothing is buffered here, so there is nothing to throw away.
+
+        The async source has a queue between its callback and its reader, and stale
+        entries in it have to go before a measurement.  A synchronous read has no
+        queue at all, which is one of the things this design removes rather than
+        manages.
+        """
+        return 0
+
+    def read(self, timeout: float = 1.0) -> IqBlock | None:
+        """One block, or None when the device has stopped answering.
+
+        `timeout` is accepted and ignored, because rtlsdr_read_sync has no timeout to
+        give it.  The signature matches the async source so that a sweep does not have
+        to know which one it is holding.
+
+        pyrtlsdr closes the device itself on a short read or a libusb error, so a
+        failure here is the end of the session rather than something to retry.  This
+        reports it once and returns None from then on, which a sweep already treats as
+        the receiver having gone quiet.
+        """
+        if self._closed:
+            return None
+        try:
+            buffer = self._device.read_bytes(self._block_samples * _BYTES_PER_SAMPLE)
+        except Exception:
+            self._closed = True
+            logger.warning(
+                'Reading from the receiver failed, and the library closes the device '
+                'on any read error, so this sweep cannot continue.  Whatever it had '
+                'measured before this point is still used.', exc_info=True)
+            return None
+        # Copied, because the library hands back a buffer it reuses for the next read.
+        raw = np.ctypeslib.as_array(buffer).astype(np.uint8, copy=True)
+        self._produced += 1
+        return IqBlock(raw=raw, arrived_at=monotonic(), index=self._produced)
+
+    def close(self) -> bool:
+        """Release the device, bounded the way every other close here is."""
+        if self._closed and self._released:
+            return True
+        self._closed = True
+        atexit.unregister(self.close)
+        self._released = close_device(self._device)
+        return self._released
 
 
 class RtlSdrPipeline(RingBufferPipeline):

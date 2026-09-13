@@ -343,20 +343,31 @@ class TestOpeningTheRealReceiver:
     follows in render.py.
     """
 
-    def test_it_opens_the_configured_device_with_a_small_block(self, tmp_path):
+    def test_it_opens_the_configured_device(self, tmp_path):
         from buzz.setup.screens.gain_calibration import open_sweep
 
         with patch('buzz.sdr.open_device') as open_device, \
-             patch('buzz.sdr.RtlSdrSource') as source_class:
+             patch('buzz.sdr.SweepReader') as reader_class:
             values = dict(RTLSDR_VALUES, device_index=2)
             source, sweep = open_sweep(values)
 
         open_device.assert_called_once_with(2)
-        assert source_class.call_args.kwargs['block_samples'] == 2048
         # The receiver is set in Hz; only the config key moved to kHz.
-        assert source_class.call_args.kwargs['frequency_hz'] == 3_588_000
-        assert source is source_class.return_value
-        source.start.assert_called_once()
+        assert reader_class.call_args.kwargs['frequency_hz'] == 3_588_000
+        assert source is reader_class.return_value
+
+    def test_it_reads_synchronously_rather_than_streaming(self):
+        """The whole reason the sweep has a reader of its own.  RtlSdrSource streams
+        on a capture thread, and changing gain against that is two threads on one
+        device, which wedged the receiver and hung the program.
+        """
+        from buzz.setup.screens.gain_calibration import open_sweep
+
+        with patch('buzz.sdr.open_device'), \
+             patch('buzz.sdr.SweepReader'), \
+             patch('buzz.sdr.RtlSdrSource') as streaming:
+            open_sweep(dict(RTLSDR_VALUES))
+        streaming.assert_not_called()
 
     def test_the_headroom_comes_from_the_config_rather_than_a_literal(self):
         """arc_headroom_db is the reserve the whole choice turns on, so a sweep built
@@ -364,7 +375,7 @@ class TestOpeningTheRealReceiver:
         """
         from buzz.setup.screens.gain_calibration import open_sweep
 
-        with patch('buzz.sdr.open_device'), patch('buzz.sdr.RtlSdrSource'):
+        with patch('buzz.sdr.open_device'), patch('buzz.sdr.SweepReader'):
             _, sweep = open_sweep(dict(RTLSDR_VALUES, arc_headroom_db=26.0))
         assert sweep._headroom_db == 26.0
 
@@ -625,3 +636,57 @@ class TestProgressDoesNotBlockTheSweep:
             'lib/buzz/setup/screens/gain_calibration.py').read_text(encoding='utf-8')
         assert '.call_from_thread(' not in source
         assert '.call_soon_threadsafe(' in source
+
+
+class TestTheInstructionsStayOnScreen:
+    """They shared a widget with the progress line, so the first step overwrote them
+    about four hundred milliseconds in and nobody could read them.
+    """
+
+    def _shown(self, tmp_path, sweep):
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test() as pilot:
+                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                           return_value=(_FakeSource(), sweep)):
+                    app.push_screen(GainCalibrationDialog(dict(RTLSDR_VALUES)))
+                    await _wait_until(
+                        pilot,
+                        lambda: app.screen.query_one('#outcome', Static).content != '',
+                        'the dialog to report an outcome')
+                    return app.screen.query_one('#instructions', Static).content
+
+        return run(scenario())
+
+    def test_they_survive_the_whole_sweep(self, tmp_path):
+        instructions = self._shown(tmp_path, _FakeSweep(_result()))
+        assert 'Leave the antenna connected' in instructions
+
+    def test_they_survive_a_sweep_that_found_nothing(self, tmp_path):
+        nothing = SweepResult(None, 'The antenna is too quiet.', 0.1, None, 49.6, ())
+        assert 'antenna' in self._shown(tmp_path, _FakeSweep(nothing))
+
+    def test_progress_and_instructions_are_different_widgets(self, tmp_path):
+        """The defect stated directly: one widget cannot hold both, because the
+        progress line is rewritten 145 times.
+        """
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test() as pilot:
+                dialog = GainCalibrationDialog(dict(RTLSDR_VALUES))
+                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                           side_effect=RuntimeError('no receiver')):
+                    app.push_screen(dialog)
+                    await pilot.pause()
+                    instructions = app.screen.query_one('#instructions', Static)
+                    status = app.screen.query_one('#status', Static)
+                    assert instructions is not status
+
+        run(scenario())
+
+    def test_they_say_to_calibrate_on_a_quiet_band(self, tmp_path):
+        """The one piece of advice that is not obvious from the screen: a running arc
+        raises the floor, the sweep measures that as the band, and the gain comes out
+        low for the hours either side.
+        """
+        assert 'quiet' in self._shown(tmp_path, _FakeSweep(_result()))

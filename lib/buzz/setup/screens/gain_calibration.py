@@ -25,21 +25,17 @@ from buzz.setup.schema import SectionValues
 from buzz.setup.screens.base import CANCELLED, ScopeModalScreen
 
 if TYPE_CHECKING:
-    from buzz.sdr import RtlSdrSource
+    from buzz.sdr import SweepReader
 
 logger = logging.getLogger(__name__)
 
-# IQ samples per callback during a sweep.
-#
-# The pipeline uses 16384 because it has a deadline to beat; a sweep has none, and the
-# transfer pool it must drain after every gain change is buf_num blocks deep whatever
-# their size.  At 2048 the pool is 120 ms rather than 960, which turns 30 seconds of
-# discarding across 29 gain steps into under 4.  See docs-notebook/rtl-sdr-hardware.md.
-_SWEEP_BLOCK_SAMPLES = 2048
-
-
-def open_sweep(rtlsdr_values: SectionValues) -> tuple['RtlSdrSource', GainSweep]:
+def open_sweep(rtlsdr_values: SectionValues) -> tuple['SweepReader', GainSweep]:
     """Open the receiver and build a sweep over it.
+
+    A SweepReader rather than the RtlSdrSource the monitor uses.  It reads
+    synchronously on one thread, so changing gain cannot race a capture thread that
+    is driving libusb's event loop, which is what left a receiver wedged and the
+    program hung.  See its own docstring.
 
     The imports sit inside the function for the reason buzz.main.open_live_source
     gives: a station using a sound card should never load pyrtlsdr, which resolves a
@@ -49,20 +45,18 @@ def open_sweep(rtlsdr_values: SectionValues) -> tuple['RtlSdrSource', GainSweep]
     radio, because open_device rewords libusb's own wording.  The dialog shows it
     rather than letting a traceback through.
     """
-    from buzz.sdr import RtlSdrSource, open_device
+    from buzz.sdr import SweepReader, open_device
 
     settings = RtlSdrConfig(**rtlsdr_values)
-    source = RtlSdrSource(
+    reader = SweepReader(
         open_device(settings.device_index),
         frequency_hz=settings.frequency_hz, gain_db=settings.gain_db,
         iq_sample_rate=settings.iq_sample_rate,
-        tuning_offset_hz=settings.tuning_offset_hz,
-        block_samples=_SWEEP_BLOCK_SAMPLES)
-    source.start()
-    return source, GainSweep(source, settings.arc_headroom_db)
+        tuning_offset_hz=settings.tuning_offset_hz)
+    return reader, GainSweep(reader, settings.arc_headroom_db)
 
 
-def _sweep_then_release(source: 'RtlSdrSource', sweep: GainSweep,
+def _sweep_then_release(source: 'SweepReader', sweep: GainSweep,
                         on_progress: ProgressCallback) -> tuple[SweepResult, bool]:
     """Run the sweep and release the receiver, both on the calling thread.
 
@@ -120,8 +114,13 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
         text-style: bold;
         padding-bottom: 1;
     }
+    #instructions {
+        width: 64;
+        padding-bottom: 1;
+    }
     #status {
         width: 64;
+        text-style: bold;
         padding-bottom: 1;
     }
     #outcome {
@@ -160,9 +159,17 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
     def compose(self):
         yield Vertical(
             Static('Calibrate receiver gain', id='title'),
-            Static('Measuring the band at every gain the tuner offers, five times '
-                   'over.  This takes a little over a minute.  Leave the antenna '
-                   'connected and the receiver tuned where it will run.', id='status'),
+            # Standing advice, in its own widget.  It shared one with the progress
+            # line until somebody pointed out that it vanished before it could be
+            # read: the first step overwrote it about four hundred milliseconds in.
+            # Worded so that it still reads correctly after the sweep has finished.
+            Static('This measures the band at every gain the tuner offers, five '
+                   'times over, and takes a little over a minute.  Leave the antenna '
+                   'connected and the receiver tuned where it will run.  Calibrate '
+                   'when the band is quiet if you can: a running arc raises the '
+                   'noise floor, and the gain then comes out low for the hours '
+                   'either side.', id='instructions'),
+            Static('Starting...', id='status'),
             Static('', id='outcome'),
             Horizontal(
                 # Hidden until there is a gain to accept.  Offering it during the

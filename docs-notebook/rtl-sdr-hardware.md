@@ -60,10 +60,22 @@ driven through a real `RtlSdrSource` over a device whose level follows the gain,
 `TestASweepOverARealSource`: it asserts the measured curve actually rises, which a
 gain that never moves cannot do.
 
-What remains is the cross-thread write, with `close_device` bounding the hang rather
-than preventing it.  The untried option is to cancel the async read around each
-change and restart it, which removes the concurrency at the cost of a cancel and a
-pool refill at every step, and `cancel_read_async` is itself implicated in the hang.
+**The sweep does not stream at all now.**  `SweepReader` reads with
+`rtlsdr_read_sync` on one thread, so there is no second thread to race and no
+outstanding async transfer for `rtlsdr_close` to wait on.  Pausing the reader was
+considered and cannot work: the callback runs inside `libusb_handle_events` holding
+libusb's event lock, so blocking there while another thread does a synchronous
+transfer deadlocks for the same reason writing from the callback fails.
+
+What it gives up is continuity, since samples between one read and the next are
+missed.  That costs a sweep nothing and would ruin the monitor, which is why
+`RtlSdrSource` still streams and the two now differ deliberately.
+
+One constraint came with it.  `rtlsdr_read_sync` wants a whole number of 512-byte USB
+packets and pyrtlsdr admits as much in a FIXME without enforcing it.  A bad size does
+not fail loudly: librtlsdr reads what it can, pyrtlsdr sees a short read, closes the
+device and raises a libusb error that says nothing about sizes.  `validate_sweep_block`
+refuses one before the device is touched.
 
 ## Three artifacts that follow the tuner
 

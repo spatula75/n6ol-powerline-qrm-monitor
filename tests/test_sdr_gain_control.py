@@ -13,7 +13,13 @@ import numpy as np
 import pytest
 
 from buzz.gain_sweep import GainSweep
-from buzz.sdr import IqBlock, RtlSdrSource
+from buzz.sdr import (
+    DEFAULT_SWEEP_BLOCK_SAMPLES,
+    IqBlock,
+    RtlSdrSource,
+    SweepReader,
+    validate_sweep_block,
+)
 
 V4_GAINS = [0.0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6, 19.7, 20.7,
             22.9, 25.4, 28.0, 29.7, 32.8, 33.8, 36.4, 37.2, 38.6, 40.2, 42.1, 43.4,
@@ -309,21 +315,15 @@ class _StreamingDevice(FakeDevice):
         self._cancel.set()
 
 
-class _GainDependentDevice(FakeDevice):
-    """A device whose noise follows the tuner gain, driven from its own thread.
+class _SyncDevice(FakeDevice):
+    """A device that answers synchronous reads, with a level that follows the gain."""
 
-    read_bytes_async blocks in the real library while it dispatches transfers, so this
-    keeps the callback on a separate thread the way librtlsdr does.  The level follows
-    whatever gain was last written, which is what makes a sweep over it mean anything.
-    """
-
-    def __init__(self, antenna=1.2e-6, converter=2e-8, block_ms=1.0):
+    def __init__(self, antenna=1.2e-6, converter=2e-8):
         super().__init__()
-        self._cancel = threading.Event()
-        self._level = 0.0
         self._antenna = antenna
         self._converter = converter
-        self._block_ms = block_ms
+        self._level = 0.0
+        self.reads = 0
         self.gains_seen: list[float] = []
         self._rng = np.random.default_rng(0)
 
@@ -333,89 +333,183 @@ class _GainDependentDevice(FakeDevice):
             object.__setattr__(self, '_level', value)
         super().__setattr__(name, value)
 
-    def read_bytes_async(self, callback, num_bytes):
-        import ctypes as _ctypes
-
+    def read_bytes(self, num_bytes):
+        self.reads += 1
         samples = num_bytes // 2
-        while not self._cancel.is_set():
-            power = self._antenna * 10 ** (self._level / 10) + self._converter
-            sigma = np.sqrt(power / 2)
-            z = (self._rng.normal(0, sigma, samples)
-                 + 1j * self._rng.normal(0, sigma, samples))
-            interleaved = np.stack([z.real, z.imag], axis=-1).ravel()
-            raw = np.clip(np.round((interleaved + 1) * 127.5), 0, 255).astype(np.uint8)
-            callback((_ctypes.c_ubyte * num_bytes)(*raw.tolist()))
-            time.sleep(self._block_ms / 1000)
-
-    def cancel_read_async(self):
-        self._cancel.set()
+        power = self._antenna * 10 ** (self._level / 10) + self._converter
+        sigma = np.sqrt(power / 2)
+        z = (self._rng.normal(0, sigma, samples)
+             + 1j * self._rng.normal(0, sigma, samples))
+        interleaved = np.stack([z.real, z.imag], axis=-1).ravel()
+        raw = np.clip(np.round((interleaved + 1) * 127.5), 0, 255).astype(np.uint8)
+        return (ctypes.c_ubyte * num_bytes)(*raw.tolist())
 
 
-class TestASweepOverARealSource:
-    """GainSweep is tested against a stand-in source and RtlSdrSource against a
-    stand-in device, and for a while nothing exercised the two together.
+def _reader(device=None, **kwargs):
+    settings = dict(frequency_hz=3_588_000, gain_db=0.0, iq_sample_rate=256_000,
+                    tuning_offset_hz=50_000, block_samples=256)
+    settings.update(kwargs)
+    return SweepReader(device or _SyncDevice(), **settings)
 
-    That gap let a change ship that stopped the gain moving at all.  Every unit test
-    passed, because the stand-in source never went near RtlSdrSource and the stand-in
-    device never went near USB.  On hardware the curve was flat and the sweep reached
-    no answer.
+
+class TestTheBlockHasToBeWholeUsbPackets:
+    """A USB bulk transfer moves whole 512-byte packets, and rtlsdr_read_sync asks for
+    a buffer rather than negotiating one.  pyrtlsdr says as much and leaves it there.
+
+    A bad size does not fail loudly: librtlsdr reads what it can, pyrtlsdr sees a short
+    read, closes the device and raises a libusb error that says nothing about block
+    sizes.  So it is refused here instead.
     """
 
-    def _swept(self, **source_kwargs):
-        device = _GainDependentDevice()
-        settings = dict(frequency_hz=3_588_000, gain_db=0.0, iq_sample_rate=256_000,
-                        tuning_offset_hz=50_000, block_samples=256, buffer_blocks=64)
-        settings.update(source_kwargs)
-        source = RtlSdrSource(device, **settings)
-        source.start()
-        deadline = time.monotonic() + 2.0
-        while not device.gains_seen and time.monotonic() < deadline:
-            time.sleep(0.005)
-        try:
-            result = GainSweep(source, 32.0, passes=1, seconds_per_step=0.004).run()
-        finally:
-            source.close()
+    @pytest.mark.parametrize('block', [256, 512, 1024, 2048, 16384])
+    def test_a_whole_number_of_packets_is_accepted(self, block):
+        assert validate_sweep_block(block) is None
+
+    @pytest.mark.parametrize('block', [0, 1, 100, 255, 1000, 2049])
+    def test_anything_else_is_refused(self, block):
+        with pytest.raises(ValueError) as raised:
+            validate_sweep_block(block)
+        assert '512' in str(raised.value)
+
+    def test_the_shipped_default_is_a_whole_number_of_packets(self):
+        assert validate_sweep_block(DEFAULT_SWEEP_BLOCK_SAMPLES) is None
+
+    def test_the_reader_refuses_to_be_built_with_a_bad_one(self):
+        """Before the device is touched, so a bad size is a programming error rather
+        than a libusb error half a sweep later.
+        """
+        with pytest.raises(ValueError):
+            _reader(block_samples=1000)
+
+
+class TestTheSynchronousReader:
+    """One thread, no callback, no queue.  Changing gain during an async stream is two
+    threads on one device, and that wedged the receiver and hung the program.
+    """
+
+    def test_it_configures_the_device_the_same_way_the_monitor_does(self):
+        device = _SyncDevice()
+        reader = _reader(device)
+        assert device.sample_rate == 256_000
+        assert device.center_freq == 3_588_000 + 50_000
+        assert device.agc_calls == [False], 'the digital AGC has to be turned off'
+        assert reader.iq_sample_rate == 256_000
+
+    def test_setting_a_gain_snaps_and_reports_what_was_set(self):
+        reader = _reader()
+        assert reader.set_gain(41.0) == 40.2
+        assert reader.gain_db == 40.2
+
+    def test_there_is_nothing_to_drain(self):
+        """The async source has a queue between a callback and its reader.  This has no
+        queue at all, which is one of the things the design removes rather than
+        manages.
+        """
+        assert _reader().drain() == 0
+
+    def test_a_read_returns_a_block_of_the_size_asked_for(self):
+        reader = _reader(block_samples=256)
+        block = reader.read()
+        assert block is not None
+        assert block.samples == 256
+
+    def test_the_buffer_is_copied_rather_than_handed_out(self):
+        """The library reuses it for the next read, so anything kept without copying
+        would be rewritten underneath the caller.
+        """
+        reader = _reader()
+        first = reader.read()
+        before = first.raw.copy()
+        reader.read()
+        assert np.array_equal(first.raw, before), 'the first block was overwritten'
+
+    def test_blocks_are_numbered_in_order(self):
+        reader = _reader()
+        assert [reader.read().index for _ in range(3)] == [1, 2, 3]
+
+    def test_far_less_is_discarded_than_the_streaming_source_needs(self):
+        """There is no transfer pool to drain here, only the tuner settling."""
+        assert _reader().blocks_to_discard_after_gain_change < 16
+
+
+class TestWhenASynchronousReadFails:
+    """pyrtlsdr closes the device itself on a short read or a libusb error, so a
+    failure is the end of the session rather than something to retry.
+    """
+
+    class _Failing(_SyncDevice):
+        def __init__(self, fail_after=2):
+            super().__init__()
+            self._fail_after = fail_after
+
+        def read_bytes(self, num_bytes):
+            if self.reads >= self._fail_after:
+                raise IOError('Short read, requested 512 bytes, received 0')
+            return super().read_bytes(num_bytes)
+
+    def test_it_reports_none_rather_than_raising(self):
+        reader = _reader(self._Failing())
+        assert reader.read() is not None
+        assert reader.read() is not None
+        assert reader.read() is None
+
+    def test_every_later_read_is_none_too(self):
+        """The device is gone, so retrying would raise again on every block of every
+        remaining gain.
+        """
+        reader = _reader(self._Failing(fail_after=0))
+        assert [reader.read() for _ in range(3)] == [None, None, None]
+
+    def test_a_sweep_keeps_whatever_it_measured_first(self):
+        reader = _reader(self._Failing(fail_after=400))
+        result = GainSweep(reader, 32.0, passes=1, seconds_per_step=0.001).run()
+        assert result.measurements, 'the gains measured before the failure were lost'
+
+
+class TestASweepOverTheSynchronousReader:
+    """The end-to-end check.  GainSweep is tested against a stand-in source and the
+    reader against a stand-in device, and for a while nothing exercised the two
+    together.  That gap let a change ship that stopped the gain moving at all: every
+    unit test passed and the curve was flat on hardware.
+    """
+
+    def _swept(self):
+        device = _SyncDevice()
+        reader = _reader(device)
+        result = GainSweep(reader, 32.0, passes=1, seconds_per_step=0.002).run()
         return device, result
 
     def test_every_offered_gain_reaches_the_tuner(self):
         device, _ = self._swept()
-        assert set(device.gains_seen) >= set(V4_GAINS), (
-            'the sweep did not write every gain the tuner offers')
+        assert set(device.gains_seen) >= set(V4_GAINS)
 
     def test_the_measured_curve_rises_with_gain(self):
-        """The property a flat curve breaks.  If the gain never moves, every reading
-        is the same and the knee fit has nothing to find.
+        """The property a flat curve breaks.  If the gain never moves, every reading is
+        the same and the knee fit has nothing to find.
         """
         _, result = self._swept()
-        lowest = result.measurements[0]
-        highest = result.measurements[-1]
-        assert highest.quiet_dbfs - lowest.quiet_dbfs > 20.0, (
-            f'{lowest.gain_db} dB read {lowest.quiet_dbfs:.1f} and '
-            f'{highest.gain_db} dB read {highest.quiet_dbfs:.1f}, which is flat')
+        low, high = result.measurements[0], result.measurements[-1]
+        assert high.quiet_dbfs - low.quiet_dbfs > 20.0, (
+            f'{low.gain_db} dB read {low.quiet_dbfs:.1f} and {high.gain_db} dB read '
+            f'{high.quiet_dbfs:.1f}, which is flat')
 
     def test_it_reaches_an_answer(self):
         _, result = self._swept()
-        assert result.chosen_db is not None, result.reason
-        assert result.chosen_db in V4_GAINS
+        assert result.chosen_db in V4_GAINS, result.reason
 
-    def test_a_failure_to_set_the_gain_is_not_swallowed(self):
-        """It was, and that is why a broken gain looked like a quiet antenna rather
-        than like an error.  A tuner that refuses has to say so.
+    def test_nothing_touches_the_device_from_another_thread(self):
+        """The whole reason this reader exists.  A second thread on the device is the
+        race that wedged the receiver and hung the program.
         """
-        class _Refusing(_GainDependentDevice):
-            refusing = False
+        device = _SyncDevice()
+        reader = _reader(device)
+        threads = set()
+        original = device.read_bytes
 
-            def __setattr__(self, name, value):
-                if name == 'gain' and getattr(self, 'refusing', False):
-                    raise RuntimeError('the tuner refused')
-                super().__setattr__(name, value)
+        def watched(num_bytes):
+            threads.add(threading.current_thread().name)
+            return original(num_bytes)
 
-        device = _Refusing()
-        source = RtlSdrSource(device, frequency_hz=3_588_000, gain_db=0.0,
-                              iq_sample_rate=256_000, tuning_offset_hz=50_000,
-                              block_samples=256)
-        # Only after construction, since _configure sets the gain too and a receiver
-        # that refuses from the start fails to open rather than failing to sweep.
-        device.refusing = True
-        with pytest.raises(RuntimeError):
-            source.set_gain(25.4)
+        device.read_bytes = watched
+        GainSweep(reader, 32.0, passes=1, seconds_per_step=0.002).run()
+        assert threads == {threading.current_thread().name}, threads
