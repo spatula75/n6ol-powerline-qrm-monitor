@@ -144,13 +144,17 @@ url = ""
 
 # The latitude that Open-Meteo looks up.
 #
+# The example is the Holmdel horn antenna in New Jersey, where Penzias and
+# Wilson spent a year eliminating noise sources, pigeons included, before
+# the hiss that was left turned out to be the cosmic microwave background.
+#
 # Unset by default.
-# latitude =
+# latitude = 40.391
 
 # The longitude that Open-Meteo looks up.
 #
 # Unset by default.
-# longitude =
+# longitude = -74.185
 
 
 # Upload plots and data to a web server over SCP, so anyone can see the
