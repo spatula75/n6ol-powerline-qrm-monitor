@@ -9,7 +9,7 @@ These rules are adapted from the `ste-writing` skill by **Ege Çelebi**
 ([@woosal1337](https://github.com/woosal1337), <https://www.chele.bi>), published
 alongside the blog episode "The Cure for AI Slop":
 
-<https://github.com/woosal1337/blog/blob/main/videos/ep01-the-cure-for-ai-slop/ste-writing-skill.md>
+<https://github.com/woosal1337/blog/blob/main/videos/ep01-the-cure-for-ai-slop/asd-ste100/SKILL.md>
 
 Used under the MIT License, Copyright (c) 2026 Ege Çelebi:
 <https://github.com/woosal1337/blog/blob/main/LICENSE>. That repository reserves all
@@ -130,7 +130,7 @@ more than the slop it removes.
 
 ## Where this project overrides the source
 
-Four rules from the source skill are changed here. Each was a considered decision, so
+Five rules from the source skill are changed here. Each was a considered decision, so
 that the disagreement does not have to be settled again every time somebody notices it.
 
 1. **Semicolons are banned in strict mode only.** The source bans them everywhere.
@@ -154,6 +154,31 @@ that the disagreement does not have to be settled again every time somebody noti
 4. **Two spaces follow a period, in both modes.** Not an STE rule at all, but a house
    style `CLAUDE.md` states directly: the extra space is what makes prose easy to scan
    sentence by sentence. Applies everywhere this file's rules apply.
+
+5. **A short exemption list holds words the source replaces and this project keeps.**
+   The list is *ensure* and *acquire*. Add to it here, deliberately, rather
+   than by quietly dropping an entry from `tools/ste_lint.py`.
+
+   The source replaces *ensure* with *make sure*, in both modes, and pairs it with
+   *verify*. It is the one substitution in that list where the replacement is longer
+   than the word it replaces, and where the original is a single common word meaning
+   exactly what it says. *Utilize* and *commence* are padding; *ensure* is not. It also
+   reads as the more formal of the two, which suits a house style that already refuses
+   to end a sentence with a preposition. The source's reason holds for its own
+   audience, which is maintenance documentation read by people working in a second
+   language. This project's readers are experienced operators reading English.
+
+   *Acquire* is on the list for a different reason, because the word here is the
+   radio one rather than the plain one. The source replaces it with *get*, which
+   suits a document about obtaining a part. This program acquires a lock on a pulse
+   train, and `ContinuousAnalyzer.LOCK_ACQUIRE_SNR` is the threshold for doing it.
+   Every use of the word in this codebase is that sense, so *get* would be wrong in
+   all of them. `CLAUDE.md` assumes ham and RF terminology without gloss, and this
+   word belongs with it.
+
+   The Words rule above still states the source's version, because this file restates
+   the source faithfully and records every disagreement here instead.
+   `tools/ste_lint.py` follows this section rather than that one.
 
 ## Self-lint
 

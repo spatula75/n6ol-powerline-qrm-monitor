@@ -42,6 +42,12 @@ classifiers = [
 ]
 requires-python = ">=3.12"
 
+[project.optional-dependencies]
+# An RTL-SDR receiver as the audio source, selected with [audio] source = "rtlsdr".
+# buzz.sdr imports this inside open_device, so a sound-card station never loads it
+# and an install without this extra runs everything except that one path.
+rtlsdr = ["pyrtlsdr[lib]>=0.5"]
+
 [tool.ruff]
 line-length = 120
 exclude = ["tests"]

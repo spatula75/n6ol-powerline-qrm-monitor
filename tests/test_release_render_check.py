@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 import pytest
 
-from buzz.config import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
+from buzz.constants import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 from buzz.ffmpeg import FfmpegError
 
 from tools.release_render_check import (

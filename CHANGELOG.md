@@ -7,6 +7,99 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `lib/buzz/iq.py`, the conversion from an SDR's IQ stream to the mono audio the
+  rest of the program already expects. It mixes the frequency of interest down to
+  zero, filters to one sideband, decimates by a whole number, takes the real part
+  and scales to int16. Producing audio rather than an envelope is what lets the
+  analyzer, the recorder, playback, rendering and the display all work unchanged:
+  the analyzer treats the median of its window as a DC offset, which holds for
+  audio and not for an envelope.
+
+  The filter has complex coefficients so that it keeps one side of the tuned
+  frequency and rejects the other. A plain lowpass keeps both, and measured on a
+  recorded arc that reads 3.78 dB high on signal while quietly doubling what the
+  bandwidth setting means.
+
+  The converter holds its filter state and the position of its mixing sinusoid
+  between calls, so a stream arriving in separate blocks gives the same samples as
+  one pass over the whole signal. `tests/test_iq_to_audio.py` asserts that at six
+  block sizes, along with alias rejection, sideband rejection, DC-spike rejection,
+  and clipping rather than wrapping at the int16 rail.
+
+- `lib/buzz/sdr.py`, the hardware half of the same path. It opens the receiver,
+  configures it, and hands blocks of raw bytes to the thread that converts them. The
+  callback copies its block, timestamps it and returns, because the receiver's own
+  FIFO holds 3.67 ms at 256 kHz and nothing anywhere reports an overflow of it.
+  `RtlSdrPipeline` fills the same ring buffer a sound card fills, so the analyzer,
+  the recorder, the display and the collector needed no changes.
+
+  The tuner gain is snapped to a step the hardware offers and then remembered, since
+  an RTL-SDR Blog V4 cannot report its own gain. Measured on that hardware, the
+  setter works and the getter returns 0.0 whatever is set. Raw values sitting at the
+  converter's rail are counted and reported, because a clipped arc reads smaller
+  than it truly is.
+
+- `[audio] source`, which selects `soundcard` or `rtlsdr`. It defaults to
+  `soundcard`, so an existing station behaves exactly as before. With `rtlsdr` the
+  new `[rtlsdr]` section supplies the frequency, tuner gain, IQ sample rate,
+  decimation, bandwidth, tuning offset, sideband and device index. Any other value
+  is refused at startup rather than treated as a sound card, since `[rtlsdr]` has no
+  setup screen yet and reaches the file by hand.
+
+  Two limits apply to that section, and the monitor names both when it refuses one.
+  The IQ rate divided by the decimation has to fall between 8000 Hz and 48000 Hz,
+  which is the band the rest of the program already works in: 2400000 Hz at the
+  default decimation of 16 would otherwise give 150 kHz of audio, a ring buffer
+  holding one second instead of 9.6, and recordings at a rate `--playback` refuses.
+  The bandwidth has to fit that audio rate with room for the filter skirt, which is
+  6400 Hz at the default settings rather than the 8000 Hz half the rate suggests. At
+  8000 Hz the top of the band folds back onto the bottom 6 dB down, and a broadband
+  arc has energy exactly there.
+
+  `[rtlsdr] audio_rf_conversion_db` does for a receiver what
+  `[station] audio_rf_conversion_db` does for a sound card. It sits in its own
+  section because the figure depends on the tuner gain above it. Left unset, it is
+  estimated as the negative of that gain. Measured on one receiver, the estimate
+  moves 3.0 dB across the gain range anybody would use, so it is a place to start rather
+  than a substitute for calibrating.
+
+  The work was developed and measured against an RTL-SDR Blog V4. Other receivers
+  are untested, and a V3 reaches HF only through direct sampling, which this does
+  not enable.
+
+  `pyrtlsdr[lib]` is what talks to the hardware. `requirements.txt` installs it, and
+  a packaged install asks for it with `pip install .[rtlsdr]`. A sound-card station
+  never loads it, because the import sits inside the function that opens the device.
+
+- `tools/ste_lint.py --fragments`, an advisory pass for sentence fragments. It is
+  off by default, and deliberately so. Spotting a clause with no finite verb means
+  knowing which words are verbs, and measured over this repo the pass flagged 16
+  sentences of which about 9 were fragments. That is a good trade when somebody
+  chose to look and a bad one in a gate that blocks a commit.
+
+### Changed
+- `tools/ste_lint.py` applies the wordy-word substitutions to strict text only, as
+  `docs/ste-writing.md` has always specified. Flavored prose gets the sentence,
+  active-voice and plain-verb rules; the vocabulary restrictions were never meant to
+  reach it. The tool had been checking them everywhere, so docstrings, comments and
+  tutorial prose were being held to a rule the specification exempts.
+- Every distinct match on a line is now reported rather than the first. Fixing one
+  fault used to reveal the next only on the following run, so a clean result after an
+  edit proved less than it appeared to.
+- `ensure` and `acquire` are no longer substituted. `docs/ste-writing.md` records both,
+  and the reasons differ: `ensure` is a disagreement with the source, and `acquire` is
+  domain vocabulary here, since this program acquires a lock rather than obtaining an
+  object.
+
+### Fixed
+- `tools/ste_lint.py` exits 2 instead of reporting `clean` when it has checked nothing.
+  A bare invocation with no paths and no `--changed`, or any named path that does not
+  exist, used to print a clean line and exit 0. A mandatory gate could be skipped by
+  misspelling its own argument.
+- The attribution link in `docs/ste-writing.md` pointed at a path that no longer
+  exists. The MIT notice has to travel with the work, so a dead pointer weakens it.
+
 ## [1.5.3] - 2026-08-24
 
 ### Added

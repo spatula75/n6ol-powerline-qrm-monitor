@@ -17,7 +17,7 @@ The monitor does not (yet) install itself as a fully integrated piece of softwar
 ```
 mkdir ham_radio
 cd ham_radio
-tar xzvf ../n6ol-powerline-qrm-monitor-1.5.0.tar.gz 
+tar xzvf ../n6ol-powerline-qrm-monitor-1.5.0.tar.gz
 ```
 
 ```
@@ -37,16 +37,36 @@ Setup will attempt to locate your Python installation, create a virtual environm
 If you've run setup before, it will skip directly to launching the configuration program - it's safe to run it more than once.
 
 ## Configuration
-
 The monitor has many options. The most critical ones will be covered here; others can be found in the how-to guides.
+Each section of the configuration file corresponds to a section in the configuration program.  Enter a section
+with the `ENTER` key and go back with the `ESC` key.  Use arrow keys to navigate.  Start with Audio.
 
-At this point, you should connect your radio to your sound device that you plan to use for monitoring and verify that your operating system recognizes sound coming from your radio as input.
+<!-- TODO: insert a section here about choosing a sound card input versus an RTLSDR input here once that has been added -->
 
-Set your RF gain to 0, disable pre-amps, attenuators, widen your filter bandwidth all the way, turn off AGC, and switch to either LSB or USB mode.  Adjust the gain in your operating system for minimal interference with the signal, ideally 0dB gain and no "enhancements" applied.  In Windows, disable "exclusive access" to the device, and you can right-click the input gain to choose measurement in decibels to find 0dB.
+### Radio + Sound Card Source
+If you intend to use your radio with your sound card, connect your radio to your sound device that you plan
+to use for monitoring and verify that your operating system recognizes sound coming from your radio as input.
 
-Each section of the configuration file corresponds to a section in the configuration program.  Enter a section with the `ENTER` key and go back with the `ESC` key.  Use arrow keys to navigate.  Start with Audio.
+Set your RF gain to 0, disable pre-amps, attenuators, widen your filter bandwidth all the way, turn off AGC,
+and switch to either LSB or USB mode.  Adjust the gain in your operating system for minimal interference with the
+signal, ideally 0dB gain and no "enhancements" applied.  In Windows, disable "exclusive access" to the device, and
+you can right-click the input gain to choose measurement in decibels to find 0dB.
 
-### Audio Configuration
+### RTL-SDR Source
+Connect your RTL-SDR device to your machine and verify that it's working.  The exact means of getting an
+RTL-SDR device working varies depending on the platform and operating system.  You may find it useful to get it
+working in any other SDR software package first.
+
+#### Tips
+On Windows with RTL-SDR.com USB devices in particular, it is necessary to use [Zadig](https://zadig.akeo.ie/) to assign
+the "Bulk-In, Interface" devices to use the WinUSB driver so that pyrtlsdr (and, by extension librtlsdr) can
+communicate with them.
+
+Do NOT replace any DLLs within librtlsdr or pyrtlsdr with those from the RTL-SDR.com site.  This is not necessary with
+librtlsdr, and will actually break functionality.
+
+### Sound Card Audio Configuration / Calibration
+If you're using an SDR receiver, skip to the next section.
 
 Start by picking your audio device, the first option on the screen.  When you select this option, all the devices on your system will be polled to see if they support the required sample rate, and the current amplitude seen on the device will be sampled.  This amplitude is displayed to the left of the selection in a bar graph.  So if you're not sure which device is the one you're using, you can look for the one that seems to be seeing sound.  If you're still not sure, try turning the volume up or down and press "R" to re-scan to see which bar graph is changing.
 
@@ -57,6 +77,10 @@ At the bottom of this menu is the `Calibration` tool.  Much more detail can be f
 If you are unable to get the two to agree because you can't adjust the audio gain at all, there's another method available; see the [Calibration tutorial](calibration.md) for more.
 
 To get the pulse rate setting, double your local electrical utility's alternating current frequency.  For most of North and Central America, for example, that means 120.  For Europe and Asia, this is usually 100.  Chances are if you're using this tool, you're already very familiar with the frequency you need.
+
+### RTL-SDR Configuration / Calibration
+
+<!-- TODO -->
 
 ### Station Configuration
 

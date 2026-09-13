@@ -1,11 +1,12 @@
 """
 Configuration dataclasses and TOML loader for the powerline QRM monitor.
 
-BuzzConfig is the top-level config object, composed of six section dataclasses:
-AudioConfig, StationConfig, WeatherConfig, ServerConfig, RecordingConfig, and
-RenderConfig. Each maps directly to a [section] in ~/.buzz/config.toml.
-BuzzConfig.from_toml() reads the file and populates the dataclasses. Unknown keys
-are silently ignored, so old config files don't break when new fields are added.
+BuzzConfig is the top-level config object, composed of seven section dataclasses:
+AudioConfig, StationConfig, WeatherConfig, ServerConfig, RecordingConfig,
+RenderConfig and RtlSdrConfig.  Each maps directly to a [section] in
+~/.buzz/config.toml.  BuzzConfig.from_toml() reads the file and populates the
+dataclasses.  Unknown keys are silently ignored, so old config files do not break
+when new fields are added.
 """
 
 import tomllib
@@ -13,24 +14,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeVar
 
+from buzz.constants import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
+
 _T = TypeVar('_T')
 
 CONFIG_PATH = Path.home() / '.buzz' / 'config.toml'
-
-# The band of sample rates this program will work in.
-#
-# The floor is set by what the display and the analysis are looking at: the waterfall
-# shows 0-4 kHz, so 8 kHz is exactly twice that and the lowest rate that can carry the
-# band at all. Below it the top of the display is above Nyquist and there is nothing
-# there to show.
-#
-# The ceiling is practical rather than theoretical. Nothing in a powerline arc lives
-# above a few kHz, so a higher rate buys no signal and costs proportionally more of
-# everything. The fixed-size ring buffer also holds 3.2 s at 48 kHz against 9.6 s at
-# 16 kHz, so history shrinks as the rate climbs. 48 kHz is the highest rate a file
-# from elsewhere is likely to arrive at, and the lowest useful history this can give.
-MIN_SAMPLE_RATE = 8000
-MAX_SAMPLE_RATE = 48000
 
 
 def validate_sample_rate(sample_rate: int, source: str, configured_rate: int) -> None:
@@ -60,8 +48,94 @@ def validate_sample_rate(sample_rate: int, source: str, configured_rate: int) ->
             'station is configured to use.')
 
 
+# Where the live audio comes from.  These are alternatives rather than additions, so
+# a station picks one.  `soundcard` is a radio feeding a sound card, which is what
+# this program did before anything else existed.  `rtlsdr` is an RTL-SDR receiver,
+# with the settings in the [rtlsdr] section.
+SOUNDCARD = 'soundcard'
+RTLSDR = 'rtlsdr'
+
+
+@dataclass
+class RtlSdrConfig:
+    # Frequency to listen on, in Hz.  The receiver is tuned away from this by
+    # tuning_offset_hz and the difference is undone in software, so this is the
+    # frequency that is measured rather than the one the hardware sits at.
+    frequency_hz: int = 7_074_000
+    # Tuner gain in dB.  Snapped to the nearest step the tuner offers, since it accepts
+    # only a fixed set.  Measured on an RTL-SDR Blog V4, the useful range starts
+    # around 22.9 dB, because below that the output is the converter's own noise
+    # rather than anything from the antenna.
+    gain_db: float = 40.2
+    # Rate the receiver samples at, in Hz.  256000 divides by 16 to give exactly 16000
+    # Hz of audio, matching what a sound-card station uses.  The hardware cannot
+    # produce every rate exactly, so the figure is read back after it is set.
+    iq_sample_rate: int = 256_000
+    # IQ samples per audio sample.  Must divide iq_sample_rate exactly, so that the
+    # audio rate is a whole number of samples per second.
+    decimation: int = 16
+    # How much of the band to keep, in Hz, on one side of frequency_hz.  4000 matches a
+    # typical SSB filter, which is what makes levels comparable with a receiver.
+    bandwidth_hz: int = 4_000
+    # How far from frequency_hz to tune the hardware, in Hz.  A receiver puts a strong
+    # false signal at exactly its own tuning frequency, so this moves that artifact out
+    # of the measured band.  Undone in software, so it costs nothing but coverage on
+    # one side.
+    tuning_offset_hz: int = 50_000
+    # Which side of frequency_hz to listen to: 'upper' or 'lower'.  Either works for
+    # measuring an arc.  A receiver in LSB shows the spectrum reversed, so the two
+    # differ in how a waterfall reads rather than in what is measured.
+    sideband: str = 'upper'
+    # Which receiver to use when more than one is plugged in.
+    device_index: int = 0
+    # dB added to the measured audio level to get signal level at the receiver input,
+    # the same job station.audio_rf_conversion_db does for a sound card.  It lives here
+    # rather than there because the figure depends on gain_db above, so the two belong
+    # together.
+    #
+    # Unset means estimate it as the negative of gain_db, which puts a new station
+    # within a few dB with no equipment at all.  That is a place to start from and not
+    # a substitute for calibrating.  See level_offset_db for how far the estimate
+    # drifts.  SNR, lock, phase and grid frequency do not depend on it either way,
+    # since the offset cancels in a difference.  Only absolute levels and the S-meter
+    # move.
+    audio_rf_conversion_db: float | None = None
+
+    @property
+    def level_offset_db(self) -> float:
+        """The dB offset to apply, measured if there is one and estimated otherwise.
+
+        The estimate is the negative of the tuner gain.  The reasoning is that the gain
+        is the only part of the chain that changes, so subtracting it leaves a constant
+        belonging to the receiver itself, and assuming that constant is zero gets a new
+        station most of the way there.
+
+        It is an estimate rather than an answer, for two reasons.  Everything else in
+        the path has a gain of its own, and nothing arranges for it to cancel.  And the
+        tuner's own labels are not true dB: measured on an RTL-SDR Blog V4, the full
+        range came to 57.5 dB against a nominal 49.6.
+
+        Measured on this hardware, the same unchanging signal reported through this
+        estimate moves 5.1 dB across the whole gain range, and 3.0 dB over the part
+        anybody would use.  It is good enough to start from and not good enough to
+        publish.
+
+        That measurement covers one RTL-SDR Blog V4 on one bench.  The rest of the
+        chain summing to near zero is a property of that unit
+        rather than of RTL-SDR receivers in general, so another unit could sit
+        several dB away.  The tuner gain dominates on any unit, which is why the
+        estimate beats zero anywhere, but the residual has been measured exactly
+        once.
+        """
+        if self.audio_rf_conversion_db is not None:
+            return self.audio_rf_conversion_db
+        return -self.gain_db
+
+
 @dataclass
 class AudioConfig:
+    # Where live audio comes from, either 'soundcard' or 'rtlsdr'.
+    source: str = SOUNDCARD
     # Sounddevice name of the audio input recording the RF-to-audio converted signal.
     # The device is always resolved by this name, never by a stored index: names
     # survive a reboot, and indices change whenever Windows reassigns audio hardware.
@@ -196,6 +270,7 @@ class BuzzConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     recording: RecordingConfig = field(default_factory=RecordingConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
+    rtlsdr: RtlSdrConfig = field(default_factory=RtlSdrConfig)
 
     @classmethod
     def from_toml(cls, path: Path | str = CONFIG_PATH) -> 'BuzzConfig':
@@ -208,6 +283,7 @@ class BuzzConfig:
             server=_load_section(data, 'server', ServerConfig),
             recording=_load_section(data, 'recording', RecordingConfig),
             render=_load_section(data, 'render', RenderConfig),
+            rtlsdr=_load_section(data, 'rtlsdr', RtlSdrConfig),
         )
 
 

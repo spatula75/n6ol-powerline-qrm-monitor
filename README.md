@@ -67,7 +67,9 @@ of a neighbor.
 ## Requirements
 
 - Python 3.12 or later
-- A radio receiver with an audio output connected to a sound card line input
+- A radio receiver with an audio output connected to a sound card line input *OR* a librtlsdr-compatible
+    USB SDR receiver capable of receiving in the band in which you are encountering RF noise
+    (tested with the RTL-SDR.com v4; v3 is not currently supported because of its lack of HF up-conversion).
 - An SSH-accessible web server for publishing output (optional but expected)
 - A [CumulusMX](https://cumulusmx.com/) weather station or Open-Meteo API access for weather data (optional)
 - ffmpeg installed on your system, if using playback with auto-gain, or when rendering to video
@@ -75,7 +77,10 @@ of a neighbor.
 **Platform support:** I develop and test on Windows. Linux and macOS should work with
 no code changes. The core DSP and collection code is cross-platform, and CI runs on
 Linux. FreeBSD should also work, but install `numba` from the ports collection
-(`devel/py-numba`) rather than pip, because pip ships no FreeBSD binary wheels for it.
+(`devel/py-numba`) rather than pip, because pip ships no FreeBSD binary wheels for it.  An SDR receiver needs
+`pyrtlsdr[lib]`, which `requirements.txt` installs for you; if you install the package itself instead, ask for
+it with `pip install .[rtlsdr]`.  A sound-card station never loads it and can leave it out.  As of now, I've
+only tested with the RTL-SDR.com v4 receiver, though the v4-lite should work as well.
 
 ---
 

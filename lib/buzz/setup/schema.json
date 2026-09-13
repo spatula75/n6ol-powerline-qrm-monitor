@@ -7,8 +7,22 @@
     "audio": {
       "type": "object",
       "title": "Audio input",
-      "description": "The sound card the receiver feeds, and what it sends.",
+      "description": "Where live audio comes from, and what the analyzer expects of it.",
       "properties": {
+        "source": {
+          "type": "string",
+          "title": "Audio source",
+          "description": "Where live audio comes from, either a radio feeding a sound card or an RTL-SDR receiver.",
+          "default": "soundcard",
+          "enum": [
+            "soundcard",
+            "rtlsdr"
+          ],
+          "x-enum-titles": {
+            "soundcard": "Sound card - a radio in SSB, wired to an audio input",
+            "rtlsdr": "RTL-SDR - a receiver, set up in the RTL-SDR section"
+          }
+        },
         "input_device_name": {
           "type": "string",
           "title": "Input device",
@@ -40,7 +54,10 @@
           "title": "Pulse rate (pps)",
           "description": "Impulses per second from the mains. This is twice the grid frequency, because an arc fires on both peaks.",
           "default": 120,
-          "enum": [120, 100],
+          "enum": [
+            120,
+            100
+          ],
           "x-enum-titles": {
             "120": "120 pps - 60 Hz grid (North America)",
             "100": "100 pps - 50 Hz grid (Europe and most other places)"
@@ -121,21 +138,28 @@
           "title": "Summary graph start date",
           "description": "The ISO 8601 date that the all-time probability summary graph starts from. It applies only when that graph is turned on.",
           "default": "2024-01-01T00:00:00+0000",
-          "x-visible-when": {"field": "enable_all_time_summary", "equals": true}
+          "x-visible-when": {
+            "field": "enable_all_time_summary",
+            "equals": true
+          }
         }
       }
     },
     "weather": {
       "type": "object",
       "title": "Weather",
-      "description": "Weather readings logged beside each measurement. Arcing follows humidity and wind, so these are worth keeping.",
+      "description": "Weather readings logged beside each measurement. Arcing often follows humidity and wind.",
       "properties": {
         "source": {
           "type": "string",
           "title": "Weather source",
           "description": "Where weather readings come from. Choose none to leave those CSV columns empty.",
           "default": "cumulusmx",
-          "enum": ["cumulusmx", "openmeteo", "none"],
+          "enum": [
+            "cumulusmx",
+            "openmeteo",
+            "none"
+          ],
           "x-enum-titles": {
             "cumulusmx": "CumulusMX - a weather station on your own network",
             "openmeteo": "Open-Meteo - a free public API that needs no account",
@@ -147,7 +171,10 @@
           "title": "CumulusMX endpoint",
           "description": "The JSON endpoint of your CumulusMX installation.",
           "default": "",
-          "x-visible-when": {"field": "source", "equals": "cumulusmx"},
+          "x-visible-when": {
+            "field": "source",
+            "equals": "cumulusmx"
+          },
           "x-example": "http://cumulusmx.local:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing",
           "x-notes": [
             "Change the query string tags to match the fields your station publishes.",
@@ -155,32 +182,60 @@
           ]
         },
         "latitude": {
-          "type": ["number", "null"],
+          "type": [
+            "number",
+            "null"
+          ],
           "title": "Latitude",
           "description": "The latitude that Open-Meteo looks up.",
           "default": null,
           "minimum": -90,
           "maximum": 90,
-          "x-visible-when": {"field": "source", "equals": "openmeteo"}
+          "x-visible-when": {
+            "field": "source",
+            "equals": "openmeteo"
+          }
         },
         "longitude": {
-          "type": ["number", "null"],
+          "type": [
+            "number",
+            "null"
+          ],
           "title": "Longitude",
           "description": "The longitude that Open-Meteo looks up.",
           "default": null,
           "minimum": -180,
           "maximum": 180,
-          "x-visible-when": {"field": "source", "equals": "openmeteo"}
+          "x-visible-when": {
+            "field": "source",
+            "equals": "openmeteo"
+          }
         }
       },
-      "if": {"properties": {"source": {"const": "openmeteo"}}, "required": ["source"]},
+      "if": {
+        "properties": {
+          "source": {
+            "const": "openmeteo"
+          }
+        },
+        "required": [
+          "source"
+        ]
+      },
       "then": {
         "comment": "`required` alone would pass: both keys are present, holding null. Open-Meteo needs real coordinates, so the type has to narrow here too.",
         "properties": {
-          "latitude": {"type": "number"},
-          "longitude": {"type": "number"}
+          "latitude": {
+            "type": "number"
+          },
+          "longitude": {
+            "type": "number"
+          }
         },
-        "required": ["latitude", "longitude"]
+        "required": [
+          "latitude",
+          "longitude"
+        ]
       }
     },
     "server": {
@@ -199,7 +254,10 @@
           "title": "Server hostname",
           "description": "The hostname or IP address of the web server that holds the published output.",
           "default": "",
-          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-visible-when": {
+            "field": "enabled",
+            "equals": true
+          },
           "x-example": "yourserver.example.com"
         },
         "username": {
@@ -207,7 +265,10 @@
           "title": "SSH username",
           "description": "The account to log in as on that server.",
           "default": "",
-          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-visible-when": {
+            "field": "enabled",
+            "equals": true
+          },
           "x-example": "yourname"
         },
         "remote_path": {
@@ -215,7 +276,10 @@
           "title": "Remote path",
           "description": "Where uploaded files go on the server. End it with a slash.",
           "default": "",
-          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-visible-when": {
+            "field": "enabled",
+            "equals": true
+          },
           "x-example": "/var/www/html/noise/"
         },
         "key_path": {
@@ -223,7 +287,10 @@
           "title": "SSH private key",
           "description": "The private key that authenticates the upload. It must have no passphrase, so uploads run without an operator.",
           "x-default-from-runtime": "buzz.pem inside the .buzz folder in your home directory.",
-          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-visible-when": {
+            "field": "enabled",
+            "equals": true
+          },
           "x-example": "C:/Users/yourname/.buzz/buzz.pem",
           "x-notes": [
             "Generate one with: ssh-keygen -t ed25519 -f ~/.buzz/buzz.pem -N \"\"",
@@ -236,12 +303,18 @@
           "title": "Current chart link",
           "description": "How the web page finds today's chart. The page reads one fixed address, data/current.png, so it never has to work out today's filename.",
           "default": "copy",
-          "enum": ["copy", "symlink"],
+          "enum": [
+            "copy",
+            "symlink"
+          ],
           "x-enum-titles": {
             "copy": "Copy - upload the chart a second time under the fixed name",
             "symlink": "Symlink - point the fixed name at today's chart"
           },
-          "x-visible-when": {"field": "enabled", "equals": true},
+          "x-visible-when": {
+            "field": "enabled",
+            "equals": true
+          },
           "x-notes": [
             "Copy works on every web server and needs no configuration. It uploads one extra chart per minute, around 85 kB.",
             "Symlink saves that upload, but the web server has to follow symbolic links. Apache needs FollowSymLinks for the upload directory, and some shared hosts refuse to allow it. Nginx and lighttpd follow links by default.",
@@ -249,15 +322,37 @@
           ]
         }
       },
-      "if": {"properties": {"enabled": {"const": true}}, "required": ["enabled"]},
+      "if": {
+        "properties": {
+          "enabled": {
+            "const": true
+          }
+        },
+        "required": [
+          "enabled"
+        ]
+      },
       "then": {
         "properties": {
-          "host": {"minLength": 1},
-          "username": {"minLength": 1},
-          "remote_path": {"minLength": 1},
-          "key_path": {"minLength": 1}
+          "host": {
+            "minLength": 1
+          },
+          "username": {
+            "minLength": 1
+          },
+          "remote_path": {
+            "minLength": 1
+          },
+          "key_path": {
+            "minLength": 1
+          }
         },
-        "required": ["host", "username", "remote_path", "key_path"]
+        "required": [
+          "host",
+          "username",
+          "remote_path",
+          "key_path"
+        ]
       }
     },
     "recording": {
@@ -369,6 +464,100 @@
             "Set it only when ffmpeg sits somewhere PATH does not reach. Two cases: a Windows build unzipped into a folder, and winget's shim directory in a terminal you have not restarted since the install.",
             "Either the binary or the folder that holds it will do. A copy on PATH wins over this setting.",
             "A monitor that never renders never looks for ffmpeg, so an empty value costs nothing."
+          ]
+        }
+      }
+    },
+    "rtlsdr": {
+      "type": "object",
+      "title": "RTL-SDR receiver",
+      "description": "Settings for an RTL-SDR receiver. Used only when the audio source is set to RTL-SDR.",
+      "properties": {
+        "frequency_hz": {
+          "type": "integer",
+          "title": "Listening frequency (Hz)",
+          "description": "The frequency to measure. Pick a quiet spot in a band where the noise is audible.",
+          "default": 7074000
+        },
+        "gain_db": {
+          "type": "number",
+          "title": "Tuner gain (dB)",
+          "description": "Snapped to the nearest step the tuner offers, since it accepts only a fixed set.",
+          "default": 40.2,
+          "x-notes": [
+            "Choose the lowest gain at which band noise sits about 10 dB above the receiver's own noise. Lower leaves more room for loud events. Higher measures the receiver rather than the band."
+          ]
+        },
+        "iq_sample_rate": {
+          "type": "integer",
+          "title": "Receiver sample rate (Hz)",
+          "description": "How fast the receiver samples. It must divide evenly by the decimation below.",
+          "default": 256000,
+          "x-notes": [
+            "256000 divided by 16 gives 16000 Hz of audio, the rate a sound-card station uses.",
+            "The receiver rate divided by the decimation has to come to between 8000 Hz and 48000 Hz. A receiver rate of 2400000 needs a decimation between 50 and 300."
+          ]
+        },
+        "decimation": {
+          "type": "integer",
+          "title": "Decimation",
+          "minimum": 1,
+          "description": "Receiver samples per audio sample. The audio rate is the receiver rate divided by this.",
+          "default": 16
+        },
+        "bandwidth_hz": {
+          "type": "integer",
+          "title": "Bandwidth (Hz)",
+          "description": "How much of the band to measure, on one side of the listening frequency.",
+          "default": 4000,
+          "x-notes": [
+            "4000 Hz matches a typical SSB filter, so levels compare with a radio tuned to the same spot.",
+            "At most the receiver rate divided by the decimation, divided again by 2.5. That is 6400 Hz with the settings above. The filter needs the extra room past the band edge, and the monitor refuses a wider setting and says what the limit is."
+          ]
+        },
+        "tuning_offset_hz": {
+          "type": "integer",
+          "title": "Tuning offset (Hz)",
+          "description": "How far from the listening frequency to tune the hardware. Undone in software, so it changes nothing you measure.",
+          "default": 50000,
+          "x-notes": [
+            "The receiver puts a false signal at its own tuning frequency, and this moves that away from the measured band. Leave it alone unless you know why you are changing it."
+          ]
+        },
+        "sideband": {
+          "type": "string",
+          "title": "Sideband",
+          "description": "Which side of the listening frequency to hear.",
+          "default": "upper",
+          "enum": [
+            "upper",
+            "lower"
+          ],
+          "x-enum-titles": {
+            "upper": "Upper - the spectrum above the listening frequency",
+            "lower": "Lower - the spectrum below it, shown reversed"
+          }
+        },
+        "device_index": {
+          "type": "integer",
+          "title": "Receiver number",
+          "minimum": 0,
+          "description": "Which receiver to use when more than one is plugged in.",
+          "default": 0
+        },
+        "audio_rf_conversion_db": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "title": "Level calibration (dB)",
+          "description": "Added to the measured audio level to get signal level at the receiver input. Leave it unset until you have calibrated.",
+          "default": null,
+          "x-example": -40.2,
+          "x-notes": [
+            "Unset means the monitor estimates it from the tuner gain. Expect the reading to be a few dB out.",
+            "To find the figure, read the noise floor on a radio you trust, on the same antenna at the same time, with its filter set to match the bandwidth above. The difference between the two readings is what goes here.",
+            "It depends on the tuner gain, so changing that means finding it again."
           ]
         }
       }

@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, TypeVar
 from buzz import wavmeta
 from buzz.analyzer import ContinuousAnalyzer
 from buzz.collector import Collector
-from buzz.config import CONFIG_PATH, BuzzConfig, validate_sample_rate
+from buzz.config import CONFIG_PATH, RTLSDR, SOUNDCARD, BuzzConfig, validate_sample_rate
 from buzz.csv_store import CsvStore
 from buzz.playback import (
     FilePlaybackPipeline,
@@ -171,7 +171,7 @@ def check_playback_source(path: Path, config: BuzzConfig) -> None:
     loudness probe has read the whole recording for nothing.
     open_playback_pipeline calls it as well, so the guarantee belongs to the
     function rather than to the order main happens to do things in.  Two header
-    reads is not a cost worth reasoning about.
+    reads cost nothing measurable.
     """
     try:
         validate_sample_rate(sample_rate_of(path), path.name, config.audio.sample_rate)
@@ -203,8 +203,8 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
     traceback: a mistyped filename is an ordinary thing to do from a command line,
     not a bug in the monitor.
 
-    Returns a pipeline that is not yet playing.  The caller starts it once there is
-    somewhere to watch it - see FilePlaybackPipeline.start().
+    The pipeline comes back not yet playing, so the caller can start it once there
+    is somewhere to watch it.  See FilePlaybackPipeline.start().
     """
     path = resolve_playback_path(name, config.recording.directory_path(config.station))
     check_playback_source(path, config)
@@ -224,10 +224,10 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
     station.audio_rf_conversion_db = _adopt(
         'level calibration', path.name, station.audio_rf_conversion_db, calibration)
 
-    # Any .wav plays, including one this monitor never made.  It just cannot be
-    # analyzed with any authority, and the operator is the only one who can judge
-    # whether that matters - so say what is being assumed rather than fall back
-    # silently and let a plausible-looking dBm reading speak for itself.
+    # Any .wav plays, including one this monitor never made, but it cannot be
+    # analyzed with any authority.  The operator is the only one who can judge whether
+    # that matters, so say what is being assumed rather than fall back silently and
+    # let a plausible-looking dBm reading speak for itself.
     # An explicit figure from the command line beats both, because it is the only one
     # anybody deliberately supplied.  Overriding a value the recording carries is
     # unusual enough to say out loud: the file's own calibration is normally the right
@@ -262,6 +262,74 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
             'know the figure at which it was recorded.',
             path.name, station.audio_rf_conversion_db)
     return pipeline
+
+
+def open_live_source(config: BuzzConfig) -> RingBufferPipeline:
+    """Build whichever live audio source the config asks for.
+
+    Both return a RingBufferPipeline, so nothing after this point knows or cares which
+    it has.  That is the whole reason the SDR path was built the way it was.
+
+    The RTL-SDR imports are local so that a sound-card station never loads pyrtlsdr.
+    The library resolves a symbol at import time, so a mismatched librtlsdr breaks the
+    import rather than the first call, and a station that owns no receiver should not be
+    able to fail on one.
+
+    A source this does not recognize is refused rather than treated as a sound card.
+    Nothing else checks the setting.  The schema states the two values it allows and
+    the setup program enforces them, but _load_section copies whatever the file holds.
+    [rtlsdr] has no setup screen yet either, so that section reaches the file by hand
+    and a neighboring typo in [audio] arrives the same way.  A misspelling would
+    otherwise open the sound card named in [audio] input_device_name and log a day of
+    whatever that input is hearing.
+    """
+    if config.audio.source not in (SOUNDCARD, RTLSDR):
+        raise RuntimeError(
+            f'[audio] source is {config.audio.source!r}, and it must be {SOUNDCARD!r} '
+            f'or {RTLSDR!r}.  It selects where live audio comes from, and no other '
+            'value has a meaning.  Correct it in the config file, or run '
+            'python -m buzz.setup to set it.')
+    if config.audio.source == SOUNDCARD:
+        return AudioSampler(config).pipeline
+
+    from buzz.iq import IqToAudio
+    from buzz.sdr import RtlSdrPipeline, RtlSdrSource, open_device
+
+    settings = config.rtlsdr
+    source = RtlSdrSource(
+        open_device(settings.device_index),
+        frequency_hz=settings.frequency_hz, gain_db=settings.gain_db,
+        iq_sample_rate=settings.iq_sample_rate,
+        tuning_offset_hz=settings.tuning_offset_hz)
+    converter = IqToAudio(
+        source.iq_sample_rate, settings.decimation, settings.bandwidth_hz,
+        settings.tuning_offset_hz, settings.sideband)
+
+    # The audio rate comes from the hardware rather than from the config, because the
+    # receiver cannot produce every rate exactly and everything downstream counts
+    # seconds by dividing samples by this figure.
+    config.audio.sample_rate = converter.audio_sample_rate
+
+    # The receiver has its own dB offset, because the figure depends on the tuner gain
+    # and the sound card's has nothing to do with it.  The analyzer reads whichever is
+    # in station, so the chosen one is put there.
+    config.station.audio_rf_conversion_db = settings.level_offset_db
+
+    logger.info('Listening on %.4f MHz with an RTL-SDR tuned to %.4f MHz, %.1f dB '
+                'gain, %d Hz of %s sideband, %d Hz audio.',
+                settings.frequency_hz / 1e6, source.tuned_hz / 1e6, source.gain_db,
+                settings.bandwidth_hz, settings.sideband, converter.audio_sample_rate)
+    if settings.audio_rf_conversion_db is not None:
+        logger.info('Levels are offset by %+.1f dB, the calibrated figure for this '
+                    'station.', settings.level_offset_db)
+    else:
+        logger.warning(
+            'This receiver has not been calibrated, so levels are offset by %+.1f dB, '
+            'estimated from the tuner gain.  Expect them to be a few dB out, and the '
+            'error to change if the gain does.  Set [rtlsdr] audio_rf_conversion_db '
+            'once you have compared against a receiver you trust on the same antenna.',
+            settings.level_offset_db)
+    return RtlSdrPipeline(source, converter)
 
 
 def _start_playback(pipeline: RingBufferPipeline, playing_back: str | None) -> None:
@@ -317,8 +385,8 @@ def _start_render(args: argparse.Namespace, config: BuzzConfig, window: 'MainWin
     as the PySide6 import below, and for the same reason: a feature nobody asked
     for should not be able to fail.
 
-    The window is measured rather than told its size.  It was built without the
-    control strip, so it is 742x248 instead of 742x284, and a hard-coded frame size
+    The window is measured rather than told its size, because it was built without
+    the control strip, so it is 742x248 instead of 742x284.  A hard-coded frame size
     here would be a second place to keep that in step.
     """
     from buzz.render import RenderError, RenderSession
@@ -411,17 +479,17 @@ def _check_render_output(output: Path) -> None:
 def _resolve_gain(args: argparse.Namespace, config: BuzzConfig, source: Path) -> float:
     """Settle on a playback gain before anything is built that depends on it.
 
-    Deliberately early.  The gain is a constructor argument to the playback
-    pipeline and is baked into the ffmpeg command as a filter, so it has to be
-    known before either exists.  Doing the measurement here means every way a
-    render can be refused happens before a window opens or an output file is
+    This runs deliberately early, because the gain is a constructor argument to the
+    playback pipeline and is baked into the ffmpeg command as a filter.  It has to be
+    known before either of those exists.  Doing the measurement here means every way
+    a render can be refused happens before a window opens or an output file is
     created.
 
     Rendering defaults to measuring, because a rendered event sits around -45 LUFS,
-    well below a normal listening level - the calibration process keeps it there
-    deliberately - and a video somebody has to strain at is not worth making.
-    Watching does not, because that is a different job: the operator is listening
-    live, has the volume control to hand, and did not ask to wait for a measurement.
+    well below a normal listening level.  The calibration process keeps it there
+    deliberately.  Without the measurement the viewer has to strain to hear anything.
+    Watching does not measure, because that is a different job.  The operator is
+    listening live, has the volume control to hand, and did not ask to wait.
     """
     requested = args.playback_gain
     if requested is None:
@@ -537,12 +605,26 @@ def main() -> None:  # pragma: no cover
                            'audio is calibrated by station.audio_rf_conversion_db in '
                            'the config, which is the figure this station was set up '
                            'with. Change it there rather than per run.')
-        pipeline = AudioSampler(config).pipeline
+        # open_live_source fails with a message written for whoever is standing at the
+        # radio: which driver to install, what else holds the device, which setting is
+        # wrong.  A traceback would bury all of it, so this gets the same treatment
+        # as the playback branch above.  ValueError is caught alongside RuntimeError
+        # because IqToAudio._validate refuses an impossible [rtlsdr] section that way,
+        # and its wording is aimed at the same reader.
+        try:
+            pipeline = open_live_source(config)
+        except (RuntimeError, ValueError) as exc:
+            logger.error('%s', exc)
+            sys.exit(2)
         analyzer = ContinuousAnalyzer(pipeline, config)
         # Built whether or not recording is enabled: `enabled` only decides whether it
         # starts armed, and the toolbar has to be able to arm it mid-run either way.
         config.recording.enabled = config.recording.enabled or args.enable_recording
         recorder = EventRecorder(pipeline, analyzer, config)
+        # A sound-card pipeline is already running by the time its constructor
+        # returns.  An SDR one is not, because opening the device and starting the
+        # capture are separate steps, so this starts whichever needs it.
+        pipeline.start()
         # Started only now, because the recorder's state listener has to be registered
         # before the analyzer thread begins publishing state changes.
         analyzer.start()

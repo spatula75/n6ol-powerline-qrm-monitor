@@ -28,3 +28,23 @@ S9_DBM = -73.0
 # spacing kept local to waterfall.py rather than generalized here, since nothing else
 # needs it.
 DB_PER_S_UNIT = 6.0
+
+# The band of sample rates this program will work in.
+#
+# The floor is set by what the display and the analysis are looking at: the waterfall
+# shows 0-4 kHz, so 8 kHz is exactly twice that and the lowest rate that can carry the
+# band at all.  Below it the top of the display is above Nyquist and there is nothing
+# there to show.
+#
+# The ceiling is practical rather than theoretical.  Nothing in a powerline arc lives
+# above a few kHz, so a higher rate buys no signal and costs proportionally more of
+# everything.  The fixed-size ring buffer also holds 3.2 s at 48 kHz against 9.6 s at
+# 16 kHz, so history shrinks as the rate climbs.  48 kHz is the highest rate a file
+# from elsewhere is likely to arrive at, and the lowest useful history this can give.
+#
+# Two modules enforce this band on two different inputs.  config.validate_sample_rate
+# refuses a rate that arrived from the config or from a .wav somebody sent.
+# iq.IqToAudio refuses a receiver rate and decimation whose quotient falls outside it,
+# which is a second way into the same band and was unguarded at first.
+MIN_SAMPLE_RATE = 8000
+MAX_SAMPLE_RATE = 48000
