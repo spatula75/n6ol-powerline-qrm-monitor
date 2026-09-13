@@ -113,6 +113,21 @@ Three pages carry a `TODO` comment waiting on code that now exists:
   which was waiting for the receiver support.
 - `docs/tutorials/getting-started.md:83` - unlabelled.
 
+Points the SDR pages need to make, as notes rather than draft prose:
+
+- **Calibrate the gain when the band is quiet.**  A running arc raises the broadband
+  floor, the sweep measures that as the band, and the gain comes out lower than it
+  should be for the hours either side.  Observed: 28.0, then 19.7, then 25.4 dB across
+  one evening as an intermittent arc came and went.  The reserve already covers the
+  loud case, so the measurement wants the quiet one.  See
+  `sdr-gain-calibration.md` for why the percentile cannot reject a raised floor.
+- **Clipping applies across the whole sampled span**, not just the 4 kHz being
+  measured, which is why the reserve is as large as it is.
+- **Re-run the calibration after changing the tuner gain**, or carry the level
+  calibration across by the difference.  Startup warns if the two disagree.
+- **A quiet antenna may have no usable gain at all**, and the sweep says so rather
+  than picking a number.  That is a statement about the antenna, not a failure.
+
 `docs/` needs the wording approved before anything is written to it, so these are for
 the author rather than for a model to fill in unattended.
 
