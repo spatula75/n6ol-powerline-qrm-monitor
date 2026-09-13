@@ -9,12 +9,14 @@ mocked anywhere is the source's own behavior: the queue, the counters, the snapp
 and the discarding are all the real code.
 """
 
+import logging
 import queue
 import threading
 
 import numpy as np
 import pytest
 
+from buzz import sdr as sdr_module
 from buzz.sdr import DEFAULT_BLOCK_SAMPLES, IqBlock, RtlSdrSource
 
 # Measured from the hardware, so the stand-in offers what the real tuner offers.
@@ -357,9 +359,9 @@ class TestStartingAndStopping:
 
         assert len(attempts) == 2, (
             f'{len(attempts)} of the two shutdown steps reached the device.  '
-            'cancel_read_async and close are both meant to be attempted even when '
-            'the other raises, or a receiver that failed on the way out is left '
-            'streaming with nothing collecting from it.')
+            'Both are meant to be attempted even when the other raises.  '
+            'Otherwise a receiver that failed on the way out is left streaming '
+            'with nothing collecting from it.')
 
         s.close()
         assert len(attempts) == 2, (
@@ -538,3 +540,63 @@ class TestClosingIsGuaranteedAndRepeatable:
         assert removed == [s.close], (
             'close() left its atexit hook in place, so the interpreter holds a '
             'reference to a source whose device is already shut down.')
+
+
+class TestAStuckCaptureThreadKeepsItsDevice:
+    """close() must not free a handle a thread is still reading through.
+
+    cancel_read_async is what makes read_bytes_async return, and the capture thread
+    sits inside that call until it does.  If the cancel does not take, joining times
+    out and the thread is still in librtlsdr's own code.  Calling close() then frees
+    the device underneath it, which is a fault in C rather than an exception here, so
+    nothing in Python would report what happened.
+
+    The module docstring measures what skipping the close costs: the operating system
+    reclaims the handle at exit, and the next process opened the device on its first
+    attempt either way.  So there is nothing to weigh against the risk.
+    """
+
+    def stuck_source(self):
+        """A source whose capture thread will not come back from the device."""
+        device = FakeDevice()
+        release = threading.Event()
+
+        def never_returns(callback, num_bytes):
+            release.wait(timeout=30.0)
+
+        device.read_bytes_async = never_returns
+        device.cancel_read_async = lambda: None     # the cancel that does not take
+        return source(device), device, release
+
+    def test_the_device_is_left_open_when_the_thread_will_not_join(self, caplog, monkeypatch):
+        monkeypatch.setattr(sdr_module, '_THREAD_JOIN_TIMEOUT_SECONDS', 0.05)
+        s, device, release = self.stuck_source()
+        s.start()
+        try:
+            with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+                s.close()
+
+            assert not device.closed, (
+                'close() freed the device while the capture thread was still inside '
+                'read_bytes_async.  librtlsdr would then be reading through a handle '
+                'that no longer exists, which crashes the process rather than raising.')
+            assert any('did not stop' in m for m in caplog.messages), (
+                f'Nothing was logged about the stuck thread: {caplog.messages}.  '
+                'Skipping the close is the safe choice and a silent skip leaves '
+                'whoever reads the log with no idea the receiver stayed open.')
+        finally:
+            release.set()
+            s._thread.join(timeout=5.0)
+
+    def test_a_thread_that_does_join_still_closes_the_device(self, monkeypatch):
+        """The guard has to be able to come out the other way, or it would read as
+        working while quietly never closing anything.
+        """
+        monkeypatch.setattr(sdr_module, '_THREAD_JOIN_TIMEOUT_SECONDS', 5.0)
+        device = FakeDevice()
+        s = source(device)
+        s.start()
+        assert device._reading.wait(timeout=2.0)
+        s.close()
+
+        assert device.closed and not s._thread.is_alive()

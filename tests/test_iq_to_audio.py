@@ -9,12 +9,14 @@ Where a test asserts a number, that number comes from how the test signal was bu
 rather than from the chain's own output, so the chain cannot agree with itself.
 """
 
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 from scipy.signal import freqz, lfilter
 
 from buzz import iq as iq_module
-from buzz.constants import FULL_SCALE_COUNTS
+from buzz.constants import FULL_SCALE_COUNTS, MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 from buzz.dsp import amplitude_to_dbfs
 from buzz.iq import LOWER, UPPER, IqToAudio
 
@@ -228,10 +230,13 @@ class TestTheOutputMatchesADirectConvolution:
     `y[m] = sum over k of h[k] * x[m*D + T - 1 - k]`.  Agreement between the two is
     therefore evidence rather than a restatement.
 
-    The settings are small so the nested loops stay quick.
+    The settings are small so the nested loops stay quick.  32 kHz is the lowest IQ
+    rate that gives a legal audio rate at this decimation, since _validate refuses
+    anything under MIN_SAMPLE_RATE, and a lower rate would build a shorter filter and
+    a faster loop than any real setting could reach.
     """
 
-    RATE, DECIM, BAND, OFFSET = 8_000, 4, 1_000, 500
+    RATE, DECIM, BAND, OFFSET = 32_000, 4, 1_000, 500
 
     def reference(self, iq):
         """The chain again, in loops, with nothing borrowed from the converter."""
@@ -252,7 +257,8 @@ class TestTheOutputMatchesADirectConvolution:
 
     @pytest.mark.parametrize('block', [37, 64, 400])
     def test_every_sample_matches_the_definition(self, block):
-        iq = noise(400, amplitude=0.3) + tone(200, 400, rate=8_000, offset=500)
+        iq = noise(1_200, amplitude=0.3) + tone(200, 1_200, rate=self.RATE,
+                                                 offset=self.OFFSET)
         c = IqToAudio(self.RATE, self.DECIM, self.BAND, self.OFFSET)
         actual = np.concatenate([c.convert(iq[i:i + block])
                                  for i in range(0, len(iq), block)])
@@ -510,3 +516,307 @@ class TestTheFilterItself:
         middle = np.sum(taps * np.exp(-2j * np.pi * (BANDWIDTH / 2)
                                       * np.arange(n_taps) / IQ_RATE))
         assert abs(middle) == pytest.approx(1.0, abs=0.05)
+
+
+class TestTheBandwidthLimitAccountsForTheFilterSkirt:
+    """Half the audio rate looks like the limit and is not.
+
+    one_sided_filter's transition runs another `bandwidth * _SKIRT_FRACTION / 2` past
+    the band edge before the stopband starts.  At a bandwidth of exactly half the audio
+    rate that transition sits on top of the first alias band, so the top of the
+    measured band folds back onto the bottom at nearly full amplitude.  A broadband arc
+    has energy right there, and folded energy reads as a stronger arc.
+    """
+
+    def alias_rejection_db(self, bandwidth):
+        """Peak response inside the first alias band, relative to the passband.
+
+        Decimating by D folds everything near multiples of the audio rate onto the
+        measurement.  The first such band starts at `audio_rate - bandwidth`, so this
+        measures the worst the filter lets through between there and the audio rate,
+        which is what decimation would bring back.
+        """
+        n_taps = IqToAudio.filter_length(IQ_RATE, bandwidth, DECIMATION)
+        taps = IqToAudio.one_sided_filter(IQ_RATE, bandwidth, n_taps, UPPER)
+        freqs, response = freqz(taps, worN=1 << 16, fs=IQ_RATE, whole=True)
+        magnitude = np.abs(response)
+        passband = magnitude[(freqs > 100) & (freqs < bandwidth * 0.9)].max()
+        folds = (freqs >= AUDIO_RATE - bandwidth) & (freqs <= AUDIO_RATE)
+        return 20 * np.log10(magnitude[folds].max() / passband)
+
+    def test_the_widest_allowed_bandwidth_still_rejects_its_aliases(self):
+        """The limit is set so the skirt finishes before the first alias band starts,
+        which should leave rejection no worse than the filter's own stopband.
+        """
+        widest = IqToAudio.widest_bandwidth_for(AUDIO_RATE)
+        rejection = self.alias_rejection_db(widest)
+
+        assert rejection <= -iq_module._STOPBAND_DB, (
+            f'At the widest allowed bandwidth of {widest} Hz, the first alias band is '
+            f'rejected by only {-rejection:.1f} dB against a stopband of '
+            f'{iq_module._STOPBAND_DB} dB.  Decimation folds that band onto the '
+            'measurement, so the limit is too generous for the skirt the filter has.')
+
+    def test_half_the_audio_rate_would_barely_be_rejected_at_all(self):
+        """The figure the old limit allowed, kept as a test so the reason for the
+        tighter one cannot be forgotten and quietly relaxed.
+
+        This is the measurement that motivated the change rather than a property of
+        the code, so it asserts the direction and a loose bound instead of the exact
+        -6.1 dB it happens to produce.
+        """
+        rejection = self.alias_rejection_db(AUDIO_RATE // 2)
+
+        assert rejection > -20, (
+            f'A bandwidth of half the audio rate is now rejected by {-rejection:.1f} dB '
+            'in the first alias band.  It used to be about 6 dB, near enough to none, '
+            'which is why widest_bandwidth_for exists.  If the filter got this much '
+            'sharper, the limit can be reconsidered.')
+
+    def test_the_widest_bandwidth_is_accepted_and_one_hertz_more_is_not(self):
+        widest = IqToAudio.widest_bandwidth_for(AUDIO_RATE)
+        converter(bandwidth_hz=widest)
+
+        with pytest.raises(ValueError, match=f'carries {widest} Hz at most'):
+            converter(bandwidth_hz=widest + 1)
+
+    def test_the_limit_is_derived_from_the_skirt_rather_than_written_down(self):
+        """A drift pin.  _SKIRT_FRACTION is measured and could be re-measured, and the
+        limit has to follow it rather than stay at whatever it evaluates to today.
+        """
+        expected = int(AUDIO_RATE / 2 / (1 + iq_module._SKIRT_FRACTION / 2))
+
+        assert IqToAudio.widest_bandwidth_for(AUDIO_RATE) == expected, (
+            'widest_bandwidth_for no longer follows _SKIRT_FRACTION.  The limit exists '
+            'to keep the whole skirt below half the audio rate.  The skirt width is '
+            'what _SKIRT_FRACTION measures, so the two have to move together.')
+
+
+class TestTheAudioRateHasToLandInTheBandTheProgramWorksIn:
+    """The SDR path is a second way into the sample-rate band, and it was unguarded.
+
+    config.validate_sample_rate refuses a rate that arrived from the config or from a
+    .wav.  Nothing refused one the receiver settings produced, and schema.json bounds
+    neither iq_sample_rate nor decimation above 1, so an ordinary setting reached rates
+    far outside it.
+    """
+
+    def test_the_canonical_receiver_rate_at_the_default_decimation_is_refused(self):
+        """2.4 MS/s is the rate every RTL-SDR guide names, and 16 is the shipped
+        decimation, so this pair is the easiest one in the world to type.  It gives
+        150 kHz of audio: a ring buffer holding one second instead of 9.6, and every
+        recorded .wav at a rate --playback then refuses.
+        """
+        with pytest.raises(ValueError, match='150000 Hz of audio'):
+            IqToAudio(2_400_000, 16, 4_000, 50_000)
+
+    def test_a_rate_below_the_floor_is_refused(self):
+        """Below MIN_SAMPLE_RATE the 4 kHz band the analysis looks at is above Nyquist,
+        which is the case validate_sample_rate's docstring exists to describe.
+        """
+        with pytest.raises(ValueError, match='4000 Hz of audio'):
+            IqToAudio(256_000, 64, 2_000, 50_000)
+
+    @pytest.mark.parametrize('decimation, audio_rate',
+                             [(32, MIN_SAMPLE_RATE), (16, 16_000), (8, 32_000)])
+    def test_rates_inside_the_band_are_accepted(self, decimation, audio_rate):
+        assert IqToAudio(256_000, decimation, 2_000,
+                         50_000).audio_sample_rate == audio_rate
+
+    def test_both_ends_of_the_band_itself_are_legal(self):
+        """The boundaries are inclusive, so a receiver landing exactly on either one
+        works rather than failing by a single hertz.
+        """
+        for rate in (MIN_SAMPLE_RATE, MAX_SAMPLE_RATE):
+            assert IqToAudio(rate * 4, 4, 2_000, 500).audio_sample_rate == rate
+
+    def test_the_remedy_names_a_decimation_range_that_actually_works(self):
+        """The message tells the operator to pick a decimation between two figures.
+        Both ends have to be honest, or it sends them to another failure.
+        """
+        lowest, highest = IqToAudio.decimation_bounds_for(2_400_000)
+
+        for decimation in (lowest, highest):
+            rate = IqToAudio.audio_sample_rate_for(2_400_000, decimation)
+            assert MIN_SAMPLE_RATE <= rate <= MAX_SAMPLE_RATE, (
+                f'decimation_bounds_for suggested {decimation}, which gives {rate} Hz '
+                f'of audio, outside the {MIN_SAMPLE_RATE} to {MAX_SAMPLE_RATE} Hz band '
+                'the same message says to stay inside.')
+        assert IqToAudio.audio_sample_rate_for(2_400_000, lowest - 1) > MAX_SAMPLE_RATE
+        assert IqToAudio.audio_sample_rate_for(2_400_000, highest + 1) < MIN_SAMPLE_RATE
+
+
+# Every (IQ rate, decimation) pair an operator can reach: the rates an RTL-SDR
+# actually supports, crossed with the decimations that divide them and leave the audio
+# rate inside the band.  Built here rather than written out, so adding a rate or
+# moving the band moves what the sweep below covers.
+_SUPPORTED_IQ_RATES = (225_001, 250_000, 256_000, 300_000, 900_001, 1_024_000,
+                       1_200_000, 1_400_000, 1_800_000, 1_920_000, 2_048_000,
+                       2_400_000, 2_560_000)
+
+
+def legal_settings():
+    """Each (iq_sample_rate, decimation) pair IqToAudio._validate would accept."""
+    return [(rate, decimation)
+            for rate in _SUPPORTED_IQ_RATES
+            for decimation in range(1, 400)
+            if rate % decimation == 0
+            and MIN_SAMPLE_RATE <= rate // decimation <= MAX_SAMPLE_RATE]
+
+
+class TestTheFilterLengthSatisfiesBothConstraintsAtOnce:
+    """filter_length answers to two requirements, and only one of them used to bind.
+
+    `n_taps - 1` has to divide by `decimation`, or upfirdn's output grid sits a
+    fraction of a sample away from where the samples belong.  And `n_taps` has to be
+    odd, or the symmetric filter delays by half a sample and group_delay_samples,
+    which returns whole IQ samples, cannot say so.
+
+    The second held by accident while every decimation in use was even.  A sweep is
+    cheap here, so it covers the domain rather than the default.
+    """
+
+    def test_every_legal_setting_gives_an_odd_tap_count_on_the_decimation_grid(self):
+        wrong = []
+        for rate, decimation in legal_settings():
+            n_taps = IqToAudio.filter_length(rate, BANDWIDTH, decimation)
+            if n_taps % 2 == 0:
+                wrong.append(f'{rate}/{decimation}: {n_taps} taps is even, so the '
+                             'filter delays by half a sample')
+            if (n_taps - 1) % decimation:
+                wrong.append(f'{rate}/{decimation}: {n_taps} taps leaves n_taps - 1 '
+                             f'off the decimation grid by {(n_taps - 1) % decimation}')
+
+        assert not wrong, (
+            f'{len(wrong)} of {len(legal_settings())} legal settings break one of the '
+            'two constraints filter_length has to satisfy together.  The fix differs '
+            'by case, so each is named:\n  ' + '\n  '.join(wrong[:10]))
+
+    def test_the_parity_fix_costs_what_the_docstring_says(self):
+        """filter_length quotes two counts and a cost, and a reader has no way to check
+        them without rebuilding the sweep.  This is that sweep.
+
+        The counts depend on _SUPPORTED_IQ_RATES above, so a rate added there moves the
+        figures in the docstring too, and this is what says so.
+        """
+        legal = legal_settings()
+        bumped = []
+        for rate, decimation in legal:
+            # The count before the parity bump, which is what the docstring compares to.
+            skirt = 2 * np.pi * BANDWIDTH * iq_module._SKIRT_FRACTION / rate
+            estimate = int(np.ceil((iq_module._STOPBAND_DB - iq_module._KAISER_LENGTH_OFFSET)
+                                   / (iq_module._KAISER_LENGTH_SCALE * skirt)))
+            before = decimation * int(np.ceil((estimate - 1) / decimation)) + 1
+            after = IqToAudio.filter_length(rate, BANDWIDTH, decimation)
+            if after != before:
+                bumped.append((rate, decimation, before, after))
+
+        assert (len(legal), len(bumped)) == (137, 8), (
+            f'filter_length says 8 of 137 legal settings reach the parity bump.  The '
+            f'sweep now finds {len(bumped)} of {len(legal)}.  Update the docstring, or '
+            'check whether a rate was added to _SUPPORTED_IQ_RATES here.')
+        costs = [(after - before) / before for _, _, before, after in bumped]
+        assert 0.011 <= min(costs) and max(costs) <= 0.048, (
+            f'The bump now costs between {min(costs):.1%} and {max(costs):.1%} more '
+            'taps.  filter_length quotes 1.1% to 4.8% as the whole price of the fix, '
+            'so one of the two is now wrong.')
+
+    def test_an_odd_decimation_is_what_would_have_broken_it(self):
+        """Names the case the sweep protects, so a later reader can see why the bump
+        is there without rerunning the sweep in their head.
+
+        1.2 MS/s decimated by 75 gives 16 kHz of audio, which is an ordinary thing to
+        want.  Before the parity fix it built 2626 taps.
+        """
+        n_taps = IqToAudio.filter_length(1_200_000, BANDWIDTH, 75)
+
+        assert n_taps % 2 == 1 and (n_taps - 1) % 75 == 0
+        assert n_taps == 2_701, (
+            f'1.2 MS/s decimated by 75 now builds {n_taps} taps rather than 2701.  '
+            'The underlying Kaiser estimate was 2626, an even number, and the parity '
+            'fix adds one decimation to it.  If the estimate moved, check that the '
+            'result is still the first odd count on the decimation grid above it.')
+
+    def test_the_shipped_default_pays_nothing_for_the_parity_fix(self):
+        """The bump only fires at an odd decimation, so the setting every station
+        starts from builds exactly the filter it did before.
+        """
+        assert IqToAudio.filter_length(IQ_RATE, BANDWIDTH, DECIMATION) == 561
+
+    @pytest.mark.parametrize('rate, decimation', [(IQ_RATE, DECIMATION),
+                                                  (1_200_000, 75),
+                                                  (256_000, 25)])
+    def test_an_impulse_emerges_exactly_where_the_group_delay_says(self, rate, decimation):
+        """The same check the default already had, run at the two settings whose tap
+        count came out even before the fix.
+
+        The impulse half of this cannot stand alone at an even tap count, because the
+        response then has two peaks of equal magnitude straddling the true delay and
+        np.argmax picks between them by tie-break.  So the reported delay is also
+        measured a second way, by folding the filter about it.  A linear-phase filter
+        has a symmetric magnitude, so the two halves line up to floating-point noise
+        when the fold sits on the true center and not otherwise.  Measured here, an odd
+        count mismatches by about 1e-18 and an even one by about 1e-5.
+        """
+        c = IqToAudio(rate, decimation, BANDWIDTH, 500)
+        taps = IqToAudio.one_sided_filter(rate, BANDWIDTH, c.n_taps, UPPER)
+
+        impulse = np.zeros(4 * c.n_taps, dtype=np.complex128)
+        impulse[c.n_taps] = 1.0
+        response = np.abs(lfilter(taps, 1.0, impulse))
+        arrived = int(np.argmax(response))
+
+        assert arrived - c.n_taps == c.group_delay_samples, (
+            f'At {rate} Hz decimated by {decimation}, an impulse emerged {arrived - c.n_taps} '
+            f'samples late while group_delay_samples reports {c.group_delay_samples}.  '
+            'IQ pulled with that mapping would sit beside the audio it should match.')
+
+        delay, magnitude = c.group_delay_samples, np.abs(taps)
+        reach = min(delay, c.n_taps - 1 - delay)
+        mismatch = np.abs(magnitude[delay - reach:delay][::-1]
+                          - magnitude[delay + 1:delay + 1 + reach]).max()
+        assert mismatch < 1e-12, (
+            f'Folding the {c.n_taps}-tap filter about the reported delay of {delay} '
+            f'leaves the two halves {mismatch:.2e} apart, so that index is not the '
+            'center of symmetry.  An even tap count puts the center on a half sample, '
+            'which group_delay_samples cannot report.')
+
+
+class TestAFailedConversionDoesNotGrowTheBacklogForever:
+    """RtlSdrPipeline._feed catches every exception and goes on to the next block.
+
+    A fault that repeats every block would therefore retry forever, and if the backlog
+    grew before the filtering rather than after it, each retry would add another
+    block's samples to a buffer nothing ever drops.  At 16384 complex samples a block
+    that is 256 KB per attempt, for as long as the receiver runs.
+    """
+
+    def test_a_raising_filter_leaves_the_backlog_where_it_was(self):
+        c = converter()
+        c.convert(noise(IQ_RATE // 10))
+        settled = len(c._pending)
+
+        with patch('buzz.iq.upfirdn', side_effect=MemoryError('no room')):
+            for _ in range(20):
+                with pytest.raises(MemoryError):
+                    c.convert(noise(IQ_RATE // 10))
+
+        assert len(c._pending) == settled, (
+            f'After 20 failed conversions the backlog holds {len(c._pending)} samples '
+            f'rather than the {settled} it held before.  _pending is being added to '
+            'before the filtering rather than after, so every retry costs memory that '
+            'is never given back.')
+
+    def test_the_converter_still_works_after_a_failure(self):
+        """The bound is worth nothing if holding the backlog back corrupts the stream.
+        A block lost to an exception is lost, and the next one has to carry on from
+        the samples that were already there.
+        """
+        c = converter()
+        c.convert(noise(IQ_RATE // 10))
+
+        with patch('buzz.iq.upfirdn', side_effect=MemoryError('no room')):
+            with pytest.raises(MemoryError):
+                c.convert(noise(IQ_RATE // 10))
+
+        assert len(c.convert(noise(IQ_RATE // 10))) > 0

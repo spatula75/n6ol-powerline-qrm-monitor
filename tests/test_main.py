@@ -2,6 +2,7 @@
 and headless wait."""
 import argparse
 import logging
+import sys
 import time
 import wave
 from pathlib import Path
@@ -14,8 +15,9 @@ from buzz import wavmeta
 from buzz.config import BuzzConfig
 from buzz.main import (
     _start_collector, _start_playback, _wait_until_interrupted, configure_logging,
-    make_weather_client, open_playback_pipeline,
+    make_weather_client, open_live_source, open_playback_pipeline,
 )
+from buzz.sdr import open_device
 from buzz.sampler import RingBufferPipeline
 from buzz.weather import CumulusMXWeatherClient, NullWeatherClient, OpenMeteoWeatherClient
 
@@ -727,3 +729,202 @@ class TestCheckPlaybackSource:
     def test_a_missing_file_exits(self, tmp_path):
         with pytest.raises(SystemExit):
             main_module.check_playback_source(tmp_path / 'gone.wav', BuzzConfig())
+
+
+class TestTheAudioSourceHasToBeOneThisProgramKnows:
+    """_load_section copies whatever the TOML holds, with no check against the schema.
+
+    The schema names the two values and the setup program enforces them, but [rtlsdr]
+    has no setup screen yet, so that section reaches the file by hand and a neighboring
+    typo in [audio] source reaches it the same way.  A branch that fell through to the
+    sound card would then open the device named in input_device_name and log a day of
+    whatever that input hears, which looks exactly like a quiet band.
+    """
+
+    @pytest.mark.parametrize('typo', ['sdr', 'RTL-SDR', 'rtl_sdr', 'RTLSDR', ''])
+    def test_a_misspelled_source_is_refused_rather_than_assumed(self, typo):
+        config = BuzzConfig()
+        config.audio.source = typo
+
+        with pytest.raises(RuntimeError, match='must be'):
+            open_live_source(config)
+
+    def test_the_message_names_both_values_that_work(self):
+        config = BuzzConfig()
+        config.audio.source = 'rtl-sdr'
+
+        with pytest.raises(RuntimeError) as caught:
+            open_live_source(config)
+
+        message = str(caught.value)
+        assert 'soundcard' in message and 'rtlsdr' in message, (
+            'The message refuses the value without saying what would be accepted.  '
+            'Whoever hit this is editing the file by hand and cannot see the schema.  '
+            f'It said: {message!r}')
+
+    def test_a_sound_card_source_still_opens_the_sound_card(self):
+        """The guard has to let the ordinary case through, or it would read as working
+        while refusing every station that never touched the setting.
+        """
+        config = BuzzConfig()
+        with patch.object(main_module, 'AudioSampler') as sampler:
+            assert open_live_source(config) is sampler.return_value.pipeline
+
+
+class TestAReceiverThatWillNotOpenPrintsItsReason:
+    """buzz.sdr composes messages for whoever is standing at the radio: which driver to
+    install, what else is holding the device, which setting is wrong.
+
+    They were then raised through a call site that caught nothing, so all of that
+    arrived as a traceback with the explanation buried in its last line.  The playback
+    branch four lines above has always logged and exited instead.
+    """
+
+    def run_main_and_capture_the_exit(self, failure, capsys):
+        """Drive main() past the point where it opens the live source.
+
+        The output is read off stderr rather than through caplog, because
+        configure_logging() clears propagate on the buzz logger, so caplog's handler on
+        the root logger never sees these records.  stderr is also where the operator
+        reads them, which makes it the honest thing to assert on.
+        """
+        args = ['buzz', '--headless']
+        with patch.object(main_module, 'open_live_source', side_effect=failure), \
+                patch.object(sys, 'argv', args):
+            with pytest.raises(SystemExit) as exited:
+                main_module.main()
+        return exited.value.code, capsys.readouterr().err
+
+    def test_a_receiver_failure_is_printed_and_exits_two(self, capsys):
+        message = ('Receiver 0 was found but no driver is bound to it.  Run Zadig as '
+                   'administrator.')
+        code, err = self.run_main_and_capture_the_exit(RuntimeError(message), capsys)
+
+        assert code == 2, f'exited {code} rather than 2, the code playback already uses'
+        assert 'Zadig' in err, (
+            f'The receiver message did not reach the operator: {err!r}.  It names the '
+            'one thing that fixes the commonest Windows failure, and a traceback puts '
+            'it where nobody reads it.')
+        assert 'Traceback' not in err
+
+    def test_an_impossible_config_is_printed_and_exits_two(self, capsys):
+        """IqToAudio._validate refuses an [rtlsdr] section with ValueError, and its
+        wording is aimed at the same reader as the receiver messages.
+        """
+        message = ('An IQ rate of 2400000 Hz decimated by 16 gives 150000 Hz of audio.  '
+                   'Set [rtlsdr] decimation between 50 and 300.')
+        code, err = self.run_main_and_capture_the_exit(ValueError(message), capsys)
+
+        assert code == 2
+        assert 'decimation' in err, (
+            f'The config message did not reach the operator: {err!r}.  ValueError has '
+            'to be caught alongside RuntimeError, because that is how _validate refuses '
+            'a section nobody can use.')
+
+
+class TestOpeningAReceiverAsTheLiveSource:
+    """The wiring between the three pieces the SDR path is built from.
+
+    RtlSdrSource holds the hardware, IqToAudio holds the arithmetic, and
+    RtlSdrPipeline joins them to the ring buffer.  open_live_source is the only place
+    that knows how they fit together, and what it settles afterwards decides what every
+    later measurement means: the audio rate everything downstream counts seconds by,
+    and the dB offset every level is reported against.
+    """
+
+    def open_with_a_fake_receiver(self, config, device=None):
+        """Run the real open_live_source with only the USB device replaced.
+
+        Everything above the device is the production code, so the converter, the
+        pipeline and the rate bookkeeping are all the real ones.
+        """
+        from tests.test_sdr_source import FakeDevice
+        with patch('buzz.sdr.open_device', return_value=device or FakeDevice()):
+            return open_live_source(config)
+
+    def rtlsdr_config(self, **overrides):
+        config = BuzzConfig()
+        config.audio.source = 'rtlsdr'
+        for name, value in overrides.items():
+            setattr(config.rtlsdr, name, value)
+        return config
+
+    def test_the_audio_rate_is_taken_from_the_hardware_not_the_config(self):
+        """A receiver cannot produce every rate exactly, and everything downstream
+        divides samples by this figure to count seconds.  The shipped default asks for
+        256 kHz and decimates by 16.
+        """
+        config = self.rtlsdr_config()
+        pipeline = self.open_with_a_fake_receiver(config)
+
+        assert config.audio.sample_rate == 16_000, (
+            f'[audio] sample_rate was left at {config.audio.sample_rate} rather than '
+            'the 16000 Hz the receiver settings produce.  The recorder writes it into '
+            'every .wav header and the analyzer counts seconds by it.')
+        assert pipeline.capacity_samples > 0
+
+    def test_a_section_that_cannot_work_is_refused_before_anything_starts(self):
+        """2.4 MS/s decimated by 16 gives 150 kHz of audio.  Nothing used to check it,
+        so the monitor ran with a ring buffer holding one second instead of 9.6 and
+        wrote .wav files at a rate --playback then refused.
+        """
+        config = self.rtlsdr_config(iq_sample_rate=2_400_000)
+
+        with pytest.raises(ValueError, match='150000 Hz of audio'):
+            self.open_with_a_fake_receiver(config)
+
+    def test_the_receiver_brings_its_own_level_calibration(self):
+        """The sound card's dB offset has nothing to do with a tuner's, so the analyzer
+        has to read the receiver's.  It reads station.audio_rf_conversion_db, which is
+        why the chosen figure is put there.
+        """
+        config = self.rtlsdr_config(audio_rf_conversion_db=-38.5)
+        self.open_with_a_fake_receiver(config)
+
+        assert config.station.audio_rf_conversion_db == -38.5
+
+    def test_an_uncalibrated_receiver_is_estimated_from_the_gain_and_says_so(self, caplog):
+        """The estimate is good enough to start from and not good enough to publish,
+        which the operator has no way to know from the numbers themselves.
+        """
+        config = self.rtlsdr_config(gain_db=40.2, audio_rf_conversion_db=None)
+
+        with caplog.at_level(logging.WARNING, logger='buzz.main'):
+            self.open_with_a_fake_receiver(config)
+
+        assert config.station.audio_rf_conversion_db == pytest.approx(-40.2)
+        assert any('not been calibrated' in m for m in caplog.messages), (
+            f'Nothing warned that the levels are estimated: {caplog.messages}.  They '
+            'are a few dB out and move when the gain does, and an S-meter reading gives '
+            'no sign of it.')
+
+
+class TestThePyrtlsdrImportFailureIsExplained:
+    """pyrtlsdr resolves rtlsdr_set_dithering as it imports, so a librtlsdr that
+    predates that symbol fails at the import rather than at the first call.
+
+    That is the case the local import exists to isolate, and it reached the operator as
+    a bare ModuleNotFoundError with none of the explanation this module worked out.
+    """
+
+    def test_a_missing_library_names_what_to_install(self):
+        import builtins
+        real_import = builtins.__import__
+
+        def refuse_rtlsdr(name, *args, **kwargs):
+            if name == 'rtlsdr':
+                raise ImportError("undefined symbol: rtlsdr_set_dithering")
+            return real_import(name, *args, **kwargs)
+
+        with patch.object(builtins, '__import__', refuse_rtlsdr):
+            with pytest.raises(RuntimeError) as caught:
+                open_device(0)
+
+        message = str(caught.value)
+        assert 'pyrtlsdr[lib]' in message, (
+            'The message does not name the package to install.  Whoever hits this sees '
+            f'an import failure and cannot tell which library failed.  Got: {message!r}')
+        assert 'rtlsdr_set_dithering' in message, (
+            'The underlying error was dropped, so a mismatched librtlsdr looks the same '
+            'as one that was never installed.  The fix differs between the two.')
+        assert 'soundcard' in message

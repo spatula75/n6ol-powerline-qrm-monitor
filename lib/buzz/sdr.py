@@ -54,6 +54,7 @@ import atexit
 import logging
 import queue
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from time import monotonic
 from typing import TYPE_CHECKING, Protocol
@@ -105,6 +106,30 @@ DEFAULT_BUFFER_BLOCKS = 8
 # without costing a log line per block.
 _DISCARD_LOG_EVERY = 100
 
+# How long to wait for a thread to finish during shutdown, in seconds.
+#
+# The two threads stop by different means.  The feeder notices its stop flag when its
+# next read times out, which is within 0.5 s.  The capture thread returns from
+# read_bytes_async once cancel_read_async has taken effect.  Five seconds is several
+# times either, so a thread still running afterwards is stuck rather than slow, and
+# RtlSdrSource.close treats it that way.
+_THREAD_JOIN_TIMEOUT_SECONDS = 5.0
+
+# How often the pipeline looks at its own health counters, in seconds.
+#
+# A minute matches the collector's own cadence, so a warning reaches the log beside
+# the CSV row it spoiled.  Looking more often would find nothing sooner, because the
+# counters only move when a block arrives.
+_HEALTH_INTERVAL_SECONDS = 60.0
+
+# How far the receiver clock may run from the system clock, in parts per million,
+# before the difference means lost samples rather than two crystals disagreeing.
+#
+# The figure is chosen rather than measured.  RTL-SDR crystals are specified in the
+# tens of parts per million, so 500 leaves room for a poor one and still catches a
+# loss, which runs to thousands.  See RtlSdrSource.clock_drift_seconds.
+_DRIFT_PPM_LIMIT = 500
+
 
 class RtlSdrDevice(Protocol):
     """The part of pyrtlsdr's RtlSdr this module uses.
@@ -140,6 +165,11 @@ def open_device(index: int = 0) -> RtlSdrDevice:
     mismatched librtlsdr makes the import itself fail rather than the first call.
     buzz.render takes the same approach with ffmpeg for the same reason.
 
+    That failure is caught and reworded here, so both ways of not reaching a receiver
+    leave by the same door.  Everything this raises is a RuntimeError carrying a
+    message for the operator, which is what lets main.py print one rather than a
+    traceback.
+
     This reports a failure with its likely causes named, because libusb's own wording
     sends people the wrong way.  "Entity not found" reads like a missing library and means
     no driver is bound to the device, which on Windows is what Zadig exists to fix.
@@ -153,7 +183,14 @@ def open_device(index: int = 0) -> RtlSdrDevice:
     without closing is not among them, because the operating system reclaims the
     handle when a process ends.
     """
-    from rtlsdr import RtlSdr
+    try:
+        from rtlsdr import RtlSdr
+    except ImportError as exc:
+        raise RuntimeError(
+            f'The pyrtlsdr library would not load ({exc}), and [audio] source is set '
+            'to rtlsdr.  Either it is not installed, or its bundled librtlsdr is too '
+            'old to carry the symbol it looks up as it imports.  Run pip install '
+            '"pyrtlsdr[lib]", or set [audio] source back to soundcard.') from exc
     try:
         return RtlSdr(index)
     except Exception as exc:
@@ -416,7 +453,18 @@ class RtlSdrSource:
         # join() raises on a thread that was never started, which happens whenever
         # setup failed between construction and start().  Shutdown must not raise.
         if self._thread.is_alive():
-            self._thread.join(timeout=5.0)
+            self._thread.join(timeout=_THREAD_JOIN_TIMEOUT_SECONDS)
+        # A join that timed out leaves the capture thread inside librtlsdr's own read.
+        # Closing now would free the handle it is reading through, which is a crash in
+        # C rather than an exception here.  The module docstring measures what skipping
+        # the close costs, and the answer is nothing.
+        if self._thread.is_alive():
+            logger.warning(
+                'The receiver capture thread did not stop within %.0f seconds, so the '
+                'device was left open.  Closing it now would free a handle that thread '
+                'is still reading through.  The operating system releases it when this '
+                'process ends.', _THREAD_JOIN_TIMEOUT_SECONDS)
+            return
         try:
             self._device.close()
         except Exception:
@@ -503,7 +551,8 @@ class RtlSdrPipeline(RingBufferPipeline):
     convert, count and append.  See the module docstring.
     """
 
-    def __init__(self, source: RtlSdrSource, converter: 'IqToAudio') -> None:
+    def __init__(self, source: RtlSdrSource, converter: 'IqToAudio', *,
+                 clock: Callable[[], float] = monotonic) -> None:
         super().__init__(converter.audio_sample_rate)
         self._source = source
         self._converter = converter
@@ -511,6 +560,14 @@ class RtlSdrPipeline(RingBufferPipeline):
         self._leftover = np.empty(0, dtype=np.int16)
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._feed, daemon=True, name='sdr-feeder')
+        # The clock is injected so a test can drive a minute of monitoring in no time
+        # at all.  Waiting for the real one would put _HEALTH_INTERVAL_SECONDS into
+        # the suite for every case.
+        self._clock = clock
+        self._health_checked_at = clock()
+        self._clipped_reported = 0
+        self._saturated_reported = 0
+        self._drift_reported = 0.0
 
     @property
     def clipped_samples(self) -> int:
@@ -540,7 +597,7 @@ class RtlSdrPipeline(RingBufferPipeline):
         self._stop.set()
         self._source.close()
         if self._thread.is_alive():
-            self._thread.join(timeout=5.0)
+            self._thread.join(timeout=_THREAD_JOIN_TIMEOUT_SECONDS)
 
     def _feed(self) -> None:  # pragma: no cover -- thread body; _consume is tested directly
         """Drain the source until told to stop."""
@@ -563,6 +620,77 @@ class RtlSdrPipeline(RingBufferPipeline):
         """
         self._clipped += block.clipped_samples
         self._append_in_chunks(self._converter.convert(block.as_complex()))
+        self._report_health()
+
+    def _report_health(self) -> None:
+        """Say once a minute whether the receiver is still delivering honest samples.
+
+        Each failure this reports is silent in the data it spoils.  A receiver whose
+        gain is too high clips every loud arc, measures it smaller than it is, and
+        writes that figure to the CSV with nothing to mark it.  Lost samples do the
+        same to the grid frequency.  Both read as a quiet band, which is the answer
+        the operator is hoping for, so neither prompts anybody to look.
+
+        A log line is the smallest thing that makes the counters visible.  The
+        counters stay public so that a CSV column or a light on the display can read
+        them later instead.
+
+        The check runs from _consume rather than from the feeder loop, so a test can
+        drive it directly.  A stream that stops entirely therefore stops reporting,
+        which is correct.  _run already says the receiver went quiet, and a second
+        voice for one failure would only add noise.
+        """
+        now = self._clock()
+        elapsed = now - self._health_checked_at
+        if elapsed < _HEALTH_INTERVAL_SECONDS:
+            return
+        self._health_checked_at = now
+        self._warn_about_clipping(elapsed)
+        self._warn_about_drift(elapsed)
+
+    def _warn_about_clipping(self, elapsed: float) -> None:
+        """Report any sample that hit a rail, at the receiver or at the int16 output.
+
+        The two are counted apart because they have separate causes.  A raw value at
+        the converter's rail means the antenna is louder than the tuner gain allows.
+        A clipped output sample can happen without that, because the filter can leave
+        a peak slightly above where its input sat.
+
+        Any movement at all is reported.  A threshold would need a figure nobody has
+        measured, and on a quiet band the honest count is zero, so a single clipped
+        sample is already news.
+        """
+        clipped = max(0, self._clipped - self._clipped_reported)
+        saturated = max(0, self._converter.saturated_samples - self._saturated_reported)
+        self._clipped_reported = self._clipped
+        self._saturated_reported = self._converter.saturated_samples
+        if not clipped and not saturated:
+            return
+        logger.warning(
+            'The receiver clipped %d raw value(s) in the last %.0f seconds, and the '
+            'conversion clipped %d output sample(s).  Loud events are measured smaller '
+            'than they are.  Lower [rtlsdr] gain_db by one step.',
+            clipped, elapsed, saturated)
+
+    def _warn_about_drift(self, elapsed: float) -> None:
+        """Report a receiver clock that has run away from the system clock.
+
+        This one needs a limit where the counters above do not, because the figure is
+        never exactly zero.  Two crystals always disagree by some parts per million,
+        so "any movement" would report every minute of a healthy run.  What is
+        measured here is the change since the last report rather than the total, so a
+        steady offset settles instead of accumulating into a warning.
+        """
+        drift = self._source.clock_drift_seconds
+        moved = drift - self._drift_reported
+        self._drift_reported = drift
+        if abs(moved) <= elapsed * _DRIFT_PPM_LIMIT / 1e6:
+            return
+        logger.warning(
+            'The receiver and system clocks moved %+.0f ms apart over the last %.0f '
+            'seconds, which is more than a crystal explains.  Samples were probably '
+            'lost, so levels and grid frequency from this period are suspect.  Check '
+            'what else on this machine is taking the CPU.', moved * 1e3, elapsed)
 
     def _append_in_chunks(self, audio: np.ndarray) -> None:
         """Hand the audio over in pieces of exactly CHUNK_SIZE, holding any remainder.

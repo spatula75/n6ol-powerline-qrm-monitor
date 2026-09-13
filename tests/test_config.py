@@ -7,10 +7,10 @@ from pathlib import Path
 import pytest
 
 from buzz.config import (
-    MAX_SAMPLE_RATE, MIN_SAMPLE_RATE, AudioConfig, BuzzConfig, RecordingConfig,
-    RtlSdrConfig, ServerConfig, StationConfig, WeatherConfig, _load_section,
-    validate_sample_rate,
+    AudioConfig, BuzzConfig, RecordingConfig, RtlSdrConfig, ServerConfig,
+    StationConfig, WeatherConfig, _load_section, validate_sample_rate,
 )
+from buzz.constants import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 
 _EXAMPLE = Path(__file__).resolve().parent.parent / 'config.example.toml'
 

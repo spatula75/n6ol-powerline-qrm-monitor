@@ -494,7 +494,8 @@
           "description": "How fast the receiver samples. It must divide evenly by the decimation below.",
           "default": 256000,
           "x-notes": [
-            "256000 divided by 16 gives 16000 Hz of audio, the rate a sound-card station uses."
+            "256000 divided by 16 gives 16000 Hz of audio, the rate a sound-card station uses.",
+            "The receiver rate divided by the decimation has to come to between 8000 Hz and 48000 Hz. A receiver rate of 2400000 needs a decimation between 50 and 300."
           ]
         },
         "decimation": {
@@ -510,7 +511,8 @@
           "description": "How much of the band to measure, on one side of the listening frequency.",
           "default": 4000,
           "x-notes": [
-            "4000 Hz matches a typical SSB filter, so levels compare with a radio tuned to the same spot."
+            "4000 Hz matches a typical SSB filter, so levels compare with a radio tuned to the same spot.",
+            "At most the receiver rate divided by the decimation, divided again by 2.5. That is 6400 Hz with the settings above. The filter needs the extra room past the band edge, and the monitor refuses a wider setting and says what the limit is."
           ]
         },
         "tuning_offset_hz": {

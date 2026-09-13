@@ -88,7 +88,7 @@ _WINDOW_SECONDS = 512 / 16000
 # width whatever the audio arrives at.  8 kHz is the lowest rate that can supply it -
 # N is 256 there, Nyquist falls exactly on bin 128, and the display is the whole
 # spectrum up to 4 kHz with nothing to spare.  Below that the top of the display would
-# be above Nyquist; see config.MIN_SAMPLE_RATE.
+# be above Nyquist; see constants.MIN_SAMPLE_RATE.
 DISPLAY_BINS = round(_MAX_HZ * _WINDOW_SECONDS)   # 128
 # How much of each FFT frame is re-analyzed in the next one.  Hann tapers to zero at
 # both edges, so without overlap an impulse's contribution depends entirely on where

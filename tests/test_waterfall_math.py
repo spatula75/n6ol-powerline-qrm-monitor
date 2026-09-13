@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 
 from buzz.analyzer import AnalysisResult
-from buzz.config import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
+from buzz.constants import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 from buzz.dsp import SILENCE_DBFS
 from buzz.recorder import RecorderStatus
 from buzz.scope import H_DIVISIONS

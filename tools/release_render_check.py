@@ -4,7 +4,7 @@ that each result actually holds a picture and a sound - not merely a
 well-formed container.
 
 Run this as part of preparing a release (see CONTRIBUTING.md's release
-procedure). It is deliberately not wired into CI. CI has no live radio and
+procedure).  It is deliberately not wired into CI.  CI has no live radio and
 cannot produce a recording that means anything, so this stays a manual,
 hands-on check, like the release procedure's other verification against real
 hardware.
@@ -19,11 +19,11 @@ What "recent" is for
 -------------------------------------------------------------------------------
 
 The point of this check is confidence about what the current build does with a
-real capture, not with an arbitrary one. A recording from months ago says
+real capture, not with an arbitrary one.  A recording from months ago says
 nothing about whether today's receiver, band conditions, or config still
-produce something the renderer handles correctly. Its mere existence also begs
+produce something the renderer handles correctly.  Its mere existence also begs
 the question of whether the monitor has actually been recording lately at all,
-which is itself worth knowing before a release goes out. So rather than pick
+which is itself worth knowing before a release goes out.  So rather than pick
 silently, this asks the release engineer when nothing recent enough is on hand,
 the same way the monitor asks rather than guesses when a setting is ambiguous.
 
@@ -32,15 +32,15 @@ What gets checked
 -------------------------------------------------------------------------------
 
 The chosen recording is trimmed to a short clip and resampled to both ends of
-the band buzz.config.validate_sample_rate admits - MIN_SAMPLE_RATE and
-MAX_SAMPLE_RATE - plus the rates a file from another operator's sound card
-plausibly arrives at. Not every rate in the band: it is a continuous range of
+the band buzz.config.validate_sample_rate admits - buzz.constants.MIN_SAMPLE_RATE
+and MAX_SAMPLE_RATE - plus the rates a file from another operator's sound card
+plausibly arrives at.  Not every rate in the band: it is a continuous range of
 40,001 of them, and the ends are where a rate-dependent bug shows up first.
 Each variant is rendered exactly as --render does it, and the result is
 checked four ways, all via ffmpeg/ffprobe filters rather than pixel-by-pixel
-inspection. This is deliberately cursory: it catches "nothing was painted" and
+inspection.  This is deliberately cursory: it catches "nothing was painted" and
 "the render silently produced a blank or frozen file", not "the waterfall is a
-pixel off". Confirming the picture is right still needs a person watching a
+pixel off".  Confirming the picture is right still needs a person watching a
 real render; see CLAUDE.md's "Don't overdrive your headlights".
 
   1. blackdetect  - flags a sustained black frame: a blank or frozen render.
@@ -48,11 +48,11 @@ real render; see CLAUDE.md's "Don't overdrive your headlights".
   3. frame count  - the file's own decoded frame count against what
                     buzz.render itself logged, so an encoder that quietly
                     dropped or duplicated frames does not pass unnoticed.
-  4. signalstats  - per-frame mean luma (YAVG). Its range over the whole clip
+  4. signalstats  - per-frame mean luma (YAVG).  Its range over the whole clip
                     distinguishes real motion (the waterfall scrolling, the
                     scope tracing, the meter bars moving) from a static or
                     duplicated picture - the specific "frozen opening frame"
-                    bug class this project has hit before. The standard
+                    bug class this project has hit before.  The standard
                     deviation is reported beside it but not checked; see
                     _MIN_LUMA_RANGE for why.
 """
@@ -72,7 +72,8 @@ from pathlib import Path
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / 'lib'))
 
-from buzz.config import CONFIG_PATH, MAX_SAMPLE_RATE, MIN_SAMPLE_RATE, BuzzConfig  # noqa: E402
+from buzz.config import CONFIG_PATH, BuzzConfig  # noqa: E402
+from buzz.constants import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE  # noqa: E402
 from buzz.ffmpeg import FfmpegError, find_ffmpeg, run  # noqa: E402
 
 # Rates a file from another operator's sound card is plausibly recorded at -

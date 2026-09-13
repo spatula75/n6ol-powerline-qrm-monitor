@@ -48,7 +48,7 @@ from math import ceil, gcd
 import numpy as np
 from scipy.signal import firwin, upfirdn
 
-from buzz.constants import FULL_SCALE_COUNTS
+from buzz.constants import FULL_SCALE_COUNTS, MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 
 # Which side of the tuned frequency to keep.  A radio in USB hears the spectrum
 # above the dial and one in LSB hears the spectrum below it, with the audio running
@@ -168,6 +168,11 @@ class IqToAudio:
         the worse failure.  A wrong audio rate mislabels every later measurement, and
         a bandwidth wider than the audio can hold folds the top of the band back onto
         the bottom.
+
+        The checks run in this order because each needs the ones before it to have
+        passed.  The audio rate cannot be worked out until the decimation is known to
+        be positive and to divide.  The bandwidth limit is then a fraction of that
+        rate.
         """
         if decimation < 1:
             raise ValueError(
@@ -181,19 +186,69 @@ class IqToAudio:
                 'number of samples per second.  Every sample position downstream is '
                 'counted in whole samples.  Choose a rate that divides, such as '
                 f'{decimation * (iq_sample_rate // decimation)} Hz.')
+
         audio_rate = IqToAudio.audio_sample_rate_for(iq_sample_rate, decimation)
-        if not 0 < bandwidth_hz <= audio_rate / 2:
+        if not MIN_SAMPLE_RATE <= audio_rate <= MAX_SAMPLE_RATE:
+            lowest, highest = IqToAudio.decimation_bounds_for(iq_sample_rate)
+            raise ValueError(
+                f'An IQ rate of {iq_sample_rate} Hz decimated by {decimation} gives '
+                f'{audio_rate} Hz of audio.  This program works only between '
+                f'{MIN_SAMPLE_RATE} Hz and {MAX_SAMPLE_RATE} Hz.  Below the floor '
+                'the 4 kHz the display and the analysis look at is above Nyquist.  '
+                'Above the ceiling the fixed-size buffer holds too little history to '
+                f'acquire reliably.  Set [rtlsdr] decimation between {lowest} and '
+                f'{highest}, choosing one that divides {iq_sample_rate} exactly.')
+
+        widest = IqToAudio.widest_bandwidth_for(audio_rate)
+        if not 0 < bandwidth_hz <= widest:
             raise ValueError(
                 f'A bandwidth of {bandwidth_hz} Hz does not fit in audio sampled at '
-                f'{audio_rate} Hz.  That audio carries {audio_rate // 2} Hz at most.  '
-                'Anything above the limit folds back onto the measured band.  Lower '
-                '[rtlsdr] bandwidth_hz, or lower the decimation to raise the audio '
-                'rate.')
+                f'{audio_rate} Hz, which carries {widest} Hz at most.  The filter '
+                'skirt reaches past the band edge, so the limit sits below half the '
+                'audio rate.  Anything above it folds back onto the measurement.  '
+                f'Lower [rtlsdr] bandwidth_hz to {widest} or less, or lower the '
+                'decimation to raise the audio rate.')
+
         if sideband not in (UPPER, LOWER):
             raise ValueError(
                 f'The sideband is {sideband!r}, and it must be {UPPER!r} or '
                 f'{LOWER!r}.  It selects which side of the tuned frequency the '
                 'receiver hears.  Set [rtlsdr] sideband to one of those two values.')
+
+    @staticmethod
+    def widest_bandwidth_for(audio_rate: int) -> int:
+        """The widest band that can be kept at `audio_rate` without an alias folding in.
+
+        Half the audio rate is the obvious answer and it is too generous, because the
+        filter does not stop at the band edge.  Its skirt runs another
+        `bandwidth_hz * _SKIRT_FRACTION / 2` past that edge before the stopband
+        begins.  Whatever is still passing at half the audio rate therefore folds
+        straight back onto the measurement.
+
+        The figures come from measuring, at 256 kHz decimated by 16.  Peak response in
+        the first alias band ran -71.6 dB at a 6400 Hz bandwidth and -24.5 dB at
+        7000 Hz.  At the 8000 Hz that half the audio rate allowed it reached -6.1 dB,
+        which is near enough to no rejection at all.  The tap count also falls as the
+        bandwidth grows, from 561 to 289, so the leak widens faster than the band does.
+
+        The condition is `bandwidth * (1 + _SKIRT_FRACTION / 2) <= audio_rate / 2`,
+        and this is that rearranged.  It rounds down to a whole Hz, so the answer is
+        always legal rather than one Hz over.
+        """
+        return int(audio_rate / 2 / (1 + _SKIRT_FRACTION / 2))
+
+    @staticmethod
+    def decimation_bounds_for(iq_sample_rate: int) -> tuple[int, int]:
+        """The lowest and highest decimation whose audio rate falls inside the band.
+
+        For the remedy in _validate, which names a range rather than a single value.
+        It has to, because not every IQ rate has a divisor inside the band at all.
+        Both ends round inwards, so any decimation between them gives a legal rate and
+        the caller only has to find one that divides.
+        """
+        lowest = ceil(iq_sample_rate / MAX_SAMPLE_RATE)
+        highest = iq_sample_rate // MIN_SAMPLE_RATE
+        return lowest, highest
 
     @staticmethod
     def audio_sample_rate_for(iq_sample_rate: int, decimation: int) -> int:
@@ -226,9 +281,22 @@ class IqToAudio:
         they disagree, every output comes from a fraction of a sample away from where it
         belongs, and nothing about the output shows it.
 
-        The answer is always odd, which a symmetric filter wants so that its delay is a
-        whole number of samples.  That comes free, because `decimation` is even in any
-        sensible setup and one more than a multiple of an even number is odd.
+        The third requirement is that the answer comes out odd, because a symmetric
+        filter of even length delays the signal by half a sample.  group_delay_samples
+        reports a whole number of IQ samples, and it cannot report a half.  An even
+        length puts two exactly equal peaks in the impulse response, straddling the
+        true delay, so which one np.argmax returns decides the answer.
+
+        An even count only arises when `decimation` is odd, since the expression below
+        is one more than a multiple of it.  Adding `decimation` again fixes the parity
+        and leaves `n_taps - 1` divisible, because both terms keep that property.
+        Taking the lcm of the two spacings the way panel_width does would round much
+        further for the same effect.
+
+        Of the 137 rate and decimation pairs this program admits, 8 reach the bump,
+        and each pays between 1.1% and 4.8% more taps.  Nothing else changes, because
+        the shipped default is odd already.  Those figures are pinned by
+        test_the_parity_fix_costs_what_the_docstring_says.
         """
         skirt_hz = bandwidth_hz * _SKIRT_FRACTION
         # Kaiser's length estimate: deeper rejection and a narrower skirt each cost taps,
@@ -237,7 +305,8 @@ class IqToAudio:
         skirt_radians = 2 * np.pi * skirt_hz / iq_sample_rate
         estimate = int(ceil((_STOPBAND_DB - _KAISER_LENGTH_OFFSET)
                             / (_KAISER_LENGTH_SCALE * skirt_radians)))
-        return decimation * int(ceil((estimate - 1) / decimation)) + 1
+        n_taps = decimation * int(ceil((estimate - 1) / decimation)) + 1
+        return n_taps if n_taps % 2 else n_taps + decimation
 
     @staticmethod
     def one_sided_filter(iq_sample_rate: int, bandwidth_hz: int, n_taps: int,
@@ -324,8 +393,9 @@ class IqToAudio:
 
         Saturation here means the receiver gain is too high for what the antenna is
         hearing.  A clipped arc measures smaller than it truly is, so the events it
-        spoils are the loud ones that matter most.  A caller that never reads this
-        learns nothing from a quiet failure.
+        spoils are the loud ones that matter most.  Nothing about the audio looks
+        wrong afterwards, so a caller that never reads this learns nothing from the
+        failure.  RtlSdrPipeline._warn_about_clipping is the one that does.
         """
         return self._saturated
 
@@ -405,14 +475,21 @@ class IqToAudio:
         leaves `_pending` with one owner.  Adding to it and dropping from it are two
         halves of the same decision about what is still needed, so they belong in one
         place.
+
+        The backlog is built locally and stored only once the filtering has returned.
+        RtlSdrPipeline._feed catches every exception and goes on to the next block.  A
+        fault that repeats would otherwise add 16384 samples per block to a backlog
+        nothing ever drops, which is 256 KB a block for as long as the receiver runs.
+        Storing afterwards costs nothing and bounds the failure at one block.
         """
-        self._pending = np.concatenate([self._pending, mixed])
-        usable = len(self._pending) - self._n_taps
+        pending = np.concatenate([self._pending, mixed])
+        usable = len(pending) - self._n_taps
         if usable < 0:
+            self._pending = pending
             return np.empty(0, dtype=np.complex128)
         n_out = usable // self._decimation + 1
-        filtered = upfirdn(self._taps, self._pending, up=1, down=self._decimation)
-        self._pending = self._pending[n_out * self._decimation:]
+        filtered = upfirdn(self._taps, pending, up=1, down=self._decimation)
+        self._pending = pending[n_out * self._decimation:]
         return filtered[self._first_usable:self._first_usable + n_out]
 
     def _as_int16(self, audio: np.ndarray) -> np.ndarray:

@@ -43,7 +43,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `[audio] source`, which selects `soundcard` or `rtlsdr`. It defaults to
   `soundcard`, so an existing station behaves exactly as before. With `rtlsdr` the
   new `[rtlsdr]` section supplies the frequency, tuner gain, IQ sample rate,
-  decimation, bandwidth, tuning offset, sideband and device index.
+  decimation, bandwidth, tuning offset, sideband and device index. Any other value
+  is refused at startup rather than treated as a sound card, since `[rtlsdr]` has no
+  setup screen yet and reaches the file by hand.
+
+  Two limits apply to that section, and the monitor names both when it refuses one.
+  The IQ rate divided by the decimation has to fall between 8000 Hz and 48000 Hz,
+  which is the band the rest of the program already works in: 2400000 Hz at the
+  default decimation of 16 would otherwise give 150 kHz of audio, a ring buffer
+  holding one second instead of 9.6, and recordings at a rate `--playback` refuses.
+  The bandwidth has to fit that audio rate with room for the filter skirt, which is
+  6400 Hz at the default settings rather than the 8000 Hz half the rate suggests. At
+  8000 Hz the top of the band folds back onto the bottom 6 dB down, and a broadband
+  arc has energy exactly there.
 
   `[rtlsdr] audio_rf_conversion_db` does for a receiver what
   `[station] audio_rf_conversion_db` does for a sound card. It sits in its own
@@ -55,6 +67,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The work was developed and measured against an RTL-SDR Blog V4. Other receivers
   are untested, and a V3 reaches HF only through direct sampling, which this does
   not enable.
+
+  `pyrtlsdr[lib]` is what talks to the hardware. `requirements.txt` installs it, and
+  a packaged install asks for it with `pip install .[rtlsdr]`. A sound-card station
+  never loads it, because the import sits inside the function that opens the device.
 
 - `tools/ste_lint.py --fragments`, an advisory pass for sentence fragments. It is
   off by default, and deliberately so. Spotting a clause with no finite verb means

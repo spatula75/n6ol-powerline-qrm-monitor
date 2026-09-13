@@ -77,10 +77,10 @@ of a neighbor.
 **Platform support:** I develop and test on Windows. Linux and macOS should work with
 no code changes. The core DSP and collection code is cross-platform, and CI runs on
 Linux. FreeBSD should also work, but install `numba` from the ports collection
-(`devel/py-numba`) rather than pip, because pip ships no FreeBSD binary wheels for it.  When using an SDR receiver,
-it is necessary to install the `pyrtlsdr[lib]` requirement (already found in the requirements.txt file), but otherwise
-it can be skipped.  As of now, I've only tested with the RTL-SDR.com v4 receiver, though the v4-lite should work
-as well.
+(`devel/py-numba`) rather than pip, because pip ships no FreeBSD binary wheels for it.  An SDR receiver needs
+`pyrtlsdr[lib]`, which `requirements.txt` installs for you; if you install the package itself instead, ask for
+it with `pip install .[rtlsdr]`.  A sound-card station never loads it and can leave it out.  As of now, I've
+only tested with the RTL-SDR.com v4 receiver, though the v4-lite should work as well.
 
 ---
 

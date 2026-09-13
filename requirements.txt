@@ -20,4 +20,8 @@ jsonschema~=4.26.0
 # system dependency, unlike curses, which needs windows-curses on Windows.
 textual~=8.2.8
 
-pyrtlsdr[lib]
+# Only an RTL-SDR station opens this, and buzz.sdr imports it inside the function
+# that opens the device, so a sound-card station never loads it.  It is pinned here
+# and declared as the [rtlsdr] extra in pyproject.toml, since a packaged install
+# has no reason to pull a USB library it will never call.
+pyrtlsdr[lib]~=0.5.0

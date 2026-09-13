@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, TypeVar
 from buzz import wavmeta
 from buzz.analyzer import ContinuousAnalyzer
 from buzz.collector import Collector
-from buzz.config import CONFIG_PATH, RTLSDR, BuzzConfig, validate_sample_rate
+from buzz.config import CONFIG_PATH, RTLSDR, SOUNDCARD, BuzzConfig, validate_sample_rate
 from buzz.csv_store import CsvStore
 from buzz.playback import (
     FilePlaybackPipeline,
@@ -274,8 +274,22 @@ def open_live_source(config: BuzzConfig) -> RingBufferPipeline:
     The library resolves a symbol at import time, so a mismatched librtlsdr breaks the
     import rather than the first call, and a station that owns no receiver should not be
     able to fail on one.
+
+    A source this does not recognize is refused rather than treated as a sound card.
+    Nothing else checks the setting.  The schema states the two values it allows and
+    the setup program enforces them, but _load_section copies whatever the file holds.
+    [rtlsdr] has no setup screen yet either, so that section reaches the file by hand
+    and a neighboring typo in [audio] arrives the same way.  A misspelling would
+    otherwise open the sound card named in [audio] input_device_name and log a day of
+    whatever that input is hearing.
     """
-    if config.audio.source != RTLSDR:
+    if config.audio.source not in (SOUNDCARD, RTLSDR):
+        raise RuntimeError(
+            f'[audio] source is {config.audio.source!r}, and it must be {SOUNDCARD!r} '
+            f'or {RTLSDR!r}.  It selects where live audio comes from, and no other '
+            'value has a meaning.  Correct it in the config file, or run '
+            'python -m buzz.setup to set it.')
+    if config.audio.source == SOUNDCARD:
         return AudioSampler(config).pipeline
 
     from buzz.iq import IqToAudio
@@ -591,7 +605,17 @@ def main() -> None:  # pragma: no cover
                            'audio is calibrated by station.audio_rf_conversion_db in '
                            'the config, which is the figure this station was set up '
                            'with. Change it there rather than per run.')
-        pipeline = open_live_source(config)
+        # open_live_source fails with a message written for whoever is standing at the
+        # radio: which driver to install, what else holds the device, which setting is
+        # wrong.  A traceback would bury all of it.  Same treatment as the playback
+        # branch above.  ValueError is caught alongside RuntimeError because
+        # IqToAudio._validate refuses an impossible [rtlsdr] section that way, and its
+        # wording is aimed at the same reader.
+        try:
+            pipeline = open_live_source(config)
+        except (RuntimeError, ValueError) as exc:
+            logger.error('%s', exc)
+            sys.exit(2)
         analyzer = ContinuousAnalyzer(pipeline, config)
         # Built whether or not recording is enabled: `enabled` only decides whether it
         # starts armed, and the toolbar has to be able to arm it mid-run either way.

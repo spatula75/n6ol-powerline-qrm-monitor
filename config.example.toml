@@ -346,6 +346,10 @@ gain_db = 40.2
 #
 # 256000 divided by 16 gives 16000 Hz of audio, the rate a sound-card
 # station uses.
+#
+# The receiver rate divided by the decimation has to come to between 8000 Hz
+# and 48000 Hz. A receiver rate of 2400000 needs a decimation between 50 and
+# 300.
 iq_sample_rate = 256000
 
 # Receiver samples per audio sample. The audio rate is the receiver rate
@@ -356,6 +360,11 @@ decimation = 16
 #
 # 4000 Hz matches a typical SSB filter, so levels compare with a radio tuned
 # to the same spot.
+#
+# At most the receiver rate divided by the decimation, divided again by 2.5.
+# That is 6400 Hz with the settings above. The filter needs the extra room
+# past the band edge, and the monitor refuses a wider setting and says what
+# the limit is.
 bandwidth_hz = 4000
 
 # How far from the listening frequency to tune the hardware. Undone in
