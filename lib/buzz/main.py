@@ -607,10 +607,10 @@ def main() -> None:  # pragma: no cover
                            'with. Change it there rather than per run.')
         # open_live_source fails with a message written for whoever is standing at the
         # radio: which driver to install, what else holds the device, which setting is
-        # wrong.  A traceback would bury all of it.  Same treatment as the playback
-        # branch above.  ValueError is caught alongside RuntimeError because
-        # IqToAudio._validate refuses an impossible [rtlsdr] section that way, and its
-        # wording is aimed at the same reader.
+        # wrong.  A traceback would bury all of it, so this gets the same treatment
+        # as the playback branch above.  ValueError is caught alongside RuntimeError
+        # because IqToAudio._validate refuses an impossible [rtlsdr] section that way,
+        # and its wording is aimed at the same reader.
         try:
             pipeline = open_live_source(config)
         except (RuntimeError, ValueError) as exc:

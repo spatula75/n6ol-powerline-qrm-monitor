@@ -569,6 +569,25 @@ Practical consequences:
   and a module that is procedural by nature such as `main.py`. `buzz.iq.filter_length`
   and `buzz.sdr.count_clipped` both started bare and were wrong that way: only
   `IqToAudio` builds a filter, and only `IqBlock` holds raw bytes.
+- **A second path into an existing contract has to satisfy what the first one already
+  satisfies.** Adding a source, a backend or a caller beside an existing one is the
+  moment to walk the checks the existing one passes through, because each of them was
+  written for a reason that has not gone away.
+
+  The RTL-SDR path was built beside the sound-card path rather than through it, and
+  skipped four things the older path does. It set `config.audio.sample_rate` directly
+  instead of through `validate_sample_rate`. It fell through to the sound card on an
+  unrecognized `[audio] source` rather than refusing one. It let a device failure
+  reach the operator as a traceback, past the message the code had already composed
+  for exactly that moment. It also published four counters that nothing ever read.
+  Every one of those already existed, and none of them were hard. They were simply
+  not on the path being built.
+
+  The diagnostic is to list what the old path does between its entry point and the
+  ring buffer, then ask of each item whether the new path does it too. Where the
+  answer is that the new path does not need it, say why in a comment. Review found
+  all four of these after a green suite, which is the same lesson as the counters
+  themselves: a check nobody runs and a counter nobody reads fail the same way.
 - **Push, don't poll.** Components publish state changes to their listeners rather than
   reaching into another component to read its state - a lock is an event, not a level,
   and a poller misses any event that begins and ends between two polls. Publish from the

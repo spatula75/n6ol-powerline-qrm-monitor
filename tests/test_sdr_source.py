@@ -31,9 +31,9 @@ BLOCK = 1_024
 class FakeDevice:
     """Stands in for pyrtlsdr's RtlSdr, recording what was asked of it.
 
-    Deliberately not a Mock.  The source reads `sample_rate` back after setting it,
-    and a device that cannot do that faithfully would hide the one behavior that
-    readback exists to catch.
+    This is deliberately not a Mock, because the source reads `sample_rate` back
+    after setting it, and a device that cannot do that faithfully would hide the one
+    behavior that readback exists to catch.
     """
 
     def __init__(self, actual_rate: float | None = None):
