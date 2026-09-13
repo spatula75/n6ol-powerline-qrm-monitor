@@ -77,6 +77,32 @@ What it costs, on the broadband antenna the figures below came from:
 Moving from 30 to 32 costs 0.37 dB of floor accuracy.  Cheap, against an arc that
 cannot be recovered once it clips.
 
+## How much of the floor has to be the antenna
+
+The reserve decides the highest gain.  A second bound decides the lowest, because a
+gain too small leaves the converter making most of the noise the station reports.
+`buzz.gain_sweep._ANTENNA_SHARE_FLOOR` is where that bar sits, and the sweep picks the
+lowest gain that clears it.
+
+At one half the antenna equals the converter and the reported floor reads 3.01 dB
+high.  The bar is a choice rather than a measurement, and against the broadband
+antenna above it decides the answer:
+
+    bar    gain picked    reported floor reads high by
+    0.5       32.8 dB               1.87 dB
+    0.7       33.8 dB               1.54 dB
+    0.8       36.4 dB               0.92 dB
+    0.9       40.2 dB               0.41 dB
+
+0.8 would reproduce the 36.4 dB this station settled on by hand.  0.5 was chosen
+anyway, on the same reasoning as the reserve: clipping is the failure that cannot be
+recovered from, so the spare 3.6 dB above the reserve is worth more than the decibel
+of floor accuracy it costs.  A lower bar also finds an answer on quieter antennas
+where a higher one finds none, and the antennas that need help are the quiet ones.
+
+The two bounds can cross, and on a quiet antenna they do.  The sweep reports that
+rather than picking a number from a rule that failed.
+
 ## The sweep has to interleave
 
 A first attempt swept each gain once in sequence and produced neighboring steps
@@ -99,6 +125,32 @@ gain and differently for the two quantities:
 
 Five passes at a quarter second per step took about 75 seconds and gave a monotonic
 curve where one pass had given noise.
+
+### The number of passes has to be odd
+
+Found in simulation afterwards, and it is a property of the combining rather than of
+the receiver.  The floor takes a median, and numpy's median of an even count averages
+the two middle values rather than picking one, so an even number of passes gives up
+exactly the outlier rejection the passes were added to buy.
+
+An arc running through half the sweep is the case that separates them.  Against a
+simulated arc that lifts the band noise 7.4 dB for a stretch of the run, and asking
+whether the sweep still reaches the answer it reaches on a quiet band:
+
+    passes    steps    matches the quiet-band answer
+       1        29              25 of 25
+       2        58               0 of 25
+       3        87              25 of 25
+       5       145              25 of 25
+       7       203              25 of 25
+
+`GainSweep` rounds an even request up to the next odd number for that reason.
+
+Two other things that table says.  Three passes would do in simulation, and five is
+kept because the figure came from hardware rather than from a model, where the arc is
+not as well behaved as any of this.  And one pass scoring 25 of 25 is a limit of the
+model rather than a defence of one pass: the hardware measurement above is what one
+pass actually did.
 
 ## What the two antennas showed
 

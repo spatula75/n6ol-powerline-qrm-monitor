@@ -83,6 +83,15 @@ _RAW_HALF_SPAN = (_RAW_MAX - _RAW_MIN) / 2
 # Bytes per complex sample, one for I and one for Q.
 _BYTES_PER_SAMPLE = 2
 
+# How many transfers librtlsdr keeps in flight.
+#
+# pyrtlsdr passes DEFAULT_ASYNC_BUF_NUMBER = 0 straight to rtlsdr_read_async and
+# librtlsdr substitutes 15, so the pool holds buf_num * block_samples / sample_rate.
+# At the default block and 256 kHz that is 960 ms, which matched a hand measurement to
+# the digit.  It is a library constant rather than a parameter, so this restates it and
+# TestTheTransferPoolDepth pins the arithmetic that depends on it.
+_TRANSFER_POOL_BLOCKS = 15
+
 # Samples per callback, which is the deadline the draining thread has to beat.
 #
 # 16384 samples is 64 ms at 256 kHz, against roughly 2 ms of conversion work, so the
@@ -376,6 +385,41 @@ class RtlSdrSource:
     def iq_sample_rate(self) -> int:
         """The rate the device is actually running at, rounded to whole samples."""
         return self._iq_sample_rate
+
+    @property
+    def supported_gains_db(self) -> list[float]:
+        """Every tuner gain this device offers, in the order it reports them."""
+        return list(self._device.valid_gains_db)
+
+    @property
+    def blocks_to_discard_after_gain_change(self) -> int:
+        """Blocks that may predate a gain change, and so have to be thrown away.
+
+        Up to _TRANSFER_POOL_BLOCKS buffers are filled or in flight when the gain
+        moves, plus the one being written at that moment, so discarding this many
+        makes every later block provably post-change.  Counting blocks rather than
+        waiting a duration keeps it independent of scheduler jitter and of the sample
+        rate being what was asked for.
+
+        Measuring without the discard reads the previous step's answer shifted by one
+        step, which looks like a plausible curve and is wrong.
+        """
+        return _TRANSFER_POOL_BLOCKS + 1
+
+    def set_gain(self, gain_db: float) -> float:
+        """Move the tuner gain while streaming, and return the value actually set.
+
+        The request is snapped to a step the tuner offers, the same way the
+        constructor snaps it, because a V4 cannot report its own gain and the figure
+        we chose is the only one anybody will ever know.
+
+        Blocks already in the transfer pool still carry the old gain.  A caller
+        measuring the result has to drop blocks_to_discard_after_gain_change of them
+        first, which is why that number is public.
+        """
+        self._gain_db = self._nearest_supported_gain(gain_db, self.supported_gains_db)
+        self._device.gain = self._gain_db
+        return self._gain_db
 
     @property
     def gain_db(self) -> float:
