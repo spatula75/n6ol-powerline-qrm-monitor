@@ -1,5 +1,8 @@
 """The closing screen: show what changed, back out if something looks wrong, or save.
 
+With nothing to save it offers to leave the program instead, because Back would be
+the only way out of a screen somebody opened in order to finish.
+
 Saving always backs up an existing config first.  If the backup cannot be written,
 the config is not touched - complaining about a failed backup and then overwriting
 the file anyway would destroy the one copy a failed backup was supposed to protect.
@@ -25,9 +28,9 @@ def changed_fields(schema: dict[str, Any], original: ConfigValues,
     """Every (section, field, old, new) where `current` differs from `original`.
 
     In schema order, not dict order, so the summary reads the same way the setup
-    program's own menus do.  Unaffected by which fields happen to be visible right
-    now: this reports what will actually be written, not what the last-opened
-    submenu showed.
+    program's own menus do.  The result does not depend on which fields happen to be
+    visible right now, because it reports what will actually be written rather than
+    what the last-opened submenu showed.
     """
     changes = []
     for section in section_names(schema):
@@ -73,7 +76,7 @@ def toml_ready(values: ConfigValues,
 
 
 class FinishScreen(ScopeScreen[None]):
-    """Show the pending changes, then back out or save."""
+    """Show the pending changes, then back out or save.  With none, back out or exit."""
 
     DEFAULT_CSS = """
     FinishScreen {
@@ -124,20 +127,40 @@ class FinishScreen(ScopeScreen[None]):
                 id='body',
             )
         else:
+            # Exit as well as Back, because Back alone is a dead end: somebody who
+            # reached this screen to leave the program is told there is nothing to
+            # save and then sent to the menu they came from.  Exit is safe here in a
+            # way it is not in the branch above, since there is nothing to discard.
             yield Vertical(
-                Static('No changes to save.', id='intro'),
-                Horizontal(Button('Back', id='back'), id='actions'),
+                Static(self._nothing_to_save(), id='intro'),
+                Horizontal(Button('Exit', id='exit', variant='primary'),
+                           Button('Back', id='back'),
+                           id='actions'),
                 id='body',
             )
         yield Footer()
+
+    def _nothing_to_save(self) -> str:
+        """Why there is nothing to write, and what that leaves behind.
+
+        The two cases differ in what the monitor will read afterwards, so they say so.
+        An operator who ran setup on a machine with no config at all should not have
+        to guess whether one now exists.
+        """
+        if self.app.had_existing_config:
+            return f'No changes to save.  {self.app.config_path} is unchanged.'
+        return ('No changes to save, so no config file was written.  The monitor uses '
+                f'its built-in defaults until {self.app.config_path} exists.')
 
     def on_mount(self) -> None:
         # Neither button focuses itself, and nothing else on this screen is
         # focusable - without this, arrow keys and Enter do nothing until Tab is
         # pressed first, and no row shows which one Enter would confirm.  Back is
-        # the safe default, the same reasoning as ConfirmDialog focusing Cancel:
-        # Enter should not save by accident.
-        self.query_one('#back', Button).focus()
+        # the safe default where there is something to save, the same reasoning as
+        # ConfirmDialog focusing Cancel: Enter should not save by accident.  With
+        # nothing to save there is nothing to do by accident, so Exit takes the
+        # focus and Enter finishes the job the operator came here for.
+        self.query_one('#back' if self._changes else '#exit', Button).focus()
 
     def _change_line(self, change: tuple[str, str, Any, Any]) -> str:
         section, field, old, new = change
@@ -147,6 +170,11 @@ class FinishScreen(ScopeScreen[None]):
     def on_button_pressed(self, event) -> None:
         if event.button.id == 'back':
             self.dismiss()
+        elif event.button.id == 'exit':
+            # No confirmation, unlike the main menu's Escape.  That one asks because
+            # it cannot tell whether somebody meant to leave; this button says Exit
+            # and there is nothing unsaved for a misfire to cost.
+            self.app.exit(message=self._nothing_to_save())
         elif event.button.id == 'save':
             self._save()
 

@@ -181,6 +181,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   decimation, bandwidth, tuning offset and sideband.
 
 ### Fixed
+- The setup program's Finish screen offered only Back when there was nothing to save,
+  so somebody who opened it to leave the program was told there were no changes and
+  sent to the menu they came from. It offers Exit as well, and says whether a config
+  file exists, since with none the monitor runs on its built-in defaults.
 - `# latitude =` and `# longitude =` in `config.example.toml` had nothing after the
   equals sign, so uncommenting either was a TOML syntax error. Both carry an example
   now, and the example is the Holmdel horn antenna.

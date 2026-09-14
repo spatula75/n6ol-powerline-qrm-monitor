@@ -1061,6 +1061,80 @@ class TestSetupAppWalkthrough:
 
         run(scenario())
 
+    def test_finish_with_nothing_to_save_offers_a_way_out_of_the_program(self, tmp_path):
+        """Back was the only button, so somebody who opened this screen to finish was
+        told there was nothing to save and sent back to the menu they came from.  The
+        only way out was to know that Escape on the main menu asks to exit.
+        """
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+                assert app.screen.query_one('#exit', Button)
+                await pilot.click('#exit')
+                await pilot.pause()
+                assert not app.is_running, 'Exit left the program running'
+                assert not config_path.exists(), 'Exit wrote a config file'
+
+        run(scenario())
+
+    def test_exit_is_focused_only_when_there_is_nothing_to_save(self, tmp_path):
+        """Enter should not save by accident, so Back holds the focus where there are
+        changes.  With none there is nothing to do by accident, and Enter should
+        finish the job rather than bounce off Back.
+        """
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+                assert app.screen.focused.id == 'exit'
+                await pilot.click('#back')
+                await pilot.pause()
+
+                # Stage an edit, then the same screen should guard Enter again.
+                app.values['station']['callsign'] = 'N6OL'
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+                assert app.screen.focused.id == 'back'
+
+        run(scenario())
+
+    def test_nothing_to_save_says_whether_a_config_file_exists(self, tmp_path):
+        """The two cases differ in what the monitor reads afterwards.  Somebody who
+        ran setup on a machine with no config should not have to guess whether one
+        now exists.
+        """
+        async def scenario(config_path):
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+                return str(app.screen.query_one('#intro').content)
+
+        missing = tmp_path / 'config.toml'
+        said = run(scenario(missing))
+        assert 'no config file was written' in said, said
+
+        existing = tmp_path / 'existing.toml'
+        existing.write_text('[station]\ncallsign = "N6OL"\n', encoding='utf-8')
+        said = run(scenario(existing))
+        assert 'is unchanged' in said, said
+        assert 'no config file was written' not in said
+
     def test_finish_screen_buttons_sit_side_by_side_and_take_arrow_keys(self, tmp_path):
         """Regression test for a real bug: Save and Back sat in a Vertical, so they
         stacked one above the other instead of side by side like every other
