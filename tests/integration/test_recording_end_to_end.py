@@ -5,7 +5,7 @@ Deselected by default because it costs tens of seconds.  Run it with:
     pytest -m integration --no-cov
 
 These drive the components the unit tests stub out: a real ContinuousAnalyzer
-measuring real synthetic audio, a real EventRecorder polling on its own thread, and
+measuring real synthetic audio, a real RecordingTrigger polling on its own thread, and
 a real ring buffer filling and discarding in real time.  That combination is where
 this project's costly bugs have lived - an analyzer reset that silently did
 nothing, a recording that came out empty because a limit was measured from the

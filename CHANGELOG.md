@@ -176,6 +176,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   alike whatever the hour.
 
 ### Changed
+- `EventRecorder` is split into `RecordingTrigger`, which decides when an event is
+  worth a file and when that file ends, and `AbstractEventRecorder`, which handles the
+  mechanics of writing one. `AudioEventRecorder` is the first subclass. The trigger
+  reads no audio and opens no file, so a second format needs no second copy of the
+  lock gating, the event budget, or the rearm cycle, and one event counts once against
+  the budget however many files it produced. Nothing an operator sets or sees changes.
+  `docs-notebook/iq-recording-design.md` records why, and raw IQ capture is what it is
+  for.
 - `[rtlsdr]` frequencies are given in kHz: `frequency_khz`, `bandwidth_khz` and
   `tuning_offset_khz` replace the Hz-denominated keys. Nobody wants to type three
   zeroes on the end of every frequency.
@@ -210,6 +218,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   decimation, bandwidth, tuning offset and sideband.
 
 ### Fixed
+- A recording that could not open its file still counted against the event budget, so
+  an operator with a full disk or an unwritable directory paid for files they never
+  got, and recording ran out of budget having written nothing. The budget is now spent
+  only by an event that produced a file.
 - The setup program's Finish screen offered only Back when there was nothing to save,
   so somebody who opened it to leave the program was told there were no changes and
   sent to the menu they came from. It offers Exit as well, and says whether a config

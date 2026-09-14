@@ -48,7 +48,7 @@ from buzz.playback import (
 )
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher
-from buzz.recorder import EventRecorder
+from buzz.recorder import RecordingTrigger
 from buzz.sampler import AudioSampler, RingBufferPipeline
 from buzz.weather import (
     CumulusMXWeatherClient,
@@ -382,7 +382,7 @@ def _start_collector(config: BuzzConfig, analyzer: ContinuousAnalyzer) -> None:
 
 
 def _wait_until_interrupted(pipeline: RingBufferPipeline, analyzer: ContinuousAnalyzer,
-                            recorder: EventRecorder | None = None) -> None:
+                            recorder: RecordingTrigger | None = None) -> None:
     """Headless main loop: block until ^C, then stop the analyzer and the audio pipeline.
 
     This stops the analyzer first, mirroring MainWindow.closeEvent(), otherwise the
@@ -647,7 +647,7 @@ def main() -> None:  # pragma: no cover
         # Built whether or not recording is enabled: `enabled` only decides whether it
         # starts armed, and the toolbar has to be able to arm it mid-run either way.
         config.recording.enabled = config.recording.enabled or args.enable_recording
-        recorder = EventRecorder(pipeline, analyzer, config)
+        recorder = RecordingTrigger(pipeline, analyzer, config)
         # A sound-card pipeline is already running by the time its constructor
         # returns.  An SDR one is not, because opening the device and starting the
         # capture are separate steps, so this starts whichever needs it.
