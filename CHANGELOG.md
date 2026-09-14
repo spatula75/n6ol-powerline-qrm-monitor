@@ -218,6 +218,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   decimation, bandwidth, tuning offset and sideband.
 
 ### Fixed
+- The gain calibration dialog could replace its own answer with a stale progress line.
+  Progress crosses from the sweep's thread by `call_soon_threadsafe`, which queues
+  rather than runs, so one posted just before the sweep finished could arrive after
+  the measured gain was on screen and overwrite it, leaving the operator looking at a
+  step counter for a sweep that had already answered.
 - A recording that could not open its file still counted against the event budget, so
   an operator with a full disk or an unwritable directory paid for files they never
   got, and recording ran out of budget having written nothing. The budget is now spent
