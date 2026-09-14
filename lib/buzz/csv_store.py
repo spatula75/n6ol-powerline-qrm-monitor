@@ -29,6 +29,11 @@ CsvValue = str | float
 # graph builds its time axis from the same constant so the two can't drift apart.
 BUCKET_MINUTES = 15
 
+# The header cell naming the grid-frequency column.  Written by _header_line and read
+# back by read_grid_frequencies(), so the two cannot drift apart and a rename cannot
+# quietly turn every frequency chart empty.
+_GRID_FREQUENCY_HEADING = 'Grid frequency (Hz)'
+
 
 @dataclass(frozen=True)
 class CsvRow:
@@ -46,7 +51,7 @@ class CsvStore:
         pps = config.audio.pulse_rate
         self._header_line = (f'ISO datetime,{pps}pps SNR,{pps}pps signal (dBm),Noise floor (dBm),'
                              f'Signal Lock Status,'
-                             f'Grid frequency (Hz),Phase drift (samples/s),'
+                             f'{_GRID_FREQUENCY_HEADING},Phase drift (samples/s),'
                              f'Temperature (F),Humidity (%),Solar radiation (w/m^2),'
                              f'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)\n')
 
@@ -109,6 +114,47 @@ class CsvStore:
                 except ValueError:
                     continue
         return rows
+
+    def read_grid_frequencies(self, input_filename: Path | str) -> list[tuple[datetime, float | None]]:
+        """One day's (timestamp, grid frequency) pairs, with None where there was no lock.
+
+        The column is found by its header name rather than by its position, and that
+        is not fussiness.  Grid frequency sits at index 5, which in a file written
+        before that column existed holds Temperature.  Reading by position would plot
+        degrees as hertz with nothing on the chart to say so, which is the failure
+        this module's own docstring warns about when it says nothing past index 4 is
+        read.  A file whose header does not name the column reports no readings at
+        all, so an older day comes out empty rather than wrong.
+
+        One case still comes out empty that holds real data: a file created by a
+        version without the column and appended to by a version with it, which is the
+        single day an upgrade happens on.  The header is written once, when the file
+        is created, so it describes the older rows.  Showing nothing for that day is
+        the safe side of the same trade.
+        """
+        zone = ZoneInfo(self._config.station.timezone)
+        readings: list[tuple[datetime, float | None]] = []
+        with open(input_filename, newline='') as f:
+            rows = csv.reader(f)
+            header = next(rows, None)
+            if header is None or _GRID_FREQUENCY_HEADING not in header:
+                return []
+            column = header.index(_GRID_FREQUENCY_HEADING)
+            for row in rows:
+                if len(row) <= column:
+                    continue
+                try:
+                    timestamp = datetime.fromisoformat(row[0]).astimezone(zone)
+                except ValueError:
+                    continue
+                # An unlocked minute writes the field blank rather than a number, so
+                # a blank is a real reading of "nothing to report" and not a defect.
+                text = row[column].strip()
+                try:
+                    readings.append((timestamp, float(text) if text else None))
+                except ValueError:
+                    readings.append((timestamp, None))
+        return readings
 
     def _read_day_scores(self, input_filename: Path | str) -> dict[time, int]:
         """Read one day's CSV file and return a {time: score} dict bucketed to 15-minute intervals.

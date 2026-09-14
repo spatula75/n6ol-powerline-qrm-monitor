@@ -105,6 +105,103 @@ class TestGridFrequencyColumns:
         assert rows[0].lock_status == 'partial'
 
 
+class TestReadGridFrequencies:
+    """Reading the frequency column back, which is only safe by header name.
+
+    Grid frequency sits at index 5, and in a file written before that column existed
+    index 5 holds Temperature.  Every test here is really about telling those apart.
+    """
+
+    _NEW_HEADER = ('ISO datetime,120pps SNR,120pps signal (dBm),Noise floor (dBm),Signal Lock Status,'
+                   'Grid frequency (Hz),Phase drift (samples/s),Temperature (F),Humidity (%),'
+                   'Solar radiation (w/m^2),Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)')
+    # Pre-grid-frequency layout: the sixth column is Temperature, not frequency.
+    _OLD_HEADER = ('ISO datetime,120pps SNR,120pps signal (dBm),Noise floor (dBm),Signal Lock Status,'
+                   'Temperature (F),Humidity (%),Solar radiation (w/m^2),'
+                   'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)')
+
+    def _write(self, path: Path, header: str, rows: list[str]) -> Path:
+        path.write_text('\n'.join([header, *rows]) + '\n')
+        return path
+
+    def test_it_reads_the_values(self, tmp_path):
+        store = _make_store(tmp_path)
+        path = self._write(tmp_path / 'a.csv', self._NEW_HEADER, [
+            '2024-01-15T10:00:00-08:00,15.0,-80.0,-95.0,full,60.021,-6.1,68,52,300,7,12,225',
+            '2024-01-15T10:01:00-08:00,15.0,-80.0,-95.0,full,59.987,-6.2,68,52,300,7,12,225',
+        ])
+        assert [value for _, value in store.read_grid_frequencies(path)] == [60.021, 59.987]
+
+    def test_an_unlocked_minute_reads_as_no_value(self, tmp_path):
+        """A blank is a real reading of "nothing to report", not a damaged row."""
+        store = _make_store(tmp_path)
+        path = self._write(tmp_path / 'a.csv', self._NEW_HEADER, [
+            '2024-01-15T10:00:00-08:00,0.00,-95.0,-95.0,none,,,68,52,300,7,12,225',
+            '2024-01-15T10:01:00-08:00,15.0,-80.0,-95.0,full,60.010,-6.1,68,52,300,7,12,225',
+        ])
+        assert [value for _, value in store.read_grid_frequencies(path)] == [None, 60.010]
+
+    def test_an_old_file_reports_nothing_rather_than_temperatures(self, tmp_path):
+        """The whole reason this reads by header name.
+
+        In the old layout the sixth column is Temperature.  Reading by position would
+        chart 68 degrees as 68 Hz, put it far outside the band, and mark it as an
+        excursion, with nothing anywhere to say the number was never a frequency.
+        """
+        store = _make_store(tmp_path)
+        path = self._write(tmp_path / 'old.csv', self._OLD_HEADER, [
+            '2024-01-15T10:00:00-08:00,15.0,-80.0,-95.0,full,68,52,300,7,12,225',
+            '2024-01-15T10:01:00-08:00,15.0,-80.0,-95.0,full,69,52,300,7,12,225',
+        ])
+        assert store.read_grid_frequencies(path) == [], (
+            'An old-format file gave up readings it does not have, so the sixth '
+            'column was read by position rather than by name.'
+        )
+
+    def test_a_file_with_no_header_reports_nothing(self, tmp_path):
+        """Without a header there is no way to know which column is which."""
+        store = _make_store(tmp_path)
+        path = self._write(tmp_path / 'bare.csv',
+                           '2024-01-15T10:00:00-08:00,15.0,-80.0,-95.0,full,60.021,-6.1,68',
+                           ['2024-01-15T10:01:00-08:00,15.0,-80.0,-95.0,full,60.022,-6.1,68'])
+        assert store.read_grid_frequencies(path) == []
+
+    def test_an_unparseable_value_reads_as_no_value(self, tmp_path):
+        store = _make_store(tmp_path)
+        path = self._write(tmp_path / 'a.csv', self._NEW_HEADER, [
+            '2024-01-15T10:00:00-08:00,15.0,-80.0,-95.0,full,not-a-number,-6.1,68,52,300,7,12,225',
+        ])
+        assert [value for _, value in store.read_grid_frequencies(path)] == [None]
+
+    def test_a_short_row_is_skipped(self, tmp_path):
+        store = _make_store(tmp_path)
+        path = self._write(tmp_path / 'a.csv', self._NEW_HEADER, [
+            '2024-01-15T10:00:00-08:00,15.0,-80.0',
+            '2024-01-15T10:01:00-08:00,15.0,-80.0,-95.0,full,60.010,-6.1,68,52,300,7,12,225',
+        ])
+        assert [value for _, value in store.read_grid_frequencies(path)] == [60.010]
+
+    def test_timestamps_come_back_in_the_station_timezone(self, tmp_path):
+        store = _make_store(tmp_path)
+        path = self._write(tmp_path / 'a.csv', self._NEW_HEADER, [
+            '2024-01-15T18:00:00+00:00,15.0,-80.0,-95.0,full,60.010,-6.1,68,52,300,7,12,225',
+        ])
+        when, _ = store.read_grid_frequencies(path)[0]
+        assert when.tzinfo is not None and when.hour == 10   # 18:00 UTC is 10:00 PST
+
+    def test_what_it_writes_is_what_it_reads_back(self, tmp_path):
+        """The header constant is shared by both sides, and this is what pins that.
+
+        A rename on one side alone would leave every frequency chart silently empty.
+        """
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.append(now, 15.0, -80.0, -95.0, 'full', 68.0, 52.0, 300.0, 7.5, 12.0, 225,
+                     grid_frequency='60.023', phase_drift='-6.12')
+        readings = store.read_grid_frequencies(store.filename_for_date(now))
+        assert [value for _, value in readings] == [60.023]
+
+
 class TestAppend:
     def test_creates_file_with_headers_on_first_call(self, tmp_path):
         store = _make_store(tmp_path)

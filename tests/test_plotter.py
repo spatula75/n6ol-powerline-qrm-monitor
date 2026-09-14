@@ -6,6 +6,8 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 from zoneinfo import ZoneInfo
 
+import matplotlib.dates as mdates
+import matplotlib.pyplot as plt
 import numpy as np
 import pytest
 
@@ -230,6 +232,220 @@ class TestGenerateGraphFromCsv:
         output = tmp_path / 'out.png'
         plotter.generate_graph_from_csv(csv_path, output, smooth=6)
         assert output.exists()
+
+
+def _write_frequency_csv(path: Path, values: list[str], day: str = '2024-01-15') -> None:
+    """A new-format CSV whose grid-frequency column holds `values`, blank for no lock."""
+    lines = ['ISO datetime,120pps SNR,120pps signal (dBm),Noise floor (dBm),Signal Lock Status,'
+             'Grid frequency (Hz),Phase drift (samples/s),Temperature (F),Humidity (%),'
+             'Solar radiation (w/m^2),Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)']
+    for minute, value in enumerate(values):
+        lines.append(f'{day}T10:{minute:02d}:00-08:00,15.0,-80.0,-95.0,full,'
+                     f'{value},-6.1,68,52,300,7,12,225')
+    path.write_text('\n'.join(lines) + '\n')
+
+
+class TestFrequencySeries:
+    """Splitting readings into a drawable trace and the times that left the band."""
+
+    def _series(self, tmp_path, readings, low=59.9, high=60.1):
+        plotter, _ = _make_plotter(tmp_path)
+        pairs = [(datetime(2024, 1, 15, 10, i, tzinfo=_TZ), v) for i, v in enumerate(readings)]
+        return plotter._frequency_series(pairs, low, high)
+
+    def test_a_minute_with_no_lock_becomes_a_gap(self, tmp_path):
+        """NaN is what makes matplotlib break the line instead of spanning the gap.
+
+        Joining across an unlocked stretch would draw a straight segment through
+        readings nobody took, which on a chart of a wandering figure reads as an hour
+        of unusual stability.
+        """
+        series = self._series(tmp_path, [60.0, None, 60.02])
+        assert series.trace[0] == 60.0
+        assert np.isnan(series.trace[1])
+        assert series.trace[2] == 60.02
+
+    def test_a_reading_above_the_band_is_clamped_and_recorded(self, tmp_path):
+        series = self._series(tmp_path, [60.5])
+        assert series.trace[0] == 60.1
+        assert len(series.above_at) == 1 and series.below_at == []
+
+    def test_a_reading_below_the_band_is_clamped_and_recorded(self, tmp_path):
+        series = self._series(tmp_path, [59.0])
+        assert series.trace[0] == 59.9
+        assert len(series.below_at) == 1 and series.above_at == []
+
+    def test_a_reading_exactly_on_the_edge_is_not_an_excursion(self, tmp_path):
+        """The band is inclusive, so an edge value is drawn as itself, not marked."""
+        series = self._series(tmp_path, [59.9, 60.1])
+        assert series.outside_count == 0
+
+    def test_the_count_covers_both_edges(self, tmp_path):
+        series = self._series(tmp_path, [60.5, 59.0, 60.0])
+        assert series.outside_count == 2
+
+
+class TestGenerateFrequencyGraph:
+    def _limits(self, tmp_path, values, pulse_rate=120):
+        """Render a chart and report the axis limits matplotlib ended up with."""
+        plotter, _ = _make_plotter(tmp_path)
+        plotter._config.audio.pulse_rate = pulse_rate
+        csv_path = tmp_path / 'data.csv'
+        _write_frequency_csv(csv_path, values)
+        captured = {}
+        real_subplots = plt.subplots
+
+        def capture(*args, **kwargs):
+            figure, axes = real_subplots(*args, **kwargs)
+            captured['axes'] = axes
+            return figure, axes
+
+        with patch('buzz.plotter.plt.subplots', capture):
+            plotter.generate_frequency_graph(csv_path, tmp_path / 'out.png',
+                                             datetime(2024, 1, 15, 10, 30, tzinfo=_TZ))
+        return captured['axes']
+
+    def test_creates_png_file(self, tmp_path):
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_frequency_csv(csv_path, ['60.01', '60.02'])
+        output = tmp_path / 'out.png'
+        plotter.generate_frequency_graph(csv_path, output,
+                                         datetime(2024, 1, 15, 10, 30, tzinfo=_TZ))
+        assert output.exists()
+
+    def test_a_day_with_no_readings_still_writes_a_chart(self, tmp_path):
+        """The output has one fixed name and is overwritten in place.
+
+        Returning early would leave yesterday's chart sitting there under today's
+        name, looking current, which is the staleness the fixed name invites.  An
+        empty chart for an empty morning is the honest answer.
+        """
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_frequency_csv(csv_path, ['', '', ''])
+        output = tmp_path / 'out.png'
+        output.write_bytes(b'yesterday')
+        plotter.generate_frequency_graph(csv_path, output,
+                                         datetime(2024, 1, 15, 0, 1, tzinfo=_TZ))
+        assert output.read_bytes() != b'yesterday', (
+            'The stale chart from the previous day was left in place under a name '
+            'that says it is current.'
+        )
+
+    def test_the_y_axis_is_the_nominal_frequency_plus_or_minus_a_tenth(self, tmp_path):
+        axes = self._limits(tmp_path, ['60.01'])
+        low, high = axes.get_ylim()
+        assert (round(low, 6), round(high, 6)) == (59.9, 60.1)
+
+    def test_a_fifty_hertz_grid_centres_on_fifty(self, tmp_path):
+        """An arc fires on both peaks, so 100 pps is a 50 Hz grid."""
+        axes = self._limits(tmp_path, ['50.01'], pulse_rate=100)
+        low, high = axes.get_ylim()
+        assert (round(low, 6), round(high, 6)) == (49.9, 50.1)
+
+    def test_the_axis_does_not_stretch_to_fit_the_data(self, tmp_path):
+        """Fixed scale is what lets one hour's chart be compared with the next."""
+        axes = self._limits(tmp_path, ['60.5', '59.4'])
+        assert (round(axes.get_ylim()[0], 6), round(axes.get_ylim()[1], 6)) == (59.9, 60.1)
+
+    def test_the_x_axis_runs_from_midnight_to_now_with_a_pad_at_each_end(self, tmp_path):
+        """The newest reading belongs at the right-hand end, not partway along an axis
+        mostly waiting to be used.
+
+        The pad is 5% of the span either side, which is what the reference chart this
+        layout follows leaves matplotlib's default margin at.  Taking it as a fraction
+        rather than as a fixed number of minutes keeps it proportionate at any hour.
+        """
+        axes = self._limits(tmp_path, ['60.01', '60.02'])   # rendered as at 10:30
+        start, end = (mdates.num2date(v).astimezone(_TZ) for v in axes.get_xlim())
+        midnight = datetime(2024, 1, 15, tzinfo=_TZ)
+        now = datetime(2024, 1, 15, 10, 30, tzinfo=_TZ)
+        expected_pad = (now - midnight).total_seconds() * 0.05
+        assert (midnight - start).total_seconds() == pytest.approx(expected_pad, rel=0.001)
+        assert (end - now).total_seconds() == pytest.approx(expected_pad, rel=0.001)
+
+    def test_just_after_midnight_the_axis_still_has_a_width(self, tmp_path):
+        """An axis of zero width cannot be drawn, and at 00:00 the day is zero wide.
+
+        The chart is rendered every minute, so this is the state it is in for the
+        first render of every day.
+        """
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_frequency_csv(csv_path, [''])
+        output = tmp_path / 'out.png'
+        plotter.generate_frequency_graph(csv_path, output,
+                                         datetime(2024, 1, 15, 0, 0, tzinfo=_TZ))
+        assert output.exists()
+
+    def test_the_trace_is_dark_orange(self, tmp_path):
+        axes = self._limits(tmp_path, ['60.01', '60.02'])
+        assert axes.get_lines()[0].get_color() == 'darkorange'
+
+    def test_horizontal_grid_lines_every_25_millihertz(self, tmp_path):
+        """Set explicitly rather than left to the autolocator.
+
+        Both axes have a fixed span here, so the lines can sit on round numbers and
+        stay there from one hour's chart to the next.  An autolocator is free to
+        choose differently as the data changes.
+        """
+        axes = self._limits(tmp_path, ['60.01'])
+        low, high = axes.get_ylim()
+        ticks = [t for t in axes.get_yticks() if low - 1e-9 <= t <= high + 1e-9]
+        steps = {round(b - a, 6) for a, b in zip(ticks, ticks[1:])}
+        assert steps == {0.025}, f'Horizontal grid lines were spaced {steps}, not 0.025 Hz.'
+
+    def test_the_hours_are_labelled_and_ruled_every_two_hours_on_even_hours(self, tmp_path):
+        """One locator sets both, so the labels are on the lines rather than between.
+
+        Left to the autolocator this labels every three hours, and none of those
+        labels would fall on a two-hourly grid line.
+        """
+        axes = self._limits(tmp_path, ['60.01'])
+        start, end = axes.get_xlim()
+        hours = [mdates.num2date(t).astimezone(_TZ).hour
+                 for t in axes.get_xticks() if start <= t <= end]
+        # Rendered as at 10:30, so the marks run 00:00 through 10:00.
+        assert hours == [0, 2, 4, 6, 8, 10], (
+            f'Vertical grid lines and hour labels fell on {hours}, not the even hours '
+            'from midnight to the last one before now.'
+        )
+
+    def test_the_grid_is_drawn_behind_the_trace(self, tmp_path):
+        """A light gray line crossing the orange one reads as a break in the trace."""
+        axes = self._limits(tmp_path, ['60.01'])
+        assert axes.get_axisbelow() is True
+
+    def test_the_axes_box_matches_the_reference_chart(self, tmp_path):
+        """The layout is measured off kestrelgrid.com's WECC frequency panel, so the
+        two can be read side by side.
+
+        Its axes box is 1861 x 579 px inside a 1999 px figure, with the left edge at
+        123 px.  Those are the numbers a reader would notice if they drifted, since
+        the point is that one chart overlays the other.
+        """
+        axes = self._limits(tmp_path, ['60.01'])
+        figure = axes.get_figure()
+        width, height = (round(v * figure.dpi) for v in figure.get_size_inches())
+        box = axes.get_position()
+        assert (width, height) == (1999, 742)
+        assert round(box.x0 * width) == 123
+        assert (round(box.width * width), round(box.height * height)) == (1861, 579)
+
+    def test_the_labels_are_monospace(self, tmp_path):
+        """The reference is monospace throughout, and a column of proportional
+        timestamps beside a column of monospace ones is the difference a reader
+        notices first."""
+        axes = self._limits(tmp_path, ['60.01'])
+        assert axes.get_xticklabels()[0].get_fontfamily() == ['monospace']
+
+    def test_the_hour_labels_are_rotated_clear_of_each_other(self, tmp_path):
+        """Twelve HH:MM:SS labels across the day collide when drawn flat."""
+        axes = self._limits(tmp_path, ['60.01'])
+        label = axes.get_xticklabels()[0]
+        assert label.get_rotation() == 45
+        assert label.get_text().count(':') == 2
 
 
 class TestGenerateSummaryGraph:

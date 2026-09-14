@@ -30,6 +30,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.axes import Axes
 from matplotlib.lines import Line2D
+from matplotlib.ticker import MultipleLocator
 
 from buzz.config import BuzzConfig
 from buzz.constants import S9_DBM
@@ -72,6 +73,53 @@ _PCT_ELEVATED = 85
 _COLOR_MAX      = 'firebrick'
 _COLOR_HIGH     = 'indianred'
 _COLOR_ELEVATED = 'lightcoral'
+
+# How far either side of the nominal grid frequency the frequency chart's y-axis
+# reaches.  Fixed rather than fitted to the data, so one hour's chart can be compared
+# with the next without reading the axis first.  A wide margin for what it holds: an
+# uncalibrated sound card biases every reading by its own clock error, and at 50-100
+# ppm that is 0.003-0.006 Hz at 60 Hz, well inside this band.
+_FREQUENCY_BAND_HZ = 0.1
+_COLOR_FREQUENCY = 'darkorange'
+
+# Grid spacing for the frequency chart.  0.025 Hz divides the band into four above the
+# nominal and four below, and two hours divides the day into twelve, so both sets of
+# lines fall on round numbers a reader can count off without reading the tick labels.
+_FREQUENCY_GRID_HZ = 0.025
+_FREQUENCY_GRID_HOURS = 2
+_COLOR_GRID = 'lightgray'
+
+# The frequency chart is laid out to match the "System Frequency WECC/USA West" panel
+# published at kestrelgrid.com/static/WECC.png, so an operator can put the two side by
+# side and compare their own reading against a reference the grid operators' own data
+# feeds.  Every figure here was measured off that image rather than chosen: its axes
+# box is 1861 x 579 px with a 123 px left margin and a 15 px right one, and its labels
+# are monospace.  These are separate from the daily chart's _GRAPH_* and _M_* above,
+# which nothing about this comparison should be allowed to disturb.
+_FREQ_W = 1999
+_FREQ_H = 742
+_FREQ_M_LEFT = 123
+_FREQ_M_RIGHT = 15
+_FREQ_M_TOP = 45
+_FREQ_M_BOTTOM = 118
+# Chosen by measuring rendered glyphs rather than by reading the reference's source,
+# which is not published.  Its tick labels run 12.67 px per character.  Glyph advances
+# quantize to whole pixels, so 12.83 is the closest reachable here, and anything from
+# 14.25 to 14.75 pt produces it.  The middle of that plateau is the value least likely
+# to shift if the font or freetype ever rounds differently.
+_FREQ_FONT_PT = 14.5
+_FREQ_TICK_ROTATION = 45
+
+# Padding inside the axes, before the first reading and after the last, as a fraction
+# of the span between them.  The reference's is 85.5 px on the left and 84 px on the
+# right of a 1692 px span, which is 5.01% either side: matplotlib's own default margin,
+# left in place.  Taking it as a fraction rather than as the 41 minutes it works out to
+# there keeps the padding proportionate at any hour of the day.
+_FREQUENCY_X_MARGIN = 0.05
+# The axis ends at the current time, so just after midnight it has almost no width, and
+# an axis with no width at all cannot be drawn.  This is the floor, wide enough to draw
+# and narrow enough that an empty chart still looks empty.
+_FREQUENCY_MIN_SPAN = timedelta(minutes=10)
 
 
 def _bar_color(val: int) -> str:
@@ -163,6 +211,24 @@ class _DailySeries:
     signals: Series
     noises: Series
     title: str
+
+
+@dataclass(frozen=True)
+class _FrequencySeries:
+    """One day's grid-frequency readings, split into what the chart can draw in band
+    and the times that left it.
+
+    `trace` holds NaN for a minute with no lock and a clamped value for one outside
+    the band, so the line breaks at the first and spikes to the edge at the second.
+    """
+    timestamps: list[datetime]
+    trace: list[float]
+    above_at: list[datetime]
+    below_at: list[datetime]
+
+    @property
+    def outside_count(self) -> int:
+        return len(self.above_at) + len(self.below_at)
 
 
 class Plotter:
@@ -299,6 +365,121 @@ class Plotter:
 
             reference_lines = self._draw_reference_lines(axes)
             axes.legend(loc='lower left', handles=[plot_signal, plot_noise, *reference_lines])
+            figure.savefig(output_filename, pil_kwargs={'optimize': True})
+            plt.close(figure)
+
+    def _frequency_series(self, readings: list[tuple[datetime, float | None]],
+                          low: float, high: float) -> '_FrequencySeries':
+        """Split readings into the drawable trace and the points that left the band.
+
+        The trace carries NaN where a minute had no lock, which is what makes
+        matplotlib break the line there rather than drawing a straight segment across
+        the gap and inventing readings nobody took.
+
+        A reading outside the band is clamped into the trace, so the line spikes to
+        the edge and says which way it went, and its time is also recorded so a marker
+        can be drawn there.  Without the marker, a clamped point is indistinguishable
+        from a reading that really sat on the boundary.
+        """
+        timestamps = [when for when, _ in readings]
+        trace = [float('nan') if value is None else min(max(value, low), high)
+                 for _, value in readings]
+        above = [when for when, value in readings if value is not None and value > high]
+        below = [when for when, value in readings if value is not None and value < low]
+        return _FrequencySeries(timestamps=timestamps, trace=trace,
+                                above_at=above, below_at=below)
+
+    @_gc_guarded
+    def generate_frequency_graph(self, input_filename: Path | str,
+                                 output_filename: Path | str, day: datetime) -> None:
+        """Render the current day's grid-frequency estimate and save it as a PNG.
+
+        The x-axis runs from the station-local midnight to `day`, taken as the current
+        time, with a proportional pad at each end.  The y-axis is the nominal grid
+        frequency plus or minus a fixed band, held there rather than fitted to the data
+        so that one hour's chart can be compared with the next.
+
+        This writes even when the day holds no locked readings at all.  The output has
+        one fixed name and is overwritten in place, so returning early would leave
+        yesterday's chart sitting there under today's name, looking current.  An empty
+        chart for an empty morning is the honest answer.
+        """
+        station = self._config.station
+        # An arc fires on both peaks of the mains cycle, so the pulse rate is twice
+        # the grid frequency: 120 pps on a 60 Hz grid, 100 pps on a 50 Hz one.
+        nominal = self._config.audio.pulse_rate / 2
+        low, high = nominal - _FREQUENCY_BAND_HZ, nominal + _FREQUENCY_BAND_HZ
+
+        readings = self._store.read_grid_frequencies(input_filename)
+        series = self._frequency_series(readings, low, high)
+        day_start = day.replace(hour=0, minute=0, second=0, microsecond=0)
+
+        with matplotlib.rc_context({'timezone': station.timezone,
+                                    'font.family': 'monospace',
+                                    'font.size': _FREQ_FONT_PT}):
+            px = 1 / plt.rcParams['figure.dpi']
+            figure, axes = plt.subplots(figsize=(_FREQ_W * px, _FREQ_H * px))
+            figure.subplots_adjust(left=_FREQ_M_LEFT/_FREQ_W, right=1 - _FREQ_M_RIGHT/_FREQ_W,
+                                   top=1 - _FREQ_M_TOP/_FREQ_H, bottom=_FREQ_M_BOTTOM/_FREQ_H)
+            axes.set_title(f'Grid Frequency Estimate, {day_start.strftime("%Y-%m-%d")}')
+            # Seconds are always :00 on a once-a-minute reading, so they carry nothing.
+            # They are here because the reference chart shows them, and a column of
+            # labels that matches makes the two easier to read against each other.
+            axes.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M:%S'))
+            axes.set_xlabel(f'Timestamp ({day_start.strftime("%Z")})')
+            axes.set_ylabel('Frequency (Hz)')
+
+            # Locators rather than whatever the autolocator picks, because the grid is
+            # the point: both axes have a fixed span here, so the lines can be put on
+            # round numbers and stay there from one hour's chart to the next.  The
+            # locator sets the labels as well as the lines, so the hours down the axis
+            # are the even ones the vertical lines fall on.  Left alone, the autolocator
+            # labels every three hours and none of them line up with a grid line.
+            axes.yaxis.set_major_locator(MultipleLocator(_FREQUENCY_GRID_HZ))
+            axes.xaxis.set_major_locator(
+                mdates.HourLocator(byhour=range(0, 24, _FREQUENCY_GRID_HOURS)))
+
+            # axisbelow keeps the grid under the trace.  Without it a light gray line
+            # crosses the orange one, and at this line width that reads as a break in
+            # the trace rather than as a grid line passing behind it.
+            axes.set_axisbelow(True)
+            axes.grid(True, color=_COLOR_GRID)
+            # Anchored rotation so each label ends at its own tick rather than being
+            # centered on it, which is what keeps a column of long timestamps from
+            # drifting off the mark it belongs to.
+            plt.setp(axes.get_xticklabels(), rotation=_FREQ_TICK_ROTATION,
+                     ha='right', rotation_mode='anchor')
+
+            handles: list[Line2D] = []
+            if series.timestamps:
+                trace_line, = axes.plot(series.timestamps, series.trace, color=_COLOR_FREQUENCY,
+                                        label=f'Estimated grid frequency ({nominal:g} Hz nominal)')
+                handles.append(trace_line)
+            # One legend entry for both edges, since the count is what a reader wants
+            # and the markers themselves already say which way each one went.  clip_on
+            # is off because a marker centered on the axis boundary is half outside the
+            # axes box, and the top one came out sliced in half without it.
+            outside_label = f'{series.outside_count} reading(s) outside the band'
+            for times, edge, marker in ((series.above_at, high, '^'), (series.below_at, low, 'v')):
+                if not times:
+                    continue
+                mark, = axes.plot(times, [edge] * len(times), linestyle='none', marker=marker,
+                                  color=_COLOR_FREQUENCY, clip_on=False,
+                                  label=outside_label if outside_label else None)
+                if outside_label:
+                    handles.append(mark)
+                    outside_label = ''
+
+            axes.axhline(y=nominal, color='gray', linestyle='dashed')
+            # Midnight to now rather than midnight to midnight, so the trace fills the
+            # width all day and the newest reading is always at the right-hand end
+            # instead of somewhere in the middle of an axis mostly waiting to be used.
+            span = max(day - day_start, _FREQUENCY_MIN_SPAN)
+            pad = span * _FREQUENCY_X_MARGIN
+            axes.set_xlim(day_start - pad, day_start + span + pad)
+            axes.set_ylim(low, high)
+            if handles:
+                axes.legend(loc='upper left', handles=handles)
             figure.savefig(output_filename, pil_kwargs={'optimize': True})
             plt.close(figure)
 

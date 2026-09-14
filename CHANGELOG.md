@@ -146,6 +146,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   measured. `[rtlsdr] calibrated_at_gain_db` recorded that gain and nothing read it,
   while the documentation said startup compared the two.
 
+- `[station] enable_frequency_chart`, which publishes `current_frequency_estimate.png`,
+  a chart of the estimated grid frequency against time. It covers the current day and
+  is redrawn every cycle and overwritten, alongside the daily charts rather than with
+  the hourly summaries. The horizontal axis runs from the station's midnight to the
+  moment it was drawn, so the newest reading is always at the right-hand end. Off by
+  default.
+
+  The vertical axis is fixed at the nominal grid frequency plus or minus 0.1 Hz, which
+  is half the pulse rate: 60 Hz on a 120 pps grid, 50 Hz on a 100 pps one. Holding the
+  scale rather than fitting it to the data is what lets one hour's chart be compared
+  with the next. A reading outside that band is drawn at the edge it passed, with a
+  marker and a count in the legend, so an excursion cannot be mistaken for a gap.
+
+  A minute with no lock on the pulse train has no frequency to report, and the trace
+  breaks there rather than joining across it.
+
+  Startup reports a chart left behind by turning the setting off, as it already does
+  for the all-time summary. The name says the chart is current whatever its age, so
+  nothing else would say otherwise.
+
+  The layout follows the "System Frequency WECC/USA West" panel at
+  `kestrelgrid.com/static/WECC.png`, so a station's own reading can be put beside a
+  reference drawn from the grid operators' data: the same 1861 by 579 pixel axes box
+  in a 1999 pixel figure, the same margins, monospace labels, and hour marks every two
+  hours rotated clear of each other. Grid lines are light gray, every 0.025 Hz and
+  every two hours. The padding inside the axes is 5% of the span at each end, which is
+  what the reference leaves matplotlib's default margin at, so the two stay padded
+  alike whatever the hour.
+
 ### Changed
 - `[rtlsdr]` frequencies are given in kHz: `frequency_khz`, `bandwidth_khz` and
   `tuning_offset_khz` replace the Hz-denominated keys. Nobody wants to type three

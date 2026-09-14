@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from buzz.analyzer import AnalysisResult
-from buzz.collector import ALL_TIME_SUMMARY_NAME, Collector
+from buzz.collector import ALL_TIME_SUMMARY_NAME, FREQUENCY_CHART_NAME, Collector
 from buzz.config import BuzzConfig
 
 _TZ = ZoneInfo('America/Los_Angeles')
@@ -362,32 +362,119 @@ class TestTheAllTimeSummaryIsOptional:
         assert ALL_TIME_SUMMARY_NAME not in uploaded
 
 
+class TestTheFrequencyChartIsOptional:
+    """One chart covering the current day, redrawn every minute and overwritten."""
+
+    def _run_at(self, collector, tmp_path, minute):
+        now = _setup_defaults(collector, tmp_path, minute=minute)
+        with patch('buzz.collector.datetime') as mock_dt:
+            mock_dt.now.return_value = now
+            mock_dt.fromisoformat = datetime.fromisoformat
+            collector._run_collection()
+        return now
+
+    def test_it_is_off_by_default(self, tmp_path):
+        assert BuzzConfig().station.enable_frequency_chart is False
+
+    def test_nothing_is_drawn_when_it_is_off(self, tmp_path):
+        collector = _make_collector(_make_config(tmp_path))
+        self._run_at(collector, tmp_path, minute=0)
+        collector._plotter.generate_frequency_graph.assert_not_called()
+
+    def test_turning_it_on_draws_the_chart(self, tmp_path):
+        cfg = _make_config(tmp_path)
+        cfg.station.enable_frequency_chart = True
+        collector = _make_collector(cfg)
+        self._run_at(collector, tmp_path, minute=0)
+        written = collector._plotter.generate_frequency_graph.call_args.args[1]
+        assert Path(written).name == FREQUENCY_CHART_NAME
+
+    def test_it_is_redrawn_every_minute_rather_than_on_the_hour(self, tmp_path):
+        """It rides with the daily charts, not with the hourly summaries.
+
+        A render measures 434 ms and 144 kB, which is 0.7% of the minute the cycle
+        has.  That buys a chart never more than a minute old, rather than one up to an
+        hour behind.
+        """
+        cfg = _make_config(tmp_path)
+        cfg.station.enable_frequency_chart = True
+        collector = _make_collector(cfg)
+        self._run_at(collector, tmp_path, minute=17)
+        collector._plotter.generate_frequency_graph.assert_called_once()
+
+    def test_a_minute_off_the_hour_draws_no_summaries(self, tmp_path):
+        """The summaries stay hourly, so moving this one must not have moved those."""
+        cfg = _make_config(tmp_path)
+        cfg.station.enable_frequency_chart = True
+        collector = _make_collector(cfg)
+        self._run_at(collector, tmp_path, minute=17)
+        collector._plotter.generate_summary_graph.assert_not_called()
+
+    def test_it_is_drawn_from_the_current_day_csv(self, tmp_path):
+        """The chart covers today, so it reads the file today's rows went into."""
+        cfg = _make_config(tmp_path)
+        cfg.station.enable_frequency_chart = True
+        collector = _make_collector(cfg)
+        self._run_at(collector, tmp_path, minute=0)
+        source = collector._plotter.generate_frequency_graph.call_args.args[0]
+        assert source == collector._store.filename_for_date.return_value
+
+    def test_it_is_uploaded_when_on(self, tmp_path):
+        """A chart nobody publishes helps nobody, so one flag governs both."""
+        cfg = _make_config(tmp_path, server_enabled=True)
+        cfg.station.enable_frequency_chart = True
+        collector = _make_collector(cfg)
+        self._run_at(collector, tmp_path, minute=0)
+        uploaded = [Path(f).name
+                    for f, _ in collector._publisher.scp_to_server.call_args[0][0]]
+        assert FREQUENCY_CHART_NAME in uploaded
+
+    def test_it_is_not_uploaded_when_off(self, tmp_path):
+        cfg = _make_config(tmp_path, server_enabled=True)
+        collector = _make_collector(cfg)
+        self._run_at(collector, tmp_path, minute=0)
+        uploaded = [Path(f).name
+                    for f, _ in collector._publisher.scp_to_server.call_args[0][0]]
+        assert FREQUENCY_CHART_NAME not in uploaded
+
+
+@pytest.mark.parametrize('chart_name, setting', [
+    (ALL_TIME_SUMMARY_NAME, 'enable_all_time_summary'),
+    (FREQUENCY_CHART_NAME, 'enable_frequency_chart'),
+])
 class TestAChartLeftBehindByTurningItOff:
-    """Turning the summary off stops it being updated; it does not delete it.
+    """Turning an optional chart off stops it being updated; it does not delete it.
 
     Nothing else in this program removes a file it published, and the operator may want
     to keep the last one.  But a chart that stops updating and says nothing is a chart
-    that goes on looking current in the archive, which is the very thing this setting
-    exists to prevent, so startup mentions it once.
+    that goes on looking current in the archive, which is the very thing these settings
+    exist to prevent, so startup mentions it once.
+
+    Both optional charts are covered here, because each one on its own would pass with
+    the other's report missing.
     """
 
-    def _stale_chart(self, tmp_path: Path) -> Path:
-        chart = tmp_path / ALL_TIME_SUMMARY_NAME
+    def _stale_chart(self, tmp_path: Path, chart_name: str) -> Path:
+        chart = tmp_path / chart_name
         chart.write_bytes(b'png')
         return chart
 
-    def test_an_existing_chart_is_reported_once_at_startup(self, tmp_path, caplog):
-        self._stale_chart(tmp_path)
+    def test_an_existing_chart_is_reported_once_at_startup(self, tmp_path, caplog, chart_name, setting):
+        self._stale_chart(tmp_path, chart_name)
         with caplog.at_level(logging.INFO, logger='buzz.collector'):
             _make_collector(_make_config(tmp_path))
-        assert ALL_TIME_SUMMARY_NAME in caplog.text
+        assert chart_name in caplog.text
+        assert f'station.{setting}' in caplog.text, (
+            'The report has to name the setting that turns the chart back on, or the '
+            'operator is left hunting for it in the config file.'
+        )
         assert 'no longer be updated' in caplog.text, (
             'The operator has to be told the chart is now stale, and where to delete '
             'it.  Otherwise it sits in the archive looking current for years.'
         )
 
-    def test_the_chart_is_never_deleted(self, tmp_path, caplog):
-        chart = self._stale_chart(tmp_path)
+    def test_the_chart_is_never_deleted(self, tmp_path, caplog, chart_name, setting):
+        chart = self._stale_chart(tmp_path, chart_name)
         with caplog.at_level(logging.INFO, logger='buzz.collector'):
             _make_collector(_make_config(tmp_path))
         assert chart.exists(), (
@@ -395,21 +482,21 @@ class TestAChartLeftBehindByTurningItOff:
             'removes a published file, and the last chart may be wanted.'
         )
 
-    def test_nothing_is_said_when_the_summary_is_on(self, tmp_path, caplog):
-        self._stale_chart(tmp_path)
+    def test_nothing_is_said_when_the_chart_is_on(self, tmp_path, caplog, chart_name, setting):
+        self._stale_chart(tmp_path, chart_name)
         cfg = _make_config(tmp_path)
-        cfg.station.enable_all_time_summary = True
+        setattr(cfg.station, setting, True)
         with caplog.at_level(logging.INFO, logger='buzz.collector'):
             _make_collector(cfg)
-        assert ALL_TIME_SUMMARY_NAME not in caplog.text, (
+        assert chart_name not in caplog.text, (
             'The chart is being kept current, so there is nothing to report.'
         )
 
-    def test_nothing_is_said_when_there_is_no_chart(self, tmp_path, caplog):
+    def test_nothing_is_said_when_there_is_no_chart(self, tmp_path, caplog, chart_name, setting):
         """The ordinary case for a new station, which must start up quietly."""
         with caplog.at_level(logging.INFO, logger='buzz.collector'):
             _make_collector(_make_config(tmp_path))
-        assert ALL_TIME_SUMMARY_NAME not in caplog.text
+        assert chart_name not in caplog.text
 
 
 class TestRunCollectionUploads:

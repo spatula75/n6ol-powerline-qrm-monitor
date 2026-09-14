@@ -667,6 +667,13 @@ Practical consequences:
 - **Optional features are config sections with `enabled = false`,** and a matching
   command-line switch where it makes sense. Config is nested TOML by section
   (station, audio, weather, upload, record, …).
+- **An optional output that stops being written reports itself at startup.** Turning
+  a chart off does not delete what it already wrote, here or on the web server, so
+  silence leaves a file that looks current sitting in the archive for as long as the
+  station runs. `Collector._report_any_stale_chart` covers the all-time summary and
+  the grid frequency chart from one method, taking the setting's name and a
+  description rather than being copied per chart. Reach for it again the next time an
+  `enabled = false` switch controls something written to disk under a fixed name.
 - **A setting with a known set of acceptable values gets a picker, not a text box.**
   If the program is going to reject what somebody types, or quietly change it to
   something else, then typing was the wrong interaction: offer the values instead and

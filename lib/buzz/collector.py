@@ -27,6 +27,10 @@ logger = logging.getLogger(__name__)
 # one left behind by a station that has since turned the all-time summary off.
 ALL_TIME_SUMMARY_NAME = '_noise_probability_summary.png'
 
+# The grid-frequency chart covers the current day and is overwritten in place, so its
+# name carries no date: there is only ever one, and it is always today's.
+FREQUENCY_CHART_NAME = 'current_frequency_estimate.png'
+
 
 class Collector:
     def __init__(self, config: BuzzConfig, analyzer: ContinuousAnalyzer, weather: WeatherClient,
@@ -44,7 +48,14 @@ class Collector:
         # otherwise die on every start with no way left to correct it.
         self._summary_start_date = (self._parse_summary_start_date()
                                     if config.station.enable_all_time_summary else None)
-        self._report_any_stale_all_time_summary()
+        self._report_any_stale_chart(enabled=config.station.enable_all_time_summary,
+                                     name=ALL_TIME_SUMMARY_NAME,
+                                     description='the all-time summary',
+                                     setting='enable_all_time_summary')
+        self._report_any_stale_chart(enabled=config.station.enable_frequency_chart,
+                                     name=FREQUENCY_CHART_NAME,
+                                     description='the grid frequency chart',
+                                     setting='enable_frequency_chart')
 
     def _parse_summary_start_date(self) -> datetime:
         """The date the all-time summary begins, refusing an unreadable one by name.
@@ -63,24 +74,26 @@ class Collector:
                 '~/.buzz/config.toml in the form 2024-01-01T00:00:00+0000, or turn '
                 'off station.enable_all_time_summary.') from exc
 
-    def _report_any_stale_all_time_summary(self) -> None:
-        """Say once that an all-time chart is present but no longer being updated.
+    def _report_any_stale_chart(self, enabled: bool, name: str, description: str, setting: str) -> None:
+        """Say once that an optional chart is present but no longer being updated.
 
-        Turning the summary off does not delete the chart it already wrote, here or on
-        the web server.  Silence would leave a chart that looks current sitting in the
-        archive for as long as the station runs, which is the very thing the setting
-        exists to avoid.  Deleting it unasked is worse: the operator may want to keep
-        the last one, and nothing else in this program removes a published file.
+        Turning a chart off does not delete what it already wrote, here or on the web
+        server.  Silence would leave a chart that looks current sitting in the archive
+        for as long as the station runs, which is the very thing the setting exists to
+        avoid.  Deleting it unasked is worse: the operator may want to keep the last
+        one, and nothing else in this program removes a published file.
+
+        The grid frequency chart is the sharper case, because its name claims it is
+        current whatever its age.
         """
-        if self._config.station.enable_all_time_summary:
+        if enabled:
             return
-        stale = Path(self._config.station.path) / ALL_TIME_SUMMARY_NAME
+        stale = Path(self._config.station.path) / name
         if stale.exists():
             logger.info(
-                '%s exists, and the all-time summary is off, so it will no longer be '
-                'updated.  Delete it here and on the web server if you do not want a '
-                'stale chart served.  Set station.enable_all_time_summary to keep it '
-                'current instead.', stale)
+                '%s exists, and %s is off, so it will no longer be updated.  Delete it '
+                'here and on the web server if you do not want a stale chart served.  '
+                'Set station.%s to keep it current instead.', stale, description, setting)
 
     def _average_minute_results(self, results: list[AnalysisResult]) -> tuple[float, float, float, str]:
         """Average one minute's analyzer results into (snr, signal, noise, lock_status).
@@ -172,6 +185,27 @@ class Collector:
                                              today - timedelta(days=30)))
         return summaries
 
+    def _render_frequency_chart(self, csv_filename: Path, output_dir: Path,
+                                now: datetime) -> list[Path]:
+        """Redraw the current day's grid-frequency chart, where the station asked for it.
+
+        One file, overwritten in place, rather than one per day.  It shows today only,
+        and yesterday's is not kept: the daily CSVs hold the readings, and this chart is
+        for watching the figure move rather than for keeping.
+
+        Redrawn every cycle, with the daily charts, rather than on the hour with the
+        summaries.  It costs 434 ms and 144 kB per minute, measured, which is 0.7% of
+        the minute it has to work in.
+
+        Returns the path written, for the caller to add to its upload list, or nothing
+        at all when the chart is off.
+        """
+        if not self._config.station.enable_frequency_chart:
+            return []
+        chart = output_dir / FREQUENCY_CHART_NAME
+        self._plotter.generate_frequency_graph(csv_filename, chart, now)
+        return [chart]
+
     def _write_summary(self, output_dir: Path, name: str, start: datetime) -> Path:
         """Generate one summary graph covering `start` to now, and return where it went."""
         path = output_dir / name
@@ -225,6 +259,7 @@ class Collector:
         self._render_daily_plots(csv_filename, plot_filename, smooth_plot_filename)
 
         upload_files = [csv_filename, plot_filename, smooth_plot_filename]
+        upload_files.extend(self._render_frequency_chart(csv_filename, output_dir, now))
         if now.minute == 0:
             upload_files.extend(self._render_hourly_summaries(zone, output_dir))
 
