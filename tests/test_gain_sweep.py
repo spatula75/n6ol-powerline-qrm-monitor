@@ -536,16 +536,28 @@ class TestTheAnswerIsAlwaysAGainTheTunerHas:
 
     def test_a_tie_goes_to_the_lower_gain(self):
         """The decibel a tie costs the floor is one an arc gets to use, so the lower
-        gain is the side to err on.  The target is moved to the midpoint between two
-        steps, which is the only way to make a tie out of a continuous curve.
+        gain is the side to err on.
+
+        The tie is stated rather than built out of a real curve.  An earlier version
+        of this test put the target at the midpoint between two steps, which ties them
+        in exact arithmetic and not in floating point: the two distances agree to
+        within an ulp, and which one compares smaller depends on how lstsq rounded.
+        It passed on the development machine, where the two came out bit-identical,
+        and failed in CI on a different numpy.
         """
         fit = _fit_of(1e-6, 1e-4)
         lower, higher = 20.7, 22.9
-        midway = (fit.floor_error_db(lower) + fit.floor_error_db(higher)) / 2.0
-        assert (abs(fit.floor_error_db(lower) - midway)
-                == pytest.approx(abs(fit.floor_error_db(higher) - midway), abs=1e-9))
-        assert min([lower, higher],
-                   key=lambda gain: abs(fit.floor_error_db(gain) - midway)) == lower
+        # The same error for both, not one either side of the target.  Placing them
+        # symmetrically looks like a tie and is not one, because (T - 1.0) - T and
+        # (T + 1.0) - T come out 1.0 and 1.0000000000000004.  The lower gain then
+        # wins on distance and the test passes whichever way the tie-break goes.
+        tied = {lower: _FLOOR_ERROR_TARGET_DB + 1.0,
+                higher: _FLOOR_ERROR_TARGET_DB + 1.0}
+        # Anything else sits far enough away to lose.  The guard in the method under
+        # test still reads antenna_share off the real fit, so the top gain has to
+        # clear the target for a bound to exist at all.
+        fit.floor_error_db = lambda gain: tied.get(gain, 99.0)
+        assert fit.gain_nearest_the_floor_target(V4_GAINS) == lower
 
     def test_the_result_and_the_fit_report_the_same_floor_error(self):
         """A drift pin.  SweepResult works the figure out from the share it was handed
