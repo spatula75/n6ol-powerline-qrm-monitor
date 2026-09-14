@@ -398,7 +398,9 @@ class TestPlaybackAdoptsRecordedSettings:
         cfg = BuzzConfig()
         cfg.station.audio_rf_conversion_db = -32.0
         cfg = self._play(tmp_path, cfg, audio_rf_conversion_db=-18.5)
-        assert cfg.station.audio_rf_conversion_db == pytest.approx(-18.5)
+        assert cfg.level_offset_db == pytest.approx(-18.5)
+        assert cfg.station.audio_rf_conversion_db == -32.0, (
+            "a recording's own figure must not overwrite this station's setting")
 
     def test_mismatched_pulse_rate_warns(self, tmp_path, caplog):
         cfg = BuzzConfig()
@@ -582,11 +584,11 @@ class TestSuppliedCalibration:
 
     def test_it_is_used_when_the_file_says_nothing(self, tmp_path):
         cfg = self._play(tmp_path, BuzzConfig(), rf_conversion_db=-28.5)
-        assert cfg.station.audio_rf_conversion_db == -28.5
+        assert cfg.level_offset_db == -28.5
 
     def test_the_config_stands_when_nothing_is_supplied(self, tmp_path):
         cfg = self._play(tmp_path, BuzzConfig())
-        assert cfg.station.audio_rf_conversion_db == BuzzConfig().station.audio_rf_conversion_db
+        assert cfg.level_offset_db == BuzzConfig().station.audio_rf_conversion_db
 
     def test_it_overrides_a_figure_the_recording_carries(self, tmp_path):
         """An explicit flag is the only value anybody deliberately supplied, so it
@@ -594,7 +596,7 @@ class TestSuppliedCalibration:
         that made it, so the override is worth saying out loud."""
         cfg = self._play(tmp_path, BuzzConfig(), rf_conversion_db=-28.5,
                          audio_rf_conversion_db=-32.0)
-        assert cfg.station.audio_rf_conversion_db == -28.5
+        assert cfg.level_offset_db == -28.5
 
     def test_overriding_the_recording_says_so(self, tmp_path, caplog):
         with caplog.at_level(logging.WARNING, logger='buzz'):
@@ -874,25 +876,36 @@ class TestOpeningAReceiverAsTheLiveSource:
             self.open_with_a_fake_receiver(config)
 
     def test_the_receiver_brings_its_own_level_calibration(self):
-        """The sound card's dB offset has nothing to do with a tuner's, so the analyzer
-        has to read the receiver's.  It reads station.audio_rf_conversion_db, which is
-        why the chosen figure is put there.
+        """The sound card's dB offset has nothing to do with a tuner's, so everything
+        that converts a level reads BuzzConfig.level_offset_db, which picks by source.
         """
-        config = self.rtlsdr_config(audio_rf_conversion_db=-38.5)
+        config = self.rtlsdr_config(calibrated_offset_db=-38.5)
         self.open_with_a_fake_receiver(config)
 
-        assert config.station.audio_rf_conversion_db == -38.5
+        assert config.level_offset_db == -38.5
+
+    def test_the_sound_cards_own_figure_is_left_alone(self):
+        """Startup used to copy the receiver's figure over it, which left a config
+        object holding the same setting twice and a file whose [station] value no
+        longer described anything.  Nothing writes to it now.
+        """
+        config = self.rtlsdr_config(calibrated_offset_db=-38.5)
+        config.station.audio_rf_conversion_db = -32.0
+        self.open_with_a_fake_receiver(config)
+
+        assert config.station.audio_rf_conversion_db == -32.0
+        assert config.level_offset_db == -38.5
 
     def test_an_uncalibrated_receiver_is_estimated_from_the_gain_and_says_so(self, caplog):
         """The estimate is good enough to start from and not good enough to publish,
         which the operator has no way to know from the numbers themselves.
         """
-        config = self.rtlsdr_config(gain_db=40.2, audio_rf_conversion_db=None)
+        config = self.rtlsdr_config(gain_db=40.2, calibrated_offset_db=None)
 
         with caplog.at_level(logging.WARNING, logger='buzz.main'):
             self.open_with_a_fake_receiver(config)
 
-        assert config.station.audio_rf_conversion_db == pytest.approx(-40.2)
+        assert config.level_offset_db == pytest.approx(-40.2)
         assert any('not been calibrated' in m for m in caplog.messages), (
             f'Nothing warned that the levels are estimated: {caplog.messages}.  They '
             'are a few dB out and move when the gain does, and an S-meter reading gives '

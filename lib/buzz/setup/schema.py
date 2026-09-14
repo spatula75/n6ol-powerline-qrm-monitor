@@ -5,7 +5,7 @@ Nothing here draws.  The setup program's screens, the example-config generator, 
 the tests all need these same operations.  Keeping them clear of any terminal makes
 the merge rules testable without one.
 
-The schema carries seven custom keywords.  JSON Schema ignores a keyword it does not
+The schema carries nine custom keywords.  JSON Schema ignores a keyword it does not
 know, so the document stays valid while it says things a validator has no opinion on.
 
   * `x-visible-when` names the field this one depends on, so the setup program can
@@ -22,6 +22,16 @@ know, so the document stays valid while it says things a validator has no opinio
     and gated the whole recording section by mistake.  It only seeds the recorder's
     opening state.  The R key and `--enable-recording` both arm a run that started
     disarmed, and every other recording setting governs that run.
+  * `x-file-only` marks a setting that the monitor reads and `config.example.toml`
+    documents, but that nobody should meet in a menu, such as the decimation.
+    `menu_field_names()` leaves it out.
+  * `x-drop-when-hidden` marks a field that is left out of the written config file
+    while its `x-visible-when` condition is unsatisfied, rather than merely left off
+    the menu.  Only `station.audio_rf_conversion_db` carries it, because another
+    setting holds the same quantity for a receiver and exactly one of the two is ever
+    in use.  Every other hidden field is still written, since an operator who turns
+    uploads off for a week expects the host and the key path to be there when they
+    turn them back on.  See `file_field_names()`.
   * `x-notes` holds paragraphs too long for a form field.  Only `example_toml` renders
     them.  The setup program shows `description`, which stays a line or two, because a
     form field has no room for four paragraphs.
@@ -132,14 +142,79 @@ def validate(schema: dict[str, Any], values: ConfigValues) -> list[str]:
 
 
 def is_visible(schema: dict[str, Any], section: str, field: str,
-               section_values: SectionValues) -> bool:
-    """Whether to show `field`, given what else in its section is set.
+               values: ConfigValues) -> bool:
+    """Whether to show `field`, given what is set anywhere.
 
     A field with no `x-visible-when` always shows.  A field that has one shows only
     when the field it names holds the stated value.  The whole of [server] therefore
     stays out of the way until you switch uploads on.
+
+    The condition may name a `section`, and defaults to the field's own.  Most gates
+    are local, and one is not: station.audio_rf_conversion_db describes a sound card
+    and is overwritten at startup when the source is a receiver, so it has to read
+    audio.source to know whether it applies at all.  This is the same shape
+    section_is_visible already uses, rather than a second spelling of one idea.
     """
     condition = field_schema(schema, section, field).get('x-visible-when')
     if condition is None:
         return True
-    return section_values.get(condition['field']) == condition['equals']
+    where = values.get(condition.get('section', section), {})
+    return where.get(condition['field']) == condition['equals']
+
+
+def section_is_visible(schema: dict[str, Any], section: str,
+                       values: ConfigValues) -> bool:
+    """Whether to show `section` at all, given what is set elsewhere.
+
+    A section with no `x-visible-when` always shows.  Unlike a field gate, this one
+    names the section it reads as well as the field, because the setting that decides
+    whether a whole section applies is rarely inside that section.  `[rtlsdr]` stays
+    hidden until the audio source is set to `rtlsdr`, and the source cannot live in
+    `[rtlsdr]`, since it is what chooses between the receiver and the sound card.
+    """
+    condition = schema['properties'][section].get('x-visible-when')
+    if condition is None:
+        return True
+    return values.get(condition['section'], {}).get(condition['field']) == condition['equals']
+
+
+def file_field_names(schema: dict[str, Any], section: str,
+                     values: ConfigValues) -> list[str]:
+    """The fields of `section` that belong in the written config file, in order.
+
+    Every field except one marked `x-drop-when-hidden` whose `x-visible-when`
+    condition is unsatisfied.  A hidden field is normally still written, because
+    hidden means inapplicable to the choices made so far rather than unwanted: an
+    operator who switches uploads off for a week expects the host, the username and
+    the key path to still be there afterwards, and the backup is the only other copy.
+
+    The marked field is the exception because a second setting holds the same
+    quantity.  A receiver's file that carried a [station] audio_rf_conversion_db
+    would show a live-looking figure the monitor ignores, in a section that applies
+    to every station, and somebody would edit it and watch nothing happen.
+
+    This is the file's counterpart to menu_field_names, and the two differ on
+    purpose.  Being off a menu says a setting does not apply now.  Being out of the
+    file says it never applied.
+    """
+    return [field for field in field_names(schema, section)
+            if is_visible(schema, section, field, values)
+            or not field_schema(schema, section, field).get('x-drop-when-hidden')]
+
+
+def menu_field_names(schema: dict[str, Any], section: str,
+                     values: ConfigValues) -> list[str]:
+    """The fields of `section` the setup program offers, in order.
+
+    Two things take a field out of the menu.  `x-file-only` marks a setting that is
+    real and documented in `config.example.toml` but that nobody should meet in a
+    menu, such as the decimation.  `x-visible-when` hides one that does not apply to
+    the choices already made, such as the sound card device when the source is a
+    receiver.
+
+    Both screens go through here rather than filtering for themselves, so a field
+    cannot be offered on one and withheld on the other.
+    """
+    return [field for field in field_names(schema, section)
+            if not field_schema(schema, section, field).get('x-file-only')
+            and is_visible(schema, section, field, values)]

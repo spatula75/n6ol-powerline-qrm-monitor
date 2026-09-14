@@ -77,8 +77,88 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   knowing which words are verbs, and measured over this repo the pass flagged 16
   sentences of which about 9 were fragments. That is a good trade when somebody
   chose to look and a bad one in a gate that blocks a commit.
+- The setup program knows which audio source it is configuring. The source moved to
+  the main menu, above the sections, because it decides which of them apply.
+  `[rtlsdr]` hides for a sound-card station, and the sound card device and rate hide
+  for a receiver.
+- The RTL-SDR section lists the steps of its procedure in order and nothing else:
+  the listening frequency, the tuner gain, the level calibration, and which receiver.
+  An uncalibrated level shows the figure the monitor will actually use and says it is
+  an estimate, so a borrowed number and a measured one no longer look alike.
+- `[rtlsdr] calibrated_at_gain_db`, written by the calibration tool rather than set by
+  hand. Changing the tuner gain afterwards leaves the calibration wrong by roughly the
+  difference, and nothing else would notice.
+- `docs-notebook/`, an engineering notebook for why a constant holds the value it
+  does, what an experiment ruled out, and how the hardware behaved when tested. It is
+  committed, unlike `tmp/`, and unpublished, unlike `docs/`. Its first three documents
+  cover the gain calibration, the receiver's measured artifacts, and the shape of the
+  setup screens.
+- `tools/ste_lint.py` requires every Markdown file under `docs-notebook/` to open with
+  an attribution line. A reader judging a measurement needs to know what produced it,
+  and the rule was broken within minutes of being written, in the README that states
+  it.
+- `lib/buzz/gain_sweep.py`, which chooses the receiver's tuner gain by measuring the
+  band rather than asking anyone to guess. The receiver section's "Auto-calibrate
+  gain..." row runs it, and takes the answer as the gain, the level offset, and the
+  calibration mark together.
+
+  Neither measurement it makes depends on a signal being present, because nobody can
+  promise an arc is running when the tool is opened. The level between bursts comes
+  from a low percentile of per-frame RMS, and the antenna's share of the noise floor
+  from the shape of the whole sweep. It walks every gain five times, alternating
+  direction, and takes the median floor and the worst peak, because an arc that comes
+  and goes makes a single pass measure every step in a different world.
+
+  It picks the tuner step whose reported noise floor comes closest to reading 3.01 dB
+  high, which is the knee where the antenna and the converter contribute equally.
+  Nearest to a target rather than lowest inside a budget: a budget is a bar, so half a
+  decibel of drift in the fit moves a step across it, and one station's answer moved
+  between 20.7 and 25.4 dB on repeated runs of the same sweep. A target also bounds
+  what the rule can spend, where a budget spends whatever the next step down happens
+  to cost.
+
+  The dialog works out how long the sweep will take from the number of gains the tuner
+  reports, rather than quoting a figure measured on one model of receiver.
+
+  It reports rather than guesses when the two bounds leave nothing: an antenna too
+  quiet to beat the receiver at any gain, a band loud enough to clip at every gain,
+  and the two crossing each get their own wording. A quiet station is told what its
+  antenna is doing instead of handed a number.
+- The setup program's level meters open the source the config actually names. An
+  RTL-SDR station reaching either meter used to open whatever sound card was named in
+  `[audio]`, meter that, and let an offset be calibrated against a device the monitor
+  was never going to use.
+- `[rtlsdr] gain_db` is chosen from a list of the steps the tuner reports rather than
+  typed. A tuner accepts a fixed set and snaps anything else to the nearest, so a
+  typed 41.0 became 40.2 with nothing said. Choosing a gain also moves the level
+  calibration with it, by the difference, so the reported dBm does not change and the
+  calibration stays describing the gain in use.
+- The level meter's offset moves by 0.1 dB on Up and Down and 1 dB on PageUp and
+  PageDown. Half a decibel could not reach the figure that matches a gain of 40.2,
+  which is the case anybody calibrating a receiver is in.
+- `BuzzConfig.level_offset_db` resolves the one level offset that applies, from the
+  playback override, then `[rtlsdr]`, then `[station]`. Everything that converts a
+  level reads it.
+- `_load_section` names any config key it does not recognize instead of dropping it in
+  silence. It is still ignored rather than fatal, so a file from another build starts,
+  but a misspelled setting no longer reverts to its default without a word.
+- Startup warns when the tuner gain has moved since the level calibration was
+  measured. `[rtlsdr] calibrated_at_gain_db` recorded that gain and nothing read it,
+  while the documentation said startup compared the two.
 
 ### Changed
+- `[rtlsdr]` frequencies are given in kHz: `frequency_khz`, `bandwidth_khz` and
+  `tuning_offset_khz` replace the Hz-denominated keys. Nobody wants to type three
+  zeroes on the end of every frequency.
+- `[rtlsdr] audio_rf_conversion_db` is now `calibrated_offset_db`. It was never the
+  same setting as `[station] audio_rf_conversion_db`, only the same name, and sharing
+  one read as a single setting stored in two places.
+- `[rtlsdr] gain_db` ships as 28.0 rather than 40.2, which is what the automatic
+  calibration measured on the antenna this was developed against. It gives up some
+  noise-floor accuracy for headroom, which is the right way round: a clipped arc
+  cannot be recovered.
+- The receiver section sits directly below the audio section in the setup program and
+  second in `config.example.toml`, next to the source that selects it.
 - `tools/ste_lint.py` applies the wordy-word substitutions to strict text only, as
   `docs/ste-writing.md` has always specified. Flavored prose gets the sentence,
   active-voice and plain-verb rules; the vocabulary restrictions were never meant to
@@ -91,8 +171,145 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the reasons differ: `ensure` is a disagreement with the source, and `acquire` is
   domain vocabulary here, since this program acquires a lock rather than obtaining an
   object.
+- `[rtlsdr] frequency_hz` defaults to 3.588 MHz rather than 7.074. The receiver tunes
+  50 kHz above it, so the whole 256 kHz span falls inside 80m and clear of the CW DX
+  window. Powerline noise is generally worse low in HF. An existing config keeps
+  whatever it already says.
+- Settings that exist but that nobody should meet in a menu are marked `x-file-only`
+  in the schema. They stay documented in `config.example.toml`, which is the only way
+  anybody could edit them by hand. The five are the receiver's sample rate,
+  decimation, bandwidth, tuning offset and sideband.
 
 ### Fixed
+- The setup program's Finish screen offered only Back when there was nothing to save,
+  so somebody who opened it to leave the program was told there were no changes and
+  sent to the menu they came from. It offers Exit as well, and says whether a config
+  file exists, since with none the monitor runs on its built-in defaults.
+- `# latitude =` and `# longitude =` in `config.example.toml` had nothing after the
+  equals sign, so uncommenting either was a TOML syntax error. Both carry an example
+  now, and the example is the Holmdel horn antenna.
+- The setup program's level meters said nothing when audio stopped arriving. A read
+  now gives up after a second and the meter says "no audio" instead of holding the
+  last number it saw, which an operator had no way to tell from a live reading. The
+  stall line is built to the width of a reading, so the block does not shift.
+- The level meter's DC estimate used a weight that was correct for one block size and
+  one sample rate, and quietly meant a different time constant for any other. It is
+  computed from both now. The sound card's figure is unchanged.
+- The analyzer's Tier-3a screening window was a fixed 4000 samples while the kernel it
+  has to hold grows with the sample rate, so above about 34 kHz at 120 pps the kernel
+  no longer fitted. `fftconvolve` accepts that and returns the swapped arrangement
+  rather than raising, so re-acquisition was gated on a meaningless number over a
+  third of the supported rate band. The window is counted in pulse periods now and
+  comes to the same 4000 samples at 16 kHz.
+- The analyzer's DC estimate weight is derived from the tick cadence and the time
+  constant rather than written as 0.02, which was the answer for one cadence. The
+  value is unchanged.
+- The setup program froze the whole interface on the way out of the level meter and
+  the gain sweep. Closing a receiver joins two threads with five second timeouts, and
+  that ran on the event loop. Both close on a worker thread now.
+- The gain sweep measured the receiver's DC offset along with the band. The monitor
+  tunes away from that spike and filters it out, so the sweep was sizing the gain
+  against something nothing downstream hears: an offset of 0.04 read 7.07 dB high, and
+  worst at low gain. The quiet level now removes it and the peak still counts it,
+  since clipping happens at the converter before any filtering.
+- `[station] audio_rf_conversion_db` is no longer written to an RTL-SDR station's
+  config file, and no longer overwritten at startup. It described a sound card, and a
+  receiver's file carried it looking live while the monitor ignored it.
+- Four descriptions in the setup program named no subject: "Snapped to the nearest
+  step the tuner offers" left nothing doing the snapping. `ste_lint --fragments`
+  reports the construct now, over Python and `schema.json`.
+- A finished gain sweep offered no way to decline the figure it measured except
+  Escape. It has a Cancel button beside "Use this gain" now, and the arrow keys move
+  between the two, which they did not.
+- The gain sweep's noise-floor measurement is thrown off by a running arc far less
+  than it was. Its frames were 4 ms, the same order as a 120 pps burst, so nearly
+  every frame straddled one and there was no quiet frame for the percentile to find:
+  a 6 ms burst 25 dB over the floor read 21 dB high. A frame is 1 ms now, derived from
+  the receiver's sample rate, which fits inside the 2.3 ms gap between bursts and
+  brings that to 0.01 dB. It costs 0.17 dB on a clean band, and the same at every
+  gain, so it leaves the gain the sweep picks unmoved.
+
+  An arc dense enough to leave no gap is still measured as the floor, correctly: there
+  is nothing else there to measure. Calibrate when the band is quiet.
+- The gain sweep says the reserve leaves "at least" the headroom figure. The chosen
+  gain is the lowest one where the antenna dominates, which is usually well below the
+  highest the reserve allows, so the real margin is commonly a good deal more.
+- The gain sweep uses the clipping it observes, which it recorded and then ignored. A
+  gain that clipped during the sweep is not a prediction about arcs but one that
+  happened, so it rules that gain out and every gain above it. The five passes are
+  what make it worth consulting: an intermittent arc firing during any one of them is
+  caught. On the station this was developed against that is the difference between
+  25.4 and 22.9 dB, which is the step its operator had been taking by hand.
+
+  The bar is the same 4 parts per million the monitor reports clipping at, rather than
+  a single value at a rail. Five passes of a quarter second at 256 kHz collect 640,000
+  raw values, so it takes three of them. The tuner's own DC offset puts the occasional
+  sample at a rail with nothing arcing, and counting one of those capped the gain a
+  step or more low with nothing said about why.
+- The gain sweep gives up noise-floor accuracy rather than headroom when the two
+  cannot both be had, and says how much it gave up. It used to refuse outright, and a
+  station near the crossing then got no gain at all and set one by hand anyway,
+  making that trade without the figures to make it on. Clipping is nonlinear and
+  cannot be undone; a floor that reads high is wrong by a known amount in a known
+  direction.
+- The monitor no longer warns about every clipped sample. It reports above 4 parts
+  per million, about 123 values a minute at 256 kHz, and says to run the calibration
+  rather than to lower the gain a step. A handful a minute comes from the first burst
+  of an intermittent arc, moves an averaged burst amplitude by eight millionths of a
+  decibel, and acting on it costs a gain step, which below the knee costs one to three
+  decibels on every noise floor reported afterwards.
+- The clipping message offers the cheaper remedies before the expensive one: a higher
+  band, where powerline noise is weaker, or a frequency further from where the antenna
+  is resonant.
+- The gain sweep reads the receiver synchronously on one thread rather than streaming
+  it. Changing gain during an async stream is two threads touching one device: the
+  capture thread sits inside librtlsdr driving libusb's event loop while the gain goes
+  out as control transfers from somewhere else. Twice in a few dozen sweeps a transfer
+  never completed, after which closing the receiver never returned and the program
+  hung. There is no second thread now, so there is nothing to race, and no outstanding
+  transfer for the close to wait on.
+
+  A sweep can afford it: it throws away most of what it reads and measures a
+  statistical property of noise, so samples missed between reads cost it nothing. The
+  monitor still streams, because it cannot miss a sample.
+
+  A synchronous read has to be a whole number of 512-byte USB packets, which pyrtlsdr
+  documents as a FIXME and does not enforce. A bad size closes the device and raises a
+  libusb error that says nothing about sizes, so it is refused up front instead.
+- The gain sweep discards both buffers between the tuner and a measurement rather
+  than one. The counted discard covers librtlsdr's transfer pool; the receiver's own
+  queue was not covered, so the count spent itself on stale entries and let that many
+  post-change blocks through in their place. Worst at the first step of a sweep, where
+  the queue has been filling since the device opened.
+- The gain sweep could finish its last step, show nothing, and leave the receiver
+  held. The release happened in the worker's `finally` as an awaited call, so the
+  event loop decided whether it ran, and anything raised after the sweep died inside
+  the worker where Textual reports it nowhere the operator can see. The release now
+  happens in the sweep's own thread, which no task cancellation can skip, and a
+  failure past that point reaches the screen. A receiver the program could not release
+  is said on screen too, since the consequence otherwise falls on the next run as
+  LIBUSB_ERROR_ACCESS: a permissions error that is nothing of the sort.
+
+  Opening it moved into that same thread, because the open had a thread of its own and
+  the receiver it produced belonged to a task that cancellation could take away.
+  Escape during the opening second, which takes about 0.72 s on this hardware, left
+  the device held for the rest of the session and the next attempt reading as the same
+  permissions error. A receiver that opens and then refuses to configure is released
+  too, where the constructor's own exit hook had not been registered yet.
+- Exiting the setup program could hang after a gain sweep. Progress crossed back to
+  the interface with `App.call_from_thread`, which waits until the loop has run the
+  callback, and a loop that is shutting down never runs it. CPython joins every
+  thread-pool worker at interpreter exit, so one waiting thread hung the process
+  rather than the dialog that orphaned it.
+- `tools/ste_lint.py --changed` checks files git has not seen yet. A new file does not
+  appear in `git diff`, so the gate read it as nothing to check and reported clean.
+  Three findings sat in two new files through several green runs and surfaced only
+  once the files were committed, which is the wrong moment.
+- `GainSweep` rounds an even number of passes up to an odd one. The floor is combined
+  with a median, and numpy's median of an even count averages the two middle values
+  instead of picking one, which gives up the outlier rejection the passes exist for.
+  Measured against a simulated arc: three, five and seven passes each recovered the
+  arc-free answer 25 times out of 25, and two passes recovered it in none of them.
 - `tools/ste_lint.py` exits 2 instead of reporting `clean` when it has checked nothing.
   A bare invocation with no paths and no `--changed`, or any named path that does not
   exist, used to print a clean line and exit 0. A mandatory gate could be skipped by

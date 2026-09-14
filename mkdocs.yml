@@ -51,6 +51,7 @@ nav:
       - Record events: how-to-guides/recording-events.md
       - Replay and render recordings: how-to-guides/replaying-recordings.md
       - Render all of your recordings: how-to-guides/batch-rendering-recordings.md
+      - Set up an RTL-SDR v4 device: how-to-guides/rtl-sdr-v4-setup.md
   - Reference:
       - Configuration: reference/configuration.md
       - Command line: reference/cli.md

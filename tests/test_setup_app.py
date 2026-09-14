@@ -11,12 +11,23 @@ from textual import events
 from textual.css.query import NoMatches
 from textual.widgets import Button, OptionList, RadioButton, RadioSet
 from buzz.setup.device_setup import DeviceInfo
-from buzz.setup.screens.calibration import _format_reading, _meter_block
-from buzz.setup.screens.field_dialogs import _kind, _parse_number
+from buzz.setup.screens.calibration import (
+    _NUDGE_STEP_DB,
+    CalibrationMeterDialog,
+    _format_reading,
+    _meter_block,
+    _stalled_reading,
+)
+from buzz.setup.screens.field_dialogs import EnumFieldDialog, _kind, _parse_number
 from buzz.setup.screens.finish import backup_path, changed_fields, toml_ready
 from buzz.setup.screens.main_menu import MainMenuScreen
-from buzz.setup.screens.section_menu import display_value
+from buzz.setup.screens.section_menu import (
+    SectionMenuScreen,
+    display_value,
+    row_value,
+)
 from buzz.setup.screens.timezone_picker import _canonical_zone_names, _utc_offset_label
+from buzz.config import RtlSdrConfig
 from buzz.setup.app import SetupApp
 
 
@@ -127,14 +138,17 @@ class _FakeLevelStream:
     """
 
     instances: list['_FakeLevelStream'] = []
+    # Set by a test to make read() report a stall, the way the real one does when
+    # nothing has arrived for a second.
+    stalls = False
 
     def __init__(self, config, device_index, blocksize) -> None:
         self.offset_db = config.station.audio_rf_conversion_db
         self.closed = False
         _FakeLevelStream.instances.append(self)
 
-    def read(self) -> float:
-        return -50.0
+    def read(self, timeout=None) -> float | None:
+        return None if _FakeLevelStream.stalls else -50.0
 
     def close(self) -> None:
         self.closed = True
@@ -275,10 +289,18 @@ class TestSetupAppWalkthrough:
             app = SetupApp(config_path=config_path)
             async with app.run_test() as pilot:
                 assert app.screen.query_one('#sections').highlighted == 0
+                # Row 0 is the audio-source row, which decides which sections apply,
+                # so Enter on it opens that field's dialog rather than a section.
                 await pilot.press('enter')
                 await pilot.pause()
-                # Row 0 is a section (never the Finish row or the separator), so
-                # Enter with nothing touched must have opened a section screen.
+                assert isinstance(app.screen, EnumFieldDialog)
+                await pilot.press('escape')
+                await pilot.pause()
+                # Two rows down is past the separator and onto the first section,
+                # which is what proves Enter reaches a section with no arrow keys
+                # beyond moving the highlight.
+                await pilot.press('down', 'down', 'enter')
+                await pilot.pause()
                 assert app.visited != set()
 
         run(scenario())
@@ -357,7 +379,9 @@ class TestSetupAppWalkthrough:
         async def scenario():
             app = SetupApp(config_path=config_path)
             async with app.run_test() as pilot:
-                await pilot.press('enter')  # into whichever section row 0 is
+                # Row 0 is the audio-source row and row 1 the separator, so the
+                # first section sits at row 2.
+                await pilot.press('down', 'down', 'enter')
                 await pilot.pause()
                 assert app.screen.query_one('#fields').highlighted == 0
 
@@ -1037,6 +1061,80 @@ class TestSetupAppWalkthrough:
 
         run(scenario())
 
+    def test_finish_with_nothing_to_save_offers_a_way_out_of_the_program(self, tmp_path):
+        """Back was the only button, so somebody who opened this screen to finish was
+        told there was nothing to save and sent back to the menu they came from.  The
+        only way out was to know that Escape on the main menu asks to exit.
+        """
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+                assert app.screen.query_one('#exit', Button)
+                await pilot.click('#exit')
+                await pilot.pause()
+                assert not app.is_running, 'Exit left the program running'
+                assert not config_path.exists(), 'Exit wrote a config file'
+
+        run(scenario())
+
+    def test_exit_is_focused_only_when_there_is_nothing_to_save(self, tmp_path):
+        """Enter should not save by accident, so Back holds the focus where there are
+        changes.  With none there is nothing to do by accident, and Enter should
+        finish the job rather than bounce off Back.
+        """
+        config_path = tmp_path / 'config.toml'
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+                assert app.screen.focused.id == 'exit'
+                await pilot.click('#back')
+                await pilot.pause()
+
+                # Stage an edit, then the same screen should guard Enter again.
+                app.values['station']['callsign'] = 'N6OL'
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+                assert app.screen.focused.id == 'back'
+
+        run(scenario())
+
+    def test_nothing_to_save_says_whether_a_config_file_exists(self, tmp_path):
+        """The two cases differ in what the monitor reads afterwards.  Somebody who
+        ran setup on a machine with no config should not have to guess whether one
+        now exists.
+        """
+        async def scenario(config_path):
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                option_list = app.screen.query_one('#sections')
+                option_list.highlighted = option_list.get_option_index('__finish__')
+                await pilot.press('enter')
+                await pilot.pause()
+                return str(app.screen.query_one('#intro').content)
+
+        missing = tmp_path / 'config.toml'
+        said = run(scenario(missing))
+        assert 'no config file was written' in said, said
+
+        existing = tmp_path / 'existing.toml'
+        existing.write_text('[station]\ncallsign = "N6OL"\n', encoding='utf-8')
+        said = run(scenario(existing))
+        assert 'is unchanged' in said, said
+        assert 'no config file was written' not in said
+
     def test_finish_screen_buttons_sit_side_by_side_and_take_arrow_keys(self, tmp_path):
         """Regression test for a real bug: Save and Back sat in a Vertical, so they
         stacked one above the other instead of side by side like every other
@@ -1394,7 +1492,7 @@ class TestSetupAppWalkthrough:
         config_path = tmp_path / 'config.toml'
         monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
                             lambda name, kind: {'index': 0})
-        monkeypatch.setattr('buzz.setup.screens.calibration.LevelStream', _FakeLevelStream)
+        monkeypatch.setattr('buzz.setup.screens.calibration.SoundCardLevelStream', _FakeLevelStream)
 
         async def scenario():
             app = SetupApp(config_path=config_path)
@@ -1464,7 +1562,7 @@ class TestSetupAppWalkthrough:
         _FakeLevelStream.instances.clear()
         monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
                             lambda name, kind: {'index': 0})
-        monkeypatch.setattr('buzz.setup.screens.calibration.LevelStream', _FakeLevelStream)
+        monkeypatch.setattr('buzz.setup.screens.calibration.SoundCardLevelStream', _FakeLevelStream)
 
         async def scenario():
             app = SetupApp(config_path=config_path)
@@ -1490,13 +1588,13 @@ class TestSetupAppWalkthrough:
                 await pilot.press('up')
                 await pilot.pause()
 
-                assert f'{before + 1.0:+.1f} dB' in app.screen.query_one('#offset').content
-                assert _FakeLevelStream.instances[-1].offset_db == before + 1.0
+                assert f'{before + 2 * _NUDGE_STEP_DB:+.1f} dB' in app.screen.query_one('#offset').content
+                assert _FakeLevelStream.instances[-1].offset_db == before + 2 * _NUDGE_STEP_DB
 
                 await pilot.press('enter')
                 await pilot.pause()
 
-                assert app.values['station']['audio_rf_conversion_db'] == before + 1.0
+                assert app.values['station']['audio_rf_conversion_db'] == before + 2 * _NUDGE_STEP_DB
 
         run(scenario())
 
@@ -1504,7 +1602,7 @@ class TestSetupAppWalkthrough:
         config_path = tmp_path / 'config.toml'
         monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
                             lambda name, kind: {'index': 0})
-        monkeypatch.setattr('buzz.setup.screens.calibration.LevelStream', _FakeLevelStream)
+        monkeypatch.setattr('buzz.setup.screens.calibration.SoundCardLevelStream', _FakeLevelStream)
 
         async def scenario():
             app = SetupApp(config_path=config_path)
@@ -1542,7 +1640,7 @@ class TestSetupAppWalkthrough:
         config_path = tmp_path / 'config.toml'
         monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
                             lambda name, kind: {'index': 0})
-        monkeypatch.setattr('buzz.setup.screens.calibration.LevelStream', _FakeLevelStream)
+        monkeypatch.setattr('buzz.setup.screens.calibration.SoundCardLevelStream', _FakeLevelStream)
 
         async def scenario():
             app = SetupApp(config_path=config_path)
@@ -1813,3 +1911,172 @@ class TestMainEntryPoint:
     def test_importing_does_not_launch_the_app(self):
         import buzz.setup.__main__ as entry_point
         assert entry_point.SetupApp is SetupApp
+
+
+class TestTheAudioSourceRowOnTheMainMenu:
+    """The source decides which sections apply, so it sits above them rather than
+    inside one of the two answers it chooses between.
+    """
+
+    @staticmethod
+    def _section_ids(app):
+        rows = app.screen.query_one('#sections', OptionList)
+        return [rows.get_option_at_index(i).id for i in range(rows.option_count)]
+
+    def test_it_is_the_first_row_and_shows_the_current_value(self, tmp_path):
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test():
+                rows = app.screen.query_one('#sections', OptionList)
+                first = rows.get_option_at_index(0)
+                assert first.id == '__source__'
+                assert 'soundcard' in str(first.prompt)
+        run(scenario())
+
+    def test_the_receiver_section_is_hidden_for_a_sound_card(self, tmp_path):
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test():
+                assert app.values['audio']['source'] == 'soundcard'
+                assert 'rtlsdr' not in self._section_ids(app)
+                assert 'audio' in self._section_ids(app)
+        run(scenario())
+
+    def test_choosing_the_receiver_makes_its_section_appear(self, tmp_path):
+        """The whole point of putting the choice on the main menu: what you are
+        configuring changes as soon as you answer it.
+        """
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test() as pilot:
+                assert 'rtlsdr' not in self._section_ids(app)
+                app.values['audio']['source'] = 'rtlsdr'
+                app.screen._refresh_options()
+                await pilot.pause()
+                ids = self._section_ids(app)
+                assert 'rtlsdr' in ids, (
+                    f'the receiver section stayed hidden after choosing it: {ids}')
+        run(scenario())
+
+    def test_selecting_it_opens_the_enum_dialog(self, tmp_path):
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test() as pilot:
+                await pilot.press('enter')
+                await pilot.pause()
+                assert isinstance(app.screen, EnumFieldDialog)
+        run(scenario())
+
+
+class TestTheReceiverSectionMenu:
+
+    def test_it_offers_the_steps_in_order_and_hides_the_rest(self, tmp_path):
+        """The five file-only settings stay documented in config.example.toml, and
+        simply have no business in a menu.
+
+        The gain sweep is a row among the fields rather than below them, because it is
+        the second step of the procedure the section lists: tune, measure a gain, read
+        back what it chose, then say which receiver.
+        """
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test() as pilot:
+                app.values['audio']['source'] = 'rtlsdr'
+                # Pushed directly rather than through the menu: push_screen_wait
+                # needs a worker, and the rows are what this is about.
+                await app.push_screen(SectionMenuScreen('rtlsdr'))
+                await pilot.pause()
+                rows = app.screen.query_one('#fields', OptionList)
+                ids = [rows.get_option_at_index(i).id for i in range(rows.option_count)]
+                assert ids == ['frequency_khz', '__sweep__', 'gain_db',
+                               'calibrated_offset_db', 'device_index'], ids
+        run(scenario())
+
+
+class TestTheLevelCalibrationRow:
+    """`(unset)` is honest and unhelpful here, because the monitor does not run
+    without an offset.  It estimates one from the tuner gain, so the row shows the
+    figure the operator would be accepting and says where it came from.
+    """
+
+    SPEC = {'type': ['number', 'null'], 'title': 'Level calibration (dB)'}
+
+    def _values(self, **overrides):
+        values = {'gain_db': 40.2, 'calibrated_offset_db': None}
+        values.update(overrides)
+        return values
+
+    def test_an_uncalibrated_row_shows_the_estimate_and_says_so(self):
+        assert row_value('rtlsdr', 'calibrated_offset_db', self.SPEC,
+                         self._values()) == '-40.2 (estimated)'
+
+    def test_the_estimate_follows_the_gain(self):
+        """Which is what proves it is derived rather than copied.  A second copy of
+        `-gain_db` in the menu would keep showing -40.2 after the gain moved.
+        """
+        assert row_value('rtlsdr', 'calibrated_offset_db', self.SPEC,
+                         self._values(gain_db=43.9)) == '-43.9 (estimated)'
+
+    def test_a_calibrated_row_carries_no_marker(self):
+        """The marker exists to flag a number the operator did not supply."""
+        assert row_value('rtlsdr', 'calibrated_offset_db', self.SPEC,
+                         self._values(calibrated_offset_db=-38.5)) == '-38.5'
+
+    def test_the_row_shows_what_the_monitor_will_actually_use(self):
+        """A drift pin.  The menu and the running program each decide what an unset
+        offset means, and an operator calibrating against a figure the monitor does
+        not use would bake the difference into every level the station ever logs.
+        """
+        for gain in (22.9, 40.2, 49.6):
+            values = self._values(gain_db=gain)
+            shown = row_value('rtlsdr', 'calibrated_offset_db', self.SPEC, values)
+            used = RtlSdrConfig(**values).level_offset_db
+            assert shown == f'{used:g} (estimated)', (
+                f'the menu shows {shown} at gain {gain} where the monitor uses {used}')
+
+    def test_every_other_field_is_unaffected(self):
+        """Only the one derived field is special-cased; the rest read as before."""
+        values = {'gain_db': 40.2}
+        assert row_value('rtlsdr', 'gain_db', {'type': 'number'}, values) == '40.2'
+
+
+class TestAStalledMeterSaysSo:
+    """A meter frozen on a number that stopped being true is worse than one saying
+    it has nothing, because the operator cannot tell the difference by looking.
+    """
+
+    def test_the_stall_line_is_exactly_as_wide_as_a_reading(self):
+        """_meter_block's Static is sized to its widest line, so a narrower stall
+        line would shrink the widget and shift the whole block sideways at the one
+        moment somebody is trying to read it.
+        """
+        assert len(_stalled_reading()) == len(_format_reading(-45.0))
+
+    def test_it_says_what_is_wrong_rather_than_showing_a_number(self):
+        line = _stalled_reading()
+        assert 'no audio' in line
+        assert 'dBm' not in line
+
+    def test_the_dialog_shows_it_when_the_stream_stalls(self, tmp_path, monkeypatch):
+        config_path = tmp_path / 'config.toml'
+        _FakeLevelStream.instances.clear()
+        _FakeLevelStream.stalls = True
+        monkeypatch.setattr('buzz.setup.screens.calibration.sd.query_devices',
+                            lambda name, kind: {'index': 0})
+        monkeypatch.setattr('buzz.setup.screens.calibration.SoundCardLevelStream',
+                            _FakeLevelStream)
+
+        async def scenario():
+            app = SetupApp(config_path=config_path)
+            async with app.run_test() as pilot:
+                screen = CalibrationMeterDialog(app.values['audio'], -32.0)
+                await app.push_screen(screen)
+                await _wait_until(
+                    pilot,
+                    lambda: 'no audio' in app.screen.query_one('#meter').content,
+                    'the meter never showed the stall line')
+
+        try:
+            run(scenario())
+        finally:
+            _FakeLevelStream.stalls = False

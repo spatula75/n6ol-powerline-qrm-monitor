@@ -211,8 +211,7 @@ class Plotter:
         Both moves go away from the data, which is what keeps reference lines
         (noise floor, threshold, S9) off the plot borders.
         """
-        station = self._config.station
-        anchor = _AXIS_ANCHOR_DBFS + station.audio_rf_conversion_db
+        anchor = _AXIS_ANCHOR_DBFS + self._config.level_offset_db
         min_y = min(min(series.signals), min(series.noises), anchor) * 1.33
         max_y = max(max(series.signals), max(series.noises), anchor) / 1.33
         return min_y, max_y

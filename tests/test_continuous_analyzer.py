@@ -14,7 +14,10 @@ from buzz.analyzer import (
     AnalysisResult, AnalyzerState, ContinuousAnalyzer, TriggerSync, fit_drift_rate,
 )
 from buzz.config import BuzzConfig
-from buzz.dsp import pulse_phase_period
+from buzz.constants import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
+from buzz.dsp import (
+    PULSE_WIDTH_SAMPLES, build_pulse_kernel, calculate_pps_fit_array, pulse_phase_period,
+)
 from buzz.sampler import AudioPipeline
 
 SAMPLE_RATE = 16000
@@ -22,16 +25,16 @@ PULSE_RATE  = 120
 MIN_FIT     = ContinuousAnalyzer.DRIFT_FIT_MIN_POINTS
 
 
-def _make_config() -> BuzzConfig:
+def _make_config(sample_rate: int = SAMPLE_RATE) -> BuzzConfig:
     cfg = BuzzConfig()
-    cfg.audio.sample_rate   = SAMPLE_RATE
+    cfg.audio.sample_rate   = sample_rate
     cfg.audio.pulse_rate    = PULSE_RATE
     cfg.audio.input_device_name = 'Test'
     return cfg
 
 
-def _make_analyzer() -> ContinuousAnalyzer:
-    cfg      = _make_config()
+def _make_analyzer(sample_rate: int = SAMPLE_RATE) -> ContinuousAnalyzer:
+    cfg      = _make_config(sample_rate)
     pipeline = MagicMock(spec=AudioPipeline)
     pipeline.wait_for_data.return_value = True
     # Drift is tracked against the audio clock.  Freezing it means no audio time
@@ -124,6 +127,39 @@ class TestContinuousAnalyzerInit:
         az = _make_analyzer()
         az.stop()
         assert az._stop.is_set()
+
+
+class TestTheDcWeightIsDerivedNotGuessed:
+    """DC_EMA_ALPHA was the literal 0.02, correct only at the tick cadence its comment
+    named.  It is computed from that cadence and the time constant now, so the figure
+    in the source is the ten seconds somebody actually chose.
+    """
+
+    def test_it_reproduces_the_literal_it_replaced(self):
+        """Equal rather than close, so the change provably moved no measurement."""
+        assert ContinuousAnalyzer.DC_EMA_ALPHA == 0.02
+
+    def test_the_time_constant_is_what_it_claims(self):
+        """One time constant of ticks should leave about 1/e of a step remaining.
+        This is the claim the comment makes, checked rather than asserted.
+
+        A discrete EMA only approaches the continuous exponential as the weight gets
+        light, so the tolerance is 2% rather than the 0.1% the level meter reaches at
+        its own 0.002.  Measured here: 0.36417 against 1/e of 0.36788, off by 1.0%.
+        A tighter bound would fail on arithmetic that is behaving correctly.
+        """
+        alpha = ContinuousAnalyzer.DC_EMA_ALPHA
+        ticks = round(ContinuousAnalyzer.DC_TIME_CONSTANT_SECONDS
+                      / ContinuousAnalyzer.FAST_TICK_INTERVAL)
+        assert (1 - alpha) ** ticks == pytest.approx(1 / np.e, rel=0.02)
+
+    def test_a_slower_tick_would_stretch_it_rather_than_break_it(self):
+        """The derivation follows FAST_TICK_INTERVAL, so changing the cadence keeps
+        the ten seconds instead of silently meaning something else.  A literal could
+        not do this, which is the whole reason the constant is an expression.
+        """
+        faster = 0.1 / ContinuousAnalyzer.DC_TIME_CONSTANT_SECONDS
+        assert faster == ContinuousAnalyzer.DC_EMA_ALPHA / 2
 
 
 # ---------------------------------------------------------------------------
@@ -1360,19 +1396,19 @@ class TestSnapshotPhaseAlignment:
 class TestFastScan:
     def test_fast_scan_returns_true_with_signal(self):
         az = _signal_lost_analyzer()
-        n = ContinuousAnalyzer.FAST_SCAN_SAMPLES
+        n = az._fast_scan_samples
         az._pipeline.get_snapshot.return_value = _pulse_audio(n=n)
         assert az._fast_scan() is True
 
     def test_fast_scan_returns_false_without_signal(self):
         az = _signal_lost_analyzer()
-        n = ContinuousAnalyzer.FAST_SCAN_SAMPLES
+        n = az._fast_scan_samples
         az._pipeline.get_snapshot.return_value = _noise_audio(n=n)
         assert az._fast_scan() is False
 
     def test_fast_scan_does_not_publish_or_change_state(self):
         az = _signal_lost_analyzer()
-        n = ContinuousAnalyzer.FAST_SCAN_SAMPLES
+        n = az._fast_scan_samples
         az._pipeline.get_snapshot.return_value = _pulse_audio(n=n)
         before = az.latest_result()
         az._fast_scan()
@@ -1395,6 +1431,80 @@ class TestFastScan:
     def test_fast_scan_pulses_less_than_scan_pulses(self):
         az = _make_analyzer()
         assert ContinuousAnalyzer.FAST_SCAN_PULSES < az._scan_pulses
+
+
+class TestTheFastScanWindowFollowsTheSampleRate:
+    """The window was the literal 4000 samples while the kernel it has to hold scales
+    with the sample rate, so past about 34 kHz the kernel no longer fitted.
+
+    Nothing raised.  scipy's fftconvolve takes mode='valid' with either argument
+    longer and returns the other arrangement, so the fit array came back full of
+    scores that measured the kernel against the data instead of the data against the
+    kernel, and Tier 3a gated re-acquisition on them.
+    """
+
+    def test_it_reproduces_the_literal_at_the_default_rate(self):
+        """Equal rather than close, so the change provably moved nothing for a
+        station at 16 kHz and 120 pps."""
+        assert _make_analyzer()._fast_scan_samples == 4000
+
+    def test_the_window_is_the_same_count_of_pulses_at_every_rate(self):
+        """The quantity chosen is in the pulse domain.  What it comes to in samples,
+        and in milliseconds, is a consequence of the rate and the grid."""
+        for rate in (8000, 16000, 32000, 44100, 48000):
+            az = _make_analyzer(sample_rate=rate)
+            periods = az._fast_scan_samples / (rate / az._pulse_rate)
+            assert periods == pytest.approx(
+                ContinuousAnalyzer.FAST_SCAN_WINDOW_PULSES, abs=0.01), (
+                f'at {rate} Hz the window spans {periods:.2f} pulse periods rather '
+                f'than {ContinuousAnalyzer.FAST_SCAN_WINDOW_PULSES}')
+
+    @pytest.mark.parametrize('pulse_rate', [100, 120])
+    def test_the_kernel_fits_inside_the_window_at_every_legal_rate(self, pulse_rate):
+        """The sweep that would have caught the original bug.
+
+        Both bounds matter and the failure differs at each: too small a window and
+        fftconvolve silently swaps its arguments, too few valid positions and the
+        peak/trough ratio is taken over too little to mean anything.  A spot check at
+        16 kHz passes either way, which is why this walks the whole band.
+        """
+        worst = None
+        for rate in range(MIN_SAMPLE_RATE, MAX_SAMPLE_RATE + 1, 211):
+            cfg = _make_config(rate)
+            cfg.audio.pulse_rate = pulse_rate
+            pipeline = MagicMock(spec=AudioPipeline)
+            pipeline.total_samples = 0
+            az = ContinuousAnalyzer(pipeline, cfg)
+            # Read both off the analyzer, never recomputed here: a test that derives
+            # the window the same way the code does would pass against the literal
+            # this exists to rule out, which is exactly what it did when first written.
+            positions = az._fast_scan_samples - len(az._fast_kernel) + 1
+            if worst is None or positions < worst[0]:
+                worst = (positions, rate, len(az._fast_kernel), az._fast_scan_samples)
+        positions, rate, kernel, window = worst
+        assert positions > 1, (
+            f'at {rate} Hz and {pulse_rate} pps a {kernel}-sample kernel leaves '
+            f'{positions} valid positions in a {window}-sample window.  Below 1 the '
+            'kernel does not fit and fftconvolve returns the swapped arrangement '
+            'rather than raising, so the fit array is meaningless instead of empty.')
+
+    def test_a_direct_correlation_agrees_with_the_fft_path(self):
+        """The equivalence that the old literal broke above 34 kHz, where a direct
+        correlation had no valid positions at all while the FFT path returned 1604
+        scores.  Checked at the top of the band, which is where it used to fail.
+        """
+        az = _make_analyzer(sample_rate=48000)
+        rng = np.random.default_rng(0)
+        data = np.abs(rng.standard_normal(az._fast_scan_samples).astype(np.float32))
+        fast = calculate_pps_fit_array(data, az._fast_kernel,
+                                       ContinuousAnalyzer.FAST_SCAN_PULSES)
+        width = len(az._fast_kernel)
+        direct = np.array([float(np.dot(data[i:i + width], az._fast_kernel))
+                           for i in range(len(data) - width + 1)])
+        direct /= PULSE_WIDTH_SAMPLES * ContinuousAnalyzer.FAST_SCAN_PULSES
+        assert len(direct) > 0, 'the kernel does not fit, which is the bug itself'
+        assert len(fast) == len(direct)
+        assert fast == pytest.approx(direct, rel=1e-6)
 
 
 class TestRunResilience:

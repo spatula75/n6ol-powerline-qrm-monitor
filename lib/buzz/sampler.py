@@ -354,66 +354,151 @@ class AudioSampler:
     def close(self) -> None:
         self._pipeline.close()
 
-    def level_stream(self, blocksize: int = 320) -> 'LevelStream':
+    def level_stream(self, blocksize: int = 320) -> 'SoundCardLevelStream':
         """Open a persistent input stream for real-time level monitoring.
 
         Returns a context manager whose .read() method blocks until one block
         of audio is available and returns the broadband signal level in dBm.
         Default blocksize of 320 samples = 20 ms at 16 kHz (one Windows CPU quantum).
         """
-        return LevelStream(self._config, self._device_index, blocksize)
+        return SoundCardLevelStream(self._config, self._device_index, blocksize)
 
 
 class LevelStream:
-    """Persistent input stream for real-time level monitoring.
+    """A live broadband level in dBm, from whatever produces audio.
 
-    This uses a PortAudio callback rather than blocking read(), because DirectSound
-    on Windows does not support PortAudio's blocking I/O reliably.  The callback
-    fires whenever the hardware delivers a new buffer; read() blocks on a
-    threading.Event until that happens, then returns immediately with the latest
-    dBm level.
+    Subclasses supply blocks; everything that turns a block into a reading lives
+    here.  The split matters more than it looks: the figure this produces is what an
+    operator calibrates `audio_rf_conversion_db` against, so if a second source
+    estimated DC differently, or rectified differently, or converted to dBm
+    differently, they would calibrate against a number the monitor never reports and
+    bake the difference into every level that station ever logs.  See
+    `SoundCardLevelStream` and `buzz.sdr.SdrLevelStream`, and the test that puts the
+    same samples through both.
 
-    The sound card's DC offset is removed before rectification, using the same
-    EMA-smoothed median estimate the analyzer applies (see ContinuousAnalyzer._capture
-    for why the median rather than the mean).  It matters more here than anywhere
-    else: this is the reading the operator calibrates audio_rf_conversion_db against,
-    so an uncorrected offset would be baked into every measurement the monitor ever
-    reports.  Smoothing is what makes it viable at this block size - a 320-sample
-    block is far too short to estimate an offset from on its own.
+    DC is removed before rectification, using the same EMA-smoothed median estimate
+    the analyzer applies (see ContinuousAnalyzer._capture for why the median rather
+    than the mean).  Smoothing is what makes it viable at this block size, since a
+    320-sample block is far too short to estimate an offset from on its own.
 
     offset_db is public and safe to write from outside while the stream runs: the
     setup program's calibration dialog nudges it live as the operator adjusts the
-    offset, and amplitude_to_dbm() applies it fresh on every callback, so a write
-    from the UI thread takes effect on the very next block with no stream restart
-    needed.  A plain float assignment races the callback thread only in the
-    Python-level sense of "which value it reads this callback or the next" - never
-    a torn read - which is precise enough for a live display an operator is
-    watching, not a value anything logs or averages.
+    offset, and amplitude_to_dbm() applies it fresh on every block, so a write from
+    the UI thread takes effect on the very next one with no restart needed.  A plain
+    float assignment races the producing thread only in the Python-level sense of
+    "which value it reads this block or the next" - never a torn read - which is
+    precise enough for a live display somebody is watching, not a value anything
+    logs or averages.
 
     Use as a context manager:
         with sampler.level_stream() as stream:
             dbm = stream.read()
     """
 
-    # ~10 s time constant at the 50 Hz callback rate of the default 320-sample block.
-    DC_EMA_ALPHA = 0.002
+    # How long the DC estimate takes to follow a change, in seconds.  Ten is long
+    # against the couple of seconds an operator spends turning a knob, which is the
+    # point: the estimate should track the card's offset, not the signal.
+    DC_TIME_CONSTANT_SECONDS = 10.0
 
-    def __init__(self, config: BuzzConfig, device_index: int, blocksize: int) -> None:
+    @staticmethod
+    def dc_ema_alpha(sample_rate: int, blocksize: int, seconds: float) -> float:
+        """The EMA weight that gives a `seconds`-long time constant at this block rate.
+
+        Read it as one over the number of blocks the time constant spans, which is
+        what the arithmetic comes to: 320 samples at 16 kHz is 500 blocks in ten
+        seconds, so 0.002.  It is written as a single division rather than a
+        division inside one.
+
+        The weight applies once per block, so what it means in seconds depends on
+        how long a block is.  It was written as a bare 0.002 with a comment saying
+        "~10 s at the 50 Hz callback rate of the default 320-sample block", which
+        was true of exactly one configuration.  A second source delivering blocks at
+        another rate would have silently had a different time constant, on the
+        estimate an operator calibrates against.
+
+        Deriving it from both figures is the same move as `_PANEL_WIDTH_MULTIPLE`: a
+        value that has to satisfy a constraint gets computed from the constraint,
+        not hand-worked for the case that happens to be current.
+        """
+        return blocksize / (seconds * sample_rate)
+
+    def __init__(self, offset_db: float, sample_rate: int, blocksize: int) -> None:
+        self.offset_db = offset_db
+        self._alpha = self.dc_ema_alpha(sample_rate, blocksize, self.DC_TIME_CONSTANT_SECONDS)
         self._event = threading.Event()
         self._latest_dbm: float = SILENCE_DBFS
-        self.offset_db = config.station.audio_rf_conversion_db
         self._dc: float | None = None   # None until the first block seeds it
 
-        def _callback(indata: np.ndarray, frames: int,
-                      time: object, status: sd.CallbackFlags) -> None:
-            block = indata[:, 0].astype(np.float32)
-            block_dc = float(np.median(block))
-            self._dc = (block_dc if self._dc is None
-                        else self._dc + self.DC_EMA_ALPHA * (block_dc - self._dc))
-            amplitude = float(np.mean(np.abs(block - self._dc)))
-            self._latest_dbm = amplitude_to_dbm(amplitude, self.offset_db)
-            self._event.set()
+    def _on_block(self, block: np.ndarray) -> None:
+        """Fold one block of mono audio into the reading, and wake any reader.
 
+        Called on whichever thread the source uses, which is a PortAudio callback
+        for a sound card and an ordinary worker for a receiver.  It does no I/O and
+        allocates one block, so either is fine.
+        """
+        samples = block.astype(np.float32)
+        block_dc = float(np.median(samples))
+        self._dc = (block_dc if self._dc is None
+                    else self._dc + self._alpha * (block_dc - self._dc))
+        amplitude = float(np.mean(np.abs(samples - self._dc)))
+        self._latest_dbm = amplitude_to_dbm(amplitude, self.offset_db)
+        self._event.set()
+
+    # A healthy source delivers a block every 20 to 64 ms, so a second is dozens of
+    # blocks late.  Long enough that a loaded machine never trips it, short enough
+    # that a caller can say the reading went stale instead of freezing on it.
+    READ_TIMEOUT_SECONDS = 1.0
+
+    def read(self, timeout: float | None = None) -> float | None:
+        """Block until the next block arrives and return the level in dBm.
+
+        None means nothing arrived in time, which is what an unplugged receiver or a
+        sound card that went away looks like from here.  Returning it rather than
+        waiting forever is the difference between a meter that says so and a dialog
+        that freezes on a number that stopped being true.  `RtlSdrSource.read`
+        returns None on the same grounds.
+        """
+        if not self._event.wait(self.READ_TIMEOUT_SECONDS if timeout is None else timeout):
+            return None
+        self._event.clear()
+        return self._latest_dbm
+
+    def _stop(self) -> None:
+        """Stop producing blocks.  Subclasses shut down whatever fills this."""
+
+    def close(self) -> None:
+        self._stop()
+        # Wakes a read() blocked in the wait above, which the setup program's
+        # calibration dialogs call via asyncio.to_thread() - see calibration.py.
+        # Cancelling that asyncio Task does not stop the thread pool worker
+        # actually running read(): whatever would normally set this event has just
+        # been stopped, so without this, that thread blocks in Event.wait() forever,
+        # on an event nothing will ever set again.  A thread stuck like that is not
+        # merely leaked - CPython's own ThreadPoolExecutor registers an atexit hook
+        # that joins every worker thread it ever created, so one stuck thread hangs
+        # the entire process on exit, not just the dialog that orphaned it.
+        # Confirmed live: closing the setup program after opening either calibration
+        # dialog hung instead of exiting, until this line was added.
+        self._event.set()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+
+class SoundCardLevelStream(LevelStream):
+    """A level stream fed by a sound card.
+
+    This uses a PortAudio callback rather than blocking read(), because DirectSound
+    on Windows does not support PortAudio's blocking I/O reliably.  The callback
+    fires whenever the hardware delivers a new buffer.
+    """
+
+    def __init__(self, config: BuzzConfig, device_index: int, blocksize: int) -> None:
+        super().__init__(config.level_offset_db,
+                         config.audio.sample_rate, blocksize)
         self._stream = sd.InputStream(
             device=device_index,
             channels=1,
@@ -421,35 +506,14 @@ class LevelStream:
             dtype='int16',
             blocksize=blocksize,
             latency='low',
-            callback=_callback,
+            callback=self._callback,
         )
         self._stream.start()
 
-    def read(self) -> float:
-        """Block until the next hardware callback fires and return the level in dBm."""
-        self._event.wait()
-        self._event.clear()
-        return self._latest_dbm
+    def _callback(self, indata: np.ndarray, frames: int,
+                  time: object, status: sd.CallbackFlags) -> None:
+        self._on_block(indata[:, 0])
 
-    def close(self) -> None:
+    def _stop(self) -> None:
         self._stream.stop()
         self._stream.close()
-        # Wakes a read() blocked in the wait above, which the setup program's
-        # calibration dialogs call via asyncio.to_thread() - see calibration.py.
-        # Cancelling that asyncio Task does not stop the thread pool worker
-        # actually running read(): the callback that would normally set this
-        # event has just been stopped, so without this, that thread blocks in
-        # Event.wait() forever, on an event nothing will ever set again.  A
-        # thread stuck like that is not merely leaked - CPython's own
-        # ThreadPoolExecutor registers an atexit hook that joins every worker
-        # thread it ever created, so one stuck thread hangs the entire process
-        # on exit, not just the dialog that orphaned it.  Confirmed live: closing
-        # the setup program after opening either calibration dialog hung
-        # instead of exiting, until this line was added.
-        self._event.set()
-
-    def __enter__(self) -> 'LevelStream':
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.close()

@@ -37,11 +37,15 @@ Setup will attempt to locate your Python installation, create a virtual environm
 If you've run setup before, it will skip directly to launching the configuration program - it's safe to run it more than once.
 
 ## Configuration
-The monitor has many options. The most critical ones will be covered here; others can be found in the how-to guides.
+The monitor has many options.  The most critical ones will be covered here; others can be found in the how-to guides.
 Each section of the configuration file corresponds to a section in the configuration program.  Enter a section
 with the `ENTER` key and go back with the `ESC` key.  Use arrow keys to navigate.  Start with Audio.
 
-<!-- TODO: insert a section here about choosing a sound card input versus an RTLSDR input here once that has been added -->
+### Audio source
+
+First and foremost, choose where the monitor will get its audio feed.  This can either be sound capture device 
+reading from a radio, or an inexpensive RTL-SDR device.  It has to be one or the other (reading from multiple
+devices is not supported).  Depending on the option you select, menu availability will differ.
 
 ### Radio + Sound Card Source
 If you intend to use your radio with your sound card, connect your radio to your sound device that you plan
@@ -72,15 +76,47 @@ Start by picking your audio device, the first option on the screen.  When you se
 
 Choose the appropriate device, and press `ENTER` to select it.
 
-At the bottom of this menu is the `Calibration` tool.  Much more detail can be found in the Calibration tutorial, but for now, try turning the AF gain up and down on your radio until the S meter in the display of the configuration program matches the S meter on your radio.  If your radio doesn't have an AF gain you can adjust for its line output, you can also vary the gain for your audio input in your operating system.  The goal is to get the value inferred from the audio stream to match the RF value displayed by your radio's S meter.
+At the bottom of this menu is the `Calibration` tool.  Much more detail can be found in the Calibration tutorial, 
+but for now, try turning the AF gain up and down on your radio until the S meter in the display of the configuration 
+program matches the S meter on your radio.  If your radio doesn't have an AF gain you can adjust for its line output, 
+you can also vary the gain for your audio input in your operating system.  The goal is to get the value inferred from 
+the audio stream to match the RF value displayed by your radio's S meter.
 
-If you are unable to get the two to agree because you can't adjust the audio gain at all, there's another method available; see the [Calibration tutorial](calibration.md) for more.
+If you are unable to get the two to agree because you can't adjust the audio gain at all, there's another method 
+available; see the [Calibration tutorial](calibration.md) for more.
 
-To get the pulse rate setting, double your local electrical utility's alternating current frequency.  For most of North and Central America, for example, that means 120.  For Europe and Asia, this is usually 100.  Chances are if you're using this tool, you're already very familiar with the frequency you need.
+To get the pulse rate setting, double your local electrical utility's alternating current frequency.  For most of 
+North and Central America, for example, that means 120.  For Europe and Asia, this is usually 100.  Chances are if 
+you're using this tool, you're already very familiar with the frequency you need.
 
 ### RTL-SDR Configuration / Calibration
 
-<!-- TODO -->
+From the `Audio input` menu, first set the pulse rate, double your local electrical utility's alternating
+current frequency.
+
+Next, from the `RTL-SDR receiver` menu, choose a `Listening frequency` for your receiver.
+This should be a frequency at or near where your antenna is naturally resonant, and ideally a relatively
+quiet segment of the band.
+
+Note that the pass band for the RTL-SDR as configured by the monitor is 256 kHz, with a 50 kHz offset, so strong 
+signals in a nearby shortwave band can introduce clipping.  In order to ensure that the entire pass band sits above
+some lower limit, you may set your desired frequency no lower than 78 kHz above that lower limit.  This only
+applies if you are trying to avoid a strong out-of-band signal.  (78 kHz because the pass band is split into two
+halves around the center frequency, giving 128 kHz, and then a 50 kHz shift is used as a very simple means to avoid
+interactions with DC exactly at the center frequency.)  Similarly, if you're avoiding a strong signal from above,
+set your frequency no higher than 178 kHz *below* it. 
+
+Calibration is somewhat more complex with SDR devices.  See the [Calibration tutorial](calibration.md) for a
+detailed explanation, but you can start by selecting `Auto-calibrate gain` from the RTL-SDR receiver menu.
+Do this with your antenna connected, preferably without any active arc noise, but reasonable results are also
+possible with active noise.  Auto-calibration will attempt to find the optimal `Tuner gain` and `Level calibration`
+settings for your device and antenna.
+
+If you change bands with your `Listening frequency`, be sure to re-run `Auto-calibrate gain` because the value it 
+chooses can depend on the band you select.
+
+Some receiver settings rarely need to be changed, but are available and documented in `config.example.toml` should
+the need arise.
 
 ### Station Configuration
 

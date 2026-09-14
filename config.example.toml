@@ -57,6 +57,120 @@ sample_rate = 16000
 pulse_rate = 120
 
 
+# Settings for an RTL-SDR receiver. Used only when the audio source is set
+# to RTL-SDR.
+[rtlsdr]
+# The frequency to listen on. The receiver tunes 50 kHz above it and the
+# difference is undone in software, so this is the frequency that gets
+# measured.
+#
+# In kHz, so 80m is around 3588 and 40m around 7074. Tenths are allowed if
+# you want a frequency to the nearest hundred Hz.
+#
+# The default puts the whole 256 kHz the receiver samples inside 80m and
+# clear of the CW DX window. Powerline noise is generally worse low in HF.
+# Example: 3588.0
+frequency_khz = 3588.0
+
+# The monitor snaps this to the nearest step the tuner offers, since the
+# tuner accepts only a fixed set.
+#
+# Choose the lowest gain at which band noise sits about 10 dB above the
+# receiver's own noise. Lower leaves more room for loud events. Higher
+# measures the receiver rather than the band.
+gain_db = 22.9
+
+# The offset that converts audio amplitude to RF level at the receiver
+# input, the same job [station] audio_rf_conversion_db does for a sound
+# card. Leave it unset until you have calibrated.
+#
+# This replaces [station] audio_rf_conversion_db whenever [audio] source is
+# rtlsdr. The two carry different names because they are different
+# quantities: that one describes a radio and its wiring, this one is mostly
+# the negative of the tuner gain above and moves whenever the gain does.
+#
+# Unset means the monitor estimates it as the negative of the tuner gain.
+# Expect the reading to be a few dB out. The [station] figure is not a
+# fallback and is never used for a receiver.
+#
+# To find the figure, read the noise floor on a radio you trust, on the same
+# antenna at the same time, with its filter set to match the bandwidth
+# above. The difference between the two readings is what goes here.
+#
+# It depends on the tuner gain, so changing that means finding it again.
+#
+# Unset by default.
+# calibrated_offset_db = -22.9
+
+# The tuner gain the level calibration was measured against. The calibration
+# tool writes this, and nobody sets it by hand.
+#
+# The calibration tool writes this when it measures the level calibration
+# above.
+#
+# Change the tuner gain afterwards and the calibration is wrong by roughly
+# the difference, so startup compares the two and says so. Run the
+# calibration again rather than editing this.
+#
+# Unset by default.
+# calibrated_at_gain_db = 22.9
+
+# Room the gain calibration keeps above the quiet band noise, so that an arc
+# has somewhere to go before it clips.
+#
+# This value comes from measurement rather than choice. Over 11147 locked
+# minutes at one station the loudest arc reached 30.95 dB above its own
+# noise floor, and nothing reached 35. The extra covers the wider bandwidth
+# the receiver clips across.
+#
+# Raising it lowers the gain the calibration will pick, so more of the
+# reported noise floor becomes the receiver's own rather than the band's.
+arc_headroom_db = 32.0
+
+# Which receiver to use when more than one is plugged in.
+device_index = 0
+
+# How fast the receiver samples. It must divide evenly by the decimation
+# below.
+#
+# 256000 divided by 16 gives 16000 Hz of audio, the rate a sound-card
+# station uses.
+#
+# The receiver rate divided by the decimation has to come to between 8000 Hz
+# and 48000 Hz. A receiver rate of 2400000 needs a decimation between 50 and
+# 300.
+iq_sample_rate = 256000
+
+# Receiver samples per audio sample. The audio rate is the receiver rate
+# divided by this.
+decimation = 16
+
+# How much of the band to measure, on one side of the listening frequency.
+#
+# 4 kHz matches a typical SSB filter, so levels compare with a radio tuned
+# to the same spot.
+#
+# At most the receiver rate divided by the decimation, divided again by 2.5.
+# That is 6.4 kHz with the settings above. The filter needs the extra room
+# past the band edge, and the monitor refuses a wider setting and says what
+# the limit is.
+bandwidth_khz = 4.0
+
+# How far from the listening frequency to tune the hardware. Undone in
+# software, so it changes nothing you measure.
+#
+# The receiver puts a false signal at its own tuning frequency, and this
+# moves that away from the measured band. Leave it alone unless you know why
+# you are changing it.
+tuning_offset_khz = 50.0
+
+# Which side of the listening frequency to hear.
+#
+#   Upper - the spectrum above the listening frequency
+#   Lower - the spectrum below it, shown reversed
+sideband = "upper"
+
+
 # Who measures, from where, and the calibration that turns audio into dBm.
 [station]
 # Your amateur radio callsign. It appears in page titles and plot labels.
@@ -85,7 +199,13 @@ noise_floor = -98.0
 noise_min_snr = 12.0
 
 # The offset that converts audio amplitude to RF level at the receiver
-# input.
+# input. This one is for a sound card. A receiver uses [rtlsdr]
+# audio_rf_conversion_db instead and ignores this.
+#
+# Two settings share this name, and exactly one applies. With [audio] source
+# set to soundcard, this is the one in use. With it set to rtlsdr, the
+# monitor replaces this at startup with the receiver's own figure, so
+# editing it there changes nothing.
 #
 # This number is added to the audio level to approximate the RF level in dBm
 # at the receiver input. For example, if your radio's own S-meter reads -64
@@ -98,8 +218,8 @@ noise_min_snr = 12.0
 #
 # Some receivers have no AF gain to adjust - one with its own internal sound
 # device, for instance. Choose this field itself to open a live meter of its
-# own: Up and Down nudge the offset, Space resets it to the default, and
-# Enter confirms.
+# own: Up and Down move the offset by 0.1 dB, PageUp and PageDown by 1 dB,
+# Space resets it to the default, and Enter confirms.
 #
 # S9 is -73 dBm, and each S-unit is 6 dB.
 #
@@ -144,13 +264,18 @@ url = ""
 
 # The latitude that Open-Meteo looks up.
 #
+# The example is the Holmdel horn antenna in New Jersey, a National Historic
+# Landmark, where Penzias and Wilson spent a year eliminating noise sources,
+# pigeons included, before the hiss that was left turned out to be the
+# cosmic microwave background.
+#
 # Unset by default.
-# latitude =
+# latitude = 40.3907178
 
 # The longitude that Open-Meteo looks up.
 #
 # Unset by default.
-# longitude =
+# longitude = -74.1848613
 
 
 # Upload plots and data to a web server over SCP, so anyone can see the
@@ -324,77 +449,3 @@ min_lock_snr = 0.0
 # costs nothing.
 # Example: C:/Users/yourname/AppData/Local/Microsoft/WinGet/Links
 ffmpeg_path = ""
-
-
-# Settings for an RTL-SDR receiver. Used only when the audio source is set
-# to RTL-SDR.
-[rtlsdr]
-# The frequency to measure. Pick a quiet spot in a band where the noise is
-# audible.
-frequency_hz = 7074000
-
-# Snapped to the nearest step the tuner offers, since it accepts only a
-# fixed set.
-#
-# Choose the lowest gain at which band noise sits about 10 dB above the
-# receiver's own noise. Lower leaves more room for loud events. Higher
-# measures the receiver rather than the band.
-gain_db = 40.2
-
-# How fast the receiver samples. It must divide evenly by the decimation
-# below.
-#
-# 256000 divided by 16 gives 16000 Hz of audio, the rate a sound-card
-# station uses.
-#
-# The receiver rate divided by the decimation has to come to between 8000 Hz
-# and 48000 Hz. A receiver rate of 2400000 needs a decimation between 50 and
-# 300.
-iq_sample_rate = 256000
-
-# Receiver samples per audio sample. The audio rate is the receiver rate
-# divided by this.
-decimation = 16
-
-# How much of the band to measure, on one side of the listening frequency.
-#
-# 4000 Hz matches a typical SSB filter, so levels compare with a radio tuned
-# to the same spot.
-#
-# At most the receiver rate divided by the decimation, divided again by 2.5.
-# That is 6400 Hz with the settings above. The filter needs the extra room
-# past the band edge, and the monitor refuses a wider setting and says what
-# the limit is.
-bandwidth_hz = 4000
-
-# How far from the listening frequency to tune the hardware. Undone in
-# software, so it changes nothing you measure.
-#
-# The receiver puts a false signal at its own tuning frequency, and this
-# moves that away from the measured band. Leave it alone unless you know why
-# you are changing it.
-tuning_offset_hz = 50000
-
-# Which side of the listening frequency to hear.
-#
-#   Upper - the spectrum above the listening frequency
-#   Lower - the spectrum below it, shown reversed
-sideband = "upper"
-
-# Which receiver to use when more than one is plugged in.
-device_index = 0
-
-# Added to the measured audio level to get signal level at the receiver
-# input. Leave it unset until you have calibrated.
-#
-# Unset means the monitor estimates it from the tuner gain. Expect the
-# reading to be a few dB out.
-#
-# To find the figure, read the noise floor on a radio you trust, on the same
-# antenna at the same time, with its filter set to match the bandwidth
-# above. The difference between the two readings is what goes here.
-#
-# It depends on the tuner gain, so changing that means finding it again.
-#
-# Unset by default.
-# audio_rf_conversion_db = -40.2

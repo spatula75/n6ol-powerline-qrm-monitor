@@ -29,6 +29,8 @@ class StubSource:
         self.closed = False
         self.blocks = []
         self.clock_drift_seconds = 0.0
+        # The clipping report is a rate rather than a count, so it needs the rate.
+        self.iq_sample_rate = 256_000
 
     def start(self):
         self.started = True
@@ -264,19 +266,37 @@ class TestTheHealthCountersReachTheLog:
             'other one.')
 
     def test_clipping_is_reported_with_the_setting_that_fixes_it(self, caplog):
+        """The count has to clear the rate the report is worth making at: 4 parts per
+        million, which is about 123 values a minute at 256 kHz.
+        """
         clock = FakeClock()
         p, _ = pipeline(clock)
 
         with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
-            self.consume_for(p, clock, 120.0, clipped=40)
+            self.consume_for(p, clock, 120.0, clipped=400)
 
         assert len(caplog.messages) == 1, f'expected one warning, got {caplog.messages}'
         assert 'gain_db' in caplog.messages[0], (
             'The clipping warning does not name the setting that fixes it.  A message '
             'has to say what to do about the problem, not only that there is one.  It '
             f'said: {caplog.messages[0]!r}')
-        # Two blocks of 40 each, so 80 is the movement since the last report.
-        assert '80 raw value' in caplog.messages[0]
+        # Two blocks of 400 each, so 800 is the movement since the last report.
+        assert '800 raw value' in caplog.messages[0]
+
+    def test_a_handful_of_clipped_values_is_not_worth_a_warning(self, caplog):
+        """A station at its calibrated gain sees single digits a minute, from the
+        first burst of an intermittent arc.  Fourteen values in sixty seconds moves an
+        averaged burst amplitude by eight millionths of a decibel, and acting on it
+        costs a whole gain step, which below the knee costs one to three decibels on
+        every noise floor reported from then on.
+        """
+        clock = FakeClock()
+        p, _ = pipeline(clock)
+
+        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+            self.consume_for(p, clock, 120.0, clipped=7)
+
+        assert caplog.messages == [], caplog.messages
 
     def test_nothing_is_said_before_the_interval_has_passed(self, caplog):
         """Rate limiting is the whole reason this is not simply logged per block.  A
