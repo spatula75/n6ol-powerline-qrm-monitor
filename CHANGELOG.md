@@ -162,6 +162,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   A minute with no lock on the pulse train has no frequency to report, and the trace
   breaks there rather than joining across it.
 
+  Startup reports a chart left behind by turning the setting off, as it already does
+  for the all-time summary. The name says the chart is current whatever its age, so
+  nothing else would say otherwise.
+
   The layout follows the "System Frequency WECC/USA West" panel at
   `kestrelgrid.com/static/WECC.png`, so a station's own reading can be put beside a
   reference drawn from the grid operators' data: the same 1861 by 579 pixel axes box

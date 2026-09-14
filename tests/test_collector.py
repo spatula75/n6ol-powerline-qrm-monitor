@@ -438,32 +438,43 @@ class TestTheFrequencyChartIsOptional:
         assert FREQUENCY_CHART_NAME not in uploaded
 
 
+@pytest.mark.parametrize('chart_name, setting', [
+    (ALL_TIME_SUMMARY_NAME, 'enable_all_time_summary'),
+    (FREQUENCY_CHART_NAME, 'enable_frequency_chart'),
+])
 class TestAChartLeftBehindByTurningItOff:
-    """Turning the summary off stops it being updated; it does not delete it.
+    """Turning an optional chart off stops it being updated; it does not delete it.
 
     Nothing else in this program removes a file it published, and the operator may want
     to keep the last one.  But a chart that stops updating and says nothing is a chart
-    that goes on looking current in the archive, which is the very thing this setting
-    exists to prevent, so startup mentions it once.
+    that goes on looking current in the archive, which is the very thing these settings
+    exist to prevent, so startup mentions it once.
+
+    Both optional charts are covered here, because each one on its own would pass with
+    the other's report missing.
     """
 
-    def _stale_chart(self, tmp_path: Path) -> Path:
-        chart = tmp_path / ALL_TIME_SUMMARY_NAME
+    def _stale_chart(self, tmp_path: Path, chart_name: str) -> Path:
+        chart = tmp_path / chart_name
         chart.write_bytes(b'png')
         return chart
 
-    def test_an_existing_chart_is_reported_once_at_startup(self, tmp_path, caplog):
-        self._stale_chart(tmp_path)
+    def test_an_existing_chart_is_reported_once_at_startup(self, tmp_path, caplog, chart_name, setting):
+        self._stale_chart(tmp_path, chart_name)
         with caplog.at_level(logging.INFO, logger='buzz.collector'):
             _make_collector(_make_config(tmp_path))
-        assert ALL_TIME_SUMMARY_NAME in caplog.text
+        assert chart_name in caplog.text
+        assert f'station.{setting}' in caplog.text, (
+            'The report has to name the setting that turns the chart back on, or the '
+            'operator is left hunting for it in the config file.'
+        )
         assert 'no longer be updated' in caplog.text, (
             'The operator has to be told the chart is now stale, and where to delete '
             'it.  Otherwise it sits in the archive looking current for years.'
         )
 
-    def test_the_chart_is_never_deleted(self, tmp_path, caplog):
-        chart = self._stale_chart(tmp_path)
+    def test_the_chart_is_never_deleted(self, tmp_path, caplog, chart_name, setting):
+        chart = self._stale_chart(tmp_path, chart_name)
         with caplog.at_level(logging.INFO, logger='buzz.collector'):
             _make_collector(_make_config(tmp_path))
         assert chart.exists(), (
@@ -471,21 +482,21 @@ class TestAChartLeftBehindByTurningItOff:
             'removes a published file, and the last chart may be wanted.'
         )
 
-    def test_nothing_is_said_when_the_summary_is_on(self, tmp_path, caplog):
-        self._stale_chart(tmp_path)
+    def test_nothing_is_said_when_the_chart_is_on(self, tmp_path, caplog, chart_name, setting):
+        self._stale_chart(tmp_path, chart_name)
         cfg = _make_config(tmp_path)
-        cfg.station.enable_all_time_summary = True
+        setattr(cfg.station, setting, True)
         with caplog.at_level(logging.INFO, logger='buzz.collector'):
             _make_collector(cfg)
-        assert ALL_TIME_SUMMARY_NAME not in caplog.text, (
+        assert chart_name not in caplog.text, (
             'The chart is being kept current, so there is nothing to report.'
         )
 
-    def test_nothing_is_said_when_there_is_no_chart(self, tmp_path, caplog):
+    def test_nothing_is_said_when_there_is_no_chart(self, tmp_path, caplog, chart_name, setting):
         """The ordinary case for a new station, which must start up quietly."""
         with caplog.at_level(logging.INFO, logger='buzz.collector'):
             _make_collector(_make_config(tmp_path))
-        assert ALL_TIME_SUMMARY_NAME not in caplog.text
+        assert chart_name not in caplog.text
 
 
 class TestRunCollectionUploads:
