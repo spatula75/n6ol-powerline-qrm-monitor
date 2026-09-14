@@ -108,6 +108,31 @@ What the port would touch, read off the code rather than off the device:
 
 What stops it is that nobody owns one, and the SoapySDR question is unanswered.
 
+### A third source is the moment to stop dispatching on the source by name
+
+Nothing abstracts "where live audio comes from".  Each source is named in the places
+that care, and a third name means editing each of them:
+
+- `BuzzConfig.level_offset_db` picks the section that owns the answer with
+  `if self.audio.source == RTLSDR`, falling through to the sound card.  A third
+  source adds a branch, and the fall-through stops reading as a default and starts
+  reading as an oversight.
+- `open_live_source` checks membership of a two-item tuple, names both spellings in
+  the error it raises, and then branches again to build the one asked for.
+- Four of the schema's `x-visible-when` rules key on `[audio] source`, and the
+  `[audio] source` enum itself has to gain the value.
+
+The schema scales without trouble, because every rule is an equality against one
+spelling and a new source brings its own section.  The two `if` chains are what turn
+awkward.  The shape they want is probably a registry, mapping a source name to the
+section that configures it and the factory that opens it, so the dispatch happens once
+and the error message lists whatever is registered.
+
+This is recorded rather than done because one extra branch is cheaper than an
+abstraction built for a second case that does not exist yet.  Revisit it when the
+SDRplay work makes that second case real, and not before.
+
+
 ## Setup program
 
 ### Tuner gain should be a picker, not a text box
