@@ -619,6 +619,21 @@
             "A signal that starts quiet and grows louder is not skipped. Recording starts the moment it crosses, so the monitor catches the event even when it misses the opening seconds.",
             "The lead-in pays for the wait, and the lead-in runs out. This differs from min_lock_seconds, which the monitor can clamp: this wait depends on the signal rather than the clock. Something in the low teens is a reasonable place to start."
           ]
+        },
+        "record_iq": {
+          "type": "boolean",
+          "title": "Record raw IQ",
+          "description": "Write a second .wav of raw IQ beside each event recording, for handing the raw data to somebody who wants to process it themselves.",
+          "default": false,
+          "x-notes": [
+            "The monitor keeps the last several seconds of raw IQ at all times when this is on, so that an IQ recording gets the same run-up its audio does. That is 4.7 MB at the default sample rate and 44 MB at the highest the hardware takes.",
+            "Nothing in this program reads an IQ recording back. Playing one is a job for other software."
+          ],
+          "x-visible-when": {
+            "section": "audio",
+            "field": "source",
+            "equals": "rtlsdr"
+          }
         }
       }
     },

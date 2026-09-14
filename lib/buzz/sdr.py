@@ -887,6 +887,48 @@ class SweepReader:
         return self._released
 
 
+class IqRingBuffer(RingBufferPipeline):
+    """The last several seconds of raw IQ, kept so an IQ recording has a lead-in.
+
+    The audio ring buffer gives an event recording its run-up for free, because the
+    audio is already sitting there when the lock happens.  Raw IQ has no such buffer:
+    RtlSdrPipeline converts each block and keeps only the audio, and the bytes go out
+    of scope immediately after.  This holds them for the same duration instead.
+
+    It stores the bytes the device delivered rather than the complex samples they
+    convert to.  That is eight times smaller, and it is also exactly what a recording
+    writes, since the format on disk is the device's own: unsigned bytes, I then Q.
+    Converting to complex and back would cost the work twice and gain nothing.
+
+    Appended one whole device block at a time rather than in CHUNK_SIZE pieces.  That
+    slicing exists so get_snapshot returns a full window to the analyzer, and nothing
+    reads this by chunk count - a recording reads it sequentially with read_from.
+
+    Built only when [rtlsdr] record_iq is on, because it is not small: 4.7 MB at the
+    default 256 kHz, and 44 MB at the 2.4 MHz the hardware will accept.
+    """
+
+    def __init__(self, iq_sample_rate: int, block_samples: int) -> None:
+        super().__init__(sample_rate=iq_sample_rate, chunk_size=block_samples,
+                         dtype=np.uint8)
+
+    def add(self, block: IqBlock) -> None:
+        """Keep one block's raw bytes, shaped one complex sample per row.
+
+        Public where every other pipeline here fills itself from inside a subclass,
+        because this one is filled by RtlSdrPipeline, which is a buffer in its own
+        right for the audio.  The push crosses an object boundary, so it gets a name.
+
+        The reshape is what keeps the buffer's arithmetic honest.  `raw` is interleaved
+        bytes, so its length counts two per complex sample, while the capacity this
+        buffer was sized to counts one - appending it flat would leave total_samples
+        and capacity_samples in different units, and every duration derived from them
+        wrong by a factor of two.  A row per complex sample also happens to be the
+        frame layout a stereo recording writes, I then Q.
+        """
+        self._append(block.raw.reshape(-1, 2))
+
+
 class RtlSdrPipeline(RingBufferPipeline):
     """Feeds the shared ring buffer from a receiver, converting on the way.
 
@@ -903,10 +945,14 @@ class RtlSdrPipeline(RingBufferPipeline):
     """
 
     def __init__(self, source: RtlSdrSource, converter: 'IqToAudio', *,
-                 clock: Callable[[], float] = monotonic) -> None:
+                 clock: Callable[[], float] = monotonic, keep_iq: bool = False) -> None:
         super().__init__(converter.audio_sample_rate)
         self._source = source
         self._converter = converter
+        # Off unless an IQ recording is going to want it.  See IqRingBuffer for what
+        # it costs, which is enough to be worth not paying by default.
+        self._iq_buffer = (IqRingBuffer(source.iq_sample_rate, source.block_samples)
+                           if keep_iq else None)
         self._clipped = 0
         self._leftover = np.empty(0, dtype=np.int16)
         self._stop = threading.Event()
@@ -928,6 +974,11 @@ class RtlSdrPipeline(RingBufferPipeline):
         hearing, and that loud events are being measured smaller than they are.
         """
         return self._clipped
+
+    @property
+    def iq_buffer(self) -> IqRingBuffer | None:
+        """The raw IQ history, or None when nothing asked for one to be kept."""
+        return self._iq_buffer
 
     @property
     def source(self) -> RtlSdrSource:
@@ -970,6 +1021,11 @@ class RtlSdrPipeline(RingBufferPipeline):
         this does not.
         """
         self._clipped += block.clipped_samples
+        # Kept before the conversion, so that a conversion that raises still leaves the
+        # raw bytes behind.  They are what a recording writes, and they are the one
+        # thing this block carries that nothing else can reconstruct afterward.
+        if self._iq_buffer is not None:
+            self._iq_buffer.add(block)
         self._append_in_chunks(self._converter.convert(block.as_complex()))
         self._report_health()
 

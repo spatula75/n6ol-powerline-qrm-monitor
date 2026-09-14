@@ -88,12 +88,22 @@ class RingBufferPipeline:
 
     CHUNK_SIZE = 512  # samples per callback block; 32 ms at 16 kHz
 
-    def __init__(self, sample_rate: int = _DEFAULT_SAMPLE_RATE) -> None:
+    def __init__(self, sample_rate: int = _DEFAULT_SAMPLE_RATE, *,
+                 chunk_size: int | None = None,
+                 dtype: np.dtype | type = np.int16) -> None:
         # The rate is taken here only to size the buffer: this class never looks at the
         # audio, and a subclass that knows the real rate passes it up.  Sizing in
         # seconds is what keeps the analyzer's history and a recording's lead-in
         # meaning the same thing whatever the audio arrives at.
-        self._chunks = buffer_chunks(sample_rate, self.CHUNK_SIZE)
+        #
+        # chunk_size and dtype exist for a buffer holding something other than the
+        # monitor's audio.  The raw IQ buffer holds unsigned bytes and is appended one
+        # whole device block at a time, because nothing reads it by chunk count the way
+        # the analyzer reads audio.  Both default to what every audio buffer has always
+        # used, so no existing caller changes.
+        self._chunk_size = self.CHUNK_SIZE if chunk_size is None else chunk_size
+        self._dtype = dtype
+        self._chunks = buffer_chunks(sample_rate, self._chunk_size)
         self._buffer: deque[np.ndarray] = deque(maxlen=self._chunks)
         self._condition = threading.Condition()
         # Monotonic count of samples ever captured; keeps growing after the deque
@@ -131,16 +141,16 @@ class RingBufferPipeline:
 
         The caller should ensure wait_for_data(n_samples + align) has returned True.
         """
-        n_chunks = ceil((n_samples + align - 1) / self.CHUNK_SIZE)
+        n_chunks = ceil((n_samples + align - 1) / self._chunk_size)
         with self._condition:
             chunks = list(self._buffer)[-n_chunks:]
             total = self._total_samples
         if not chunks:
-            return np.zeros(n_samples, dtype=np.int16)
+            return np.zeros(n_samples, dtype=self._dtype)
         arr = np.concatenate(chunks)
         end = len(arr) - total % align
         if end <= 0:
-            return np.zeros(n_samples, dtype=np.int16)
+            return np.zeros(n_samples, dtype=self._dtype)
         return arr[max(0, end - n_samples):end]
 
     def read_from(self, position: int) -> AudioSpan:
@@ -163,7 +173,7 @@ class RingBufferPipeline:
         oldest = end - buffered
         start = max(position, oldest)
         if start >= end:
-            return AudioSpan(np.empty(0, dtype=np.int16), end, end)
+            return AudioSpan(np.empty(0, dtype=self._dtype), end, end)
 
         # Only the chunks the span actually touches are joined.  A caller reading
         # sequentially asks for the fraction of a second that arrived since its last
@@ -190,7 +200,7 @@ class RingBufferPipeline:
         slides, so a second spent waiting is a second of run-up that has fallen off
         the far end by the time the file opens.
         """
-        return self._chunks * self.CHUNK_SIZE
+        return self._chunks * self._chunk_size
 
     @property
     def total_samples(self) -> int:
@@ -209,7 +219,7 @@ class RingBufferPipeline:
         On first startup this blocks while the buffer fills; thereafter it
         returns immediately.
         """
-        n_chunks = ceil(n_samples / self.CHUNK_SIZE)
+        n_chunks = ceil(n_samples / self._chunk_size)
         with self._condition:
             return self._condition.wait_for(
                 lambda: len(self._buffer) >= n_chunks,

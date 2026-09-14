@@ -15,6 +15,10 @@ file through this program is out of scope on purpose.  Nothing here reads one ba
 `AudioEventRecorder` the only subclass so far.  All three live in
 `lib/buzz/recorder.py`.
 
+The raw IQ buffer is built too - `IqRingBuffer` in `lib/buzz/sdr.py`, filled by
+`RtlSdrPipeline` and gated on the new `[recording] record_iq`.  Nothing reads it yet,
+because the recorder that will is the next step.
+
 Two things described below are not built.  The trigger calls `begin`, `capture` and
 `finish` on a list of recorders directly rather than publishing to listeners that
 subscribe, so the decoupling described under "Publish/subscribe" is still the next
@@ -147,10 +151,23 @@ derived from the `complex128` conversion.  One raw block (`DEFAULT_BLOCK_SAMPLES
 16,384 samples) is appended whole - nothing needs the leftover-holding logic
 `_append_in_chunks` uses for audio, since nothing reads the IQ buffer by a fixed
 chunk count the way the analyzer reads audio.  Sized to the same `_BUFFER_SECONDS`
-(9.6 s) as the audio buffer, that is about 4.9 MB at 256 kHz - cheap enough that
-building it whenever the source is RTL-SDR, regardless of whether `record_iq` is on,
-is the leaning rather than a hard decision.  Config would gate only whether a recorder
-is ever constructed to read it.
+(9.6 s) as the audio buffer.
+
+**Built only when `[recording] record_iq` is on.**  An earlier draft of this document
+leaned the other way, on the grounds that 4.7 MB at the default rate is too little to
+bother gating.  That reasoning only looked at the default.  `iq_sample_rate` has no
+maximum in the schema, and the same 9.6 seconds costs 18.8 MB at 1.024 MHz and 43.9 MB
+at the 2.4 MHz the hardware accepts, none of it touched by a station that will never
+record IQ.
+
+The gate is `record_iq` alone, and deliberately not `[recording] enabled`.  That second
+flag does not mean recording is off, it means recording starts disarmed, and the
+toolbar can arm it at any point in the run - `main.py` builds the recorder whether or
+not it is enabled for exactly that reason.  Skipping the buffer on it would hand an
+operator who presses Record an audio file with a full lead-in and an IQ file with
+none, which is the two files disagreeing about one event.  Building it lazily on the
+first arm fails the same way, because the buffer would start empty and the lead-in is
+the whole reason it exists.
 
 ## Naming, config, metadata
 
@@ -158,10 +175,17 @@ is ever constructed to read it.
   written as `event-<timestamp>-iq.wav` beside `event-<timestamp>.wav` - same lock
   instant, same `unique_path` collision handling, obviously paired at a glance in one
   directory.
-- Proposed config: `[rtlsdr] record_iq = false`, gated by `x-visible-when` the same
-  way the rest of `[rtlsdr]` already is.  `[recording]`'s existing budget and timing
-  fields apply to both recorders unchanged, since the trigger they configure is now
-  the only thing that reads them.
+- Config: `[recording] record_iq = false`.  It went there rather than into
+  `[rtlsdr]`, where an earlier draft put it, for two reasons.  It is a recording
+  setting, and `[recording]` is a full menu in the setup program, so that is where an
+  operator looks for one.  And the `[rtlsdr]` menu is deliberately a four-step
+  procedure - frequency, gain, check, level - which a fifth unrelated item would
+  interrupt.  It carries an `x-visible-when` reaching into `[audio] source`, so a
+  sound-card station never sees it.  That is the second cross-section gate in the
+  schema, and `tests/test_setup_schema.py` keeps an allowlist of them precisely so a
+  third has to be argued for.  `[recording]`'s existing budget and timing fields apply
+  to both recorders unchanged, since the trigger they configure is the only thing that
+  reads them.
 - The IQ file's tags carry what the audio file's cannot: center frequency, IQ sample
   rate, tuner gain, tuning offset, decimation, bandwidth, sideband - read at record
   time, so a mid-run gain change is captured accurately per file rather than as
@@ -183,8 +207,20 @@ falls out of the composition rather than needing new wiring at the call sites.
   file and the toolbar asks the audio recorder directly, since it always exists, or
   `RecorderStatus` grows a small per-recorder breakdown.  UI-only, does not touch the
   recording logic.
-- Whether the IQ buffer is always built on an RTL-SDR source or only when
-  `record_iq` is on - leaning always, for the reason above, not locked in.
+
+## What the buffer counts
+
+`IqRingBuffer` stores one complex sample per row, as a `(N, 2)` array of unsigned
+bytes, rather than the flat interleaved bytes the device delivers.  The first attempt
+appended them flat and was wrong in a way that would not have shown up until an IQ
+recording had a lead-in half the length of its audio one: `_append` counts
+`len(chunk)`, which for interleaved bytes is two per complex sample, while the
+capacity the buffer was sized to counts one.  The two would have been in different
+units, and every duration derived from them wrong by a factor of two.
+
+A row per complex sample also turns out to be the frame layout a stereo recording
+writes, I then Q, so the recorder can hand the rows straight to `wave` without
+reshaping them back.
 
 ## Testing
 

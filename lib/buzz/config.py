@@ -355,6 +355,16 @@ class RecordingConfig:
     # anything at or below that is the same as 0.  A signal that starts weak and grows
     # is recorded from the moment it crosses, not skipped.
     min_lock_snr: float = 0.0
+    # Write a second .wav of raw IQ beside each event recording, stereo, I on the left
+    # channel and Q on the right, exactly as the device delivered it.  For handing the
+    # raw data to somebody who wants to do their own signal processing on it; nothing
+    # in this program reads one back.  An RTL-SDR receiver only: a sound card has no IQ.
+    #
+    # Off by default because it is not free even when no event is ever recorded: the
+    # monitor has to keep the last several seconds of raw IQ at all times so that a
+    # recording has the same run-up its audio gets.  That is 4.7 MB at the default
+    # sample rate and 44 MB at the highest the hardware takes.
+    record_iq: bool = False
 
     def directory_path(self, station: StationConfig) -> Path:
         """Resolve `directory` against the station's output path when it is unset."""

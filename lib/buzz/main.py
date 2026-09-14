@@ -355,7 +355,10 @@ def open_live_source(config: BuzzConfig) -> RingBufferPipeline:
             'error to change if the gain does.  Set [rtlsdr] calibrated_offset_db '
             'once you have compared against a receiver you trust on the same antenna.',
             settings.level_offset_db)
-    return RtlSdrPipeline(source, converter)
+    if config.recording.record_iq:
+        logger.info('Keeping the last several seconds of raw IQ, so that an IQ '
+                    'recording gets the same run-up its audio does.')
+    return RtlSdrPipeline(source, converter, keep_iq=config.recording.record_iq)
 
 
 def _start_playback(pipeline: RingBufferPipeline, playing_back: str | None) -> None:

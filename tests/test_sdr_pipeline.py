@@ -7,6 +7,8 @@ it, and a test that started it would be waiting on timeouts to prove nothing.
 
 import logging
 
+from unittest.mock import patch
+
 import numpy as np
 import pytest
 
@@ -31,6 +33,8 @@ class StubSource:
         self.clock_drift_seconds = 0.0
         # The clipping report is a rate rather than a count, so it needs the rate.
         self.iq_sample_rate = 256_000
+        # What the raw IQ buffer sizes its chunks by, when one is being kept.
+        self.block_samples = BLOCK
 
     def start(self):
         self.started = True
@@ -59,9 +63,10 @@ class FakeClock:
         self.now += seconds
 
 
-def pipeline(clock=None):
+def pipeline(clock=None, keep_iq=False):
     converter = IqToAudio(IQ_RATE, DECIMATION, BANDWIDTH, OFFSET)
-    return (RtlSdrPipeline(StubSource(), converter, clock=clock or FakeClock()),
+    return (RtlSdrPipeline(StubSource(), converter, clock=clock or FakeClock(),
+                           keep_iq=keep_iq),
             converter)
 
 
@@ -381,3 +386,91 @@ class TestTheHealthCountersReachTheLog:
             'Saturation at the int16 output was not reported.  It is counted on the '
             'converter rather than the pipeline, so it is easy to miss.  Got: '
             f'{caplog.messages[0]!r}')
+
+
+class TestKeepingRawIq:
+    """The buffer an IQ recording reads its lead-in from.
+
+    Raw IQ is discarded the instant it is converted, so without this a recording would
+    have to start at the moment of lock and miss the onset of the event it exists to
+    capture.  See docs-notebook/iq-recording-design.md.
+    """
+
+    def test_nothing_is_kept_unless_asked(self):
+        """It is not small.  A station that will never record IQ should not be holding
+        several seconds of it for the life of the run.
+        """
+        sdr, _ = pipeline()
+        assert sdr.iq_buffer is None
+
+    def test_asking_for_it_builds_one(self):
+        sdr, _ = pipeline(keep_iq=True)
+        assert sdr.iq_buffer is not None
+
+    def test_a_consumed_block_is_kept_byte_for_byte(self):
+        """What a recording writes is the device's own bytes.  Anything derived from
+        the complex conversion would be a round trip with nothing gained.
+        """
+        sdr, _ = pipeline(keep_iq=True)
+        one = block()
+        sdr._consume(one)
+        span = sdr.iq_buffer.read_from(0)
+        assert np.array_equal(span.samples.reshape(-1), one.raw)
+
+    def test_it_counts_complex_samples_rather_than_bytes(self):
+        """The buffer is sized in complex samples, so it has to count in them too.
+        Counting the interleaved bytes would leave every duration derived from this
+        wrong by a factor of two, in the direction that silently halves a lead-in.
+        """
+        sdr, _ = pipeline(keep_iq=True)
+        for _ in range(4):
+            sdr._consume(block())
+        assert sdr.iq_buffer.total_samples == 4 * BLOCK
+
+    def test_a_row_is_one_frame_of_i_and_q(self):
+        """Stored the way a stereo recording writes it: I then Q, one pair per frame."""
+        sdr, _ = pipeline(keep_iq=True)
+        one = block()
+        sdr._consume(one)
+        span = sdr.iq_buffer.read_from(0)
+        assert span.samples.shape == (BLOCK, 2)
+        assert np.array_equal(span.samples[:, 0], one.raw[0::2])   # I
+        assert np.array_equal(span.samples[:, 1], one.raw[1::2])   # Q
+
+    def test_it_holds_the_same_span_of_time_the_audio_buffer_does(self):
+        """The lead-in an IQ recording gets has to match the one its audio gets, or the
+        two files describe the same event and disagree about where it started.
+        """
+        sdr, _ = pipeline(keep_iq=True)
+        iq_seconds = sdr.iq_buffer.capacity_samples / IQ_RATE
+        audio_seconds = sdr.capacity_samples / (IQ_RATE // DECIMATION)
+        assert iq_seconds == pytest.approx(audio_seconds, abs=0.2)
+
+    def test_the_oldest_blocks_fall_off_the_end(self):
+        """A sliding window, like the audio buffer.  Without the discard this would
+        grow without bound for as long as the monitor runs.
+        """
+        sdr, _ = pipeline(keep_iq=True)
+        for _ in range(buffer_chunks(IQ_RATE, BLOCK) + 5):
+            sdr._consume(block())
+        span = sdr.iq_buffer.read_from(0)
+        assert len(span.samples) == sdr.iq_buffer.capacity_samples
+        assert span.start > 0, 'nothing was discarded, so the buffer is still growing'
+
+    def test_the_raw_is_kept_even_when_the_conversion_fails(self):
+        """The bytes are the one thing in a block that nothing can reconstruct
+        afterward, so they are kept before anything that can raise touches them.
+        """
+        sdr, converter = pipeline(keep_iq=True)
+        with patch.object(converter, 'convert', side_effect=RuntimeError('bad block')):
+            with pytest.raises(RuntimeError):
+                sdr._consume(block())
+        assert sdr.iq_buffer.total_samples == BLOCK
+
+    def test_the_audio_still_arrives(self):
+        """Keeping the raw must not disturb what the monitor actually analyzes."""
+        plain, _ = pipeline()
+        kept, _ = pipeline(keep_iq=True)
+        for sdr in (plain, kept):
+            sdr._consume(block())
+        assert kept.total_samples == plain.total_samples
