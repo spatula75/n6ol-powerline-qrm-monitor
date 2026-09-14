@@ -902,6 +902,25 @@ that call rather than quietly compiling another variant mid-flight.
   and then asserting on the mock's output, which proves only that Python can return a
   value. Before trusting a test, ask what change to the real code would make it fail -
   if the honest answer is "none," delete or rewrite it.
+- **A deliberate break that leaves the test green is a finding about the test.** The
+  falsification step above has its own failure mode: you break the code, the suite
+  stays green, and the natural reading is that you broke the wrong line. Read it the
+  other way first, because the other reading is that the test never tested the thing.
+
+  `test_a_tie_goes_to_the_lower_gain` claimed `gain_nearest_the_floor_target` prefers
+  the lower gain when two steps sit equally far from the target. Flipping
+  `min(ordered, ...)` to `min(reversed(ordered), ...)` left it green, because the tie
+  was not a tie: the two gains sat at `T - 1.0` and `T + 1.0`, whose distances from
+  `T` come out `1.0` and `1.0000000000000004`. The lower gain won on distance, so the
+  assertion held whichever way the code broke ties.
+
+  **A tie assembled out of floating-point arithmetic is not a tie.** Give the tied
+  quantities the same value rather than two values that ought to be equidistant. A
+  setup that rests on exact float equality is also a flake waiting for another
+  machine:
+  the first version of that test built the tie from the midpoint of two fitted
+  values, passed here where `lstsq` happened to return two bit-identical distances,
+  and failed in CI on a different numpy.
 - **Deleting a safeguard means guarding the reason it became unnecessary.** The frame
   padding in `ffmpeg_command()` was removed because the time-pinned FFT window makes the
   bin count 128 at every rate. True, but only because `validate_sample_rate` refuses
