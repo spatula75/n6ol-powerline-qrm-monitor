@@ -313,12 +313,35 @@ an import fails at collection rather than as a mock error minutes into a full ru
 `tests/test_main.py` uses it throughout, which is the file the problem happened in
 twice.
 
-The rest of the suite still names our own symbols as strings, about sixty call sites
-across eight files.  The ones worth converting are the symbols we can rename:
-`buzz.sdr.open_device`, `buzz.setup.screens.gain_calibration.open_sweep`,
-`buzz.sdr.RtlSdrSource`, `buzz.iq.IqToAudio`, `buzz.sdr.SweepReader`,
-`buzz.sdr.SdrLevelStream`, `buzz.sdr.close_device`, `buzz.ffmpeg.find_ffmpeg` and
-`buzz.setup.screens.calibration.SoundCardLevelStream`.
+The rest of the suite still names our own symbols as strings.  Counted on 2026-09-14
+there are 312 string targets, of which 107 name a symbol we can rename, spread over
+nine files:
+
+| uses | file | targets |
+| --- | --- | --- |
+| 25 | `test_gain_calibration_dialog.py` | `open_device`, `open_sweep`, `RtlSdrSource`, `SweepReader`, `close_device` |
+| 23 | `test_level_stream_source_choice.py` | `open_device`, `RtlSdrSource`, `SdrLevelStream`, `IqToAudio`, `SoundCardLevelStream` |
+| 15 | `test_release_render_check.py` | `run`, `render_variant`, `count_black_segments` |
+| 14 | `test_batch_render_recordings.py` | `render`, `default_recordings_directory`, `BuzzConfig` |
+| 9 | `test_gain_picker.py` | `open_device` |
+| 9 | `test_loudness.py` | `run` |
+| 6 | `test_pulse_probe.py` | `AudioSampler`, `capture` |
+| 4 | `test_render.py` | `wavmeta.read_settings` |
+| 2 | `test_recorder.py` | `wavmeta.append_metadata` |
+
+The last two need the owning module rather than the calling one, for the reason
+`tests/patching.py` now explains: a target that reaches through a module binding
+patches whoever owns the attribute, so `buzz.render.wavmeta.read_settings` already
+patches `buzz.wavmeta` and `patch_in(wavmeta, read_settings)` says so.
+
+The other 205 targets reach through one of our modules to somebody else's, such as
+`buzz.playback.sd.OutputStream` and `buzz.recorder.time.monotonic`.  Those stay as
+strings.
+
+**Do this on its own branch, from the backlog, rather than folding it into whatever
+work touches one of these files.**  It is cleanup across nine test files at once, so a
+diff that mixes it with a feature buries both.  Meanwhile every new test uses
+`patch_in` from the start, which is what stops the count growing.
 
 Three kinds stay as strings on purpose.  Third-party names reached through one of our
 modules, such as `buzz.sampler.sd.InputStream`, are not ours to rename.  Constants
