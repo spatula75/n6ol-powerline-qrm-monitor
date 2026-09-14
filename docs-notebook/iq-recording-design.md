@@ -16,16 +16,26 @@ file through this program is out of scope on purpose.  Nothing here reads one ba
 `lib/buzz/recorder.py`.
 
 The raw IQ buffer is built too - `IqRingBuffer` in `lib/buzz/sdr.py`, filled by
-`RtlSdrPipeline` and gated on the new `[recording] record_iq`.  Nothing reads it yet,
-because the recorder that will is the next step.
+`RtlSdrPipeline` and gated on the new `[recording] record_iq` - and `IqEventRecorder`
+reads it.  An event on a receiver with the setting on now writes two files.
 
-Two things described below are not built.  The trigger calls `begin`, `capture` and
+Building the second recorder turned up three assumptions in the abstract base that
+had only ever held because audio was the only format: `_emit` cast to `<i2`, the
+held-back tail started as a flat array that cannot concatenate with stereo frames,
+and the fade ramp raised rather than broadcasting against a row per frame.  None of
+them was visible until something other than mono int16 arrived, which is the argument
+for the second format being real code rather than a planned one.
+
+One thing described below is not built.  The trigger calls `begin`, `capture` and
 `finish` on a list of recorders directly rather than publishing to listeners that
 subscribe, so the decoupling described under "Publish/subscribe" is still the next
 step - the interface it needs is in place, and what changes is how the trigger gets
-its list.  Failure isolation is also still the old single-recorder behavior: a
-recorder that cannot open its file disarms the trigger rather than being skipped,
-which is right while there is only one of them and wrong as soon as there are two.
+its list.
+
+Failure isolation is now the live question rather than a future one, because there
+really are two recorders.  A recorder that cannot open its file still disarms the
+trigger rather than being skipped, so a full disk on the IQ side takes audio
+recording down with it.
 
 What the split already bought is the part that could not be retrofitted later: one
 budget, spent once per event by the trigger, whatever number of files an event

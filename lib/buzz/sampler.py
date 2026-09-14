@@ -102,7 +102,9 @@ class RingBufferPipeline:
         # the analyzer reads audio.  Both default to what every audio buffer has always
         # used, so no existing caller changes.
         self._chunk_size = self.CHUNK_SIZE if chunk_size is None else chunk_size
-        self._dtype = dtype
+        # Normalized, so that itemsize and str are available to anything asking
+        # what this buffer holds.  A recorder sizes its .wav frames from it.
+        self._dtype = np.dtype(dtype)
         self._chunks = buffer_chunks(sample_rate, self._chunk_size)
         self._buffer: deque[np.ndarray] = deque(maxlen=self._chunks)
         self._condition = threading.Condition()
@@ -191,6 +193,21 @@ class RingBufferPipeline:
         # taken overshoots wanted by however far into its oldest chunk `start` falls:
         # the run of chunks begins on a chunk boundary and a position rarely does.
         return AudioSpan(np.concatenate(kept[::-1])[taken - wanted:], start, end)
+
+    @property
+    def dtype(self) -> np.dtype:
+        """What one sample of this buffer is, which decides a recording's frame size."""
+        return self._dtype
+
+    @property
+    def iq_buffer(self) -> 'RingBufferPipeline | None':
+        """The raw pre-conversion samples this source kept, or None when it keeps none.
+
+        Only a receiver has anything to keep: a sound card delivers the audio itself,
+        with nothing upstream of it to hold on to.  Answering None here rather than
+        making the caller test the source keeps that question off every call site.
+        """
+        return None
 
     @property
     def capacity_samples(self) -> int:

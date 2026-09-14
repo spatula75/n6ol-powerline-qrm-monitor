@@ -865,6 +865,23 @@ class TestOpeningAReceiverAsTheLiveSource:
             'every .wav header and the analyzer counts seconds by it.')
         assert pipeline.capacity_samples > 0
 
+    def test_raw_iq_is_kept_only_when_the_setting_asks_for_it(self):
+        """The setting has to reach the pipeline, or an operator who turned IQ
+        recording on gets an event with no IQ file and nothing saying why.
+
+        It is gated because the buffer is not small: several seconds of raw IQ is
+        4.7 MB at the default rate and 44 MB at the highest the hardware takes, none
+        of it touched by a station that will never record IQ.
+        """
+        off = self.open_with_a_fake_receiver(self.rtlsdr_config())
+        assert off.iq_buffer is None
+
+        config = self.rtlsdr_config()
+        config.recording.record_iq = True
+        on = self.open_with_a_fake_receiver(config)
+        assert on.iq_buffer is not None
+        assert on.iq_buffer.dtype.itemsize == 1, 'an RTL-SDR delivers unsigned bytes'
+
     def test_a_section_that_cannot_work_is_refused_before_anything_starts(self):
         """2.4 MS/s decimated by 16 gives 150 kHz of audio.  Nothing used to check it,
         so the monitor ran with a ring buffer holding one second instead of 9.6 and

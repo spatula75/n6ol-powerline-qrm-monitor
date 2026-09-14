@@ -20,7 +20,11 @@ The design is worked out in full - the ring buffer this needs that does not exis
 yet, why the two recorders share one trigger rather than two independent budgets, why
 that trigger publishes to listeners rather than holding sink objects directly, and why
 stopping mid-recording turns out not to need any special handling once `finish` is
-allowed to be a synchronous call.  See `iq-recording-design.md`.  Not started.
+allowed to be a synchronous call.  See `iq-recording-design.md`.
+
+Mostly built.  What is left is the publish/subscribe decoupling, and failure
+isolation: a recorder that cannot open its file disarms the whole trigger, so a full
+disk on the IQ side stops audio recording too.
 
 ## Faster sample rate support
 

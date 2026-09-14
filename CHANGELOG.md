@@ -8,6 +8,22 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `[recording] record_iq`, which writes a second `.wav` of raw IQ beside each event
+  recording: stereo, I on the left channel and Q on the right, at the receiver's own
+  sample rate, in the device's own sample format. Nothing is scaled, levelled or
+  faded, so the file is the measurement rather than this program's reading of it. It
+  is for handing the raw data to somebody with their own tools; nothing here reads one
+  back. Off by default, and a receiver only.
+
+  Its metadata carries what the samples cannot: the frequency the hardware was tuned
+  to, which is where DC sits in the file, the listening frequency and the offset
+  between them, the tuner gain, the level calibration, and the grid's pulse rate. The
+  cue marker sits at the moment of lock, as it does in an audio recording.
+
+  Turning it on costs memory whether or not an event is ever recorded, because the
+  monitor has to hold the last several seconds of raw IQ at all times for a recording
+  to have the same run-up its audio gets. That is 4.7 MB at the default sample rate
+  and 44 MB at the highest the hardware takes.
 - `lib/buzz/iq.py`, the conversion from an SDR's IQ stream to the mono audio the
   rest of the program already expects. It mixes the frequency of interest down to
   zero, filters to one sideband, decimates by a whole number, takes the real part

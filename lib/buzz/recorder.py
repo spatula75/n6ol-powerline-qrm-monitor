@@ -84,8 +84,6 @@ from buzz.sampler import RingBufferPipeline
 logger = logging.getLogger(__name__)
 
 
-_EMPTY = np.empty(0, dtype=np.int16)
-
 
 _END_DESCRIPTIONS = {
     'operator': 'stopped by operator',
@@ -156,6 +154,11 @@ class AbstractEventRecorder(ABC):
     # to whoever opens one later, so each says which it is.
     KIND: str
 
+    # Appended to the filename, so that two recorders of one event are one glance
+    # apart in the directory.  Empty for the audio, which is the one an operator
+    # reaches for and the one every other part of this program reads.
+    FILENAME_SUFFIX = ''
+
     def __init__(self, pipeline: RingBufferPipeline, sample_rate: int, directory: Path,
                  callsign: str, max_seconds: float, charged_wait_seconds: float) -> None:
         self._pipeline = pipeline
@@ -181,11 +184,22 @@ class AbstractEventRecorder(ABC):
         self._started_at: datetime | None = None    # wall-clock time of the lock
         # The most recent samples, held back from the file so the fade-out can be
         # applied to whichever ones turn out to be last.  See _write().
-        self._tail = _EMPTY
+        self._tail = self._no_frames
         self._position = 0              # next unread sample position in the pipeline
         self._event_start = 0           # position where recording began (max_seconds origin)
 
     # ------------------------------------------------------------------ public
+
+    @property
+    def _no_frames(self) -> np.ndarray:
+        """An empty run of frames, shaped the way this recorder's own samples arrive.
+
+        Mono audio is a flat array and stereo IQ is one row per frame.  The two cannot
+        be concatenated with each other, so the empty the tail starts as has to match
+        whatever will be appended to it.
+        """
+        return np.empty(0 if self.CHANNELS == 1 else (0, self.CHANNELS),
+                        dtype=self.SAMPLE_DTYPE)
 
     @property
     def is_recording(self) -> bool:
@@ -234,15 +248,19 @@ class AbstractEventRecorder(ABC):
         return 0.5 - 0.5 * np.cos(np.pi * np.linspace(0.0, 1.0, n))
 
     @staticmethod
-    def event_filename(when: datetime) -> str:
+    def event_filename(when: datetime, suffix: str = '') -> str:
         """Return the .wav filename for an event that locked at `when`.
+
+        The suffix is what keeps two recorders of one event apart.  Both open at the
+        same instant, so both would otherwise ask for the same name and the second
+        would be pushed to a -2 that says nothing about which file it is.
 
         Local time with the UTC offset attached, so a file stays unambiguous a year
         later and across a DST change.  ISO 8601's colons are illegal in Windows
         filenames and its T separator is hard to read at a glance, so date and time are
         joined with a dash instead: event-20260729-143307-0700.wav.
         """
-        return f'event-{when.strftime("%Y%m%d-%H%M%S%z")}.wav'
+        return f'event-{when.strftime("%Y%m%d-%H%M%S%z")}{suffix}.wav'
 
     @staticmethod
     def unique_path(path: Path) -> Path:
@@ -306,7 +324,7 @@ class AbstractEventRecorder(ABC):
         recorder reading a different pipeline at a different rate has to place the cue
         marker in its own samples.  See docs-notebook/iq-recording-design.md.
         """
-        path = self._directory / self.event_filename(started_at)
+        path = self._directory / self.event_filename(started_at, self.FILENAME_SUFFIX)
         writer = None
         try:
             self._directory.mkdir(parents=True, exist_ok=True)
@@ -335,7 +353,7 @@ class AbstractEventRecorder(ABC):
         # Position 0 reads the whole buffer: everything still held from before this
         # moment, which is the run-up the file opens with.
         span = self._pipeline.read_from(0)
-        self._frames_accepted, self._tail = 0, _EMPTY
+        self._frames_accepted, self._tail = 0, self._no_frames
         # Where the lock actually sits inside that span, which is not where the file
         # starts and not where this decision is being taken.  min_lock_seconds puts
         # those seconds between the two, and they are part of the event: the cue
@@ -470,7 +488,8 @@ class AbstractEventRecorder(ABC):
             return samples
         n = min(remaining, len(samples))
         faded = samples.copy()
-        ramp = self._fade_in[self._frames_accepted:self._frames_accepted + n]
+        ramp = self._ramp_for(self._fade_in[self._frames_accepted:self._frames_accepted + n],
+                              samples)
         faded[:n] = np.rint(faded[:n] * ramp)
         return faded
 
@@ -479,13 +498,41 @@ class AbstractEventRecorder(ABC):
 
         The ramp is built to the tail's own length, so a recording too short to have
         filled it still ends on silence rather than on a step.
+
+        Nothing is held back at all by a recorder that does not fade, so the early
+        return is the whole of that case.  It also keeps the arithmetic below away
+        from an empty stereo tail, whose shape a flat ramp cannot broadcast against.
         """
-        self._emit(np.rint(self._tail * self.fade_ramp(len(self._tail))[::-1])
-                   .astype(self.SAMPLE_DTYPE))
-        self._tail = _EMPTY
+        if not len(self._tail):
+            return
+        ramp = self._ramp_for(self.fade_ramp(len(self._tail))[::-1], self._tail)
+        self._emit(np.rint(self._tail * ramp).astype(self.SAMPLE_DTYPE))
+        self._tail = self._no_frames
+
+    @staticmethod
+    def _ramp_for(ramp: np.ndarray, frames: np.ndarray) -> np.ndarray:
+        """A fade ramp shaped to multiply against `frames`.
+
+        One value per frame, applied to every channel of it.  Mono frames are a flat
+        array and the ramp already matches; anything with channels is a row per frame,
+        which a flat ramp cannot broadcast against and would raise on instead.
+
+        Nothing multi-channel fades today, since the one stereo recorder is raw IQ and
+        deliberately does not.  This is here so that the fade length stays a knob a
+        subclass can simply set, rather than one that works for mono and raises for
+        everything else.
+        """
+        return ramp if frames.ndim == 1 else ramp[:, None]
 
     def _emit(self, samples: np.ndarray) -> None:
-        self._writer.writeframes(samples.astype('<i2', copy=False).tobytes())
+        """Write frames out in this recorder's own sample format.
+
+        The dtype is the subclass's rather than a literal, and the two .wav
+        conventions line up with numpy's: 8-bit is unsigned, like a receiver's raw
+        bytes, and everything wider is signed little-endian, like int16 audio.  So
+        the cast is a no-op whenever the samples already arrived in the right form.
+        """
+        self._writer.writeframes(samples.astype(self.SAMPLE_DTYPE, copy=False).tobytes())
 
     def _write_metadata(self, ended: str) -> None:
         """Tag the finished file with what it is and how to read it back.
@@ -564,6 +611,79 @@ class AudioEventRecorder(AbstractEventRecorder):
         }
 
 
+class IqEventRecorder(AbstractEventRecorder):
+    """The receiver's raw IQ, exactly as it came off the device.
+
+    Stereo, I on the left channel and Q on the right, at the receiver's own sample
+    rate.  Nothing is scaled, levelled or faded: the file is the bytes the converter
+    produced, so that whoever opens it is looking at the measurement rather than at
+    this program's opinion of it.  Nothing here reads one back either - the point is
+    handing the raw data to somebody with their own tools.
+
+    No fade, where the audio recorder has one.  A fade exists to stop a click when a
+    person plays the file, and this is not for playing.  Altering the samples at each
+    end would be the one edit this recorder makes to data it exists to pass through.
+
+    The width comes from the buffer rather than from a constant here, because it is a
+    fact about the device: an RTL-SDR delivers unsigned bytes, and a wider converter
+    would deliver something else.  The two conventions happen to line up, which is
+    what makes the copy a copy - 8-bit .wav is unsigned like the device's bytes, and
+    every wider .wav is signed like a wider converter's samples.
+    """
+
+    CHANNELS = 2
+    KIND = 'raw IQ capture'
+    FILENAME_SUFFIX = '-iq'
+    # No fade.  See the class docstring; fade_ramp(0) is empty, so the machinery in
+    # AbstractEventRecorder holds nothing back and every write goes straight out.
+    FADE_SECONDS = 0.0
+
+    def __init__(self, pipeline: RingBufferPipeline, config: BuzzConfig,
+                 charged_wait_seconds: float) -> None:
+        recording = config.recording
+        settings = config.rtlsdr
+        # Before the base constructor, which shapes its first empty frame buffer from
+        # these.  Per instance rather than per class, unlike every other recorder's,
+        # because the answer belongs to the hardware that filled the buffer.
+        self.SAMPLE_DTYPE = pipeline.dtype
+        self.SAMPLE_WIDTH_BYTES = pipeline.dtype.itemsize
+        super().__init__(
+            pipeline,
+            sample_rate=settings.iq_sample_rate,
+            directory=recording.directory_path(config.station),
+            callsign=config.station.callsign,
+            max_seconds=recording.max_seconds,
+            charged_wait_seconds=charged_wait_seconds,
+        )
+        # What a reader needs to make sense of the samples, none of which the file
+        # itself carries.  The center frequency matters most: it is where DC sits in
+        # this capture, and without it the numbers describe an unknown piece of
+        # spectrum.
+        self._pulse_rate = config.audio.pulse_rate
+        self._listening_hz = settings.frequency_hz
+        self._tuned_hz = settings.frequency_hz + settings.tuning_offset_hz
+        self._tuning_offset_hz = settings.tuning_offset_hz
+        self._gain_db = settings.gain_db
+        self._rf_conversion_db = config.level_offset_db
+
+    def _metadata_settings(self, ended: str) -> dict[str, Any]:
+        return {
+            'sample_rate': self._sample_rate,
+            'pulse_rate': self._pulse_rate,
+            # Where the hardware actually sat, which is DC in this file.  The
+            # frequency the monitor measures is the other one, offset from it on
+            # purpose so that the receiver's own spur misses the measured band.
+            'center_frequency_hz': self._tuned_hz,
+            'listening_frequency_hz': self._listening_hz,
+            'tuning_offset_hz': self._tuning_offset_hz,
+            'gain_db': self._gain_db,
+            'rf_conversion_db': self._rf_conversion_db,
+            'lead_in_seconds': round(self._lead_in / self._sample_rate, 2),
+            'lead_in_max_seconds': round(self._max_lead_in_samples() / self._sample_rate, 2),
+            'ended': ended,
+        }
+
+
 class RecordingTrigger:
     """Decides when an event is worth recording, and drives the recorders that write it.
 
@@ -621,6 +741,13 @@ class RecordingTrigger:
         self._recorders: list[AbstractEventRecorder] = [
             AudioEventRecorder(pipeline, config, charged_wait_seconds=charged_wait),
         ]
+        # A second file of the same event, when the source kept the raw IQ to write it
+        # from.  Both are driven by the decisions below, so they start and stop
+        # together and one event spends one from the budget.
+        if pipeline.iq_buffer is not None:
+            self._recorders.append(
+                IqEventRecorder(pipeline.iq_buffer, config,
+                                charged_wait_seconds=charged_wait))
 
         # The analyzer, kept for its published levels rather than its state.  The
         # state arrives by push because lock is an edge, but SNR is a level, and a

@@ -18,7 +18,7 @@ from buzz import __version__, wavmeta
 from buzz.analyzer import AnalysisResult, AnalyzerState
 from buzz.config import BuzzConfig
 from buzz.playback import load_wav
-from buzz.recorder import AudioEventRecorder, RecordingTrigger
+from buzz.recorder import AudioEventRecorder, IqEventRecorder, RecordingTrigger
 from buzz.sampler import RingBufferPipeline
 
 CHUNK = RingBufferPipeline.CHUNK_SIZE
@@ -1593,3 +1593,165 @@ class TestThreadedOperation:
                 recorder.start()
                 recorder.stop()
         assert 'Recorder tick failed' in caplog.text
+
+
+class PipelineThatKeptIq(RingBufferPipeline):
+    """An audio pipeline that also held the raw IQ, the way RtlSdrPipeline does."""
+
+    def __init__(self, iq: RingBufferPipeline) -> None:
+        super().__init__()
+        self._iq = iq
+
+    @property
+    def iq_buffer(self) -> RingBufferPipeline:
+        return self._iq
+
+
+class TestRecordingRawIq:
+    """The second file, written from the raw IQ the receiver kept.
+
+    Driven through the same trigger as the audio, because that is the point of the
+    split: one lock, one budget, two files that cannot disagree about what happened.
+    """
+
+    IQ_RATE = 4 * SAMPLE_RATE      # a whole number of IQ samples per audio sample
+
+    def _trigger(self, tmp_path, **recording):
+        iq = RingBufferPipeline(sample_rate=self.IQ_RATE, chunk_size=self.IQ_RATE,
+                                dtype=np.uint8)
+        audio = PipelineThatKeptIq(iq)
+        config = _make_config(tmp_path, **recording)
+        # An IQ recording only exists on a receiver, so the config has to say so or
+        # the level offset resolves to the sound card's figure.
+        config.audio.source = 'rtlsdr'
+        config.rtlsdr.iq_sample_rate = self.IQ_RATE
+        analyzer = FakeAnalyzer()
+        return RecordingTrigger(audio, analyzer, config), audio, iq, analyzer
+
+    def _feed_iq(self, iq, seconds, start=0):
+        """Append `seconds` of raw IQ whose bytes are known by construction."""
+        for second in range(seconds):
+            first = (start + second) % 256
+            raw = ((np.arange(self.IQ_RATE * 2, dtype=np.int64) + first) % 256)
+            iq._append(raw.astype(np.uint8).reshape(-1, 2))
+
+    def _record_one(self, tmp_path, **recording):
+        trigger, audio, iq, analyzer = self._trigger(tmp_path, **recording)
+        _feed(audio, 1)
+        self._feed_iq(iq, 1)
+        analyzer.lock()
+        trigger.tick()
+        _feed(audio, 3)
+        self._feed_iq(iq, 3, start=100)
+        trigger.tick()
+        analyzer.unlock()
+        for _ in range(4):
+            _feed(audio, 1)
+            self._feed_iq(iq, 1, start=200)
+            trigger.tick()
+        return trigger
+
+    def _iq_file(self, tmp_path):
+        return [f for f in _wav_files(tmp_path) if f.name.endswith('-iq.wav')][0]
+
+    def test_one_event_writes_both_files(self, tmp_path):
+        self._record_one(tmp_path)
+        names = sorted(f.name for f in _wav_files(tmp_path))
+        assert len(names) == 2, names
+        # A dash sorts before a dot, so the raw capture comes first.
+        iq_name, audio_name = names
+        assert iq_name == audio_name.replace('.wav', '-iq.wav'), (
+            'the two files should read as one event at a glance')
+
+    def test_the_iq_file_is_stereo_at_the_receivers_rate(self, tmp_path):
+        self._record_one(tmp_path)
+        with wave.open(str(self._iq_file(tmp_path)), 'rb') as wav:
+            assert wav.getnchannels() == 2, 'I on the left, Q on the right'
+            assert wav.getsampwidth() == 1, 'one byte per sample, as the device sends'
+            assert wav.getframerate() == self.IQ_RATE
+
+    def test_the_bytes_are_the_ones_the_device_sent(self, tmp_path):
+        """No scaling, no levelling, no fade at either end.  What a reader opens is
+        the measurement rather than this program's opinion of it.
+        """
+        trigger, audio, iq, analyzer = self._trigger(tmp_path)
+        known = (np.arange(self.IQ_RATE * 2, dtype=np.int64) % 256).astype(np.uint8)
+        iq._append(known.reshape(-1, 2))
+        _feed(audio, 1)
+        analyzer.lock()
+        trigger.tick()
+        trigger.disarm()
+        with wave.open(str(self._iq_file(tmp_path)), 'rb') as wav:
+            written = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.uint8)
+        assert np.array_equal(written, known), (
+            'the file should be the bytes that went in, unaltered at both ends')
+
+    def test_the_metadata_says_where_in_the_spectrum_this_is(self, tmp_path):
+        """DC in the file is where the hardware sat, not the frequency the monitor
+        measures - the two differ by the tuning offset on purpose.  Without this a
+        reader has a pile of samples describing an unknown piece of spectrum.
+        """
+        self._record_one(tmp_path)
+        settings = wavmeta.read_settings(self._iq_file(tmp_path))
+        config = _make_config(tmp_path)
+        assert int(settings['center_frequency_hz']) == (
+            config.rtlsdr.frequency_hz + config.rtlsdr.tuning_offset_hz)
+        assert int(settings['listening_frequency_hz']) == config.rtlsdr.frequency_hz
+        assert float(settings['gain_db']) == config.rtlsdr.gain_db
+
+    def test_it_carries_the_calibration_and_the_pulse_rate(self, tmp_path):
+        """The two the audio file carries, for the same reason: neither is recoverable
+        from the samples, and both change what a reading of them means.
+        """
+        self._record_one(tmp_path)
+        settings = wavmeta.read_settings(self._iq_file(tmp_path))
+        assert 'rf_conversion_db' in settings
+        assert int(settings['pulse_rate']) == 120
+
+    def test_both_files_end_for_the_same_reason(self, tmp_path):
+        """One trigger decided it, so the two cannot disagree about why they stopped."""
+        self._record_one(tmp_path)
+        reasons = {wavmeta.read_settings(f)['ended'] for f in _wav_files(tmp_path)}
+        assert reasons == {'timeout'}, reasons
+
+    def test_one_event_spends_one_from_the_budget(self, tmp_path):
+        """Two files, one event.  A budget per recorder would have charged twice."""
+        trigger = self._record_one(tmp_path, max_events=3)
+        assert trigger.status().events_remaining == 2
+
+    def test_the_two_files_cover_the_same_stretch_of_time(self, tmp_path):
+        """They describe one event, so their lengths have to agree to within the
+        rounding each rate does independently.
+        """
+        self._record_one(tmp_path)
+        audio_file = [f for f in _wav_files(tmp_path) if not f.name.endswith('-iq.wav')][0]
+        with wave.open(str(audio_file), 'rb') as wav:
+            audio_seconds = wav.getnframes() / wav.getframerate()
+        with wave.open(str(self._iq_file(tmp_path)), 'rb') as wav:
+            iq_seconds = wav.getnframes() / wav.getframerate()
+        assert iq_seconds == pytest.approx(audio_seconds, abs=0.05)
+
+    def test_a_fade_would_work_on_stereo_if_one_were_ever_wanted(self):
+        """The IQ recorder sets no fade, so nothing exercises this in the program.
+        It is here because FADE_SECONDS is documented as a knob a subclass sets, and
+        a knob that raises ValueError for every subclass but one is not a knob.  A
+        flat ramp cannot broadcast against a row-per-frame array.
+        """
+        frames = np.full((4, 2), 100, dtype=np.uint8)
+        ramp = np.array([0.0, 0.25, 0.5, 1.0])
+        shaped = AudioEventRecorder._ramp_for(ramp, frames)
+        faded = np.rint(frames * shaped).astype(np.uint8)
+        assert faded.shape == frames.shape
+        # One ramp value per frame, the same across both channels.
+        assert np.array_equal(faded[:, 0], faded[:, 1])
+        assert list(faded[:, 0]) == [0, 25, 50, 100]
+
+    def test_the_same_ramp_is_unchanged_for_mono(self):
+        ramp = np.array([0.0, 0.5, 1.0])
+        mono = np.full(3, 100, dtype=np.int16)
+        assert np.array_equal(AudioEventRecorder._ramp_for(ramp, mono), ramp)
+
+    def test_no_iq_recorder_without_a_buffer_to_read(self, tmp_path):
+        """A sound card, and a receiver that was never asked to keep any."""
+        recorder, _, _ = _make_recorder(tmp_path)
+        assert not any(isinstance(r, IqEventRecorder) for r in recorder._recorders)
