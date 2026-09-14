@@ -47,12 +47,49 @@ S meter on your screen agrees with the S meter on your radio.  Press `ENTER` whe
 
 ## SDR Calibration
 SDR use requires calibrating two settings: hardware gain and audio-to-RF offset.  Hardware gain is applied by the
-receiver itself to the incoming RF signal, before sampling, and a value must be carefully chosen to ensure
-minimal noise is introduced by the hardware itself, while also allowing for maximum dynamic range so that capturing
+receiver itself to the incoming RF signal, before sampling, and a value must be carefully chosen to minimize noise 
+introduced by the hardware itself, while also allowing for maximum dynamic range so that capturing
 strong signals does not overload the ADC circuitry and cause digital clipping.
 
 It is also necessary to determine an appropriate offset to convert between the amplitude of the signals to which gain
 was applied and the approximate amplitude of the RF signal seen at the receiver input, in order to correctly estimate
 signal levels for logging and the on-screen S meters.
 
-<!-- TODO fill in this section after calibration code has been added -->
+Unfortunately, inexpensive 8-bit analog-to-digital converters such as those found in RTL-SDR devices do not offer
+tremendous dynamic range - only about 48 dB - so any measurements taken are by necessity a compromise of some kind.
+
+By making gain adjustments, we can decide where in the RF envelope that ~48dB of dynamic range sits.  Below the
+envelope nothing can be known, and above it, everything becomes digitally clipped.
+
+The monitor defaults to using RTL-SDR receiver number 0.  For most users this should be fine. 
+If you are using multiple receivers, ensure the correct receiver number is selected first, before proceeding.
+
+The first step to take is to run the `Auto-calibrate gain` tool with your antenna connected to your SDR device.
+This will measure the response of the device to each of its supported gain values multiple times in an effort to
+find the gain setting at which the noise floor contribution of the SDR device itself comes closest to matching 
+the contribution from the antenna.  This permits getting a reasonably good measurement of the
+true value of the noise floor while allowing for the maximum dynamic range for any received arc noise.
+
+After applying gain in hardware, we want to reverse that operation to convert the decoded audio level back to
+an approximate RF level for reporting and for display on a virtual S meter.  This is the `Level calibration` setting,
+and after running `Auto-calibrate gain`, it defaults to the negative of the gain setting.  If you have an actual
+reference to use for comparison, this value can be adjusted to match, as experience has shown these inexpensive
+USB devices don't always apply the gain exactly as-advertised; there is some non-linearity in the gain adjustment.
+The automatic value here should still be a good starting value.
+
+Should excessive digital clipping occur during monitoring, this will be logged in warning messages to the monitor's 
+output.  In that case, you can choose a different, lower `Tuner gain` setting.  Doing so will also shift the
+`Level calibration` value by the difference, because the two need to be adjusted together.
+
+If you consistently get values from `Auto-calibrate gain` which result in excessive clipping, you can also consider
+adjusting the `arc_headroom_db` setting in your `config.toml` file.  The default value can be found in
+`config.example.toml`.  Increasing it has the general effect of the auto calibration picking a lower `Tuner gain`
+value.
+
+If you're completely unable to set an adequate minimal gain while avoiding clipping, you may want to choose a
+different band for monitoring.  The amplitude of powerline noise generally decreases with increasing frequency,
+so if, for example, the signal is just too strong on the 80m band, try 60m or 40m instead, while still trying
+to choose a frequency where your antenna is resonant, so you're making a fair and valid comparison between the
+band's noise level and the powerline noise.
+
+If you do change bands, be sure to re-run `Auto-calibrate gain`, because the ideal gain can depend on the band.
