@@ -42,10 +42,10 @@ It will log your average QRM signal, the estimated noise floor level, produce
 minute-by-minute charts, and summary charts giving the noise probability at different
 times of day over the last 7 days and 30 days.  A summary over your whole data set is
 available too, disabled by default, as changes over time tend to render older data
-obsolete.  A grid frequency chart, also disabled by default, can be enabled
-to plot the estimated frequency of the power grid based on arc noise over time,
-useful for comparing against directly measured data.  Weather data can optionally be
-included in the logs.
+obsolete.  A grid frequency chart, also disabled by default, plots the estimated
+frequency of the power grid (derived from the arc noise) over time, useful for
+comparing against directly measured data.  Weather data can optionally be included in
+the logs.
 
 Optionally it can auto-record .wav files of detected events with configurable limits
 and publish your logs and charts to a web server. It can also render the analysis of
