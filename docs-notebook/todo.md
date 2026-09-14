@@ -22,10 +22,26 @@ that trigger publishes to listeners rather than holding sink objects directly, a
 stopping mid-recording turns out not to need any special handling once `finish` is
 allowed to be a synchronous call.  See `iq-recording-design.md`.
 
-Mostly built.  What is left is failure isolation: a recorder that cannot open its
-file disarms the whole trigger, so a full disk on the IQ side stops audio recording
-too.  IQ fills about thirty times faster than audio, which makes that the likely
-failure rather than a remote one.
+Mostly built.  What was listed here as the last piece, failure isolation, was
+justified by an example that does not hold: a full disk on the IQ side was said to
+stop audio recording too.  Both recorders resolve the same `[recording] directory`
+and there is no setting that separates them, so a full disk fails both, and
+disarming is then the right answer rather than a bug.  Refusing to open one file
+while the other opens needs the two to differ in something, and today they differ
+only in format.
+
+A narrower defect is left, and it is the one a full disk really produces.  It fills
+part way through an event rather than before it, so the failure is a write rather
+than an open.  `_emit` raises, `RecordingTrigger._publish` catches it per listener,
+and the audio recorder is correctly unaffected - but the IQ recorder then raises on
+every tick that follows, logging each time, and its writer is never closed.
+
+Fixed.  `AbstractEventRecorder._abandon` closes the file, says so once, and declines
+the rest of the event, which is a change to the recorder rather than to the trigger
+and the opposite of where this entry first pointed.  `[recording]
+min_free_disk_percent` keeps a tenth of the disk in reserve by default, so the
+ordinary case is that recording is held off before the disk fills at all, and starts
+again on its own once there is room.
 
 ## Faster sample rate support
 

@@ -40,13 +40,22 @@ said out loud.  That is the same thing `RingBufferPipeline._append` already says
 everything waiting on its condition, which makes three signals the honest count until
 a recorder owns a thread.
 
-Failure isolation is now the live question rather than a future one, because there
-really are two recorders.  A recorder that cannot open its file still disarms the
-trigger rather than being skipped, so a full disk on the IQ side takes audio
-recording down with it.  Publishing did not change that on its own: `begin` still
-reports the name it opened, or None, and the trigger still reads the answer.  What
-publishing did change is that a listener which *raises* no longer stops the others,
-which is a different failure from one that declines.
+**Failure isolation, and what it turned out to be worth.**  This document argued for
+skipping a recorder that cannot open its file rather than disarming the trigger, on
+the grounds that one format's failure should not stop the other.  The example given
+for it was a full disk on the IQ side, and that example is wrong: both recorders
+resolve the same `[recording] directory`, nothing separates them, so a full disk
+fails both and disarming is correct.
+
+Publishing settled the part that was real.  A listener which *raises* no longer stops
+the ones after it, which covers the failure a full disk actually produces - it fills
+part way through an event, so the failure is a write rather than an open, and the
+audio recorder carries on.  A listener which *declines* is still read by the trigger,
+and with one shared directory that is the case where both decline together.
+
+What is left is smaller and sits in the recorder rather than the trigger: after a
+write fails, the recorder goes on raising on every tick and never closes its writer,
+leaving a .wav that reports zero frames.  See `todo.md`.
 
 What the split already bought is the part that could not be retrofitted later: one
 budget, spent once per event by the trigger, whatever number of files an event

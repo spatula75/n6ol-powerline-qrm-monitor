@@ -8,6 +8,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `[recording] min_free_disk_percent`, a share of the disk to leave free. Recording is
+  held off while the disk is below it and starts again on its own once there is room,
+  so a station that fills its disk stops recording rather than taking the machine down
+  with it. Ten percent by default, and 0 records until the disk is full. Checked
+  before each event rather than before each write, so being wrong about it costs at
+  most one recording.
 - `[recording] record_iq`, which writes a second `.wav` of raw IQ beside each event
   recording: stereo, I on the left channel and Q on the right, at the receiver's own
   sample rate, in the device's own sample format. Nothing is scaled, levelled or
@@ -234,6 +240,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   decimation, bandwidth, tuning offset and sideband.
 
 ### Fixed
+- A recording whose disk filled part way through went on failing and saying so on
+  every poll for the rest of the event, and never closed the file it could no longer
+  write to. `wave` writes data and header sizes lazily, so a writer left open leaves
+  the file in whatever state buffering happened to put it. The recorder now closes
+  what it has, reports the failure once, and declines the rest of that event.
 - The gain calibration dialog could replace its own answer with a stale progress line.
   Progress crosses from the sweep's thread by `call_soon_threadsafe`, which queues
   rather than runs, so one posted just before the sweep finished could arrive after

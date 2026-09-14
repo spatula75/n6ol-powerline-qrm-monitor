@@ -554,6 +554,18 @@
             "The --playback flag also looks here when you give it a bare filename instead of a path."
           ]
         },
+        "min_free_disk_percent": {
+          "type": "number",
+          "title": "Minimum free disk (%)",
+          "minimum": 0,
+          "maximum": 99,
+          "description": "Percentage of the disk to leave free. Recording is held off while the disk is below this, and resumes on its own once there is room.",
+          "default": 10.0,
+          "x-notes": [
+            "Checked before each event rather than before each write, so being wrong about it costs at most one recording: max_seconds of it, which is about sixty megabytes of raw IQ at the default settings.",
+            "Set it to 0 to record until the disk is full."
+          ]
+        },
         "max_events": {
           "type": "integer",
           "title": "Events to record",

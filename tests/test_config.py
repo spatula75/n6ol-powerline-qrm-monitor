@@ -312,3 +312,52 @@ class TestTheShippedRtlSdrDefaultsAreUsable:
         for sideband in offered:
             IqToAudio(s.iq_sample_rate, s.decimation, s.bandwidth_hz,
                       s.tuning_offset_hz, sideband)
+
+
+class TestTheQuotedSizeOfACappedIqRecording:
+    """A drift pin on the "about sixty megabytes" figure quoted beside
+    min_free_disk_percent.
+
+    That figure is what tells an operator whether a ten percent reserve is generous
+    or thin, and it is restated in four files that cannot import it: config.py,
+    config.example.toml, schema.json and recorder.py.  Nothing derives it from the
+    defaults it came from, so moving any of them leaves four sentences quietly wrong.
+    The first draft of those sentences said "a little over a hundred megabytes", which
+    is why this exists.
+    """
+
+    _QUOTING_THE_FIGURE = (
+        'lib/buzz/config.py',
+        'lib/buzz/recorder.py',
+        'lib/buzz/setup/schema.json',
+        'config.example.toml',
+    )
+
+    def _megabytes(self) -> float:
+        """What one IQ recording comes to at the shipped defaults.
+
+        Two bytes per frame, because the recorder writes I and Q as two channels of
+        the device's own 8-bit samples.  IqEventRecorder reads its width from the
+        pipeline dtype rather than declaring one, so this states the assumption the
+        prose rests on rather than importing it.
+        """
+        bytes_per_frame = 2
+        total = RtlSdrConfig().iq_sample_rate * RecordingConfig().max_seconds * bytes_per_frame
+        return total / 1_000_000
+
+    def test_sixty_megabytes_is_still_the_right_figure(self):
+        megabytes = self._megabytes()
+        assert 55 <= megabytes <= 65, (
+            f'A capped IQ recording now comes to {megabytes:.0f} MB at the defaults, so '
+            f'"about sixty megabytes" is wrong.  The figure is quoted in '
+            f'{", ".join(self._QUOTING_THE_FIGURE)}, beside min_free_disk_percent.  '
+            f'Either a default moved (iq_sample_rate, max_seconds) or the recorder '
+            f'stopped writing two bytes per frame.')
+
+    @pytest.mark.parametrize('name', _QUOTING_THE_FIGURE)
+    def test_every_file_that_quotes_it_says_sixty(self, name):
+        text = (Path(__file__).resolve().parent.parent / name).read_text(encoding='utf-8')
+        assert 'sixty megabytes' in text, (
+            f'{name} no longer quotes the size of a capped IQ recording, so this pin has '
+            f'nothing to hold there.  Drop it from _QUOTING_THE_FIGURE if that was '
+            f'deliberate.')

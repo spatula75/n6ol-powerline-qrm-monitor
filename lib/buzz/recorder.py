@@ -62,6 +62,7 @@ gone quiet.
 
 
 import logging
+import shutil
 import threading
 import time
 import wave
@@ -132,6 +133,9 @@ class RecordingListener(Protocol):
               held_back_by: str | None) -> str | None:
         """Start recording.  Returns the filename opened, or None if it could not."""
 
+    def has_room(self) -> bool:
+        """Whether there is enough disk left to be worth starting another file."""
+
     def capture(self) -> None:
         """Take whatever has arrived since the last call."""
 
@@ -187,8 +191,13 @@ class AbstractEventRecorder(ABC):
     FILENAME_SUFFIX = ''
 
     def __init__(self, pipeline: RingBufferPipeline, sample_rate: int, directory: Path,
-                 callsign: str, max_seconds: float, charged_wait_seconds: float) -> None:
+                 callsign: str, max_seconds: float, charged_wait_seconds: float,
+                 min_free_disk_percent: float = 0.0) -> None:
         self._pipeline = pipeline
+        self._min_free_fraction = max(0.0, min_free_disk_percent) / 100.0
+        # Set while the disk is too full to start another file, so that the warning
+        # about it is said once rather than five times a second.
+        self._reported_low_disk = False
         self._sample_rate = sample_rate
         self._directory = directory
         self._callsign = callsign
@@ -217,6 +226,40 @@ class AbstractEventRecorder(ABC):
 
     # ------------------------------------------------------------------ public
 
+    def has_room(self) -> bool:
+        """Whether the disk has enough left to be worth starting another file.
+
+        Asked before each event rather than before each write, which bounds what a
+        misjudgement costs to one recording: max_seconds of it, which is two minutes
+        by default and about sixty megabytes of raw IQ.  Asking per write
+        would cost a syscall five times a second for a figure that cannot move that
+        fast.
+
+        A reserve rather than a prediction.  Nothing here knows how long the next
+        event will run, so this refuses to start one at all once the disk is down to
+        its last slice, and leaves that slice for whatever else the machine needs.
+        """
+        if self._min_free_fraction <= 0.0:
+            return True
+        try:
+            usage = shutil.disk_usage(self._directory)
+        except OSError:
+            # Fail open.  A disk that cannot be measured is not known to be full, and
+            # a write that does fail is now survivable - see _abandon.
+            return True
+        free = usage.free / usage.total if usage.total else 1.0
+        if free >= self._min_free_fraction:
+            self._reported_low_disk = False
+            return True
+        if not self._reported_low_disk:
+            logger.warning(
+                '%s is %.1f%% free, below the %.1f%% that [recording] '
+                'min_free_disk_percent keeps in reserve.  Recording is held off until '
+                'there is room.  Delete some recordings, or lower the setting.',
+                self._directory, free * 100, self._min_free_fraction * 100)
+            self._reported_low_disk = True
+        return False
+
     @property
     def _no_frames(self) -> np.ndarray:
         """An empty run of frames, shaped the way this recorder's own samples arrive.
@@ -232,11 +275,6 @@ class AbstractEventRecorder(ABC):
     def is_recording(self) -> bool:
         """Whether a file is open right now."""
         return self._writer is not None
-
-    @property
-    def filename(self) -> str | None:
-        """The name of the file being written, or None while idle."""
-        return self._path.name if self._path is not None else None
 
     def can_record(self) -> bool:
         """Whether recording is possible at all, before anything is armed.
@@ -431,14 +469,49 @@ class AbstractEventRecorder(ABC):
         return self._path.name
 
     def capture(self) -> None:
-        """Write every sample captured since the previous poll, up to any length cap."""
+        """Write every sample captured since the previous poll, up to any length cap.
+
+        Does nothing once the file has been abandoned, which is what makes a failed
+        write cost one message rather than one per poll for the rest of the event.
+        """
+        if self._writer is None:
+            return
         span = self._pipeline.read_from(self._position)
         if span.start > self._position:
             logger.warning('Recorder fell behind the ring buffer - %d samples lost.',
                            span.start - self._position)
         samples, end = self._clamp_to_cap(span.samples, span.end)
-        self._write(samples)
+        try:
+            self._write(samples)
+        except Exception as exc:
+            self._abandon(exc)
+            return
         self._position = end
+
+    def _abandon(self, exc: Exception) -> None:
+        """Give up on the current file after a write to it failed.
+
+        A write is where a disk that fills part way through an event fails, rather
+        than the open.  Left alone the next poll tries again, fails again and says so
+        again, for as long as the event lasts, and the writer is never closed.  Neither
+        gets better by trying harder.
+
+        Closing is what settles the part that did get written.  `wave` writes the data
+        and patches the header sizes lazily, so a writer left open leaves the file in
+        whatever state buffering happened to put it - measured here, a file holding one
+        unflushed write could not be opened at all.  Closing makes whatever fitted into
+        a file somebody can read.  The metadata is skipped, since tagging means another
+        write to the disk that just refused one.
+        """
+        logger.error('Writing %s failed (%s).  That file keeps whatever reached it '
+                     'and the recording stops there.  Check the free space on that '
+                     'disk.  [recording] min_free_disk_percent holds recording off '
+                     'before a disk fills.',
+                     self._path.name if self._path else '?', exc)
+        with suppress(Exception):
+            self._writer.close()
+        self._writer, self._path = None, None
+        self._tail = self._no_frames
 
     def finish(self, ended: str, description: str) -> None:
         """Close the current file and tag it.
@@ -449,7 +522,16 @@ class AbstractEventRecorder(ABC):
         reason phrased for the log, which the caller words because the limits that
         produced it are the caller's.
         """
-        self._flush_tail()
+        if self._writer is None:
+            # Abandoned part way through, and already reported.  There is nothing left
+            # to close, and the file it wrote is closed and readable.
+            self._frames_accepted = 0
+            return
+        try:
+            self._flush_tail()
+        except Exception as exc:
+            self._abandon(exc)
+            return
         self._writer.close()
         self._writer = None
         self._write_metadata(ended)
@@ -622,6 +704,7 @@ class AudioEventRecorder(AbstractEventRecorder):
             callsign=config.station.callsign,
             max_seconds=recording.max_seconds,
             charged_wait_seconds=charged_wait_seconds,
+            min_free_disk_percent=recording.min_free_disk_percent,
         )
         # Kept for the file's metadata.  The pulse rate and the dB calibration are
         # the two settings a replay cannot recover from the audio itself, and getting
@@ -683,6 +766,7 @@ class IqEventRecorder(AbstractEventRecorder):
             callsign=config.station.callsign,
             max_seconds=recording.max_seconds,
             charged_wait_seconds=charged_wait_seconds,
+            min_free_disk_percent=recording.min_free_disk_percent,
         )
         # What a reader needs to make sense of the samples, none of which the file
         # itself carries.  The center frequency matters most: it is where DC sits in
@@ -1202,6 +1286,11 @@ class RecordingTrigger:
             return 'waiting out min_lock_seconds'
         if not self._is_loud_enough():
             return 'waiting for the signal to reach min_lock_snr'
+        if not all(listener.has_room() for listener in self._listeners):
+            # Held rather than disarmed, because a disk gets emptied and a lock that
+            # arrives afterwards is worth recording.  Whoever answered no has already
+            # said so once; see AbstractEventRecorder.has_room.
+            return 'waiting for free disk space'
         return None
 
     def _lock_has_held(self) -> bool:

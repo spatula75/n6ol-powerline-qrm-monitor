@@ -2,6 +2,7 @@
 trailer, length cap, event budget, and filenames."""
 
 import re
+import shutil
 import struct
 import threading
 import time
@@ -309,8 +310,9 @@ class TestRecordingDirectory:
         recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=3)
         refuses = MagicMock()
         refuses.can_record.return_value = True
-        refuses.begin.return_value = False
-        refuses.is_recording = False
+        refuses.has_room.return_value = True
+        # None rather than False: begin reports the name it opened, and nothing is it.
+        refuses.begin.return_value = None
         recorder.add_listener(refuses)
         _feed(pipeline, 1)
         analyzer.lock()
@@ -1612,12 +1614,16 @@ class TestTheTriggerOnlyPublishes:
     class Spy:
         """A subscriber that records what it was told rather than any audio."""
 
-        def __init__(self, ready=True):
+        def __init__(self, ready=True, room=True):
             self.ready = ready
+            self.room = room
             self.calls = []
 
         def can_record(self):
             return self.ready
+
+        def has_room(self):
+            return self.room
 
         def begin(self, started_at, lock_age_seconds, held_back_by):
             self.calls.append('begin')
@@ -1685,12 +1691,159 @@ class TestTheTriggerOnlyPublishes:
         trigger, _, _ = self._trigger(tmp_path, self.Spy(ready=False))
         assert trigger.status().armed is False
 
+    def test_a_late_subscriber_does_not_re_arm_a_running_recorder(self, tmp_path):
+        """Once the thread is going, arming is whatever the operator and the budget
+        have made it.  A subscriber arriving then has no business resetting either.
+        """
+        trigger, _, _ = self._trigger(tmp_path, self.Spy())
+        trigger.start()
+        try:
+            trigger.disarm()
+            trigger.add_listener(self.Spy())
+            assert trigger.status().armed is False, (
+                'a late subscriber re-armed a recorder the operator had switched off')
+        finally:
+            trigger.stop()
+
     def test_a_late_refusal_withdraws_an_arming_an_earlier_one_allowed(self, tmp_path):
         spy = self.Spy()
         trigger, _, _ = self._trigger(tmp_path, spy)
         assert trigger.status().armed is True
         trigger.add_listener(self.Spy(ready=False))
         assert trigger.status().armed is False
+
+
+class TestAFailedWrite:
+    """A disk fills part way through an event, so the failure is a write and not the
+    open.  Before this, the recorder went on failing and saying so on every poll for
+    the rest of the event, and never closed the writer - which leaves a .wav whose
+    header still claims the zero frames it was opened with, however much reached it.
+    """
+
+    def _recording(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=3)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        recorder.tick()
+        return recorder, pipeline
+
+    def test_it_stops_after_the_first_failure(self, tmp_path, caplog):
+        recorder, pipeline = self._recording(tmp_path)
+        audio = recorder._listeners[0]
+        with patch.object(audio, '_emit', side_effect=OSError('No space left on device')):
+            with caplog.at_level('ERROR'):
+                for _ in range(4):
+                    _feed(pipeline, 1)
+                    recorder.tick()
+        # Counted as records rather than by matching the message, which would make
+        # this fail the next time somebody rewords it.
+        failures = [r for r in caplog.records if r.levelname == 'ERROR']
+        assert len(failures) == 1, (
+            f'a failing write said so {len(failures)} times rather than giving up')
+
+    def test_it_closes_the_file_it_gave_up_on(self, tmp_path):
+        """A writer left open leaves the file in whatever state buffering happened to
+        put it: possibly truncated, possibly not readable at all, because the header
+        sizes and the data are both written lazily.  Closing settles it, so whatever
+        fitted is a file somebody can open.
+
+        Asserted on the writer rather than on the file, because whether an unclosed
+        one happens to be readable depends on when the buffer last flushed, and a test
+        that reads it passes or fails for reasons that have nothing to do with this.
+        """
+        recorder, pipeline = self._recording(tmp_path)
+        audio = recorder._listeners[0]
+        with patch.object(audio, '_emit', side_effect=OSError('No space left on device')):
+            _feed(pipeline, 1)
+            recorder.tick()
+        assert audio.is_recording is False, (
+            'the recorder kept a writer open on a file that refuses every write')
+
+    def test_a_disk_still_full_at_the_end_gives_up_rather_than_raising(self, tmp_path):
+        """The realistic shape: the disk is still full when the event ends, so the
+        final flush fails too.  Without this the writer is left open by the very path
+        that exists to close it.
+        """
+        recorder, pipeline = self._recording(tmp_path)
+        audio = recorder._listeners[0]
+        with patch.object(audio, '_emit', side_effect=OSError('No space left on device')):
+            recorder.disarm()      # finish -> _flush_tail -> _emit -> raises
+        assert audio.is_recording is False, 'the closing write failed and left it open'
+
+    def test_finishing_an_abandoned_recording_does_not_raise(self, tmp_path):
+        """The trigger still publishes the stop, knowing nothing about what happened
+        to any one file.
+        """
+        recorder, pipeline = self._recording(tmp_path)
+        audio = recorder._listeners[0]
+        with patch.object(audio, '_emit', side_effect=OSError('full')):
+            _feed(pipeline, 1)
+            recorder.tick()
+            recorder.disarm()      # publishes finish to a recorder with no writer
+        assert recorder.status().recording is False
+
+
+class TestKeepingSomeDiskFree:
+    """A station that fills its disk takes the machine down with it, not just its own
+    recordings.  The reserve is what stops that, and it holds recording off rather
+    than disarming, because a disk gets emptied and the next lock is worth having.
+    """
+
+    def _usage(self, free_fraction):
+        total = 1_000_000_000
+        return shutil._ntuple_diskusage(total=total, used=0,
+                                        free=int(total * free_fraction))
+
+    def test_a_full_disk_holds_recording_off(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_free_disk_percent=10.0)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        with patch('shutil.disk_usage', return_value=self._usage(0.05)):
+            recorder.tick()
+        assert not _wav_files(tmp_path), 'it recorded onto a disk with no room left'
+
+    def test_it_records_again_once_there_is_room(self, tmp_path):
+        """Held rather than disarmed.  Nothing has to be re-armed by hand after the
+        operator clears some space.
+        """
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_free_disk_percent=10.0)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        with patch('shutil.disk_usage', return_value=self._usage(0.05)):
+            recorder.tick()
+        with patch('shutil.disk_usage', return_value=self._usage(0.50)):
+            _feed(pipeline, 1)
+            recorder.tick()
+        assert _wav_files(tmp_path), 'space came back and it stayed off'
+
+    def test_it_says_so_once_rather_than_every_poll(self, tmp_path, caplog):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_free_disk_percent=10.0)
+        analyzer.lock()
+        with patch('shutil.disk_usage', return_value=self._usage(0.05)):
+            with caplog.at_level('WARNING'):
+                for _ in range(5):
+                    _feed(pipeline, 1)
+                    recorder.tick()
+        assert caplog.text.count('min_free_disk_percent') == 1
+
+    def test_the_reserve_can_be_switched_off(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_free_disk_percent=0.0)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        with patch('shutil.disk_usage', return_value=self._usage(0.001)):
+            recorder.tick()
+        assert _wav_files(tmp_path), 'zero should mean record until the disk is full'
+
+    def test_a_disk_it_cannot_measure_does_not_stop_recording(self, tmp_path):
+        """Failing closed would cost an operator their recordings over a stat call.
+        A write that does fail is survivable now, which is what makes this safe.
+        """
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_free_disk_percent=10.0)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        with patch('shutil.disk_usage', side_effect=OSError('no such device')):
+            recorder.tick()
+        assert _wav_files(tmp_path)
 
 
 class PipelineThatKeptIq(RingBufferPipeline):

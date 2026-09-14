@@ -330,6 +330,14 @@ class RecordingConfig:
     # Directory for recorded .wav files.  Empty means <station.path>/recordings.
     # Also where --playback looks when given a bare filename rather than a path.
     directory: str = ''
+    # Percentage of the disk to leave free.  Recording is held off while the disk is
+    # below this, and starts again on its own once there is room, so a station that
+    # fills its disk stops recording rather than taking the machine down with it.
+    #
+    # Checked before each event rather than before each write, so a misjudgement costs
+    # at most one recording: max_seconds of it, which is about sixty megabytes of
+    # raw IQ at the default settings.  0 turns the reserve off.
+    min_free_disk_percent: float = 10.0
     # How many of the next events to record before disarming.  0 records every
     # event until recording is switched off by hand.
     max_events: int = 10
