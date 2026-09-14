@@ -363,7 +363,7 @@ class TestTheAllTimeSummaryIsOptional:
 
 
 class TestTheFrequencyChartIsOptional:
-    """One chart covering the current day, redrawn on the hour and overwritten."""
+    """One chart covering the current day, redrawn every minute and overwritten."""
 
     def _run_at(self, collector, tmp_path, minute):
         now = _setup_defaults(collector, tmp_path, minute=minute)
@@ -381,7 +381,7 @@ class TestTheFrequencyChartIsOptional:
         self._run_at(collector, tmp_path, minute=0)
         collector._plotter.generate_frequency_graph.assert_not_called()
 
-    def test_turning_it_on_draws_it_on_the_hour(self, tmp_path):
+    def test_turning_it_on_draws_the_chart(self, tmp_path):
         cfg = _make_config(tmp_path)
         cfg.station.enable_frequency_chart = True
         collector = _make_collector(cfg)
@@ -392,8 +392,9 @@ class TestTheFrequencyChartIsOptional:
     def test_it_is_redrawn_every_minute_rather_than_on_the_hour(self, tmp_path):
         """It rides with the daily charts, not with the hourly summaries.
 
-        Measured at 434 ms and 144 kB per render, which is 0.7% of the minute the cycle
-        has, so the cost of keeping it current is not worth the staleness of not.
+        A render measures 434 ms and 144 kB, which is 0.7% of the minute the cycle
+        has.  That buys a chart never more than a minute old, rather than one up to an
+        hour behind.
         """
         cfg = _make_config(tmp_path)
         cfg.station.enable_frequency_chart = True

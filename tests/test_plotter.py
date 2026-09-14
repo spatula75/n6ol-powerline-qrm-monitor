@@ -368,8 +368,8 @@ class TestGenerateFrequencyGraph:
     def test_just_after_midnight_the_axis_still_has_a_width(self, tmp_path):
         """An axis of zero width cannot be drawn, and at 00:00 the day is zero wide.
 
-        The chart is rendered on the hour, so this is the state it is in for the first
-        render of every day.
+        The chart is rendered every minute, so this is the state it is in for the
+        first render of every day.
         """
         plotter, _ = _make_plotter(tmp_path)
         csv_path = tmp_path / 'data.csv'

@@ -225,8 +225,6 @@ class _FrequencySeries:
     trace: list[float]
     above_at: list[datetime]
     below_at: list[datetime]
-    low: float
-    high: float
 
     @property
     def outside_count(self) -> int:
@@ -389,7 +387,7 @@ class Plotter:
         above = [when for when, value in readings if value is not None and value > high]
         below = [when for when, value in readings if value is not None and value < low]
         return _FrequencySeries(timestamps=timestamps, trace=trace,
-                                above_at=above, below_at=below, low=low, high=high)
+                                above_at=above, below_at=below)
 
     @_gc_guarded
     def generate_frequency_graph(self, input_filename: Path | str,
