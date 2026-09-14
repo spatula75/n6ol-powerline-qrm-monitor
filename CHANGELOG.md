@@ -240,6 +240,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   what make it worth consulting: an intermittent arc firing during any one of them is
   caught. On the station this was developed against that is the difference between
   25.4 and 22.9 dB, which is the step its operator had been taking by hand.
+
+  The bar is the same 4 parts per million the monitor reports clipping at, rather than
+  a single value at a rail. Five passes of a quarter second at 256 kHz collect 640,000
+  raw values, so it takes three of them. The tuner's own DC offset puts the occasional
+  sample at a rail with nothing arcing, and counting one of those capped the gain a
+  step or more low with nothing said about why.
 - The gain sweep gives up noise-floor accuracy rather than headroom when the two
   cannot both be had, and says how much it gave up. It used to refuse outright, and a
   station near the crossing then got no gain at all and set one by hand anyway,
@@ -283,6 +289,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   failure past that point reaches the screen. A receiver the program could not release
   is said on screen too, since the consequence otherwise falls on the next run as
   LIBUSB_ERROR_ACCESS: a permissions error that is nothing of the sort.
+
+  Opening it moved into that same thread, because the open had a thread of its own and
+  the receiver it produced belonged to a task that cancellation could take away.
+  Escape during the opening second, which takes about 0.72 s on this hardware, left
+  the device held for the rest of the session and the next attempt reading as the same
+  permissions error. A receiver that opens and then refuses to configure is released
+  too, where the constructor's own exit hook had not been registered yet.
 - Exiting the setup program could hang after a gain sweep. Progress crossed back to
   the interface with `App.call_from_thread`, which waits until the loop has run the
   callback, and a loop that is shutting down never runs it. CPython joins every

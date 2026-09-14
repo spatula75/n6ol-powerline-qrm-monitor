@@ -12,8 +12,25 @@ the running config no longer matched the file it came from.
 import pytest
 
 from buzz.config import RTLSDR, SOUNDCARD, BuzzConfig
-from buzz.setup.schema import defaults, load_schema
+from buzz.setup.schema import (
+    defaults,
+    field_names,
+    field_schema,
+    load_schema,
+    section_names,
+)
 from buzz.setup.screens.finish import toml_ready
+
+
+def _gated_fields():
+    """Every (section, field) in the schema whose visibility depends on another
+    setting.  Read at import so that a new one is swept without being listed here.
+    """
+    schema = load_schema()
+    return [(section, field)
+            for section in section_names(schema)
+            for field in field_names(schema, section)
+            if 'x-visible-when' in field_schema(schema, section, field)]
 
 
 def _config(source, *, station=-32.0, gain=32.8, receiver=None):
@@ -113,13 +130,34 @@ class TestTheConfigFileCarriesOnlyTheOneThatApplies:
     def test_a_sound_card_still_writes_its_own(self):
         assert 'audio_rf_conversion_db' in self._written('soundcard')['station']
 
-    @pytest.mark.parametrize('source', ['soundcard', 'rtlsdr'])
-    def test_at_most_one_offset_is_ever_written(self, source):
-        """The property the whole change exists for, stated so it cannot regress."""
-        written = self._written(source)
-        present = [section for section in ('station', 'rtlsdr')
-                   if 'audio_rf_conversion_db' in written.get(section, {})]
-        assert len(present) <= 1, f'{source} wrote the offset in {present}'
+    def test_a_receivers_file_carries_only_the_receivers_figure(self):
+        """The property the whole change exists for, with both figures set so that the
+        test can fail.  Reading defaults alone would pass on the receiver's being None.
+        """
+        schema = load_schema()
+        values = defaults(schema)
+        values['audio']['source'] = 'rtlsdr'
+        values['station']['audio_rf_conversion_db'] = -28.0
+        values['rtlsdr']['calibrated_offset_db'] = -38.5
+        written = toml_ready(values, schema)
+        assert 'audio_rf_conversion_db' not in written['station']
+        assert written['rtlsdr']['calibrated_offset_db'] == -38.5
+
+    def test_a_sound_cards_file_keeps_the_receivers_calibration(self):
+        """The asymmetry, which is deliberate.  [station] is a section that applies to
+        every station, so a figure sitting there reads as the live one and has to go.
+        The whole of [rtlsdr] is already hidden when the source is a sound card, so
+        nothing in it reads as live, and dropping the calibration would destroy a
+        measurement that costs an evening with a second receiver to make again.
+        """
+        schema = load_schema()
+        values = defaults(schema)
+        values['audio']['source'] = 'soundcard'
+        values['station']['audio_rf_conversion_db'] = -28.0
+        values['rtlsdr']['calibrated_offset_db'] = -38.5
+        written = toml_ready(values, schema)
+        assert written['station']['audio_rf_conversion_db'] == -28.0
+        assert written['rtlsdr']['calibrated_offset_db'] == -38.5
 
     def test_an_unset_value_is_still_dropped(self):
         """The older of the two jobs, which must survive the new one."""
@@ -305,3 +343,93 @@ class TestADroppedKeyIsReported:
         assert config.station.audio_rf_conversion_db == -28.0
         assert config.level_offset_db == -28.0
         assert messages == []
+
+
+class TestAHiddenSettingIsStillWritten:
+    """Hidden means inapplicable to the choices made so far, not unwanted.
+
+    Dropping every hidden field was how the level offset got left out, and it took
+    four working upload settings with it: switching [server] enabled off and saving
+    erased the host, the username, the remote path and the key path, leaving the
+    backup this screen writes as the only copy.  Switching a weather source erased the
+    other source's settings the same way, and moving a station to a receiver erased
+    the sound card name it would need on the way back.
+
+    x-drop-when-hidden marks the one field that really does have to go, and these pin
+    that it stays the one.
+    """
+
+    def _written(self, **changes):
+        """The file that would be written after making `changes` to the defaults."""
+        schema = load_schema()
+        values = defaults(schema)
+        for section, fields in changes.items():
+            values[section].update(fields)
+        return toml_ready(values, schema)
+
+    def test_switching_uploads_off_keeps_the_server_settings(self):
+        """The case that found this.  An operator turns uploads off for a week and
+        opens the setup program for something else entirely.
+        """
+        written = self._written(server={
+            'enabled': False, 'host': 'sdr.example.com', 'username': 'n6ol',
+            'remote_path': '/var/www/noise/', 'key_path': 'C:/keys/buzz.pem'})
+        assert written['server']['host'] == 'sdr.example.com'
+        assert written['server']['username'] == 'n6ol'
+        assert written['server']['remote_path'] == '/var/www/noise/'
+        assert written['server']['key_path'] == 'C:/keys/buzz.pem'
+
+    def test_changing_the_weather_source_keeps_the_other_ones_settings(self):
+        """Both directions, because either source can be the one switched away from."""
+        written = self._written(weather={
+            'source': 'openmeteo', 'url': 'http://cumulus.local:8998/api',
+            'latitude': 40.39, 'longitude': -74.18})
+        assert written['weather']['url'] == 'http://cumulus.local:8998/api'
+        written = self._written(weather={
+            'source': 'cumulusmx', 'url': 'http://cumulus.local:8998/api',
+            'latitude': 40.39, 'longitude': -74.18})
+        assert written['weather']['latitude'] == 40.39
+        assert written['weather']['longitude'] == -74.18
+
+    def test_adding_a_receiver_keeps_the_sound_card_the_station_came_from(self):
+        """A station that tries a receiver for a week has to be able to go back, and
+        the device name is the one setting nobody can retype from memory.
+        """
+        written = self._written(
+            audio={'source': 'rtlsdr', 'input_device_name': 'Line In (Realtek)',
+                   'sample_rate': 48000})
+        assert written['audio']['input_device_name'] == 'Line In (Realtek)'
+        assert written['audio']['sample_rate'] == 48000
+
+    @pytest.mark.parametrize('section, field', _gated_fields())
+    def test_only_a_marked_field_leaves_the_file_when_hidden(self, section, field):
+        """The whole domain rather than the four cases above, so that a gate added to
+        a new setting is swept without anybody remembering to add it here.
+        """
+        schema = load_schema()
+        values = defaults(schema)
+        condition = field_schema(schema, section, field)['x-visible-when']
+        wanted = condition['equals']
+        elsewhere = values[condition.get('section', section)]
+        elsewhere[condition['field']] = (not wanted if isinstance(wanted, bool)
+                                         else f'not {wanted}')
+        values[section][field] = 'set by somebody'
+
+        written = toml_ready(values, schema).get(section, {})
+        marked = field_schema(schema, section, field).get('x-drop-when-hidden', False)
+        assert (field not in written) is marked, (
+            f'[{section}] {field} is {"kept" if field in written else "dropped"} while '
+            f'hidden, and x-drop-when-hidden says it should be the other way.  A '
+            f'setting is dropped only when a second setting holds the same quantity.  '
+            f'Everything else an operator set has to survive being switched off.')
+
+    def test_the_marked_fields_are_the_ones_expected(self):
+        """The list itself, so that marking a second field is a deliberate act rather
+        than something the sweep above quietly accepts.
+        """
+        schema = load_schema()
+        marked = {(section, field)
+                  for section in section_names(schema)
+                  for field in field_names(schema, section)
+                  if field_schema(schema, section, field).get('x-drop-when-hidden')}
+        assert marked == {('station', 'audio_rf_conversion_db')}

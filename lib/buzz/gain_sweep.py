@@ -30,7 +30,7 @@ from typing import Protocol
 
 import numpy as np
 
-from buzz.sdr import IqBlock
+from buzz.sdr import CLIPPING_WORTH_NOTICING, IqBlock
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +131,26 @@ _FLOOR_ERROR_TARGET_DB = -10.0 * np.log10(_ANTENNA_SHARE_TARGET)
 
 
 @dataclass(frozen=True)
+class _PassReading:
+    """What one pass over one gain step measured, before the passes are combined.
+
+    A record rather than a tuple because it carries two counts of different things,
+    and `r[2]` against `r[3]` is the kind of distinction that survives review and then
+    goes wrong in an edit.
+    """
+
+    quiet_dbfs: float
+    peak_dbfs: float
+    clipped: int
+    raw_values: int
+
+
+# Holds every pass measured so far, keyed by the gain the tuner settled on rather than
+# the gain asked for, because a V4 snaps a request to its own nearest step.
+_Readings = dict[float, list[_PassReading]]
+
+
+@dataclass(frozen=True)
 class GainMeasurement:
     """What one gain step looked like, combined across every pass of the sweep.
 
@@ -138,13 +158,37 @@ class GainMeasurement:
     takes over and a transient is noise against that question.  `peak_dbfs` and
     `clipped` are the maximum and the total, because the worst case is the only
     interesting one: a median peak would size the headroom for a quiet moment.
+
+    `raw_values` is how many converter outputs `clipped` was counted out of, totalled
+    the same way, and it is here so that the count can be read as a share.  Both count
+    I and Q separately, which is how IqBlock reports them.
     """
 
     gain_db: float
     quiet_dbfs: float
     peak_dbfs: float
     clipped: int
+    raw_values: int
     passes: int
+
+    @property
+    def clipping_worth_noticing(self) -> bool:
+        """Whether this gain clipped enough for the clipping to mean anything.
+
+        A share rather than a count, against the figure the monitor already uses to
+        decide the same question while it runs.  One value at a rail is not evidence
+        about arcs, because the tuner's own DC offset puts the occasional sample there
+        at a high gain.  Five passes of a quarter second at 256 kHz collect 640,000
+        raw values, so one of them is 1.6 parts per million against a bar of 4, and it
+        takes three to disqualify a gain.  Counting a single one as clipping capped
+        the headroom bound a step or more low and said nothing about why.
+
+        Three out of 640,000 is a low bar in absolute terms, which is the intent.
+        What it excludes is the isolated value, not a burst: an arc loud enough to
+        reach the rail does it repeatedly, over the couple of thousand raw values a
+        single 4 ms burst covers at this rate.
+        """
+        return self.clipped > 0 and self.clipped >= self.raw_values * CLIPPING_WORTH_NOTICING
 
 
 @dataclass(frozen=True)
@@ -466,11 +510,12 @@ class GainChooser:
         than from an observed peak, which is what lets this run on a dead band: sizing
         from a peak needs an arc to be present and nothing arranges that.
 
-        The evidence is any clipping the sweep actually saw.  A gain that clipped is
-        not a prediction about arcs, it is one that happened, so it outranks the
-        reserve and so does every gain above it.  The five passes are what make this
-        worth consulting: an intermittent arc that fires during any one of them is
-        caught, where a single pass would usually miss it.
+        The evidence is any clipping the sweep actually saw, above the share at which
+        clipping means anything.  A gain that clipped is not a prediction about arcs,
+        it is one that happened, so it outranks the reserve and so does every gain
+        above it.  The five passes are what make this evidence rather than luck: an
+        intermittent arc that fires during any one of them is caught, where a single
+        pass would usually miss it.
 
         Both are needed.  The reserve alone let a station settle one step too high,
         because the sweep ran between bursts and the reserve turned out slightly tight
@@ -478,7 +523,8 @@ class GainChooser:
         band, which is most of the time.
         """
         clipping_started_at = min(
-            (m.gain_db for m in self._measurements if m.clipped), default=None)
+            (m.gain_db for m in self._measurements if m.clipping_worth_noticing),
+            default=None)
         safe = [m.gain_db for m in self._measurements
                 if m.quiet_dbfs + self._headroom_db <= 0.0
                 and (clipping_started_at is None or m.gain_db < clipping_started_at)]
@@ -573,7 +619,7 @@ class GainSweep:
         if not gains:
             return SweepResult(None, 'The receiver reported no gain settings.',
                                0.0, None, None, ())
-        readings: dict[float, list[tuple[float, float, int]]] = {gain: [] for gain in gains}
+        readings: _Readings = {gain: [] for gain in gains}
         total = self._passes * len(gains)
         step = 0
         for index in range(self._passes):
@@ -591,8 +637,7 @@ class GainSweep:
                 step += 1
         return self._combine(readings, gains)
 
-    def _measure_one(self, gain_db: float,
-                     readings: dict[float, list[tuple[float, float, int]]]) -> None:
+    def _measure_one(self, gain_db: float, readings: _Readings) -> None:
         """Set one gain, wait out the stale blocks, and record what follows."""
         actual = self._source.set_gain(gain_db)
         # Two buffers stand between the tuner and this loop, and both hold data from
@@ -603,18 +648,26 @@ class GainSweep:
         for _ in range(self._source.blocks_to_discard_after_gain_change):
             if self._source.read() is None:
                 return
-        samples, clipped = self._collect(actual)
+        samples, clipped, raw_values = self._collect(actual)
         if len(samples) == 0:
             return
-        readings.setdefault(actual, []).append(
-            (BandMeasurement.quiet_dbfs(samples, self._source.iq_sample_rate),
-             BandMeasurement.peak_dbfs(samples), clipped))
+        readings.setdefault(actual, []).append(_PassReading(
+            quiet_dbfs=BandMeasurement.quiet_dbfs(samples, self._source.iq_sample_rate),
+            peak_dbfs=BandMeasurement.peak_dbfs(samples),
+            clipped=clipped, raw_values=raw_values))
 
-    def _collect(self, gain_db: float) -> tuple[np.ndarray, int]:
-        """Gather about seconds_per_step of samples at the gain already set."""
+    def _collect(self, gain_db: float) -> tuple[np.ndarray, int, int]:
+        """Gather about seconds_per_step of samples at the gain already set.
+
+        The raw count comes back beside the clipped one, because a count of values at
+        the rail says nothing on its own.  Counting it here rather than deriving it
+        from the sample total keeps it true when a receiver stops part way through and
+        the loop breaks early.
+        """
         wanted = int(self._seconds_per_step * self._source.iq_sample_rate)
         parts: list[np.ndarray] = []
         clipped = 0
+        raw_values = 0
         gathered = 0
         while gathered < wanted:
             block = self._source.read()
@@ -624,26 +677,30 @@ class GainSweep:
                                gain_db)
                 break
             clipped += block.clipped_samples
+            raw_values += len(block.raw)
             samples = block.as_complex()
             parts.append(samples)
             gathered += len(samples)
-        return (np.concatenate(parts) if parts else np.empty(0, dtype=np.complex128)), clipped
+        return ((np.concatenate(parts) if parts else np.empty(0, dtype=np.complex128)),
+                clipped, raw_values)
 
-    def _combine(self, readings: dict[float, list[tuple[float, float, int]]],
-                 gains: list[float]) -> SweepResult:
+    def _combine(self, readings: _Readings, gains: list[float]) -> SweepResult:
         """Fold the passes together, each quantity the way its question needs.
 
         The floor takes the median, because it decides where the antenna takes over
-        and a transient arc is noise against that.  The peak takes the maximum and the
-        clipping the total, because for those the worst case is the only interesting
-        one: a median peak would size the headroom for a quiet moment.
+        and a transient arc is noise against that.  The peak takes the maximum, and
+        the clipping and the raw count their totals, because for those the worst case
+        is the only interesting one: a median peak would size the headroom for a quiet
+        moment.  The two counts are totalled together so that the share they form
+        describes the same audio.
         """
         measurements = tuple(
             GainMeasurement(
                 gain_db=gain,
-                quiet_dbfs=float(np.median([r[0] for r in readings[gain]])),
-                peak_dbfs=float(np.max([r[1] for r in readings[gain]])),
-                clipped=int(sum(r[2] for r in readings[gain])),
+                quiet_dbfs=float(np.median([r.quiet_dbfs for r in readings[gain]])),
+                peak_dbfs=float(np.max([r.peak_dbfs for r in readings[gain]])),
+                clipped=sum(r.clipped for r in readings[gain]),
+                raw_values=sum(r.raw_values for r in readings[gain]),
                 passes=len(readings[gain]))
             for gain in gains if readings.get(gain))
         return GainChooser(measurements, self._headroom_db).choose()

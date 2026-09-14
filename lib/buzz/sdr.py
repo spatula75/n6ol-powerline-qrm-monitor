@@ -137,20 +137,23 @@ _FEED_READ_TIMEOUT_SECONDS = 0.5
 # RtlSdrSource._shut_the_device_without_waiting_for_ever.
 _DEVICE_CLOSE_TIMEOUT_SECONDS = 3.0
 
-# The share of raw values that has to clip before it is worth telling anybody.
+# The share of raw values that has to clip before it means anything.
 #
 # A fraction rather than a count, so it means the same thing at any sample rate and
-# over any reporting interval.  4 parts per million is 123 values a minute at 256 kHz,
-# which is the figure the one station running this settled on as the boundary between
-# noise and news: it saw over seven hundred a minute when its gain really was a step
-# too high, and single digits once it was not.
+# over any interval.  That is what lets one figure serve two readers: the monitor
+# measures it over a minute of streaming, and GainMeasurement over a second or so at
+# one gain step.  4 parts per million is 123 values a minute at 256 kHz, which is the
+# figure the one station running this settled on as the boundary between noise and
+# news: it saw over seven hundred a minute when its gain really was a step too high,
+# and single digits once it was not.
 #
 # What that costs if it is wrong is small and known.  123 clipped values is at most
 # 6% of a single 4 ms burst, so the worst that slips through unreported is a fraction
-# of a decibel on one event.  What the old behavior of reporting everything cost was
-# larger: it advised lowering the gain a step for 0.46 parts per million, and a step
-# below the knee is one to three decibels on every noise floor from then on.
-_CLIPPING_WORTH_REPORTING = 4e-6
+# of a decibel on one event.  What the old behavior of treating any clipping at all as
+# evidence cost was larger: it advised lowering the gain a step for 0.46 parts per
+# million, and a step below the knee is one to three decibels on every noise floor
+# from then on.
+CLIPPING_WORTH_NOTICING = 4e-6
 
 # A USB bulk transfer on this hardware moves whole 512-byte packets, and
 # rtlsdr_read_sync asks for a buffer rather than negotiating one.  pyrtlsdr says as
@@ -1025,7 +1028,7 @@ class RtlSdrPipeline(RingBufferPipeline):
         self._clipped_reported = self._clipped
         self._saturated_reported = self._converter.saturated_samples
         raw_values = elapsed * self._source.iq_sample_rate * _BYTES_PER_SAMPLE
-        if clipped < raw_values * _CLIPPING_WORTH_REPORTING and not saturated:
+        if clipped < raw_values * CLIPPING_WORTH_NOTICING and not saturated:
             return
         logger.warning(
             'The receiver clipped %d raw value(s) in the last %.0f seconds, and the '

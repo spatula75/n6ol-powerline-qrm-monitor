@@ -129,6 +129,49 @@ The same question applies to `device_index`, and the answer there was no.  See
 picker would list two indistinguishable rows.  Gain is different, because the list is
 exact and the snapping is invisible.
 
+### Re-running the gain sweep throws away a measured level offset
+
+`SectionMenuScreen._calibrate_gain` sets `calibrated_offset_db` to the negative of the
+chosen gain every time the sweep produces an answer.  That is the right starting point
+for a receiver nobody has calibrated, and it is wrong for one somebody has.  The
+offset is mostly the negative of the gain plus a residual for the rest of the chain,
+and `_carry_the_calibration_to` goes to some trouble to preserve that residual when
+the gain is changed by hand.  The sweep path discards it without asking, and the
+result still reads as calibrated: startup logs "the calibrated figure for this
+station" for what is now an estimate, and the menu stops marking it "(estimated)".
+
+The fix is to carry the residual the way the manual path does, or to ask.  What stops
+it is deciding which: an operator who re-runs the sweep on a different band may want
+the old residual and may not, and nobody has run the case to find out.  Reported in
+review of the setup and calibration work, 13 September 2026.
+
+### Two operator-facing notes on the level offsets are out of date
+
+`schema.json` describes `[station] audio_rf_conversion_db` as superseded by
+`[rtlsdr] audio_rf_conversion_db`, which is the name that became
+`calibrated_offset_db` in the same piece of work.  It also says "Two settings share
+this name" and that "the monitor replaces this at startup with the receiver's own
+figure", where the sibling note beside `calibrated_offset_db` says the two carry
+different names on purpose, and `BuzzConfig.level_offset_db` resolves the question
+rather than assigning anything at startup.
+
+Every line of it is generated verbatim into `config.example.toml` and shown in the
+setup program.  Nothing stops it beyond deciding the wording, and regenerating the
+sample config afterwards.  Reported in the same review.
+
+### The gain sweep measures a peak nobody reads
+
+`BandMeasurement.peak_dbfs` runs on every collected block, `GainSweep._combine` takes
+the maximum across passes, and it rides in `GainMeasurement` and `SweepResult`.
+`GainChooser` decides on `quiet_dbfs` and `clipped` alone, and no screen or log shows
+it.  Outside `tests/test_gain_sweep.py` there is no reader, which is the same shape as
+the four published counters the earlier RTL-SDR review found.
+
+Either it belongs in the headroom reasoning, where a measured peak would say how much
+of the reserve an observed signal already used, or it should go.  What stops it is
+that the first of those needs an arc to be running, and the sweep is built so that
+nothing depends on one being there.  Reported in the same review.
+
 ### Markdown is not covered by the subjectless-opener check
 
 `ste_lint --fragments` reads Python and `schema.json`.  `markdown_prose` yields a line

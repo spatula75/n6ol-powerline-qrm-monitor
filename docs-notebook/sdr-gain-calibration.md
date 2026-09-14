@@ -218,9 +218,18 @@ whether the sweep still reaches the answer it reaches on a quiet band:
 
 ## What the finished sweep measured, 13 September 2026
 
-The first end-to-end run against the broadband antenna chose **28.0 dB**, which is the
-lowest step the tuner offers at or above that antenna's knee.  The knee therefore
-falls between 25.4 and 28.0 dB.  That figure is now the shipped default, replacing a
+The first end-to-end run against the broadband antenna chose **28.0 dB**, under the
+rules the sweep had that morning: the lowest step at or above the antenna's knee, with
+nothing reading the clipped counts each step already recorded.  That run put the knee
+between 25.4 and 28.0 dB.
+
+**The shipped default is 22.9 dB rather than that figure.**  Two rules changed later
+the same day and each moved this station down.  "Nearest a target, not lowest inside a
+budget" above is the first.  "The first burst of an intermittent arc is the loud one"
+below is the second, where clipping seen at 25.4 dB rules out that gain and every gain
+above it.  22.9 dB is also the step this station's operator had been setting by hand,
+so the tool ended up agreeing with the antenna rather than with its own first answer.
+Either figure is one the tool measured, where the default before this work was a
 guess.
 
 A model of the same antenna, fitted to the 81% share at 36.4 dB recorded earlier in
@@ -335,6 +344,26 @@ amplitude by eight millionths of a decibel, where a gain step below the knee cos
 to three decibels on every noise floor reported afterwards.  The monitor's warning
 threshold is set from that: 4 parts per million, about 123 values a minute at
 256 kHz.
+
+### The sweep uses the same bar, added 13 September 2026
+
+The first version of the rule above treated any non-zero count as evidence, which is
+the thing the paragraph before it argues against.  One raw value at a rail is what the
+tuner's own DC offset produces at a high gain with nothing arcing, and it would have
+disqualified that gain and every gain above it.
+
+The sweep now asks the same question the monitor asks, against the same 4 parts per
+million.  Five passes of a quarter second at 256 kHz collect 640,000 raw values, so the
+bar works out at three of them.  That excludes the isolated value and nothing else: a
+single 4 ms burst covers about two thousand raw values at this rate, so an arc loud
+enough to reach a rail reaches it more than three times.
+
+What the logs do not say is how many values the station's own 25.4 dB step clipped
+during the sweep that produced the figures above.  The two antenna runs recorded
+thousands at a time, and the initiation transients that motivated the rule were
+arriving in bursts of several hundred a minute, so three is almost certainly well
+under what was seen.  It has not been confirmed against the sweep that chose 22.9, and
+confirming it means keeping the per-gain clipped counts from a run at that station.
 
 ## What the two antennas showed
 

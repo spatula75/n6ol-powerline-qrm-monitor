@@ -31,7 +31,9 @@ RTLSDR_VALUES = {'frequency_khz': 3588.0, 'gain_db': 40.2, 'device_index': 0,
 def _result(chosen=36.4, reason='Measured.', share=0.81):
     return SweepResult(chosen_db=chosen, reason=reason, antenna_share=share,
                        floor_bound_db=chosen, headroom_bound_db=44.5,
-                       measurements=(GainMeasurement(36.4, -41.0, -12.0, 0, 5),))
+                       measurements=(GainMeasurement(
+                           gain_db=36.4, quiet_dbfs=-41.0, peak_dbfs=-12.0,
+                           clipped=0, raw_values=640_000, passes=5),))
 
 
 async def _wait_until(pilot, condition, description, timeout=5.0):
@@ -72,11 +74,13 @@ class _FakeSource:
     # Fewer steps than a V4, so a test can tell a derived count from a hard-coded one.
     supported_gains_db = [0.0, 14.4, 25.4, 32.8, 40.2, 49.6]
 
-    def __init__(self):
+    def __init__(self, released=True):
         self.closed = False
+        self._released = released
 
     def close(self):
         self.closed = True
+        return self._released
 
 
 class TestTheMenuRowSitsInTheProcedure:
@@ -267,11 +271,9 @@ class TestTheDialogSurvivesTheWaysItCanGoWrong:
                             '#outcome', Static).content,
                         'the sweep failure to reach the screen')
                     assert str(app.screen.query_one('#cancel', Button).label) == 'Close'
-                    # The close runs on its own thread now, so that releasing a
-                    # receiver cannot freeze the event loop.  It therefore finishes
-                    # shortly after the outcome appears rather than before it.
-                    await _wait_until(pilot, lambda: source.closed,
-                                      'the receiver to be released')
+                    # The close runs in the sweep's own thread, so it has already
+                    # happened by the time the failure reaches the screen.
+                    assert source.closed
 
         run(scenario())
 
@@ -526,47 +528,154 @@ class TestTheReceiverIsAlwaysReleased:
     The release is in the same thread as the work now, after a finally no task
     cancellation can skip, because a thread asyncio.to_thread started runs to
     completion whatever happens to the task awaiting it.
+
+    The open is in that thread too, for the same reason read the other way round: a
+    receiver opened by a thread nobody is awaiting belongs to nothing.  Between them
+    these cover the three ways the device was still reachable without an owner, which
+    are a cancelled open, a reader that would not configure, and a callback that
+    raised between the two.
     """
 
-    class _Source:
-        def __init__(self, released=True):
-            self._released = released
-            self.closed = False
+    def _run(self, source, sweep, on_open=lambda *a: None):
+        """Drive the thread function with the receiver already stood in for."""
+        from buzz.setup.screens.gain_calibration import _open_sweep_then_release
 
-        def close(self):
-            self.closed = True
-            return self._released
+        with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                   return_value=(source, sweep)):
+            return _open_sweep_then_release(dict(RTLSDR_VALUES), on_open,
+                                            lambda *a: None)
 
     def test_a_sweep_that_raises_still_releases_it(self):
-        from buzz.setup.screens.gain_calibration import _sweep_then_release
+        source = _FakeSource()
 
-        source = self._Source()
-
-        class _Exploding:
+        class _Exploding(_FakeSweep):
             def run(self, on_progress=None):
                 raise RuntimeError('the tuner stopped')
 
         with pytest.raises(RuntimeError):
-            _sweep_then_release(source, _Exploding(), lambda *a: None)
+            self._run(source, _Exploding(_result()))
+        assert source.closed
+
+    def test_a_callback_that_raises_still_releases_it(self):
+        """on_open runs on this thread between the open and the sweep, which is the one
+        stretch where the device is held and no finally had covered it.
+        """
+        source = _FakeSource()
+
+        def explode(sweep, gain_count):
+            raise ValueError('the screen went away mid-update')
+
+        with pytest.raises(ValueError):
+            self._run(source, _FakeSweep(_result()), explode)
         assert source.closed
 
     def test_it_reports_whether_the_device_came_back(self):
-        from buzz.setup.screens.gain_calibration import _sweep_then_release
-
         for released in (True, False):
-            _, reported = _sweep_then_release(
-                self._Source(released), _FakeSweep(_result()), lambda *a: None)
+            _, reported = self._run(_FakeSource(released), _FakeSweep(_result()))
             assert reported is released
 
     def test_the_release_value_is_read_after_the_close_not_before(self):
         """A return expression is evaluated before the finally runs, so building the
         tuple inside the try would have carried whatever the flag held beforehand.
         """
-        from buzz.setup.screens.gain_calibration import _sweep_then_release
-
-        _, reported = _sweep_then_release(
-            self._Source(released=True), _FakeSweep(_result()), lambda *a: None)
+        _, reported = self._run(_FakeSource(released=True), _FakeSweep(_result()))
         assert reported is True
+
+    def test_it_says_how_many_gains_the_tuner_offers_once_it_answers(self):
+        """The count reaches the screen through the callback now, because the open
+        happens on the sweep's thread rather than in an await of its own.
+        """
+        opened = []
+        sweep = _FakeSweep(_result())
+        self._run(_FakeSource(), sweep, lambda s, count: opened.append((s, count)))
+        assert opened == [(sweep, len(_FakeSource.supported_gains_db))]
+
+    def test_a_receiver_that_will_not_configure_is_not_left_open(self):
+        """The other half of the leak: open_device succeeds and SweepReader raises
+        somewhere inside configure_device, which leaves a handle no object owns.  The
+        atexit hook is registered on the constructor's last line, so it covers nothing
+        here.
+        """
+        from buzz.setup.screens.gain_calibration import open_sweep
+
+        with patch('buzz.sdr.open_device') as open_device, \
+             patch('buzz.sdr.close_device') as close_device, \
+             patch('buzz.sdr.SweepReader',
+                   side_effect=RuntimeError('the tuner would not take a rate')):
+            with pytest.raises(RuntimeError):
+                open_sweep(dict(RTLSDR_VALUES))
+
+        close_device.assert_called_once_with(open_device.return_value)
+
+    def test_cancelling_while_the_receiver_opens_still_releases_it(self, tmp_path):
+        """The defect this class exists for, in the one place it was still possible.
+
+        Textual cancels a screen's workers when it unmounts, and CancelledError is a
+        BaseException, so the `except Exception` around the await never saw it.  The
+        open ran in a thread of its own, finished after the task had gone, and handed
+        back a receiver nobody closed.  Opening one takes about 0.72 s on this
+        hardware, so Escape during the opening line was enough to do it.
+
+        The open is held here until after the cancel rather than timed, so the test
+        pins the ordering rather than racing it.
+        """
+        source = _FakeSource()
+        opening = threading.Event()
+        cancelled = threading.Event()
+
+        def blocking_open(values):
+            opening.set()
+            cancelled.wait(5.0)
+            return source, _FakeSweep(_result())
+
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test() as pilot:
+                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                           side_effect=blocking_open):
+                    dialog = GainCalibrationDialog(dict(RTLSDR_VALUES))
+                    app.push_screen(dialog)
+                    await _wait_until(pilot, opening.is_set,
+                                      'the receiver to start opening')
+                    dialog.action_cancel()
+                    await pilot.pause()
+                    cancelled.set()
+                    await _wait_until(pilot, lambda: source.closed,
+                                      'the receiver to be released')
+
+        run(scenario())
+
+    def test_cancelling_before_the_receiver_answers_still_stops_the_sweep(self, tmp_path):
+        """Escape can arrive before there is a sweep to cancel, so the request is
+        remembered and applied by the thread as soon as one exists.  Without it the
+        receiver goes on stepping through gains behind a dialog that has gone.
+        """
+        sweep = _FakeSweep(_result())
+        opening = threading.Event()
+        cancelled = threading.Event()
+
+        def blocking_open(values):
+            opening.set()
+            cancelled.wait(5.0)
+            return _FakeSource(), sweep
+
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test() as pilot:
+                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                           side_effect=blocking_open):
+                    dialog = GainCalibrationDialog(dict(RTLSDR_VALUES))
+                    app.push_screen(dialog)
+                    await _wait_until(pilot, opening.is_set,
+                                      'the receiver to start opening')
+                    assert dialog._sweep is None, 'the fixture must cancel first'
+                    dialog.action_cancel()
+                    await pilot.pause()
+                    cancelled.set()
+                    await _wait_until(pilot, lambda: sweep.cancelled,
+                                      'the sweep to be cancelled')
+
+        run(scenario())
 
     def test_a_held_receiver_is_said_on_screen(self):
         """The consequence falls on the next run as a libusb error that sends people
@@ -638,6 +747,26 @@ class TestProgressDoesNotBlockTheSweep:
                 dialog._progress_reporter(_DeadLoop())(0, 145, 32.8)
 
         run(scenario())
+
+    def test_a_dead_loop_does_not_lose_the_sweep_that_just_opened(self, tmp_path):
+        """The opening report crosses back the same way and swallows the same failure.
+        The sweep is still stored, because the dialog needs it to cancel whatever the
+        loop is doing, and the receiver is open by this point either way.
+        """
+        class _DeadLoop:
+            def call_soon_threadsafe(self, fn, *args):
+                raise RuntimeError('Event loop is closed')
+
+        sweep = _FakeSweep(_result())
+
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test():
+                dialog = GainCalibrationDialog(dict(RTLSDR_VALUES))
+                dialog._opening_reporter(_DeadLoop())(sweep, 6)
+                return dialog._sweep
+
+        assert run(scenario()) is sweep
 
     def test_the_blocking_bridge_is_not_called(self):
         """The blocking call is the defect, so its absence is what is worth pinning.

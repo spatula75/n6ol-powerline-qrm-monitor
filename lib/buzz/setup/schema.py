@@ -5,7 +5,7 @@ Nothing here draws.  The setup program's screens, the example-config generator, 
 the tests all need these same operations.  Keeping them clear of any terminal makes
 the merge rules testable without one.
 
-The schema carries seven custom keywords.  JSON Schema ignores a keyword it does not
+The schema carries nine custom keywords.  JSON Schema ignores a keyword it does not
 know, so the document stays valid while it says things a validator has no opinion on.
 
   * `x-visible-when` names the field this one depends on, so the setup program can
@@ -22,6 +22,16 @@ know, so the document stays valid while it says things a validator has no opinio
     and gated the whole recording section by mistake.  It only seeds the recorder's
     opening state.  The R key and `--enable-recording` both arm a run that started
     disarmed, and every other recording setting governs that run.
+  * `x-file-only` marks a setting that the monitor reads and `config.example.toml`
+    documents, but that nobody should meet in a menu, such as the decimation.
+    `menu_field_names()` leaves it out.
+  * `x-drop-when-hidden` marks a field that is left out of the written config file
+    while its `x-visible-when` condition is unsatisfied, rather than merely left off
+    the menu.  Only `station.audio_rf_conversion_db` carries it, because another
+    setting holds the same quantity for a receiver and exactly one of the two is ever
+    in use.  Every other hidden field is still written, since an operator who turns
+    uploads off for a week expects the host and the key path to be there when they
+    turn them back on.  See `file_field_names()`.
   * `x-notes` holds paragraphs too long for a form field.  Only `example_toml` renders
     them.  The setup program shows `description`, which stays a line or two, because a
     form field has no room for four paragraphs.
@@ -166,6 +176,30 @@ def section_is_visible(schema: dict[str, Any], section: str,
     if condition is None:
         return True
     return values.get(condition['section'], {}).get(condition['field']) == condition['equals']
+
+
+def file_field_names(schema: dict[str, Any], section: str,
+                     values: ConfigValues) -> list[str]:
+    """The fields of `section` that belong in the written config file, in order.
+
+    Every field except one marked `x-drop-when-hidden` whose `x-visible-when`
+    condition is unsatisfied.  A hidden field is normally still written, because
+    hidden means inapplicable to the choices made so far rather than unwanted: an
+    operator who switches uploads off for a week expects the host, the username and
+    the key path to still be there afterwards, and the backup is the only other copy.
+
+    The marked field is the exception because a second setting holds the same
+    quantity.  A receiver's file that carried a [station] audio_rf_conversion_db
+    would show a live-looking figure the monitor ignores, in a section that applies
+    to every station, and somebody would edit it and watch nothing happen.
+
+    This is the file's counterpart to menu_field_names, and the two differ on
+    purpose.  Being off a menu says a setting does not apply now.  Being out of the
+    file says it never applied.
+    """
+    return [field for field in field_names(schema, section)
+            if is_visible(schema, section, field, values)
+            or not field_schema(schema, section, field).get('x-drop-when-hidden')]
 
 
 def menu_field_names(schema: dict[str, Any], section: str,

@@ -12,6 +12,7 @@ say which of the two bounds failed and what to do about it.
 
 import asyncio
 import logging
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
 from textual import work
@@ -29,6 +30,12 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Told the dialog that the receiver answered: the sweep now built over it, and how
+# many gains the tuner reported.  Both figures belong to the device, so nothing can
+# state them before it is open.
+OpenedCallback = Callable[[GainSweep, int], None]
+
+
 def open_sweep(rtlsdr_values: SectionValues) -> tuple['SweepReader', GainSweep]:
     """Open the receiver and build a sweep over it.
 
@@ -44,21 +51,31 @@ def open_sweep(rtlsdr_values: SectionValues) -> tuple['SweepReader', GainSweep]:
     Whatever this raises carries a message written for whoever is standing at the
     radio, because open_device rewords libusb's own wording.  The dialog shows it
     rather than letting a traceback through.
+
+    The device is closed again if anything between opening it and returning raises,
+    because nothing else would.  SweepReader registers its atexit hook on the last
+    line of its constructor, so a failure inside configure_device would leave an open
+    receiver that no object owns and no hook covers.
     """
-    from buzz.sdr import SweepReader, open_device
+    from buzz.sdr import SweepReader, close_device, open_device
 
     settings = RtlSdrConfig(**rtlsdr_values)
-    reader = SweepReader(
-        open_device(settings.device_index),
-        frequency_hz=settings.frequency_hz, gain_db=settings.gain_db,
-        iq_sample_rate=settings.iq_sample_rate,
-        tuning_offset_hz=settings.tuning_offset_hz)
-    return reader, GainSweep(reader, settings.arc_headroom_db)
+    device = open_device(settings.device_index)
+    try:
+        reader = SweepReader(
+            device,
+            frequency_hz=settings.frequency_hz, gain_db=settings.gain_db,
+            iq_sample_rate=settings.iq_sample_rate,
+            tuning_offset_hz=settings.tuning_offset_hz)
+        return reader, GainSweep(reader, settings.arc_headroom_db)
+    except BaseException:
+        close_device(device)
+        raise
 
 
-def _sweep_then_release(source: 'SweepReader', sweep: GainSweep,
-                        on_progress: ProgressCallback) -> tuple[SweepResult, bool]:
-    """Run the sweep and release the receiver, both on the calling thread.
+def _open_sweep_then_release(rtlsdr_values: SectionValues, on_open: OpenedCallback,
+                             on_progress: ProgressCallback) -> tuple[SweepResult, bool]:
+    """Open the receiver, sweep it, and release it, all on the calling thread.
 
     The release used to be an awaited call in the worker's `finally`, which meant the
     event loop decided whether it happened.  It did not always happen.  A sweep that
@@ -70,18 +87,34 @@ def _sweep_then_release(source: 'SweepReader', sweep: GainSweep,
     cancellation can skip, because a thread started by asyncio.to_thread runs to
     completion whatever happens to the task awaiting it.
 
-    Returns the result and whether the device was actually released.  RtlSdrSource
-    leaves it open on purpose when its capture thread will not stop, since freeing a
-    handle that thread is still reading through is a crash in C rather than an
-    exception, so this can be False after an otherwise perfect sweep.
+    The open moved in here for the same reason, rather than staying in an
+    asyncio.to_thread call of its own.  Textual cancels a screen's workers when it
+    unmounts, and the CancelledError that raises is a BaseException, so an `except
+    Exception` around the await never saw it.  The thread went on to build the reader
+    and hand it back to a task that had gone, which held the receiver for the rest of
+    the session.  Escape pressed during the opening second was enough, and it
+    surfaced as the same LIBUSB_ERROR_ACCESS above.  Ownership of the device now
+    never leaves this function.
+
+    `on_open` is called with the sweep and the tuner gain count as soon as the
+    receiver answers, so that the dialog can say how long the sweep will take.  It
+    runs on this thread and must not block, which is the contract `on_progress` has
+    as well.
+
+    Returns the result and whether the device was actually released.  SweepReader
+    leaves it open on purpose when the driver will not give it back, because waiting
+    longer inside libusb only hangs the program, so this can be False after an
+    otherwise perfect sweep.
     """
+    source, sweep = open_sweep(rtlsdr_values)
     try:
+        on_open(sweep, len(source.supported_gains_db))
         result = sweep.run(on_progress)
     finally:
         # Assigned here and returned below rather than built into the return above,
         # because a return expression is evaluated before the finally runs, so the
         # tuple would have carried the value released had before the close.
-        # RtlSdrSource.close bounds itself, including the rtlsdr_close that can
+        # SweepReader.close bounds itself, including the rtlsdr_close that can
         # block inside libusb and never return.  See its own docstring; the bound
         # lives there because every other path that closes a receiver needs it too,
         # the atexit hook among them.
@@ -155,6 +188,7 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
         self._sweep: GainSweep | None = None
         self._result: SweepResult | None = None
         self._offers_gain = False
+        self._cancel_requested = False
 
     def compose(self):
         yield Vertical(
@@ -180,27 +214,25 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
 
     @work
     async def _run_sweep(self) -> None:
-        try:
-            source, sweep = await asyncio.to_thread(open_sweep, self._rtlsdr_values)
-        except Exception as exc:
-            self._set('#outcome', f'Could not open the receiver: {exc}')
-            self._finish()
-            return
-        self._sweep = sweep
-        # Now that the receiver has answered, say how many gains it offers and how
-        # long that will take.  Both figures belong to the device: a V4 has 29 steps
-        # and another tuner has its own count, so the opening text cannot state either
-        # of them before the device is open.
-        gain_count = len(source.supported_gains_db)
-        self._set('#instructions', self._instructions(
-            f'each of the {gain_count} gains the tuner offers, {sweep.passes} times '
-            f'over, which takes {self._duration_phrase(sweep.estimated_seconds(gain_count))}'))
+        """Drive the whole measurement from one worker, over one thread.
+
+        One thread call rather than an open and then a sweep, because the receiver is
+        released in that thread's `finally` and anything opened outside it is owned by
+        a task that cancellation can take away.  See `_open_sweep_then_release`.
+
+        Which of the two messages a failure gets is decided by whether the sweep ever
+        reached this screen, because `_opening_reporter` is what puts it there and
+        only a receiver that opened calls that.
+        """
+        loop = asyncio.get_running_loop()
         try:
             result, released = await asyncio.to_thread(
-                _sweep_then_release, source, sweep,
-                self._progress_reporter(asyncio.get_running_loop()))
+                _open_sweep_then_release, self._rtlsdr_values,
+                self._opening_reporter(loop), self._progress_reporter(loop))
         except Exception as exc:
-            self._set('#outcome', f'The sweep failed: {exc}')
+            opened = self._sweep is not None
+            self._set('#outcome', f'The sweep failed: {exc}' if opened
+                      else f'Could not open the receiver: {exc}')
             self._finish()
             return
         try:
@@ -243,6 +275,41 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
             return f'about {max(15, round(seconds / 15.0) * 15)} seconds'
         minutes = max(2, round(seconds / 30.0)) / 2.0
         return f'about {minutes:g} minute' + ('' if minutes == 1.0 else 's')
+
+    def _opening_reporter(self, loop: asyncio.AbstractEventLoop) -> OpenedCallback:
+        """A callback for the sweep thread to report that the receiver is open.
+
+        The sweep is stored from that thread rather than posted to the loop with the
+        screen update, so that Escape pressed a moment later finds something to
+        cancel.  Posting it would leave a window in which the sweep is running and
+        the dialog believes it has not started.  An attribute assignment is atomic and
+        Textual's thread rules are about widgets, which this does not touch.
+
+        The flag covers the other order.  Escape can arrive before the receiver
+        answers at all, and the sweep to cancel does not exist yet, so the thread
+        checks whether one was asked for as soon as it has something to ask.
+        """
+        def opened(sweep: GainSweep, gain_count: int) -> None:
+            self._sweep = sweep
+            if self._cancel_requested:
+                sweep.cancel()
+            try:
+                loop.call_soon_threadsafe(self._say_what_the_sweep_will_do, sweep,
+                                          gain_count)
+            except RuntimeError:
+                pass
+
+        return opened
+
+    def _say_what_the_sweep_will_do(self, sweep: GainSweep, gain_count: int) -> None:
+        """Replace the opening advice with the figures the device has now supplied.
+
+        Both belong to the device: a V4 has 29 steps and another tuner has its own
+        count, so the opening text cannot state either of them before it is open.
+        """
+        self._set('#instructions', self._instructions(
+            f'each of the {gain_count} gains the tuner offers, {sweep.passes} times '
+            f'over, which takes {self._duration_phrase(sweep.estimated_seconds(gain_count))}'))
 
     def _progress_reporter(self, loop: asyncio.AbstractEventLoop) -> ProgressCallback:
         """A progress callback the sweep's own thread can use without waiting.
@@ -343,6 +410,9 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
         self.action_cancel()
 
     def action_cancel(self) -> None:
+        # The flag first, so that a sweep still being built on the other thread sees
+        # it.  See _opening_reporter for the two orders this has to survive.
+        self._cancel_requested = True
         if self._sweep is not None:
             self._sweep.cancel()
         self.dismiss(CANCELLED)

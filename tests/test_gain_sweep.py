@@ -17,7 +17,7 @@ from buzz.gain_sweep import (
     KneeFit,
     SweepResult,
 )
-from buzz.sdr import IqBlock
+from buzz.sdr import CLIPPING_WORTH_NOTICING, IqBlock
 
 # The 29 steps an RTL-SDR Blog V4 reports, which is what the real sweep walks.
 # The receiver rate these captures stand for, which sets the frame length.
@@ -28,10 +28,19 @@ V4_GAINS = [0.0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6, 19.7, 20.
             43.9, 44.5, 48.0, 49.6]
 
 
+# Raw values one gain step yields in a real sweep: five passes of a quarter second at
+# 256 kHz, with I and Q counted separately.  Derived rather than written as 640000, so
+# that a change to either sweep default carries through to what a clipped count here
+# means.
+RAW_VALUES_PER_STEP = int(GainSweep.DEFAULT_PASSES * GainSweep.DEFAULT_SECONDS_PER_STEP
+                          * IQ_RATE * 2)
+
+
 def _measurement(gain_db: float, quiet_dbfs: float, peak_dbfs: float = -10.0,
-                 clipped: int = 0) -> GainMeasurement:
+                 clipped: int = 0,
+                 raw_values: int = RAW_VALUES_PER_STEP) -> GainMeasurement:
     return GainMeasurement(gain_db=gain_db, quiet_dbfs=quiet_dbfs, peak_dbfs=peak_dbfs,
-                           clipped=clipped, passes=5)
+                           clipped=clipped, raw_values=raw_values, passes=5)
 
 
 def _curve(gains, antenna_at_unity, converter):
@@ -259,7 +268,8 @@ class TestTheChooserWeighsBothBounds:
         # target decides how far apart the two have to be before they cross at all.
         curve = _curve(V4_GAINS, 2e-13, 1e-8)
         raised = tuple(GainMeasurement(m.gain_db, m.quiet_dbfs + 46.0, m.peak_dbfs,
-                                       m.clipped, m.passes) for m in curve)
+                                       m.clipped, m.raw_values, m.passes)
+                       for m in curve)
         result = GainChooser(raised, 32.0).choose()
         assert result.floor_bound_db > result.headroom_bound_db, 'fixture must cross'
         assert result.chosen_db == result.headroom_bound_db
@@ -274,7 +284,8 @@ class TestTheChooserWeighsBothBounds:
         # target decides how far apart the two have to be before they cross at all.
         curve = _curve(V4_GAINS, 2e-13, 1e-8)
         raised = tuple(GainMeasurement(m.gain_db, m.quiet_dbfs + 46.0, m.peak_dbfs,
-                                       m.clipped, m.passes) for m in curve)
+                                       m.clipped, m.raw_values, m.passes)
+                       for m in curve)
         reason = GainChooser(raised, 32.0).choose().reason
         assert 'dB high' in reason
         assert '%' not in reason, (
@@ -809,3 +820,157 @@ class TestTheAnswerSaysWhichBoundDecidedIt:
         relaxed = GainChooser(curve, 26.0).choose()
         strict = GainChooser(curve, 44.0).choose()
         assert strict.chosen_db is None or strict.chosen_db < relaxed.chosen_db
+
+
+class TestClippingIsEvidenceOnlyAboveTheShareTheMonitorUses:
+    """A gain that clipped outranks the reserve, and one stray value at a rail is not
+    a gain that clipped.
+
+    The tuner has a DC offset of its own, so the occasional sample sits at 0 or 255 at
+    a high gain with nothing arcing.  Treating that as evidence capped the headroom
+    bound a step or more low, and a step below the knee costs one to three decibels on
+    every noise floor the station reports from then on.  The bar is the share the
+    monitor already uses to decide whether to report clipping while it runs, so the
+    two cannot come apart.
+    """
+
+    def _curve_clipping_at(self, gain_db, clipped):
+        """A loud-band curve where one gain step reports `clipped` raw values."""
+        return tuple(
+            _measurement(m.gain_db, m.quiet_dbfs,
+                         clipped=clipped if m.gain_db == gain_db else 0)
+            for m in _curve(V4_GAINS, 1e-8, 1e-8))
+
+    def _bound_without_clipping(self):
+        """The headroom bound this curve reaches when nothing clipped.
+
+        Read from the chooser rather than written down, because clipping only ever
+        lowers the bound.  A test that clips at a gain the reserve had already ruled
+        out cannot fail whatever the rule does, which is how the first draft of the
+        test below passed against the defect it was written for.
+        """
+        clean = GainChooser(self._curve_clipping_at(0.0, 0), 32.0).choose()
+        assert clean.headroom_bound_db is not None, 'the fixture must reach a bound'
+        assert clean.headroom_bound_db > min(V4_GAINS), (
+            'the bound has to have somewhere lower to fall, or nothing can move')
+        return clean.headroom_bound_db
+
+    def test_one_value_at_a_rail_does_not_cost_a_gain_step(self):
+        """The defect, stated as what it did to an operator.  The bar works out to
+        three values here, so one and two are both below it.
+
+        The stray value goes at the bound itself, which is the gain where counting it
+        would cost a step.
+        """
+        bound = self._bound_without_clipping()
+        strays = GainChooser(self._curve_clipping_at(bound, 1), 32.0).choose()
+        assert strays.headroom_bound_db == bound
+        assert strays.chosen_db is not None
+
+    def test_clipping_above_the_share_still_disqualifies_the_gain(self):
+        """The rule this must not weaken.  A gain that really clipped is evidence
+        rather than a prediction, so it and everything above it are out.
+        """
+        bound = self._bound_without_clipping()
+        clipping = GainChooser(self._curve_clipping_at(bound, 4000), 32.0).choose()
+        assert clipping.headroom_bound_db < bound
+
+    def test_every_gain_above_a_clipping_one_goes_too(self):
+        """Clipping at 25.4 dB says nothing good about 32.8, and the sweep may simply
+        not have been running while the arc fired there.
+        """
+        assert 25.4 < self._bound_without_clipping(), (
+            'the clipping gain has to be one the reserve would otherwise allow')
+        result = GainChooser(self._curve_clipping_at(25.4, 4000), 32.0).choose()
+        assert result.headroom_bound_db is not None
+        assert result.headroom_bound_db < 25.4
+
+    def test_the_bar_is_the_figure_the_monitor_reports_on(self):
+        """A drift pin.  The two live in different modules and answer the same
+        question, so a change to one has to move the other.
+        """
+        bar = int(RAW_VALUES_PER_STEP * CLIPPING_WORTH_NOTICING)
+        assert not _measurement(40.2, -50.0, clipped=bar - 1).clipping_worth_noticing
+        assert _measurement(40.2, -50.0, clipped=bar + 1).clipping_worth_noticing
+
+    def test_no_clipping_is_never_evidence(self):
+        assert not _measurement(40.2, -50.0, clipped=0).clipping_worth_noticing
+
+    def test_a_gain_that_collected_nothing_is_not_read_as_clipping(self):
+        """A receiver that stopped delivering leaves a step with no raw values, and
+        any share of nothing is nothing.  Without the guard the comparison reads as
+        zero clipped out of zero and disqualifies the step.
+        """
+        assert not _measurement(40.2, -50.0, clipped=0,
+                                raw_values=0).clipping_worth_noticing
+
+
+class _ThreeGainReceiver(FakeReceiver):
+    """A FakeReceiver with three gain steps, so a sweep at its real per-step size
+    finishes in a test.
+
+    `stray_rail_value` pins one raw value to a rail in the first block the sweep
+    actually collects, which is the DC offset of a real tuner seen once.  It waits out
+    the discards rather than counting reads from the start, since a block thrown away
+    after a gain change is never measured.
+    """
+
+    def __init__(self, antenna_at_unity, converter, seed=0, stray_rail_value=False):
+        super().__init__(antenna_at_unity, converter, seed=seed)
+        self.supported_gains_db = [0.0, 25.4, 49.6]
+        self._stray_rail_value = stray_rail_value
+        self._reads_since_gain = 0
+
+    def set_gain(self, gain_db):
+        self._reads_since_gain = 0
+        return super().set_gain(gain_db)
+
+    def read(self, timeout: float = 1.0):
+        block = super().read(timeout)
+        self._reads_since_gain += 1
+        if (self._stray_rail_value
+                and self._reads_since_gain == self.blocks_to_discard_after_gain_change + 1):
+            block.raw[0] = 255
+            self._stray_rail_value = False
+        return block
+
+
+class TestTheSweepCountsWhatTheClippingIsOutOf:
+    """The share needs both counts measured over the same audio, so the sweep records
+    the raw total beside the clipped one rather than deriving it afterwards.
+    """
+
+    def _swept(self, receiver, **kwargs):
+        sweep = GainSweep(receiver, 32.0, passes=1, seconds_per_step=0.02, **kwargs)
+        return sweep.run()
+
+    def test_it_records_the_raw_values_each_gain_was_measured_over(self):
+        receiver = FakeReceiver(1e-6, 1e-4)
+        result = self._swept(receiver)
+        assert result.measurements
+        for measurement in result.measurements:
+            assert measurement.raw_values > 0, measurement
+            # Two raw values per complex sample, and a whole number of 2048-sample
+            # blocks, which is what the receiver hands out.
+            assert measurement.raw_values % (2048 * 2) == 0, measurement
+
+    def test_a_single_stray_rail_value_does_not_move_the_answer(self):
+        """End to end, over a sweep at its real per-step size, because the share is
+        what the rule turns on and a shortened step would not reach it.
+
+        The comparison is between two runs of the same receiver, one of which pins a
+        single raw value to a rail inside a collected block at the lowest gain.  Both
+        numbers come from the sweep rather than from the rule under test, and the
+        stray value sits where counting it would throw the whole answer away: a gain
+        that clips takes every gain above it with it, so the old behavior left the
+        sweep with nothing at all.
+        """
+        plain = _ThreeGainReceiver(1e-9, 1e-8, seed=7)
+        strays = _ThreeGainReceiver(1e-9, 1e-8, seed=7, stray_rail_value=True)
+        measured = GainSweep(plain, 32.0).run()
+        with_stray = GainSweep(strays, 32.0).run()
+
+        assert with_stray.measurements[0].clipped == 1, 'the fixture must clip once'
+        assert measured.chosen_db is not None, 'the fixture must reach an answer'
+        assert with_stray.chosen_db == measured.chosen_db
+        assert with_stray.headroom_bound_db == measured.headroom_bound_db

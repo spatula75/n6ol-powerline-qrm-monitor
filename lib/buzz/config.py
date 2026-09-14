@@ -98,20 +98,15 @@ class RtlSdrConfig:
     frequency_khz: float = 3588.0
     # Tuner gain in dB.  The monitor snaps this to the nearest step the tuner offers,
     # since the tuner accepts only a fixed set.  Measured on an RTL-SDR Blog V4, the
-    # useful range starts around 22.9 dB, because below that the output is the
+    # useful range starts around 20.7 dB, because below that the output is the
     # converter's own noise rather than anything from the antenna.
     #
-    # 28.0 is what the automatic calibration measured on the broadband antenna this was
+    # 22.9 is what the automatic calibration measured on the broadband antenna this was
     # developed against, so the shipped figure is one the tool arrived at rather than a
-    # guess.  It is the lowest step at or above that antenna's knee, which therefore
-    # sits between 25.4 and 28.0 dB.
-    #
-    # A model of the same antenna had predicted 32.8, and the measurement came in
-    # 4.8 dB below it.  Worth remembering before trusting anything else the model says
-    # about this station: it under-predicts where the knee falls.
+    # guess.
     #
     # Every antenna differs, so run the calibration rather than trusting this.
-    gain_db: float = 28.0
+    gain_db: float = 22.9
     # dB added to the measured audio level to get signal level at the receiver input,
     # the same job station.audio_rf_conversion_db does for a sound card.  It lives here
     # rather than there because the figure depends on gain_db above, so the two belong

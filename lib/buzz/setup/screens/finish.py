@@ -17,7 +17,7 @@ import tomli_w
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widgets import Button, Footer, Static
 
-from buzz.setup.schema import ConfigValues, field_names, is_visible, section_names
+from buzz.setup.schema import ConfigValues, field_names, file_field_names, section_names
 from buzz.setup.screens.base import ScopeScreen, scope_header
 
 _BACKUP_TIMESTAMP = '%Y%m%d-%H%M%S'
@@ -54,11 +54,16 @@ def toml_ready(values: ConfigValues,
 
     TOML cannot spell "unset", so a None is dropped rather than written.
 
-    A setting hidden by `x-visible-when` is dropped too, when a schema is given.  Two
-    sections carry a level offset and exactly one is ever used, so writing both
-    left a receiver's config file holding a live-looking [station] figure that the
-    monitor ignores.  A value nobody can act on is worse than a missing one,
-    because it invites somebody to edit it and watch nothing happen.
+    A setting marked `x-drop-when-hidden` goes too while it is hidden, when a schema
+    is given.  Two sections carry a level offset and exactly one is ever used, so
+    writing both left a receiver's config file holding a live-looking [station]
+    figure that the monitor ignores.  A value nobody can act on is worse than a
+    missing one, because it invites somebody to edit it and watch nothing happen.
+
+    The marked ones are the only ones that go, which is what `file_field_names`
+    decides.  Dropping every hidden setting instead erased four working upload
+    settings the moment somebody switched uploads off, and the backup this screen
+    writes was then the only copy of them.
 
     The schema is optional so that a caller with only values still gets the None
     filtering, which is the older of the two jobs.
@@ -67,10 +72,9 @@ def toml_ready(values: ConfigValues,
         return {section: {k: v for k, v in fields.items() if v is not None}
                 for section, fields in values.items()}
     return {section: {name: field_values[name]
-                      for name in field_names(schema, section)
+                      for name in file_field_names(schema, section, values)
                       if name in field_values
-                      and field_values[name] is not None
-                      and is_visible(schema, section, name, values)}
+                      and field_values[name] is not None}
             for section, field_values in values.items()
             if section in section_names(schema)}
 
