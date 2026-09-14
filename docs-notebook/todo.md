@@ -289,6 +289,32 @@ the author rather than for a model to fill in unattended.
 
 ## Housekeeping
 
+### Most patch targets are still strings
+
+`tests/patching.py` builds a patch target from real references, so that a rename in
+`lib/` reaches the tests that patch it: an IDE updates them, a grep finds them, and
+an import fails at collection rather than as a mock error minutes into a full run.
+`tests/test_main.py` uses it throughout, which is the file the problem happened in
+twice.
+
+The rest of the suite still names our own symbols as strings, about sixty call sites
+across eight files.  The ones worth converting are the symbols we can rename:
+`buzz.sdr.open_device`, `buzz.setup.screens.gain_calibration.open_sweep`,
+`buzz.sdr.RtlSdrSource`, `buzz.iq.IqToAudio`, `buzz.sdr.SweepReader`,
+`buzz.sdr.SdrLevelStream`, `buzz.sdr.close_device`, `buzz.ffmpeg.find_ffmpeg` and
+`buzz.setup.screens.calibration.SoundCardLevelStream`.
+
+Three kinds stay as strings on purpose.  Third-party names reached through one of our
+modules, such as `buzz.sampler.sd.InputStream`, are not ours to rename.  Constants
+have no `__name__` to build a path from, which `buzz.sdr._DEVICE_CLOSE_TIMEOUT_SECONDS`
+is.  And an attribute of a module we imported, such as
+`buzz.recorder.wavmeta.append_metadata`, is a shape the helper does not fit, since the
+name bound in the module is `wavmeta` rather than the function.
+
+`tests/test_patch_targets.py` resolves every remaining string, so nothing is
+unguarded meanwhile.  This is mechanical rather than urgent.
+
+
 ### The "worth" construct is still through the codebase
 
 37 instances outside the quantity sense remain in `lib/`, `tools/` and `scripts/`,
