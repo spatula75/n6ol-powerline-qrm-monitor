@@ -74,6 +74,40 @@ nothing on the band was strong enough to settle it.  A signal generator would.  
 figure of 57.5 dB against a nominal 49.6 in `config.py` and `sdr.py` is provisional,
 neither confirmed nor refuted.  See `sdr-gain-calibration.md`.
 
+## Other receivers
+
+### The SDRplay RSP1B is the next hardware to look at
+
+HamRadio.com stocks it, which is the reason to consider it before anything else: a
+receiver hams already buy needs no argument for why somebody would own one.  It
+carries a 14-bit ADC where the RTL-SDR has 8 bits.
+
+The reading so far says it needs SoapySDR to drive it rather than a direct Python
+binding, which is the first thing to confirm, because it decides whether this is a
+new module beside `sdr.py` or a new dependency for the whole program.  Nobody has the
+hardware, so none of what follows has been tested against one.
+
+What the port would touch, read off the code rather than off the device:
+
+- `sdr.py` holds every 8-bit assumption there is.  `_RAW_MAX = 255`, the
+  `(byte / 127.5) - 1` conversion, `_BYTES_PER_SAMPLE = 2` and `IqBlock`'s raw byte
+  buffer all say the sample format out loud.  A 14-bit converter changes each of
+  them, and `count_clipped` most of all, since the rails move.
+- `iq.py` needs nothing.  `IqToAudio` works in `complex128` from the first line, so
+  the conversion to audio does not care what produced the samples.
+- The gain calibration assumes the tuner reports a ladder of discrete steps.
+  `supported_gains_db` feeds both the gain picker and `GainSweep.run`, and
+  `set_gain` returns the step the hardware snapped to.  An RSP presents its gain
+  differently, so the question to answer early is whether it can be made to offer a
+  ladder, or whether the sweep has to handle a continuous range.  The knee fit itself
+  does not care, because it fits whatever gains it was given.
+- The extra bits change the trade the sweep exists to make.  `arc_headroom_db`
+  reserves 32 dB because an 8-bit converter has little to spare.  More dynamic range
+  should make the floor bound and the headroom bound stop crossing on the quiet
+  antennas where they cross now, which is worth measuring rather than assuming.
+
+What stops it is that nobody owns one, and the SoapySDR question is unanswered.
+
 ## Setup program
 
 ### Tuner gain should be a picker, not a text box
