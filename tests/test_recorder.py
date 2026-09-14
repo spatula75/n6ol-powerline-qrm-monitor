@@ -18,7 +18,12 @@ from buzz import __version__, wavmeta
 from buzz.analyzer import AnalysisResult, AnalyzerState
 from buzz.config import BuzzConfig
 from buzz.playback import load_wav
-from buzz.recorder import AudioEventRecorder, IqEventRecorder, RecordingTrigger
+from buzz.recorder import (
+    AudioEventRecorder,
+    IqEventRecorder,
+    RecordingTrigger,
+    build_recording,
+)
 from buzz.sampler import RingBufferPipeline
 
 CHUNK = RingBufferPipeline.CHUNK_SIZE
@@ -85,7 +90,7 @@ def _make_recorder(tmp_path: Path, sample_rate: int = SAMPLE_RATE, **recording):
     pipeline = RingBufferPipeline()
     analyzer = FakeAnalyzer()
     config = _make_config(tmp_path, sample_rate, **recording)
-    return RecordingTrigger(pipeline, analyzer, config), pipeline, analyzer
+    return build_recording(pipeline, analyzer, config), pipeline, analyzer
 
 
 def _feed(pipeline: RingBufferPipeline, seconds: int, value: int = 1000) -> None:
@@ -306,7 +311,7 @@ class TestRecordingDirectory:
         refuses.can_record.return_value = True
         refuses.begin.return_value = False
         refuses.is_recording = False
-        recorder._recorders.append(refuses)
+        recorder.add_listener(refuses)
         _feed(pipeline, 1)
         analyzer.lock()
         recorder.tick()
@@ -646,8 +651,8 @@ class TestMetadata:
         setting rather than being the raw buffer size."""
         plain, _, _ = _make_recorder(tmp_path)
         delayed, _, _ = _make_recorder(tmp_path, min_lock_seconds=1.0)
-        lost = (plain._recorders[0]._max_lead_in_samples()
-                - delayed._recorders[0]._max_lead_in_samples())
+        lost = (plain._listeners[0]._max_lead_in_samples()
+                - delayed._listeners[0]._max_lead_in_samples())
         assert lost == pytest.approx(SAMPLE_RATE, abs=CHUNK)
 
     def test_the_bound_never_goes_negative(self, tmp_path):
@@ -655,7 +660,7 @@ class TestMetadata:
         makes sure the arithmetic here cannot report a negative allowance if it ever
         stops being."""
         recorder, _, _ = _make_recorder(tmp_path, min_lock_seconds=3600.0)
-        assert recorder._recorders[0]._max_lead_in_samples() >= 0
+        assert recorder._listeners[0]._max_lead_in_samples() >= 0
 
     def test_a_saturated_lead_in_can_be_told_from_a_measured_one(self, tmp_path):
         """The whole point: a reader compares the two numbers and knows which they
@@ -1488,7 +1493,7 @@ class TestStatusAndToggle:
     def test_seeds_lock_state_from_an_already_locked_analyzer(self, tmp_path):
         pipeline = RingBufferPipeline()
         analyzer = FakeAnalyzer(AnalyzerState.LOCKED)
-        recorder = RecordingTrigger(pipeline, analyzer, _make_config(tmp_path))
+        recorder = build_recording(pipeline, analyzer, _make_config(tmp_path))
         _feed(pipeline, 1)
         recorder.tick()
         assert len(_wav_files(tmp_path)) == 1
@@ -1595,6 +1600,99 @@ class TestThreadedOperation:
         assert 'Recorder tick failed' in caplog.text
 
 
+class TestTheTriggerOnlyPublishes:
+    """The trigger decides when an event is worth recording and nothing else.
+
+    It names no recorder and no format: anything with the four methods of
+    RecordingListener can subscribe, the same way anything can listen to the
+    analyzer.  These drive it with a listener that writes nothing at all, which is
+    the clearest statement that writing is not its business.
+    """
+
+    class Spy:
+        """A subscriber that records what it was told rather than any audio."""
+
+        def __init__(self, ready=True):
+            self.ready = ready
+            self.calls = []
+
+        def can_record(self):
+            return self.ready
+
+        def begin(self, started_at, lock_age_seconds, held_back_by):
+            self.calls.append('begin')
+            return 'spy.wav' if self.ready else None
+
+        def capture(self):
+            self.calls.append('capture')
+
+        def finish(self, ended, description):
+            self.calls.append(f'finish:{ended}')
+
+    def _trigger(self, tmp_path, spy, **recording):
+        pipeline = RingBufferPipeline()
+        analyzer = FakeAnalyzer()
+        trigger = RecordingTrigger(pipeline, analyzer, _make_config(tmp_path, **recording))
+        trigger.add_listener(spy)
+        return trigger, pipeline, analyzer
+
+    def test_a_subscriber_that_writes_nothing_still_drives_an_event(self, tmp_path):
+        spy = self.Spy()
+        trigger, pipeline, analyzer = self._trigger(tmp_path, spy)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        trigger.tick()
+        _feed(pipeline, 1)
+        trigger.tick()
+        analyzer.unlock()
+        for _ in range(4):
+            _feed(pipeline, 1)
+            trigger.tick()
+        assert spy.calls[0] == 'begin'
+        assert 'capture' in spy.calls
+        assert spy.calls[-1] == 'finish:timeout'
+        assert not _wav_files(tmp_path), 'the trigger wrote a file of its own'
+
+    def test_every_subscriber_hears_the_same_event(self, tmp_path):
+        first, second = self.Spy(), self.Spy()
+        trigger, pipeline, analyzer = self._trigger(tmp_path, first)
+        trigger.add_listener(second)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        trigger.tick()
+        trigger.disarm()
+        assert first.calls == second.calls
+
+    def test_one_subscriber_raising_does_not_stop_the_others(self, tmp_path):
+        """The rule ContinuousAnalyzer._transition already follows.  A listener is
+        somebody else's code, and the trigger's job does not depend on it working.
+        """
+        broken = MagicMock()
+        broken.can_record.return_value = True
+        broken.begin.side_effect = RuntimeError('boom')
+        good = self.Spy()
+        trigger, pipeline, analyzer = self._trigger(tmp_path, broken)
+        trigger.add_listener(good)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        trigger.tick()
+        assert 'begin' in good.calls, 'a raising listener stopped the one after it'
+
+    def test_a_subscriber_that_cannot_write_keeps_it_disarmed(self, tmp_path):
+        """Arming is refused while anything that would be asked to write cannot.
+        Decided as subscribers arrive, since none has at construction time.
+        """
+        trigger, _, _ = self._trigger(tmp_path, self.Spy(ready=False))
+        assert trigger.status().armed is False
+
+    def test_a_late_refusal_withdraws_an_arming_an_earlier_one_allowed(self, tmp_path):
+        spy = self.Spy()
+        trigger, _, _ = self._trigger(tmp_path, spy)
+        assert trigger.status().armed is True
+        trigger.add_listener(self.Spy(ready=False))
+        assert trigger.status().armed is False
+
+
 class PipelineThatKeptIq(RingBufferPipeline):
     """An audio pipeline that also held the raw IQ, the way RtlSdrPipeline does."""
 
@@ -1626,7 +1724,7 @@ class TestRecordingRawIq:
         config.audio.source = 'rtlsdr'
         config.rtlsdr.iq_sample_rate = self.IQ_RATE
         analyzer = FakeAnalyzer()
-        return RecordingTrigger(audio, analyzer, config), audio, iq, analyzer
+        return build_recording(audio, analyzer, config), audio, iq, analyzer
 
     def _feed_iq(self, iq, seconds, start=0):
         """Append `seconds` of raw IQ whose bytes are known by construction."""
@@ -1754,4 +1852,4 @@ class TestRecordingRawIq:
     def test_no_iq_recorder_without_a_buffer_to_read(self, tmp_path):
         """A sound card, and a receiver that was never asked to keep any."""
         recorder, _, _ = _make_recorder(tmp_path)
-        assert not any(isinstance(r, IqEventRecorder) for r in recorder._recorders)
+        assert not any(isinstance(r, IqEventRecorder) for r in recorder._listeners)

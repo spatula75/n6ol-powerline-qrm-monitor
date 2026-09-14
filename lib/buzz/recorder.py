@@ -71,7 +71,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable, Protocol
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -110,6 +110,33 @@ class RecorderStatus:
     # Seconds until the event budget is refilled, or None when no cycle is running
     # (rearm_reset_minutes is 0, or recording was switched off by hand).
     rearm_in_seconds: float | None = None
+
+
+class RecordingListener(Protocol):
+    """What RecordingTrigger needs of anything that wants to record an event.
+
+    Declared structurally rather than as a base class, and deliberately not naming
+    AbstractEventRecorder: the trigger decides when an event is worth recording and
+    has no business knowing what recording it consists of.  Anything with these four
+    methods can subscribe, whether it writes a .wav, counts events, or lights a lamp.
+
+    The same relationship ContinuousAnalyzer already has with everything that listens
+    to it, and the same reason: a lock is an edge, and whoever cares about one should
+    not have to poll for it.
+    """
+
+    def can_record(self) -> bool:
+        """Whether this could write right now, asked before anything is armed."""
+
+    def begin(self, started_at: datetime, lock_age_seconds: float | None,
+              held_back_by: str | None) -> str | None:
+        """Start recording.  Returns the filename opened, or None if it could not."""
+
+    def capture(self) -> None:
+        """Take whatever has arrived since the last call."""
+
+    def finish(self, ended: str, description: str) -> None:
+        """Stop recording and close what was written."""
 
 
 class AbstractEventRecorder(ABC):
@@ -314,11 +341,13 @@ class AbstractEventRecorder(ABC):
             return False
 
     def begin(self, started_at: datetime, lock_age_seconds: float | None,
-              held_back_by: str | None) -> bool:
+              held_back_by: str | None) -> str | None:
         """Open a file for a newly locked event and write everything buffered so far.
 
-        Returns whether a file was opened.  The caller decides what a failure means;
-        this only reports it, having already said why in the log.
+        Returns the name of the file opened, or None when it could not be.  The caller
+        decides what a failure means; this only reports it, having already said why in
+        the log.  The name goes back because the trigger shows one on the toolbar and
+        has no other way to learn it - naming a file is the recorder's business.
 
         The age of the lock arrives in seconds rather than as a position, because a
         recorder reading a different pipeline at a different rate has to place the cue
@@ -347,7 +376,7 @@ class AbstractEventRecorder(ABC):
                 with suppress(Exception):
                     writer.close()
             self._writer, self._path = None, None
-            return False
+            return None
         self._writer = writer
 
         # Position 0 reads the whole buffer: everything still held from before this
@@ -399,7 +428,7 @@ class AbstractEventRecorder(ABC):
         logger.info('Recording %s (%.1f s lead-in%s)', self._path.name,
                     self._lead_in / self._sample_rate,
                     '; ' + '; '.join(notes) if notes else '')
-        return True
+        return self._path.name
 
     def capture(self) -> None:
         """Write every sample captured since the previous poll, up to any length cap."""
@@ -684,6 +713,29 @@ class IqEventRecorder(AbstractEventRecorder):
         }
 
 
+def build_recording(pipeline: RingBufferPipeline, analyzer: ContinuousAnalyzer,
+                    config: BuzzConfig) -> 'RecordingTrigger':
+    """A trigger with whichever recorders this configuration calls for subscribed.
+
+    The one place that knows both halves.  RecordingTrigger decides when an event is
+    worth recording and names no format; the recorders write one and decide nothing.
+    Putting the wiring here rather than in either of them is what keeps that true, and
+    keeps every caller building one object.
+    """
+    trigger = RecordingTrigger(pipeline, analyzer, config)
+    trigger.add_listener(
+        AudioEventRecorder(pipeline, config,
+                           charged_wait_seconds=trigger.charged_wait_seconds))
+    # A second file of the same event, when the source kept the raw IQ to write it
+    # from.  Both hear the same signals, so they start and stop together and one event
+    # spends one from the budget.
+    if pipeline.iq_buffer is not None:
+        trigger.add_listener(
+            IqEventRecorder(pipeline.iq_buffer, config,
+                            charged_wait_seconds=trigger.charged_wait_seconds))
+    return trigger
+
+
 class RecordingTrigger:
     """Decides when an event is worth recording, and drives the recorders that write it.
 
@@ -729,25 +781,20 @@ class RecordingTrigger:
             recording.min_lock_seconds, self._sample_rate,
             pipeline.capacity_samples, self._max_samples)
 
-        # Built here rather than passed in, so that everything wiring the monitor
-        # together keeps building one object.  Which formats apply is a property of
-        # the configuration rather than of the caller.
         # Guarded because a misconfigured rate of zero reaches here before anything
-        # has had the chance to refuse it: can_record() is what reports that, and it
-        # cannot run until the recorder below exists.  The wait is zero samples at a
-        # zero rate anyway, so there is nothing to carry across.
-        charged_wait = (self._min_lock_samples / self._sample_rate
-                        if self._sample_rate > 0 else 0.0)
-        self._recorders: list[AbstractEventRecorder] = [
-            AudioEventRecorder(pipeline, config, charged_wait_seconds=charged_wait),
-        ]
-        # A second file of the same event, when the source kept the raw IQ to write it
-        # from.  Both are driven by the decisions below, so they start and stop
-        # together and one event spends one from the budget.
-        if pipeline.iq_buffer is not None:
-            self._recorders.append(
-                IqEventRecorder(pipeline.iq_buffer, config,
-                                charged_wait_seconds=charged_wait))
+        # has had the chance to refuse it: a listener's can_record() is what reports
+        # that, and none has subscribed yet.  The wait is zero samples at a zero rate
+        # anyway, so there is nothing to carry across.
+        self._charged_wait_seconds = (self._min_lock_samples / self._sample_rate
+                                      if self._sample_rate > 0 else 0.0)
+        # Whoever wants to record subscribes; see add_listener.  Nothing is built
+        # here, so this class names no recorder and no format at all.  build_recording
+        # is the factory that puts a trigger and its recorders together.
+        self._listeners: list[RecordingListener] = []
+        # Tracked rather than asked for, because this is the one that decided both: it
+        # published the start, and it will publish the stop.
+        self._recording = False
+        self._filename: str | None = None
 
         # The analyzer, kept for its published levels rather than its state.  The
         # state arrives by push because lock is an edge, but SNR is a level, and a
@@ -773,13 +820,18 @@ class RecordingTrigger:
         # all, so a monitor run without it leaves no stray directory behind and
         # cannot complain about a path it was never going to use.  The check happens
         # instead when the operator presses Record.
-        self._armed = recording.enabled and self._can_record()
+        # Deferred, because whether anything can record depends on who has
+        # subscribed and nothing has yet.  _settle_startup_arming decides it as they
+        # arrive; see add_listener.
+        self._arm_when_ready = recording.enabled
+        self._armed = False
+        self._started = False
         self._events_remaining = self._initial_budget()
         # Monotonic deadline for the next budget reset, or None when no cycle is
         # running.  Set whenever the budget is filled, which is what makes the cycle
         # a fixed one: ten events per day means ten per day, not ten per day plus
         # however long the tenth event took to arrive.
-        self._next_reset = self._reset_deadline() if self._armed else None
+        self._next_reset = None
 
         # Lock state is pushed from the analyzer rather than read back from it (see
         # ContinuousAnalyzer.add_state_listener), seeded here with the state the
@@ -824,13 +876,56 @@ class RecordingTrigger:
     # ------------------------------------------------------------------ public
 
     @property
-    def _recording(self) -> bool:
-        """Whether any recorder has a file open."""
-        return any(recorder.is_recording for recorder in self._recorders)
+    def charged_wait_seconds(self) -> float:
+        """How much of the wait before a lock counts against the length cap.
+
+        Clamped against the buffer and the cap here, because the gating is this
+        class's, and handed to a listener so that every one of them charges the same
+        span of time at whatever rate it records.
+        """
+        return self._charged_wait_seconds
+
+    def add_listener(self, listener: RecordingListener) -> None:
+        """Subscribe to the start and end of every event this decides to record.
+
+        Registered before the polling thread starts, the same way the analyzer's own
+        listeners are, so nothing has to be safe to add halfway through an event.
+        """
+        self._listeners.append(listener)
+        self._settle_startup_arming()
+
+    def _settle_startup_arming(self) -> None:
+        """Decide whether to start armed, now that one more subscriber is known.
+
+        Re-decided from scratch on each arrival rather than accumulated, because
+        _can_record asks every subscriber and a later one that cannot write has to be
+        able to withdraw an arming an earlier one allowed.
+
+        Only before the thread starts.  After that, arming is whatever the operator
+        and the budget have made it, and a late subscriber has no business resetting
+        either.
+        """
+        if self._started:
+            return
+        self._armed = self._arm_when_ready and self._can_record()
+        self._next_reset = self._reset_deadline() if self._armed else None
 
     def _can_record(self) -> bool:
-        """Whether every recorder is ready to write."""
-        return all(recorder.can_record() for recorder in self._recorders)
+        """Whether every subscriber is ready to write."""
+        return all(listener.can_record() for listener in self._listeners)
+
+    def _publish(self, call: Callable[[RecordingListener], None]) -> None:
+        """Hand one signal to every subscriber, whatever it does with it.
+
+        Each in its own try/except, so that one subscriber failing cannot stop the
+        rest or the trigger - the rule ContinuousAnalyzer._transition already follows
+        for the same reason.
+        """
+        for listener in self._listeners:
+            try:
+                call(listener)
+            except Exception:
+                logger.exception('A recording listener failed.  The others continue.')
 
     def _begin(self) -> None:
         """Open a file on every recorder for a newly locked event.
@@ -847,32 +942,39 @@ class RecordingTrigger:
         # own clock.  See AbstractEventRecorder.__init__.
         self._event_start = self._position - self._min_lock_samples
         self._last_lock = self._position
-        for recorder in self._recorders:
-            if not recorder.begin(now, lock_age_seconds, self._held_back_by):
-                # What a single recorder already did on a failed open: a file that
-                # cannot be created is a configuration problem rather than a passing
-                # one, so recording stops instead of dropping a stray file per poll.
-                #
-                # This avoids _finish_all deliberately.  Nothing was recorded, so the
-                # event must not be counted against the budget - the operator would
-                # otherwise pay for a file they never got.
-                for opened in self._recorders:
-                    if opened.is_recording:
-                        opened.finish('failed', self._end_description('failed'))
-                self._armed = False
-                break
+        opened: list[str | None] = []
+        self._publish(lambda listener: opened.append(
+            listener.begin(now, lock_age_seconds, self._held_back_by)))
+        self._recording = any(opened)
+        # The first name anything opened, for the toolbar.  A trigger that writes
+        # nothing itself has no other way to know one, and asking afterwards would put
+        # a query back into a relationship that is otherwise all pushing.
+        self._filename = next((name for name in opened if name), None)
+        if not all(opened):
+            # What a single recorder already did on a failed open: a file that cannot
+            # be created is a configuration problem rather than a passing one, so
+            # recording stops instead of dropping a stray file per poll.
+            #
+            # Not through _finish_all, deliberately.  Nothing usable was recorded, so
+            # the event must not be counted against the budget - the operator would
+            # otherwise pay for a file they never got.
+            if self._recording:
+                description = self._end_description('failed')
+                self._publish(lambda listener: listener.finish('failed', description))
+                self._recording = False
+            self._armed = False
         self._held_back_by = None
 
     def _finish_all(self, ended: str) -> None:
         """Close every open file, and count the event once against the budget."""
         description = self._end_description(ended)
-        for recorder in self._recorders:
-            if recorder.is_recording:
-                recorder.finish(ended, description)
+        self._publish(lambda listener: listener.finish(ended, description))
+        self._recording = False
         self._await_relock = True
         self._spend_event(ended)
 
     def start(self) -> None:
+        self._started = True
         self._thread.start()
 
     def stop(self) -> None:
@@ -939,7 +1041,7 @@ class RecordingTrigger:
                 # reporting that recording's length long after it closed.
                 elapsed_seconds=(0.0 if not self._recording else
                                  (self._position - self._event_start) / self._sample_rate),
-                filename=self._recorders[0].filename,
+                filename=self._filename,
                 rearm_in_seconds=(None if self._next_reset is None
                                   else max(0.0, self._next_reset - time.monotonic())),
             )
@@ -1208,8 +1310,7 @@ class RecordingTrigger:
                         self._held_back_by = blocking
             return
 
-        for recorder in self._recorders:
-            recorder.capture()
+        self._publish(lambda listener: listener.capture())
         if locked:
             self._last_lock = self._position
         if self._max_samples and self._position - self._event_start >= self._max_samples:

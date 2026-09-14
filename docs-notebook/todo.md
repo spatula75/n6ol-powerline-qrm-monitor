@@ -22,9 +22,10 @@ that trigger publishes to listeners rather than holding sink objects directly, a
 stopping mid-recording turns out not to need any special handling once `finish` is
 allowed to be a synchronous call.  See `iq-recording-design.md`.
 
-Mostly built.  What is left is the publish/subscribe decoupling, and failure
-isolation: a recorder that cannot open its file disarms the whole trigger, so a full
-disk on the IQ side stops audio recording too.
+Mostly built.  What is left is failure isolation: a recorder that cannot open its
+file disarms the whole trigger, so a full disk on the IQ side stops audio recording
+too.  IQ fills about thirty times faster than audio, which makes that the likely
+failure rather than a remote one.
 
 ## Faster sample rate support
 

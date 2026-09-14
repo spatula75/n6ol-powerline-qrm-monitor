@@ -48,7 +48,7 @@ from buzz.playback import (
 )
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher
-from buzz.recorder import RecordingTrigger
+from buzz.recorder import RecordingTrigger, build_recording
 from buzz.sampler import AudioSampler, RingBufferPipeline
 from buzz.weather import (
     CumulusMXWeatherClient,
@@ -650,7 +650,7 @@ def main() -> None:  # pragma: no cover
         # Built whether or not recording is enabled: `enabled` only decides whether it
         # starts armed, and the toolbar has to be able to arm it mid-run either way.
         config.recording.enabled = config.recording.enabled or args.enable_recording
-        recorder = RecordingTrigger(pipeline, analyzer, config)
+        recorder = build_recording(pipeline, analyzer, config)
         # A sound-card pipeline is already running by the time its constructor
         # returns.  An SDR one is not, because opening the device and starting the
         # capture are separate steps, so this starts whichever needs it.

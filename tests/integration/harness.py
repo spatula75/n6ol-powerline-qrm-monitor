@@ -19,7 +19,7 @@ import numpy as np
 from buzz.analyzer import AnalyzerState, ContinuousAnalyzer
 from buzz.config import BuzzConfig
 from buzz.playback import FilePlaybackPipeline
-from buzz.recorder import RecordingTrigger
+from buzz.recorder import build_recording
 from buzz.sampler import RingBufferPipeline
 
 RATE = 16000
@@ -117,7 +117,7 @@ class Monitor:
         self.directory = directory
         self.pipeline = RingBufferPipeline()
         self.analyzer = ContinuousAnalyzer(self.pipeline, config)
-        self.recorder = RecordingTrigger(self.pipeline, self.analyzer, config)
+        self.recorder = build_recording(self.pipeline, self.analyzer, config)
         self.log = StateLog()
         self.analyzer.add_state_listener(self.log)
         self.analyzer.start()

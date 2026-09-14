@@ -26,16 +26,27 @@ and the fade ramp raised rather than broadcasting against a row per frame.  None
 them was visible until something other than mono int16 arrived, which is the argument
 for the second format being real code rather than a planned one.
 
-One thing described below is not built.  The trigger calls `begin`, `capture` and
-`finish` on a list of recorders directly rather than publishing to listeners that
-subscribe, so the decoupling described under "Publish/subscribe" is still the next
-step - the interface it needs is in place, and what changes is how the trigger gets
-its list.
+The publish/subscribe decoupling is built too.  `RecordingTrigger` holds a list of
+`RecordingListener`, a Protocol it satisfies structurally rather than by inheritance,
+and `build_recording` is the factory that subscribes whichever recorders the
+configuration calls for.  The trigger names no recorder and no format.
+
+It publishes three signals rather than the two this document argued for, and the
+reason is the one the two-signal argument rested on: a recorder pulling from its own
+buffer on its own schedule needs no signal in between, but it only has a schedule of
+its own if it has a thread of its own, and the recorders do not.  Without one, the
+trigger's poll is the only clock, so "more has arrived, take what you need" has to be
+said out loud.  That is the same thing `RingBufferPipeline._append` already says to
+everything waiting on its condition, which makes three signals the honest count until
+a recorder owns a thread.
 
 Failure isolation is now the live question rather than a future one, because there
 really are two recorders.  A recorder that cannot open its file still disarms the
 trigger rather than being skipped, so a full disk on the IQ side takes audio
-recording down with it.
+recording down with it.  Publishing did not change that on its own: `begin` still
+reports the name it opened, or None, and the trigger still reads the answer.  What
+publishing did change is that a listener which *raises* no longer stops the others,
+which is a different failure from one that declines.
 
 What the split already bought is the part that could not be retrofitted later: one
 budget, spent once per event by the trigger, whatever number of files an event

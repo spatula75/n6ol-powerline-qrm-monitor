@@ -184,7 +184,7 @@ class TestPlaybackWritesNothing:
              patch('buzz.main.open_playback_pipeline') as playback, \
              patch('buzz.main.AudioSampler') as sampler, \
              patch('buzz.main.ContinuousAnalyzer'), \
-             patch('buzz.main.RecordingTrigger') as recorder, \
+             patch('buzz.main.build_recording') as recorder, \
              patch('buzz.main._start_collector') as collector, \
              patch('buzz.main._wait_until_interrupted'):
             main_module.main()
