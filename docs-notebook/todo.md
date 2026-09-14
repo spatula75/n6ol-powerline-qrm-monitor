@@ -9,6 +9,19 @@ about yet do not belong here.
 This is the one forward-looking file in the notebook.  Everything else here records
 something already decided or measured.  Release history is in `CHANGELOG.md`.
 
+## Raw IQ event recording
+
+The planned last piece of work before 2.0.  Alongside the existing audio event
+recording, optionally capture the same event's raw IQ to a second `.wav` for sharing
+with someone who wants to do their own signal processing on it.  Playback of an IQ
+file through this program is out of scope.
+
+The design is worked out in full - the ring buffer this needs that does not exist
+yet, why the two recorders share one trigger rather than two independent budgets, why
+that trigger publishes to listeners rather than holding sink objects directly, and why
+stopping mid-recording turns out not to need any special handling once `finish` is
+allowed to be a synchronous call.  See `iq-recording-design.md`.  Not started.
+
 ## Faster sample rate support
 
 The program runs at 16 kHz at the one station it was written for, and several pieces
