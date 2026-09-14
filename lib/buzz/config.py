@@ -279,6 +279,9 @@ class StationConfig:
     # ISO 8601 start date for the all-time summary graph.  Used only when
     # enable_all_time_summary is on.
     summary_start_date_iso: str = '2024-01-01T00:00:00+0000'
+    # Publish a chart of the estimated grid frequency over the current day.  Off by
+    # default.
+    enable_frequency_chart: bool = False
 
     @property
     def noise_threshold(self) -> float:
