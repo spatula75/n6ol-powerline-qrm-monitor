@@ -121,17 +121,23 @@ class Collector:
         """CSV-ready (grid_frequency, phase_drift) strings for this minute.
 
         Grid frequency and drift come from the analyzer's phase tracker, which only
-        has a meaningful estimate while it is following a pulse train. With no
+        has a meaningful estimate while it is following a pulse train.  With no
         locked results this minute the stored rate is stale, so this returns blanks
         rather than a number that looks like a measurement.
 
         Three decimal places is one digit past what the absolute accuracy supports.
-        The reading is scaled by the sound card's sample-clock error (50-100 ppm on
-        typical hardware, or 0.003-0.006 Hz at 60 Hz), so the third digit is only
-        meaningful for how the frequency *changes*, not for what it is. That error
-        is a single multiplicative constant, so if the card is ever calibrated the
-        whole logged history can be corrected by one scale factor, which is also
-        why the raw drift rate is worth keeping alongside the derived frequency.
+        This never times anything against a real clock.  It counts samples between
+        pulses and divides by the sample rate the program was told it has.  The
+        reading is therefore scaled by however far the sampling clock sits from its
+        nominal rate, and that error is unmeasured here.  The program cannot separate
+        it from the grid either, because a clock off its rate and a grid off its
+        nominal frequency produce the same drift.
+
+        The error is one multiplicative constant rather than something that wanders,
+        so the third digit still says how the frequency changes even though it cannot
+        say what the frequency is.  Calibrating the clock later would correct the
+        whole logged history by one scale factor, which is why this logs the raw
+        drift rate beside the derived frequency rather than the frequency alone.
         """
         if not any(r.locked for r in results):
             return '', ''

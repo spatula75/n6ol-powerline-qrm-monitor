@@ -99,33 +99,6 @@ receiver, and the ordinary one has been driven against a real broadband antenna.
 two that say no gain works have only been reproduced from the shape the mag loop
 measurements imply, never seen on hardware.
 
-### Four places say a sound card scales the grid frequency reading
-
-The grid frequency is derived from the phase drift, so it is scaled by whatever clock
-the samples arrived on.  Four pieces of prose name a sound card as that clock, and
-were written when a sound card was the only source:
-
-- `lib/buzz/collector.py:120`, on `_grid_frequency_fields`
-- `lib/buzz/plotter.py:80`, beside `_FREQUENCY_BAND_HZ`
-- the `x-notes` on `[station] enable_frequency_chart` in `schema.json`, which
-  `config.example.toml` renders
-- the matching `CHANGELOG.md` entry, still under `[Unreleased]`
-
-An RTL-SDR station has no sound card, and its reading is scaled by the receiver's own
-crystal instead.  How large that error is has not been measured here, so the fix is to
-stop naming one source rather than to quote a second figure.  The V4 is sold with a
-TCXO, so it could be better than a sound card rather than worse, and guessing either
-way would put a number in four places that nobody checked.
-
-What the change cannot break is the chart itself.  `_FREQUENCY_BAND_HZ` is 0.1 Hz and
-a 50 to 100 ppm sound card biases a 60 Hz reading by 0.003 to 0.006 Hz, so the band
-holds with three orders of magnitude to spare and would still hold at 1000 ppm.  Only
-the attribution is stale, not the conclusion drawn from it.
-
-Nothing stops this except that one of the four already sits on `main` while the other
-three arrive with the frequency chart.  Doing it as its own change keeps it out of a
-700 line feature diff.
-
 ### The true gain per step is unmeasured
 
 `[rtlsdr] audio_rf_conversion_db` starts at the negative of the nominal gain, because
