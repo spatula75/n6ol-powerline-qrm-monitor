@@ -330,6 +330,14 @@ class RecordingConfig:
     # Directory for recorded .wav files.  Empty means <station.path>/recordings.
     # Also where --playback looks when given a bare filename rather than a path.
     directory: str = ''
+    # Percentage of the disk to leave free.  Recording is held off while the disk is
+    # below this, and starts again on its own once there is room, so a station that
+    # fills its disk stops recording rather than taking the machine down with it.
+    #
+    # Checked before each event rather than before each write, so a misjudgement costs
+    # at most one recording: max_seconds of it, which is about sixty megabytes of
+    # raw IQ at the default settings.  0 turns the reserve off.
+    min_free_disk_percent: float = 10.0
     # How many of the next events to record before disarming.  0 records every
     # event until recording is switched off by hand.
     max_events: int = 10
@@ -355,6 +363,16 @@ class RecordingConfig:
     # anything at or below that is the same as 0.  A signal that starts weak and grows
     # is recorded from the moment it crosses, not skipped.
     min_lock_snr: float = 0.0
+    # Write a second .wav of raw IQ beside each event recording, stereo, I on the left
+    # channel and Q on the right, exactly as the device delivered it.  For handing the
+    # raw data to somebody who wants to do their own signal processing on it; nothing
+    # in this program reads one back.  An RTL-SDR receiver only: a sound card has no IQ.
+    #
+    # Off by default because it is not free even when no event is ever recorded: the
+    # monitor has to keep the last several seconds of raw IQ at all times so that a
+    # recording has the same run-up its audio gets.  That is 4.7 MB at the default
+    # sample rate and 44 MB at the highest the hardware takes.
+    record_iq: bool = False
 
     def directory_path(self, station: StationConfig) -> Path:
         """Resolve `directory` against the station's output path when it is unset."""
@@ -419,6 +437,24 @@ class BuzzConfig:
         if self.audio.source == RTLSDR:
             return self.rtlsdr.level_offset_db
         return self.station.audio_rf_conversion_db
+
+    @property
+    def record_iq(self) -> bool:
+        """Whether an event gets a raw IQ recording beside its audio.
+
+        Off for a sound card whatever [recording] record_iq says, because a sound card
+        delivers audio and there is no IQ anywhere to write.  Only a receiver produces
+        it.  The setting itself is left as the operator set it, so a station that goes
+        back to a receiver gets its choice back.  That is how the sound card's device
+        name survives a spell on a receiver, and for the same reason.
+
+        Resolved here rather than at each reader, for the reason level_offset_db is.
+        The question has one answer, and a reader that works it out alone is a reader
+        that can get it wrong.  The setup program never offers the setting on a sound
+        card, so reaching this with it on means a config file edited by hand.
+        buzz.main says so at startup, where somebody is watching.
+        """
+        return self.recording.record_iq and self.audio.source == RTLSDR
 
     @classmethod
     def from_toml(cls, path: Path | str = CONFIG_PATH) -> 'BuzzConfig':

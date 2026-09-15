@@ -1,6 +1,8 @@
-"""Tests for EventRecorder: lead-in, trailer, length cap, event budget, and filenames."""
+"""Tests for the recording trigger and the audio recorder it drives: lead-in,
+trailer, length cap, event budget, and filenames."""
 
 import re
+import shutil
 import struct
 import threading
 import time
@@ -17,7 +19,12 @@ from buzz import __version__, wavmeta
 from buzz.analyzer import AnalysisResult, AnalyzerState
 from buzz.config import BuzzConfig
 from buzz.playback import load_wav
-from buzz.recorder import EventRecorder, event_filename, fade_ramp, unique_path
+from buzz.recorder import (
+    AudioEventRecorder,
+    IqEventRecorder,
+    RecordingTrigger,
+    build_recording,
+)
 from buzz.sampler import RingBufferPipeline
 
 CHUNK = RingBufferPipeline.CHUNK_SIZE
@@ -58,7 +65,7 @@ class FakeAnalyzer:
         self.set_state(AnalyzerState.SIGNAL_LOST)
 
 
-FADE = round(EventRecorder.FADE_SECONDS * SAMPLE_RATE)
+FADE = round(AudioEventRecorder.FADE_SECONDS * SAMPLE_RATE)
 
 
 def _make_config(tmp_path: Path, sample_rate: int = SAMPLE_RATE, **recording) -> BuzzConfig:
@@ -84,7 +91,7 @@ def _make_recorder(tmp_path: Path, sample_rate: int = SAMPLE_RATE, **recording):
     pipeline = RingBufferPipeline()
     analyzer = FakeAnalyzer()
     config = _make_config(tmp_path, sample_rate, **recording)
-    return EventRecorder(pipeline, analyzer, config), pipeline, analyzer
+    return build_recording(pipeline, analyzer, config), pipeline, analyzer
 
 
 def _feed(pipeline: RingBufferPipeline, seconds: int, value: int = 1000) -> None:
@@ -127,29 +134,29 @@ class FakeClock:
 class TestEventFilename:
     def test_matches_expected_shape(self):
         when = datetime(2026, 7, 29, 14, 33, 7, tzinfo=ZoneInfo('America/Los_Angeles'))
-        assert event_filename(when) == 'event-20260729-143307-0700.wav'
+        assert AudioEventRecorder.event_filename(when) == 'event-20260729-143307-0700.wav'
 
     def test_offset_follows_daylight_saving(self):
         when = datetime(2026, 1, 15, 14, 33, 7, tzinfo=ZoneInfo('America/Los_Angeles'))
-        assert event_filename(when) == 'event-20260115-143307-0800.wav'
+        assert AudioEventRecorder.event_filename(when) == 'event-20260115-143307-0800.wav'
 
     def test_contains_no_characters_illegal_on_windows(self):
         when = datetime(2026, 7, 29, 14, 33, 7, tzinfo=ZoneInfo('UTC'))
-        assert not set(event_filename(when)) & set(':*?"<>|')
+        assert not set(AudioEventRecorder.event_filename(when)) & set(':*?"<>|')
 
 
 class TestUniquePath:
     def test_returns_path_unchanged_when_free(self, tmp_path):
-        assert unique_path(tmp_path / 'event.wav') == tmp_path / 'event.wav'
+        assert AudioEventRecorder.unique_path(tmp_path / 'event.wav') == tmp_path / 'event.wav'
 
     def test_suffixes_when_taken(self, tmp_path):
         (tmp_path / 'event.wav').touch()
-        assert unique_path(tmp_path / 'event.wav') == tmp_path / 'event-2.wav'
+        assert AudioEventRecorder.unique_path(tmp_path / 'event.wav') == tmp_path / 'event-2.wav'
 
     def test_keeps_counting_past_the_first_collision(self, tmp_path):
         (tmp_path / 'event.wav').touch()
         (tmp_path / 'event-2.wav').touch()
-        assert unique_path(tmp_path / 'event.wav') == tmp_path / 'event-3.wav'
+        assert AudioEventRecorder.unique_path(tmp_path / 'event.wav') == tmp_path / 'event-3.wav'
 
 
 class TestDisarmed:
@@ -237,6 +244,15 @@ class TestRecordingDirectory:
             _make_recorder(tmp_path, sample_rate=0)
         assert 'sample rate' in caplog.text
 
+    def test_the_report_names_the_setting_that_supplied_the_rate(self, tmp_path, caplog):
+        """Whoever reads this goes and edits whatever it names, so naming the wrong
+        section costs them the search.  The audio recorder's rate is the one in
+        [audio]; see TestRecordingRawIq for the other.
+        """
+        with caplog.at_level('ERROR'):
+            _make_recorder(tmp_path, sample_rate=0)
+        assert '[audio] sample_rate' in caplog.text
+
     def test_an_impossible_sample_rate_records_nothing(self, tmp_path):
         """Rather than failing once per poll and leaving a stray file behind each time."""
         recorder, pipeline, analyzer = _make_recorder(tmp_path, sample_rate=0)
@@ -277,6 +293,45 @@ class TestRecordingDirectory:
         with patch('buzz.recorder.wave.open', side_effect=RuntimeError('bad frame rate')):
             recorder.tick()
         assert recorder.status().armed is False
+
+    def test_a_failed_open_does_not_spend_an_event(self, tmp_path):
+        """A budget pays for files that got written.  The tests either side of this
+        one cannot see the difference, because they run with max_events=1, where
+        spending the budget and failing outright both end with recording disarmed.
+        Three makes the two distinguishable.
+        """
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=3)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        with patch('buzz.recorder.wave.open', side_effect=RuntimeError('bad frame rate')):
+            recorder.tick()
+        assert recorder.status().events_remaining == 3, (
+            'The open failed and nothing was recorded, so the operator should not '
+            'have been charged for a file they never got.'
+        )
+
+    def test_one_recorder_failing_closes_the_files_the_others_opened(self, tmp_path):
+        """A half-opened event leaves a .wav whose header never got written, which
+        reads as zero frames however much audio went into it.  Unreachable with one
+        recorder, since a failed open leaves nothing to clean up, so this injects a
+        second that refuses - the shape the IQ recorder will have.
+        """
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=3)
+        refuses = MagicMock()
+        refuses.can_record.return_value = True
+        refuses.has_room.return_value = True
+        # None rather than False: begin reports the name it opened, and nothing is it.
+        refuses.begin.return_value = None
+        recorder.add_listener(refuses)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        recorder.tick()
+        assert recorder.status().recording is False, 'the opened file was left open'
+        assert _durations(tmp_path) == [pytest.approx(1.0, abs=0.1)], (
+            'The file that did open should be closed and readable, not a header-less '
+            'stub reporting zero frames.'
+        )
+        assert recorder.status().events_remaining == 3
 
     def test_arming_succeeds_once_the_path_is_fixed(self, tmp_path):
         blocked = self._blocked(tmp_path)
@@ -475,36 +530,36 @@ class TestLengthCap:
 
 class TestFadeRamp:
     def test_starts_at_exactly_zero(self):
-        assert fade_ramp(64)[0] == 0.0
+        assert AudioEventRecorder.fade_ramp(64)[0] == 0.0
 
     def test_ends_at_exactly_one(self):
-        assert fade_ramp(64)[-1] == 1.0
+        assert AudioEventRecorder.fade_ramp(64)[-1] == 1.0
 
     def test_has_the_requested_length(self):
-        assert len(fade_ramp(64)) == 64
+        assert len(AudioEventRecorder.fade_ramp(64)) == 64
 
     def test_rises_monotonically(self):
-        assert np.all(np.diff(fade_ramp(64)) > 0)
+        assert np.all(np.diff(AudioEventRecorder.fade_ramp(64)) > 0)
 
     def test_meets_both_ends_with_zero_slope(self):
         """What a raised cosine buys over a linear ramp: no corner at either join,
         so the fade adds no discontinuity of its own at the ends it exists to fix."""
-        slope = np.diff(fade_ramp(64))
+        slope = np.diff(AudioEventRecorder.fade_ramp(64))
         assert slope[0] < slope[len(slope) // 2] > slope[-1]
 
     def test_is_symmetric(self):
-        ramp = fade_ramp(64)
+        ramp = AudioEventRecorder.fade_ramp(64)
         assert ramp == pytest.approx(1.0 - ramp[::-1])
 
     def test_empty_ramp_is_allowed(self):
-        assert len(fade_ramp(0)) == 0
+        assert len(AudioEventRecorder.fade_ramp(0)) == 0
 
 
 class TestFades:
     """Recorded at 16 kHz, where the fade is a realistic 80 samples."""
 
     RATE = 16000
-    FADE = round(EventRecorder.FADE_SECONDS * RATE)
+    FADE = round(AudioEventRecorder.FADE_SECONDS * RATE)
 
     def _record(self, tmp_path, chunks=4, value=1000, **recording):
         recorder, pipeline, analyzer = _make_recorder(
@@ -607,7 +662,8 @@ class TestMetadata:
         setting rather than being the raw buffer size."""
         plain, _, _ = _make_recorder(tmp_path)
         delayed, _, _ = _make_recorder(tmp_path, min_lock_seconds=1.0)
-        lost = plain._max_lead_in_samples() - delayed._max_lead_in_samples()
+        lost = (plain._listeners[0]._max_lead_in_samples()
+                - delayed._listeners[0]._max_lead_in_samples())
         assert lost == pytest.approx(SAMPLE_RATE, abs=CHUNK)
 
     def test_the_bound_never_goes_negative(self, tmp_path):
@@ -615,7 +671,7 @@ class TestMetadata:
         makes sure the arithmetic here cannot report a negative allowance if it ever
         stops being."""
         recorder, _, _ = _make_recorder(tmp_path, min_lock_seconds=3600.0)
-        assert recorder._max_lead_in_samples() >= 0
+        assert recorder._listeners[0]._max_lead_in_samples() >= 0
 
     def test_a_saturated_lead_in_can_be_told_from_a_measured_one(self, tmp_path):
         """The whole point: a reader compares the two numbers and knows which they
@@ -852,7 +908,7 @@ class TestMinimumSnr:
         _feed(pipeline, 2)
         analyzer.publish(snr)
         analyzer.lock()
-        for _ in range(EventRecorder.SNR_WINDOW):
+        for _ in range(RecordingTrigger.SNR_WINDOW):
             recorder.tick()
         return recorder, pipeline, analyzer
 
@@ -898,7 +954,7 @@ class TestMinimumSnr:
                 _feed(pipeline, 1)
                 recorder.tick()
             analyzer.publish(30.0)
-            for _ in range(EventRecorder.SNR_WINDOW):
+            for _ in range(RecordingTrigger.SNR_WINDOW):
                 _feed(pipeline, 1)
                 recorder.tick()
             recorder.stop()
@@ -1015,12 +1071,12 @@ class TestSayingWhyItWaited:
         recorder, pipeline, analyzer = _make_recorder(tmp_path, min_lock_snr=10.0)
         analyzer.publish(2.0)
         analyzer.lock()
-        for _ in range(EventRecorder.SNR_WINDOW):
+        for _ in range(RecordingTrigger.SNR_WINDOW):
             _feed(pipeline, 1)
             recorder.tick()
         analyzer.publish(30.0)
         with caplog.at_level('INFO'):
-            for _ in range(EventRecorder.SNR_WINDOW):
+            for _ in range(RecordingTrigger.SNR_WINDOW):
                 _feed(pipeline, 1)
                 recorder.tick()
         assert 'waiting for the signal to reach min_lock_snr' in caplog.text
@@ -1448,7 +1504,7 @@ class TestStatusAndToggle:
     def test_seeds_lock_state_from_an_already_locked_analyzer(self, tmp_path):
         pipeline = RingBufferPipeline()
         analyzer = FakeAnalyzer(AnalyzerState.LOCKED)
-        recorder = EventRecorder(pipeline, analyzer, _make_config(tmp_path))
+        recorder = build_recording(pipeline, analyzer, _make_config(tmp_path))
         _feed(pipeline, 1)
         recorder.tick()
         assert len(_wav_files(tmp_path)) == 1
@@ -1548,8 +1604,512 @@ class TestThreadedOperation:
     def test_tick_failure_is_logged_and_does_not_kill_the_thread(self, tmp_path, caplog):
         recorder, pipeline, analyzer = _make_recorder(tmp_path)
         analyzer.lock()
-        with patch.object(EventRecorder, '_tick', side_effect=RuntimeError('boom')):
+        with patch.object(RecordingTrigger, '_tick', side_effect=RuntimeError('boom')):
             with caplog.at_level('ERROR'):
                 recorder.start()
                 recorder.stop()
         assert 'Recorder tick failed' in caplog.text
+
+
+class TestTheTriggerOnlyPublishes:
+    """The trigger decides when an event is worth recording and nothing else.
+
+    It names no recorder and no format: anything with the four methods of
+    RecordingListener can subscribe, the same way anything can listen to the
+    analyzer.  These drive it with a listener that writes nothing at all, which is
+    the clearest statement that writing is not its business.
+    """
+
+    class Spy:
+        """A subscriber that records what it was told rather than any audio."""
+
+        def __init__(self, ready=True, room=True):
+            self.ready = ready
+            self.room = room
+            self.calls = []
+
+        def can_record(self):
+            return self.ready
+
+        def has_room(self):
+            return self.room
+
+        def begin(self, started_at, lock_age_seconds, held_back_by):
+            self.calls.append('begin')
+            return 'spy.wav' if self.ready else None
+
+        def capture(self):
+            self.calls.append('capture')
+
+        def finish(self, ended, description):
+            self.calls.append(f'finish:{ended}')
+
+    def _trigger(self, tmp_path, spy, **recording):
+        pipeline = RingBufferPipeline()
+        analyzer = FakeAnalyzer()
+        trigger = RecordingTrigger(pipeline, analyzer, _make_config(tmp_path, **recording))
+        trigger.add_listener(spy)
+        return trigger, pipeline, analyzer
+
+    def test_a_subscriber_that_writes_nothing_still_drives_an_event(self, tmp_path):
+        spy = self.Spy()
+        trigger, pipeline, analyzer = self._trigger(tmp_path, spy)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        trigger.tick()
+        _feed(pipeline, 1)
+        trigger.tick()
+        analyzer.unlock()
+        for _ in range(4):
+            _feed(pipeline, 1)
+            trigger.tick()
+        assert spy.calls[0] == 'begin'
+        assert 'capture' in spy.calls
+        assert spy.calls[-1] == 'finish:timeout'
+        assert not _wav_files(tmp_path), 'the trigger wrote a file of its own'
+
+    def test_every_subscriber_hears_the_same_event(self, tmp_path):
+        first, second = self.Spy(), self.Spy()
+        trigger, pipeline, analyzer = self._trigger(tmp_path, first)
+        trigger.add_listener(second)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        trigger.tick()
+        trigger.disarm()
+        assert first.calls == second.calls
+
+    def test_one_subscriber_raising_does_not_stop_the_others(self, tmp_path):
+        """The rule ContinuousAnalyzer._transition already follows.  A listener is
+        somebody else's code, and the trigger's job does not depend on it working.
+        """
+        broken = MagicMock()
+        broken.can_record.return_value = True
+        broken.begin.side_effect = RuntimeError('boom')
+        good = self.Spy()
+        trigger, pipeline, analyzer = self._trigger(tmp_path, broken)
+        trigger.add_listener(good)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        trigger.tick()
+        assert 'begin' in good.calls, 'a raising listener stopped the one after it'
+
+    def test_a_subscriber_that_raises_while_opening_disarms_the_trigger(self, tmp_path):
+        """A listener that refuses leaves a None among the names; one that raises
+        leaves nothing at all, because _publish swallowed it.  The trigger reads a
+        crash as every recorder having opened when it judges only the names that did
+        arrive, and it then goes on polling one that never started.
+        """
+        broken = MagicMock()
+        broken.can_record.return_value = True
+        broken.has_room.return_value = True
+        broken.begin.side_effect = RuntimeError('boom')
+        trigger, pipeline, analyzer = self._trigger(tmp_path, broken)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        trigger.tick()
+        assert trigger.status().armed is False, (
+            'a recorder that crashed on open was counted as having opened')
+
+    def test_a_subscriber_that_cannot_write_keeps_it_disarmed(self, tmp_path):
+        """Arming is refused while anything that would be asked to write cannot.
+        Decided as subscribers arrive, since none has at construction time.
+        """
+        trigger, _, _ = self._trigger(tmp_path, self.Spy(ready=False))
+        assert trigger.status().armed is False
+
+    def test_a_late_subscriber_does_not_re_arm_a_running_recorder(self, tmp_path):
+        """Once the thread is going, arming is whatever the operator and the budget
+        have made it.  A subscriber arriving then has no business resetting either.
+        """
+        trigger, _, _ = self._trigger(tmp_path, self.Spy())
+        trigger.start()
+        try:
+            trigger.disarm()
+            trigger.add_listener(self.Spy())
+            assert trigger.status().armed is False, (
+                'a late subscriber re-armed a recorder the operator had switched off')
+        finally:
+            trigger.stop()
+
+    def test_a_late_refusal_withdraws_an_arming_an_earlier_one_allowed(self, tmp_path):
+        spy = self.Spy()
+        trigger, _, _ = self._trigger(tmp_path, spy)
+        assert trigger.status().armed is True
+        trigger.add_listener(self.Spy(ready=False))
+        assert trigger.status().armed is False
+
+
+class TestAFailedWrite:
+    """A disk fills part way through an event, so the failure is a write and not the
+    open.  Before this, the recorder went on failing and saying so on every poll for
+    the rest of the event, and never closed the writer - which leaves a .wav whose
+    header still claims the zero frames it was opened with, however much reached it.
+    """
+
+    def _recording(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=3)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        recorder.tick()
+        return recorder, pipeline
+
+    def test_it_stops_after_the_first_failure(self, tmp_path, caplog):
+        recorder, pipeline = self._recording(tmp_path)
+        audio = recorder._listeners[0]
+        with patch.object(audio, '_emit', side_effect=OSError('No space left on device')):
+            with caplog.at_level('ERROR'):
+                for _ in range(4):
+                    _feed(pipeline, 1)
+                    recorder.tick()
+        # Counted as records rather than by matching the message, which would make
+        # this fail the next time somebody rewords it.
+        failures = [r for r in caplog.records if r.levelname == 'ERROR']
+        assert len(failures) == 1, (
+            f'a failing write said so {len(failures)} times rather than giving up')
+
+    def test_it_closes_the_file_it_gave_up_on(self, tmp_path):
+        """A writer left open leaves the file in whatever state buffering happened to
+        put it: possibly truncated, possibly not readable at all, because the header
+        sizes and the data are both written lazily.  Closing settles it, so whatever
+        fitted is a file somebody can open.
+
+        Asserted on the writer rather than on the file, because whether an unclosed
+        one happens to be readable depends on when the buffer last flushed, and a test
+        that reads it passes or fails for reasons that have nothing to do with this.
+        """
+        recorder, pipeline = self._recording(tmp_path)
+        audio = recorder._listeners[0]
+        with patch.object(audio, '_emit', side_effect=OSError('No space left on device')):
+            _feed(pipeline, 1)
+            recorder.tick()
+        assert audio.is_recording is False, (
+            'the recorder kept a writer open on a file that refuses every write')
+
+    def test_a_disk_still_full_at_the_end_gives_up_rather_than_raising(self, tmp_path):
+        """The realistic shape: the disk is still full when the event ends, so the
+        final flush fails too.  Without this the writer is left open by the very path
+        that exists to close it.
+        """
+        recorder, pipeline = self._recording(tmp_path)
+        audio = recorder._listeners[0]
+        with patch.object(audio, '_emit', side_effect=OSError('No space left on device')):
+            recorder.disarm()      # finish -> _flush_tail -> _emit -> raises
+        assert audio.is_recording is False, 'the closing write failed and left it open'
+
+    def test_finishing_an_abandoned_recording_does_not_raise(self, tmp_path):
+        """The trigger still publishes the stop, knowing nothing about what happened
+        to any one file.
+        """
+        recorder, pipeline = self._recording(tmp_path)
+        audio = recorder._listeners[0]
+        with patch.object(audio, '_emit', side_effect=OSError('full')):
+            _feed(pipeline, 1)
+            recorder.tick()
+            recorder.disarm()      # publishes finish to a recorder with no writer
+        assert recorder.status().recording is False
+
+    def test_a_closing_write_that_fails_does_not_leave_it_recording(self, tmp_path):
+        """Closing is a write too, and the last one a full disk gets to refuse.
+        `wave.close` flushes the data and patches the header sizes, so ENOSPC arrives
+        there rather than at any writeframes call.
+
+        Outside the guard it left _writer set, and the recorder then believed it was
+        recording for the rest of the run: the next event replaced the writer without
+        closing it, which leaks the handle and leaves this file claiming the zero
+        frames its header was opened with.
+        """
+        recorder, pipeline = self._recording(tmp_path)
+        audio = recorder._listeners[0]
+        with patch.object(audio._writer, 'close',
+                          side_effect=OSError('No space left on device')):
+            recorder.disarm()
+        assert audio.is_recording is False, (
+            'the close failed and the recorder still believes a file is open')
+
+
+class TestAFailedOpeningWrite:
+    """The disk is already full when the event starts, so what fails is the lead-in
+    write rather than the open.  Every recording opens by writing everything the ring
+    buffer holds, so that write is the first one of the event and the first thing a
+    full disk refuses.
+
+    That write sat outside the guard covering the open, so it escaped into the
+    trigger, which logs what a listener raises and carries on.  No name was appended,
+    so all() over the names that did arrive reported every recorder open.  The trigger
+    stayed armed and opened another file on the next poll, which is one stray .wav per
+    poll for as long as the signal lasted.  That is the failure begin()'s own open
+    guard exists to prevent.
+    """
+
+    def _ticking(self, tmp_path, ticks):
+        """Run `ticks` polls of a locked signal with every write refused."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=3)
+        audio = recorder._listeners[0]
+        analyzer.lock()
+        with patch.object(audio, '_emit',
+                          side_effect=OSError('No space left on device')):
+            for _ in range(ticks):
+                _feed(pipeline, 1)
+                recorder.tick()
+        return recorder, audio
+
+    def test_it_opens_one_file_rather_than_one_per_poll(self, tmp_path):
+        self._ticking(tmp_path, ticks=5)
+        assert len(_wav_files(tmp_path)) == 1, (
+            f'five polls of a full disk left {len(_wav_files(tmp_path))} files behind')
+
+    def test_it_disarms_rather_than_trying_again(self, tmp_path):
+        recorder, _ = self._ticking(tmp_path, ticks=1)
+        assert recorder.status().armed is False, (
+            'a disk with no room left is a standing condition, not a passing one')
+
+    def test_it_is_not_left_believing_it_is_recording(self, tmp_path):
+        recorder, audio = self._ticking(tmp_path, ticks=1)
+        assert recorder.status().recording is False
+        assert audio.is_recording is False, 'the writer was left open on a dead file'
+
+    def test_it_says_so_once(self, tmp_path, caplog):
+        with caplog.at_level('ERROR'):
+            self._ticking(tmp_path, ticks=5)
+        failures = [r for r in caplog.records if r.levelname == 'ERROR']
+        assert len(failures) == 1, (
+            f'a full disk was reported {len(failures)} times rather than once')
+
+
+class TestKeepingSomeDiskFree:
+    """A station that fills its disk takes the machine down with it, not just its own
+    recordings.  The reserve is what stops that, and it holds recording off rather
+    than disarming, because a disk gets emptied and the next lock is worth having.
+    """
+
+    def _usage(self, free_fraction):
+        total = 1_000_000_000
+        return shutil._ntuple_diskusage(total=total, used=0,
+                                        free=int(total * free_fraction))
+
+    def test_a_full_disk_holds_recording_off(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_free_disk_percent=10.0)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        with patch('shutil.disk_usage', return_value=self._usage(0.05)):
+            recorder.tick()
+        assert not _wav_files(tmp_path), 'it recorded onto a disk with no room left'
+
+    def test_it_records_again_once_there_is_room(self, tmp_path):
+        """Held rather than disarmed.  Nothing has to be re-armed by hand after the
+        operator clears some space.
+        """
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_free_disk_percent=10.0)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        with patch('shutil.disk_usage', return_value=self._usage(0.05)):
+            recorder.tick()
+        with patch('shutil.disk_usage', return_value=self._usage(0.50)):
+            _feed(pipeline, 1)
+            recorder.tick()
+        assert _wav_files(tmp_path), 'space came back and it stayed off'
+
+    def test_it_says_so_once_rather_than_every_poll(self, tmp_path, caplog):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_free_disk_percent=10.0)
+        analyzer.lock()
+        with patch('shutil.disk_usage', return_value=self._usage(0.05)):
+            with caplog.at_level('WARNING'):
+                for _ in range(5):
+                    _feed(pipeline, 1)
+                    recorder.tick()
+        assert caplog.text.count('min_free_disk_percent') == 1
+
+    def test_the_reserve_can_be_switched_off(self, tmp_path):
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_free_disk_percent=0.0)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        with patch('shutil.disk_usage', return_value=self._usage(0.001)):
+            recorder.tick()
+        assert _wav_files(tmp_path), 'zero should mean record until the disk is full'
+
+    def test_a_disk_it_cannot_measure_does_not_stop_recording(self, tmp_path):
+        """Failing closed would cost an operator their recordings over a stat call.
+        A write that does fail is survivable now, which is what makes this safe.
+        """
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, min_free_disk_percent=10.0)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        with patch('shutil.disk_usage', side_effect=OSError('no such device')):
+            recorder.tick()
+        assert _wav_files(tmp_path)
+
+
+class PipelineThatKeptIq(RingBufferPipeline):
+    """An audio pipeline that also held the raw IQ, the way RtlSdrPipeline does."""
+
+    def __init__(self, iq: RingBufferPipeline) -> None:
+        super().__init__()
+        self._iq = iq
+
+    @property
+    def iq_buffer(self) -> RingBufferPipeline:
+        return self._iq
+
+
+class TestRecordingRawIq:
+    """The second file, written from the raw IQ the receiver kept.
+
+    Driven through the same trigger as the audio, because that is the point of the
+    split: one lock, one budget, two files that cannot disagree about what happened.
+    """
+
+    IQ_RATE = 4 * SAMPLE_RATE      # a whole number of IQ samples per audio sample
+
+    def _trigger(self, tmp_path, **recording):
+        iq = RingBufferPipeline(sample_rate=self.IQ_RATE, chunk_size=self.IQ_RATE,
+                                dtype=np.uint8)
+        audio = PipelineThatKeptIq(iq)
+        config = _make_config(tmp_path, **recording)
+        # An IQ recording only exists on a receiver, so the config has to say so or
+        # the level offset resolves to the sound card's figure.
+        config.audio.source = 'rtlsdr'
+        config.rtlsdr.iq_sample_rate = self.IQ_RATE
+        analyzer = FakeAnalyzer()
+        return build_recording(audio, analyzer, config), audio, iq, analyzer
+
+    def _feed_iq(self, iq, seconds, start=0):
+        """Append `seconds` of raw IQ whose bytes are known by construction."""
+        for second in range(seconds):
+            first = (start + second) % 256
+            raw = ((np.arange(self.IQ_RATE * 2, dtype=np.int64) + first) % 256)
+            iq._append(raw.astype(np.uint8).reshape(-1, 2))
+
+    def _record_one(self, tmp_path, **recording):
+        trigger, audio, iq, analyzer = self._trigger(tmp_path, **recording)
+        _feed(audio, 1)
+        self._feed_iq(iq, 1)
+        analyzer.lock()
+        trigger.tick()
+        _feed(audio, 3)
+        self._feed_iq(iq, 3, start=100)
+        trigger.tick()
+        analyzer.unlock()
+        for _ in range(4):
+            _feed(audio, 1)
+            self._feed_iq(iq, 1, start=200)
+            trigger.tick()
+        return trigger
+
+    def _iq_file(self, tmp_path):
+        return [f for f in _wav_files(tmp_path) if f.name.endswith('-iq.wav')][0]
+
+    def test_one_event_writes_both_files(self, tmp_path):
+        self._record_one(tmp_path)
+        names = sorted(f.name for f in _wav_files(tmp_path))
+        assert len(names) == 2, names
+        # A dash sorts before a dot, so the raw capture comes first.
+        iq_name, audio_name = names
+        assert iq_name == audio_name.replace('.wav', '-iq.wav'), (
+            'the two files should read as one event at a glance')
+
+    def test_the_iq_file_is_stereo_at_the_receivers_rate(self, tmp_path):
+        self._record_one(tmp_path)
+        with wave.open(str(self._iq_file(tmp_path)), 'rb') as wav:
+            assert wav.getnchannels() == 2, 'I on the left, Q on the right'
+            assert wav.getsampwidth() == 1, 'one byte per sample, as the device sends'
+            assert wav.getframerate() == self.IQ_RATE
+
+    def test_the_bytes_are_the_ones_the_device_sent(self, tmp_path):
+        """No scaling, no levelling, no fade at either end.  What a reader opens is
+        the measurement rather than this program's opinion of it.
+        """
+        trigger, audio, iq, analyzer = self._trigger(tmp_path)
+        known = (np.arange(self.IQ_RATE * 2, dtype=np.int64) % 256).astype(np.uint8)
+        iq._append(known.reshape(-1, 2))
+        _feed(audio, 1)
+        analyzer.lock()
+        trigger.tick()
+        trigger.disarm()
+        with wave.open(str(self._iq_file(tmp_path)), 'rb') as wav:
+            written = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.uint8)
+        assert np.array_equal(written, known), (
+            'the file should be the bytes that went in, unaltered at both ends')
+
+    def test_the_metadata_says_where_in_the_spectrum_this_is(self, tmp_path):
+        """DC in the file is where the hardware sat, not the frequency the monitor
+        measures - the two differ by the tuning offset on purpose.  Without this a
+        reader has a pile of samples describing an unknown piece of spectrum.
+        """
+        self._record_one(tmp_path)
+        settings = wavmeta.read_settings(self._iq_file(tmp_path))
+        config = _make_config(tmp_path)
+        assert int(settings['center_frequency_hz']) == (
+            config.rtlsdr.frequency_hz + config.rtlsdr.tuning_offset_hz)
+        assert int(settings['listening_frequency_hz']) == config.rtlsdr.frequency_hz
+        assert float(settings['gain_db']) == config.rtlsdr.gain_db
+
+    def test_it_carries_the_calibration_and_the_pulse_rate(self, tmp_path):
+        """The two the audio file carries, for the same reason: neither is recoverable
+        from the samples, and both change what a reading of them means.
+        """
+        self._record_one(tmp_path)
+        settings = wavmeta.read_settings(self._iq_file(tmp_path))
+        assert 'rf_conversion_db' in settings
+        assert int(settings['pulse_rate']) == 120
+
+    def test_both_files_end_for_the_same_reason(self, tmp_path):
+        """One trigger decided it, so the two cannot disagree about why they stopped."""
+        self._record_one(tmp_path)
+        reasons = {wavmeta.read_settings(f)['ended'] for f in _wav_files(tmp_path)}
+        assert reasons == {'timeout'}, reasons
+
+    def test_one_event_spends_one_from_the_budget(self, tmp_path):
+        """Two files, one event.  A budget per recorder would have charged twice."""
+        trigger = self._record_one(tmp_path, max_events=3)
+        assert trigger.status().events_remaining == 2
+
+    def test_the_two_files_cover_the_same_stretch_of_time(self, tmp_path):
+        """They describe one event, so their lengths have to agree to within the
+        rounding each rate does independently.
+        """
+        self._record_one(tmp_path)
+        audio_file = [f for f in _wav_files(tmp_path) if not f.name.endswith('-iq.wav')][0]
+        with wave.open(str(audio_file), 'rb') as wav:
+            audio_seconds = wav.getnframes() / wav.getframerate()
+        with wave.open(str(self._iq_file(tmp_path)), 'rb') as wav:
+            iq_seconds = wav.getnframes() / wav.getframerate()
+        assert iq_seconds == pytest.approx(audio_seconds, abs=0.05)
+
+    def test_a_fade_would_work_on_stereo_if_one_were_ever_wanted(self):
+        """The IQ recorder sets no fade, so nothing exercises this in the program.
+        It is here because FADE_SECONDS is documented as a knob a subclass sets, and
+        a knob that raises ValueError for every subclass but one is not a knob.  A
+        flat ramp cannot broadcast against a row-per-frame array.
+        """
+        frames = np.full((4, 2), 100, dtype=np.uint8)
+        ramp = np.array([0.0, 0.25, 0.5, 1.0])
+        shaped = AudioEventRecorder._ramp_for(ramp, frames)
+        faded = np.rint(frames * shaped).astype(np.uint8)
+        assert faded.shape == frames.shape
+        # One ramp value per frame, the same across both channels.
+        assert np.array_equal(faded[:, 0], faded[:, 1])
+        assert list(faded[:, 0]) == [0, 25, 50, 100]
+
+    def test_the_same_ramp_is_unchanged_for_mono(self):
+        ramp = np.array([0.0, 0.5, 1.0])
+        mono = np.full(3, 100, dtype=np.int16)
+        assert np.array_equal(AudioEventRecorder._ramp_for(ramp, mono), ramp)
+
+    def test_an_impossible_iq_rate_names_the_setting_it_came_from(self, tmp_path, caplog):
+        """The IQ recorder's rate comes from [rtlsdr], not from [audio].  The message
+        used to name [audio] sample_rate whichever recorder refused, which sends the
+        operator to edit a setting that is not the one at fault.
+        """
+        iq = RingBufferPipeline(sample_rate=self.IQ_RATE, chunk_size=self.IQ_RATE,
+                                dtype=np.uint8)
+        config = _make_config(tmp_path)
+        config.audio.source = 'rtlsdr'
+        config.rtlsdr.iq_sample_rate = 0
+        with caplog.at_level('ERROR'):
+            build_recording(PipelineThatKeptIq(iq), FakeAnalyzer(), config)
+        assert '[rtlsdr] iq_sample_rate' in caplog.text
+
+    def test_no_iq_recorder_without_a_buffer_to_read(self, tmp_path):
+        """A sound card, and a receiver that was never asked to keep any."""
+        recorder, _, _ = _make_recorder(tmp_path)
+        assert not any(isinstance(r, IqEventRecorder) for r in recorder._listeners)

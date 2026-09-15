@@ -147,7 +147,13 @@ class TestSchemaIsWellFormed:
             for field in field_names(schema, section)
             if (field_schema(schema, section, field).get('x-visible-when') or {})
             .get('section', section) != section}
-        assert reaching == {'station.audio_rf_conversion_db'}, reaching
+        assert reaching == {
+            'station.audio_rf_conversion_db',
+            # Raw IQ recording is a recording setting, so it belongs beside the rest of
+            # them, but only a receiver has IQ to record.  Nothing in [recording] names
+            # the source, so this gate cannot be made local.
+            'recording.record_iq',
+        }, reaching
 
     def test_every_section_gate_names_a_section_and_field_that_exist(self, schema):
         """The same hazard the field-gate test guards, one level up.  A section gate

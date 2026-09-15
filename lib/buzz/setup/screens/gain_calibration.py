@@ -188,6 +188,9 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
         self._sweep: GainSweep | None = None
         self._result: SweepResult | None = None
         self._offers_gain = False
+        # Set once something final is on screen, so that a progress update still in
+        # flight cannot overwrite it.  See _show_progress.
+        self._settled = False
         self._cancel_requested = False
 
     def compose(self):
@@ -331,13 +334,28 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
         """
         def report(step: int, total: int, gain_db: float) -> None:
             try:
-                loop.call_soon_threadsafe(
-                    self._set, '#status',
-                    f'Step {step + 1} of {total}: measuring {gain_db:.1f} dB...')
+                loop.call_soon_threadsafe(self._show_progress, step, total, gain_db)
             except RuntimeError:
                 pass
 
         return report
+
+    def _show_progress(self, step: int, total: int, gain_db: float) -> None:
+        """Say where the sweep has got to, unless it has already finished.
+
+        The guard is the whole reason this is a method rather than the _set call it
+        used to be.  A progress update crosses from the sweep's thread by
+        call_soon_threadsafe, which queues it rather than running it, so one posted
+        just before the sweep returned can still be waiting when the result reaches
+        the screen.  Running it then replaces the answer with a progress line for a
+        sweep that has already finished, and nothing puts the answer back.
+
+        Caught by a test that read 'Step 1 of 2: measuring 0.0 dB...' where the
+        measured gain should have been.
+        """
+        if self._settled:
+            return
+        self._set('#status', f'Step {step + 1} of {total}: measuring {gain_db:.1f} dB...')
 
     def _show_result(self, result: SweepResult, released: bool = True) -> None:
         """Report the outcome, and say if the receiver is still held.
@@ -368,7 +386,7 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
                 'this again will fail until the setup program is restarted.')
 
     def _finish(self, accept: bool = False) -> None:
-        """Offer whatever the operator can do now.
+        """Offer whatever the operator can do now, and stop progress overwriting it.
 
         A measured gain gets two buttons rather than one.  Taking the figure and
         declining it are both reasonable: somebody may have run the sweep to see what
@@ -381,6 +399,9 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
         change a widget's id once set and raises inside the worker when asked, which
         takes the whole app down rather than the dialog.
         """
+        # Every path that reaches an outcome comes through here, which makes it the
+        # one place that can say the screen is now showing something final.
+        self._settled = True
         self._offers_gain = accept
         try:
             accept_button = self.query_one('#accept', Button)

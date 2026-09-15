@@ -11,15 +11,28 @@ from unittest.mock import MagicMock, patch
 import buzz.main as main_module
 import numpy as np
 import pytest
+from buzz import ffmpeg as ffmpeg_module
+from buzz import loudness as loudness_module
+from buzz import main as main_module
+from buzz import sdr as sdr_module
 from buzz import wavmeta
+from buzz.analyzer import ContinuousAnalyzer
+from buzz.collector import Collector
 from buzz.config import BuzzConfig
+from buzz.csv_store import CsvStore
+from buzz.ffmpeg import find_ffmpeg
+from buzz.loudness import resolve_gain
 from buzz.main import (
-    _start_collector, _start_playback, _wait_until_interrupted, configure_logging,
-    make_weather_client, open_live_source, open_playback_pipeline,
+    _start_collector, _start_playback, _wait_until_interrupted, build_recording,
+    check_playback_source, configure_logging, make_weather_client, open_live_source,
+    open_playback_pipeline,
 )
+from buzz.plotter import Plotter
+from buzz.publisher import Publisher
+from buzz.sampler import AudioSampler, RingBufferPipeline
 from buzz.sdr import open_device
-from buzz.sampler import RingBufferPipeline
 from buzz.weather import CumulusMXWeatherClient, NullWeatherClient, OpenMeteoWeatherClient
+from tests.patching import patch_in
 
 
 @pytest.fixture(autouse=True)
@@ -179,14 +192,14 @@ class TestPlaybackWritesNothing:
     def _run_main(self, argv, tmp_path):
         with patch('sys.argv', ['buzz', '--headless', *argv]), \
              patch('buzz.main.CONFIG_PATH', tmp_path / 'no-such-config.toml'), \
-             patch('buzz.main.configure_logging'), \
-             patch('buzz.main.check_playback_source'), \
-             patch('buzz.main.open_playback_pipeline') as playback, \
-             patch('buzz.main.AudioSampler') as sampler, \
-             patch('buzz.main.ContinuousAnalyzer'), \
-             patch('buzz.main.EventRecorder') as recorder, \
-             patch('buzz.main._start_collector') as collector, \
-             patch('buzz.main._wait_until_interrupted'):
+             patch_in(main_module, configure_logging), \
+             patch_in(main_module, check_playback_source), \
+             patch_in(main_module, open_playback_pipeline) as playback, \
+             patch_in(main_module, AudioSampler) as sampler, \
+             patch_in(main_module, ContinuousAnalyzer), \
+             patch_in(main_module, build_recording) as recorder, \
+             patch_in(main_module, _start_collector) as collector, \
+             patch_in(main_module, _wait_until_interrupted):
             main_module.main()
         return playback, sampler, recorder, collector
 
@@ -258,9 +271,9 @@ class TestPlaybackStartsWithTheDisplay:
 class TestStartCollector:
     def _start(self, cfg):
         """Run _start_collector with everything it builds stubbed out."""
-        with patch('buzz.main.CsvStore'), patch('buzz.main.Plotter'), \
-             patch('buzz.main.Publisher') as publisher, \
-             patch('buzz.main.Collector') as collector, \
+        with patch_in(main_module, CsvStore), patch_in(main_module, Plotter), \
+             patch_in(main_module, Publisher) as publisher, \
+             patch_in(main_module, Collector) as collector, \
              patch('buzz.main.threading.Thread') as thread:
             _start_collector(cfg, MagicMock())
         return publisher, collector, thread
@@ -637,7 +650,7 @@ class TestResolveGain:
     def test_an_explicit_zero_overrides_the_render_default(self):
         """The case that needs None to exist at all: "--playback-gain 0 --render" has
         to mean "leave it alone", not "you said nothing, so measure it"."""
-        with patch('buzz.loudness.resolve_gain') as measured:
+        with patch_in(loudness_module, resolve_gain) as measured:
             gain = main_module._resolve_gain(
                 self._args(playback_gain=0.0, render='out.mp4'),
                 BuzzConfig(), Path('event.wav'))
@@ -648,8 +661,8 @@ class TestResolveGain:
 
     def test_rendering_without_a_figure_measures(self):
         config = BuzzConfig()
-        with patch('buzz.ffmpeg.find_ffmpeg', return_value='/usr/bin/ffmpeg'), \
-                patch('buzz.loudness.resolve_gain', return_value=19.0) as measured:
+        with patch_in(ffmpeg_module, find_ffmpeg, return_value='/usr/bin/ffmpeg'), \
+                patch_in(loudness_module, resolve_gain, return_value=19.0) as measured:
             gain = main_module._resolve_gain(
                 self._args(render='out.mp4'), config, Path('event.wav'))
         assert gain == 19.0
@@ -657,8 +670,8 @@ class TestResolveGain:
 
     def test_auto_is_honoured_without_a_render(self):
         """--playback-gain auto is allowed on its own; it just is not the default."""
-        with patch('buzz.ffmpeg.find_ffmpeg', return_value='/usr/bin/ffmpeg'), \
-                patch('buzz.loudness.resolve_gain', return_value=16.4):
+        with patch_in(ffmpeg_module, find_ffmpeg, return_value='/usr/bin/ffmpeg'), \
+                patch_in(loudness_module, resolve_gain, return_value=16.4):
             gain = main_module._resolve_gain(
                 self._args(playback_gain=main_module.AUTO_GAIN),
                 BuzzConfig(), Path('event.wav'))
@@ -667,8 +680,8 @@ class TestResolveGain:
     def test_the_configured_ffmpeg_path_is_offered_to_the_search(self):
         config = BuzzConfig()
         config.render.ffmpeg_path = 'C:/ffmpeg/bin'
-        with patch('buzz.ffmpeg.find_ffmpeg', return_value='C:/ffmpeg/bin/ffmpeg.exe') as found, \
-                patch('buzz.loudness.resolve_gain', return_value=1.0):
+        with patch_in(ffmpeg_module, find_ffmpeg, return_value='C:/ffmpeg/bin/ffmpeg.exe') as found, \
+                patch_in(loudness_module, resolve_gain, return_value=1.0):
             main_module._resolve_gain(self._args(render='out.mp4'), config,
                                       Path('event.wav'))
         assert found.call_args.args == ('C:/ffmpeg/bin',)
@@ -676,8 +689,8 @@ class TestResolveGain:
     def test_an_unset_path_searches_only_the_path(self):
         """Empty means "look on PATH", and find_ffmpeg takes None for that -- passing
         the empty string through would have it check a directory named ''."""
-        with patch('buzz.ffmpeg.find_ffmpeg', return_value='/usr/bin/ffmpeg') as found, \
-                patch('buzz.loudness.resolve_gain', return_value=1.0):
+        with patch_in(ffmpeg_module, find_ffmpeg, return_value='/usr/bin/ffmpeg') as found, \
+                patch_in(loudness_module, resolve_gain, return_value=1.0):
             main_module._resolve_gain(self._args(render='out.mp4'), BuzzConfig(),
                                       Path('event.wav'))
         assert found.call_args.args == (None,)
@@ -841,7 +854,7 @@ class TestOpeningAReceiverAsTheLiveSource:
         pipeline and the rate bookkeeping are all the real ones.
         """
         from tests.test_sdr_source import FakeDevice
-        with patch('buzz.sdr.open_device', return_value=device or FakeDevice()):
+        with patch_in(sdr_module, open_device, return_value=device or FakeDevice()):
             return open_live_source(config)
 
     def rtlsdr_config(self, **overrides):
@@ -864,6 +877,63 @@ class TestOpeningAReceiverAsTheLiveSource:
             'the 16000 Hz the receiver settings produce.  The recorder writes it into '
             'every .wav header and the analyzer counts seconds by it.')
         assert pipeline.capacity_samples > 0
+
+    def test_raw_iq_is_kept_only_when_the_setting_asks_for_it(self):
+        """The setting has to reach the pipeline, or an operator who turned IQ
+        recording on gets an event with no IQ file and nothing saying why.
+
+        It is gated because the buffer is not small: several seconds of raw IQ is
+        4.7 MB at the default rate and 44 MB at the highest the hardware takes, none
+        of it touched by a station that will never record IQ.
+        """
+        off = self.open_with_a_fake_receiver(self.rtlsdr_config())
+        assert off.iq_buffer is None
+
+        config = self.rtlsdr_config()
+        config.recording.record_iq = True
+        on = self.open_with_a_fake_receiver(config)
+        assert on.iq_buffer is not None
+        assert on.iq_buffer.dtype.itemsize == 1, 'an RTL-SDR delivers unsigned bytes'
+
+    def test_the_iq_rate_is_taken_from_the_hardware_too(self):
+        """The buffer an IQ recording reads is filled at the rate the device settled
+        on, and IqEventRecorder takes its own rate from the config.  If the config
+        keeps the requested figure, the two disagree.  The .wav header then describes
+        the samples as something they are not, and the recorder counts its lead-in at
+        one rate against a capacity counted at the other.
+        """
+        from tests.test_sdr_source import FakeDevice
+        config = self.rtlsdr_config()
+        config.recording.record_iq = True
+        settled = 256_016
+        pipeline = self.open_with_a_fake_receiver(config, FakeDevice(actual_rate=settled))
+
+        assert config.rtlsdr.iq_sample_rate == settled, (
+            f'[rtlsdr] iq_sample_rate was left at {config.rtlsdr.iq_sample_rate} while '
+            f'the device settled on {settled}.')
+        assert pipeline.iq_buffer.capacity_samples > 0
+
+    def test_record_iq_on_a_sound_card_says_so(self, caplog):
+        """There is no IQ anywhere on a sound card, so the setting cannot be honored.
+        Nothing misbehaved while it was silent, which is the problem: the config file
+        said one thing and the program did another, with nothing to connect the two.
+        """
+        config = BuzzConfig()
+        config.audio.source = 'soundcard'
+        config.recording.record_iq = True
+        with caplog.at_level('WARNING'):
+            with patch_in(main_module, AudioSampler):
+                open_live_source(config)
+        assert 'record_iq' in caplog.text
+        assert 'rtlsdr' in caplog.text, 'the message should say what would work instead'
+
+    def test_a_sound_card_that_never_asked_for_iq_hears_nothing_about_it(self, caplog):
+        config = BuzzConfig()
+        config.audio.source = 'soundcard'
+        with caplog.at_level('WARNING'):
+            with patch_in(main_module, AudioSampler):
+                open_live_source(config)
+        assert 'record_iq' not in caplog.text
 
     def test_a_section_that_cannot_work_is_refused_before_anything_starts(self):
         """2.4 MS/s decimated by 16 gives 150 kHz of audio.  Nothing used to check it,

@@ -1042,6 +1042,20 @@ something: an empty file list, a glob that matched nothing, a subprocess whose o
 was never examined. Ask what the check does when its input never arrives. If the
 answer is "passes", that is the bug, not the missing input.
 
+**The same shape arrives one level up, wherever code collects answers from several
+others and judges the collection.** Per "Push, don't poll",
+`RecordingTrigger._publish` wraps each listener in its own `try`/`except`, so a
+listener that raises produces no answer rather than a bad one. `_begin` collected the
+filename each recorder returned and tested the event with `all(opened)`. A recorder
+that refused left a `None` and failed that test. One that crashed left nothing at
+all, so `all()` over whatever did arrive reported every recorder open: the trigger
+stayed armed and dropped a stray `.wav` on each poll for the rest of the event. It
+counts the answers against the number of listeners now.
+
+Swallowing an exception to protect the caller is right, and it converts a failure
+into a missing entry rather than a visible one. So the count is part of the result.
+Ask how many answers were expected, not only what the answers that came back say.
+
 ## Comments and documentation
 
 Match the voice already in the codebase: concise, factual, plain. Avoid AI-assistant tics:

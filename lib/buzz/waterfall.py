@@ -40,7 +40,7 @@ from buzz.constants import DB_PER_S_UNIT, S9_DBM
 from buzz.dsp import SILENCE_DBFS
 from buzz.fonts import display_family, display_font
 from buzz.playback import FilePlaybackPipeline
-from buzz.recorder import EventRecorder, RecorderStatus
+from buzz.recorder import RecorderStatus, RecordingTrigger
 from buzz.sampler import RingBufferPipeline
 from buzz.scope import H_DIVISIONS, SCOPE_H, ScopeWidget
 
@@ -810,7 +810,7 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
     re-triggering whichever button was clicked last.
     """
 
-    def __init__(self, recorder: EventRecorder | None,
+    def __init__(self, recorder: RecordingTrigger | None,
                  playback: FilePlaybackPipeline | None = None,
                  analyzer: ContinuousAnalyzer | None = None,
                  parent: QWidget | None = None) -> None:
@@ -981,7 +981,7 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
 
     def __init__(self, pipeline: RingBufferPipeline, analyzer: ContinuousAnalyzer,
                  config: BuzzConfig, always_on_top: bool = False,
-                 recorder: EventRecorder | None = None,
+                 recorder: RecordingTrigger | None = None,
                  playback: FilePlaybackPipeline | None = None,
                  show_controls: bool = True) -> None:
         super().__init__()

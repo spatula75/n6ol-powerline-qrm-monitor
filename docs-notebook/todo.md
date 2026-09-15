@@ -9,6 +9,40 @@ about yet do not belong here.
 This is the one forward-looking file in the notebook.  Everything else here records
 something already decided or measured.  Release history is in `CHANGELOG.md`.
 
+## Raw IQ event recording
+
+The planned last piece of work before 2.0.  Alongside the existing audio event
+recording, optionally capture the same event's raw IQ to a second `.wav` for sharing
+with someone who wants to do their own signal processing on it.  Playback of an IQ
+file through this program is out of scope.
+
+The design is worked out in full - the ring buffer this needs that does not exist
+yet, why the two recorders share one trigger rather than two independent budgets, why
+that trigger publishes to listeners rather than holding sink objects directly, and why
+stopping mid-recording turns out not to need any special handling once `finish` is
+allowed to be a synchronous call.  See `iq-recording-design.md`.
+
+Mostly built.  What was listed here as the last piece, failure isolation, was
+justified by an example that does not hold: a full disk on the IQ side was said to
+stop audio recording too.  Both recorders resolve the same `[recording] directory`
+and there is no setting that separates them, so a full disk fails both, and
+disarming is then the right answer rather than a bug.  Refusing to open one file
+while the other opens needs the two to differ in something, and today they differ
+only in format.
+
+A narrower defect is left, and it is the one a full disk really produces.  It fills
+part way through an event rather than before it, so the failure is a write rather
+than an open.  `_emit` raises, `RecordingTrigger._publish` catches it per listener,
+and the audio recorder is correctly unaffected - but the IQ recorder then raises on
+every tick that follows, logging each time, and its writer is never closed.
+
+Fixed.  `AbstractEventRecorder._abandon` closes the file, says so once, and declines
+the rest of the event, which is a change to the recorder rather than to the trigger
+and the opposite of where this entry first pointed.  `[recording]
+min_free_disk_percent` keeps a tenth of the disk in reserve by default, so the
+ordinary case is that recording is held off before the disk fills at all, and starts
+again on its own once there is room.
+
 ## Faster sample rate support
 
 The program runs at 16 kHz at the one station it was written for, and several pieces
@@ -270,6 +304,55 @@ Points the SDR pages need to make, as notes rather than draft prose:
 the author rather than for a model to fill in unattended.
 
 ## Housekeeping
+
+### Most patch targets are still strings
+
+`tests/patching.py` builds a patch target from real references, so that a rename in
+`lib/` reaches the tests that patch it: an IDE updates them, a grep finds them, and
+an import fails at collection rather than as a mock error minutes into a full run.
+`tests/test_main.py` uses it throughout, which is the file the problem happened in
+twice.
+
+The rest of the suite still names our own symbols as strings.  Counted on 2026-09-14
+there are 312 string targets, of which 107 name a symbol we can rename, spread over
+nine files:
+
+| uses | file | targets |
+| --- | --- | --- |
+| 25 | `test_gain_calibration_dialog.py` | `open_device`, `open_sweep`, `RtlSdrSource`, `SweepReader`, `close_device` |
+| 23 | `test_level_stream_source_choice.py` | `open_device`, `RtlSdrSource`, `SdrLevelStream`, `IqToAudio`, `SoundCardLevelStream` |
+| 15 | `test_release_render_check.py` | `run`, `render_variant`, `count_black_segments` |
+| 14 | `test_batch_render_recordings.py` | `render`, `default_recordings_directory`, `BuzzConfig` |
+| 9 | `test_gain_picker.py` | `open_device` |
+| 9 | `test_loudness.py` | `run` |
+| 6 | `test_pulse_probe.py` | `AudioSampler`, `capture` |
+| 4 | `test_render.py` | `wavmeta.read_settings` |
+| 2 | `test_recorder.py` | `wavmeta.append_metadata` |
+
+The last two need the owning module rather than the calling one, for the reason
+`tests/patching.py` now explains: a target that reaches through a module binding
+patches whoever owns the attribute, so `buzz.render.wavmeta.read_settings` already
+patches `buzz.wavmeta` and `patch_in(wavmeta, read_settings)` says so.
+
+The other 205 targets reach through one of our modules to somebody else's, such as
+`buzz.playback.sd.OutputStream` and `buzz.recorder.time.monotonic`.  Those stay as
+strings.
+
+**Do this on its own branch, from the backlog, rather than folding it into whatever
+work touches one of these files.**  It is cleanup across nine test files at once, so a
+diff that mixes it with a feature buries both.  Meanwhile every new test uses
+`patch_in` from the start, which is what stops the count growing.
+
+Three kinds stay as strings on purpose.  Third-party names reached through one of our
+modules, such as `buzz.sampler.sd.InputStream`, are not ours to rename.  Constants
+have no `__name__` to build a path from, which `buzz.sdr._DEVICE_CLOSE_TIMEOUT_SECONDS`
+is.  And an attribute of a module we imported, such as
+`buzz.recorder.wavmeta.append_metadata`, is a shape the helper does not fit, since the
+name bound in the module is `wavmeta` rather than the function.
+
+`tests/test_patch_targets.py` resolves every remaining string, so nothing is
+unguarded meanwhile.  This is mechanical rather than urgent.
+
 
 ### The "worth" construct is still through the codebase
 

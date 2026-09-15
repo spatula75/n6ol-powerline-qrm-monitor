@@ -8,6 +8,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `[recording] min_free_disk_percent`, a share of the disk to leave free. Recording is
+  held off while the disk is below it and starts again on its own once there is room,
+  so a station that fills its disk stops recording rather than taking the machine down
+  with it. Ten percent by default, and 0 records until the disk is full. Checked
+  before each event rather than before each write, so being wrong about it costs at
+  most one recording.
+- `[recording] record_iq`, which writes a second `.wav` of raw IQ beside each event
+  recording: stereo, I on the left channel and Q on the right, at the receiver's own
+  sample rate, in the device's own sample format. Nothing is scaled, levelled or
+  faded, so the file is the measurement rather than this program's reading of it. It
+  is for handing the raw data to somebody with their own tools; nothing here reads one
+  back. Off by default, and a receiver only.
+
+  Its metadata carries what the samples cannot: the frequency the hardware was tuned
+  to, which is where DC sits in the file, the listening frequency and the offset
+  between them, the tuner gain, the level calibration, and the grid's pulse rate. The
+  cue marker sits at the moment of lock, as it does in an audio recording.
+
+  Turning it on costs memory whether or not an event is ever recorded, because the
+  monitor has to hold the last several seconds of raw IQ at all times for a recording
+  to have the same run-up its audio gets. That is 4.7 MB at the default sample rate
+  and 44 MB at the highest the hardware takes.
 - `lib/buzz/iq.py`, the conversion from an SDR's IQ stream to the mono audio the
   rest of the program already expects. It mixes the frequency of interest down to
   zero, filters to one sideband, decimates by a whole number, takes the real part
@@ -176,6 +198,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   alike whatever the hour.
 
 ### Changed
+- `EventRecorder` is split into `RecordingTrigger`, which decides when an event is
+  worth a file and when that file ends, and `AbstractEventRecorder`, which handles the
+  mechanics of writing one. `AudioEventRecorder` is the first subclass. The trigger
+  reads no audio and opens no file, so a second format needs no second copy of the
+  lock gating, the event budget, or the rearm cycle, and one event counts once against
+  the budget however many files it produced. Nothing an operator sets or sees changes.
+  `docs-notebook/iq-recording-design.md` records why, and raw IQ capture is what it is
+  for.
 - `[rtlsdr]` frequencies are given in kHz: `frequency_khz`, `bandwidth_khz` and
   `tuning_offset_khz` replace the Hz-denominated keys. Nobody wants to type three
   zeroes on the end of every frequency.
@@ -210,6 +240,46 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   decimation, bandwidth, tuning offset and sideband.
 
 ### Fixed
+- A disk that was already full when an event started dropped a stray `.wav` on every
+  poll for as long as the signal lasted. The opening write sat outside the guard that
+  covers the file being opened, so it escaped into the trigger, which logs what a
+  listener raises and carries on. No filename came back, and the trigger read the
+  absence as a recorder that writes nothing rather than as one that failed, so it
+  stayed armed and opened another file on the next poll. It now counts the recorders
+  that answered rather than reading only the answers that arrived, and a lead-in write
+  that fails gives up on the file the same way a later one does.
+- A recording whose closing write failed left the recorder believing a file was still
+  open for the rest of the run, so the next event replaced the writer without closing
+  it. `wave` flushes the data and patches the header sizes when the file is closed,
+  which is where a disk that filled during the event refuses. The close is inside the
+  same guard as the rest of the writing now.
+- The message refusing an impossible sample rate named `[audio] sample_rate` whichever
+  recorder refused, so an IQ recording's bad rate sent the operator to edit a setting
+  that was not the one at fault. Each recorder names the section its own rate came
+  from.
+- `[recording] record_iq` was ignored without a word on a station reading a sound
+  card. A sound card has no IQ to record, and the setup program does not offer the
+  setting there, but a hand-edited config file could still turn it on and get no
+  files and no explanation. The monitor says so at startup, and `BuzzConfig.record_iq`
+  now answers the question in one place rather than at each reader.
+- An IQ recording wrote the requested receiver sample rate into its `.wav` header
+  rather than the rate the hardware settled on, which is the rate the samples in the
+  file are actually at. A 28.8 MHz divider cannot hit every request, so the two can
+  differ. The audio rate was already read back off the device for the same reason.
+- A recording whose disk filled part way through went on failing and saying so on
+  every poll for the rest of the event, and never closed the file it could no longer
+  write to. `wave` writes data and header sizes lazily, so a writer left open leaves
+  the file in whatever state buffering happened to put it. The recorder now closes
+  what it has, reports the failure once, and declines the rest of that event.
+- The gain calibration dialog could replace its own answer with a stale progress line.
+  Progress crosses from the sweep's thread by `call_soon_threadsafe`, which queues
+  rather than runs, so one posted just before the sweep finished could arrive after
+  the measured gain was on screen and overwrite it, leaving the operator looking at a
+  step counter for a sweep that had already answered.
+- A recording that could not open its file still counted against the event budget, so
+  an operator with a full disk or an unwritable directory paid for files they never
+  got, and recording ran out of budget having written nothing. The budget is now spent
+  only by an event that produced a file.
 - The setup program's Finish screen offered only Back when there was nothing to save,
   so somebody who opened it to leave the program was told there were no changes and
   sent to the menu they came from. It offers Exit as well, and says whether a config

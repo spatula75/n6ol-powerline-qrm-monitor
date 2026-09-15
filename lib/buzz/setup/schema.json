@@ -554,6 +554,18 @@
             "The --playback flag also looks here when you give it a bare filename instead of a path."
           ]
         },
+        "min_free_disk_percent": {
+          "type": "number",
+          "title": "Minimum free disk (%)",
+          "minimum": 0,
+          "maximum": 99,
+          "description": "Percentage of the disk to leave free. Recording is held off while the disk is below this, and resumes on its own once there is room.",
+          "default": 10.0,
+          "x-notes": [
+            "Checked before each event rather than before each write, so being wrong about it costs at most one recording: max_seconds of it, which is about sixty megabytes of raw IQ at the default settings.",
+            "Set it to 0 to record until the disk is full."
+          ]
+        },
         "max_events": {
           "type": "integer",
           "title": "Events to record",
@@ -619,6 +631,22 @@
             "A signal that starts quiet and grows louder is not skipped. Recording starts the moment it crosses, so the monitor catches the event even when it misses the opening seconds.",
             "The lead-in pays for the wait, and the lead-in runs out. This differs from min_lock_seconds, which the monitor can clamp: this wait depends on the signal rather than the clock. Something in the low teens is a reasonable place to start."
           ]
+        },
+        "record_iq": {
+          "type": "boolean",
+          "title": "Record raw IQ",
+          "description": "Write a second .wav of raw IQ beside each event recording, for handing the raw data to somebody who wants to process it themselves.",
+          "default": false,
+          "x-notes": [
+            "The monitor keeps the last several seconds of raw IQ at all times when this is on, so that an IQ recording gets the same run-up its audio does. That is 4.7 MB at the default sample rate and 44 MB at the highest the hardware takes.",
+            "Nothing in this program reads an IQ recording back. Playing one is a job for other software.",
+            "An RTL-SDR receiver only. A sound card has no IQ to record, so the monitor ignores this and says so at startup when [audio] source is soundcard."
+          ],
+          "x-visible-when": {
+            "section": "audio",
+            "field": "source",
+            "equals": "rtlsdr"
+          }
         }
       }
     },

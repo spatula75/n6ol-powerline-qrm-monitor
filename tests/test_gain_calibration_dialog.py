@@ -151,6 +151,35 @@ class TestTheDialogReportsWhatTheSweepFound:
         assert label == 'Cancel', (
             'a measured gain has to be refusable without pressing Escape')
 
+    def test_a_late_progress_update_cannot_replace_the_result(self, tmp_path):
+        """Progress crosses from the sweep's thread by call_soon_threadsafe, which
+        queues rather than runs, so one posted just before the sweep returned can still
+        be waiting when the result reaches the screen.  Running it then puts a progress
+        line back over the answer, and nothing puts the answer back.
+
+        Seen in CI, where this class read 'Step 1 of 2: measuring 0.0 dB...' where the
+        measured gain belonged.  Driven directly here rather than hoping for the race,
+        since it only showed up under a fully loaded machine.
+        """
+        async def scenario():
+            app = SetupApp(config_path=tmp_path / 'config.toml')
+            async with app.run_test() as pilot:
+                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                           return_value=(_FakeSource(), _FakeSweep(_result()))):
+                    app.push_screen(GainCalibrationDialog(dict(RTLSDR_VALUES)))
+                    await _wait_until(
+                        pilot,
+                        lambda: app.screen.query_one('#outcome', Static).content != '',
+                        'the dialog to report an outcome')
+                    # The straggler, arriving after the answer is already on screen.
+                    app.screen._show_progress(0, 145, 0.0)
+                    await pilot.pause()
+                    return app.screen.query_one('#status', Static).content
+
+        status = run(scenario())
+        assert '36.4' in status, (
+            f'a late progress update replaced the measured gain: {status!r}')
+
     def test_no_answer_offers_no_gain_to_accept(self, tmp_path):
         """The quiet-antenna case.  The dialog closes rather than refusing, because a
         station whose sweep cannot succeed is exactly the one that has to set a gain by
@@ -730,7 +759,11 @@ class TestProgressDoesNotBlockTheSweep:
 
         run(scenario())
         assert posted, 'nothing was posted to the loop'
-        assert '1 of 145' in posted[0][1]
+        # The step, not a formatted line: the formatting moved behind _show_progress so
+        # that a late update can be dropped rather than overwriting the result.  What
+        # reaches the screen is checked by
+        # test_progress_reaches_the_screen_while_the_sweep_runs.
+        assert posted[0] == (0, 145, 32.8)
 
     def test_a_dead_loop_does_not_stop_the_sweep(self, tmp_path):
         """The loop being gone is not a reason to stop sweeping, and certainly not a
