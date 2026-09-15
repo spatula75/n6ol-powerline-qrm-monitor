@@ -308,7 +308,7 @@
           "x-notes": [
             "One chart, current_frequency_estimate.png, covering today only and overwritten each minute. It runs from midnight to the moment it was drawn.",
             "Minutes with no lock on the pulse train are left blank rather than joined up.",
-            "The reading is scaled by your sound card's own clock error, so read it for how the frequency moves rather than for what it is."
+            "Your hardware's sampling clock is never exactly its nominal rate, and that scales the reading. Read the chart for how the frequency moves rather than for what it is."
           ]
         }
       }

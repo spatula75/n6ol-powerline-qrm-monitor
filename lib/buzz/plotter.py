@@ -76,9 +76,11 @@ _COLOR_ELEVATED = 'lightcoral'
 
 # How far either side of the nominal grid frequency the frequency chart's y-axis
 # reaches.  Fixed rather than fitted to the data, so one hour's chart can be compared
-# with the next without reading the axis first.  A wide margin for what it holds: an
-# uncalibrated sound card biases every reading by its own clock error, and at 50-100
-# ppm that is 0.003-0.006 Hz at 60 Hz, well inside this band.
+# with the next without reading the axis first.  The margin also covers the sampling
+# clock, which biases every reading by its own error as a fraction of the reading.
+# Nothing here measures that error, so this rests on a bound instead.  Even a clock
+# 1000 ppm from nominal, far worse than any hardware this runs on, shifts a 60 Hz
+# reading by only 0.06 Hz and stays inside the band.
 _FREQUENCY_BAND_HZ = 0.1
 _COLOR_FREQUENCY = 'darkorange'
 

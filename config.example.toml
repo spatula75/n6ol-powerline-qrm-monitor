@@ -249,8 +249,9 @@ summary_start_date_iso = "2024-01-01T00:00:00+0000"
 # Minutes with no lock on the pulse train are left blank rather than joined
 # up.
 #
-# The reading is scaled by your sound card's own clock error, so read it for
-# how the frequency moves rather than for what it is.
+# Your hardware's sampling clock is never exactly its nominal rate, and that
+# scales the reading. Read the chart for how the frequency moves rather than
+# for what it is.
 enable_frequency_chart = false
 
 
