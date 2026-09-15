@@ -190,6 +190,11 @@ class AbstractEventRecorder(ABC):
     # reaches for and the one every other part of this program reads.
     FILENAME_SUFFIX = ''
 
+    # The config setting this recorder's rate came from, named by the message that
+    # refuses an impossible one.  The two recorders read different sections, and
+    # whoever meets that message goes and edits whichever setting it names.
+    RATE_SETTING: str
+
     def __init__(self, pipeline: RingBufferPipeline, sample_rate: int, directory: Path,
                  callsign: str, max_seconds: float, charged_wait_seconds: float,
                  min_free_disk_percent: float = 0.0) -> None:
@@ -286,8 +291,9 @@ class AbstractEventRecorder(ABC):
         recorder that stays off.
         """
         if self._sample_rate <= 0:
-            logger.error('Cannot record at a sample rate of %s - check sample_rate in '
-                         'the [audio] section of the config.', self._sample_rate)
+            logger.error('Cannot record %s at a sample rate of %s.  Correct %s in the '
+                         'config, or run python -m buzz.setup to set it.',
+                         self.KIND, self._sample_rate, self.RATE_SETTING)
             return False
         return self._ensure_directory()
 
@@ -450,7 +456,17 @@ class AbstractEventRecorder(ABC):
         # wait would otherwise be overrun before the first poll ever looked at it.
         samples, end = self._clamp_to_cap(span.samples, span.end)
         self._position = end
-        self._write(samples)
+        try:
+            self._write(samples)
+        except Exception as exc:
+            # Guarded like the open above it.  A disk with no room left refuses this
+            # write rather than the open, and either way nothing usable exists yet.
+            #
+            # An escape from here reaches the trigger, which reads a missing name as a
+            # recorder that writes nothing rather than as one that failed.  It would
+            # stay armed and open another file on the next poll.
+            self._abandon(exc)
+            return None
         # Both of the reasons a recording is not what the settings might suggest, said
         # plainly, because neither is recoverable from the file afterward.  A monitor
         # that has just started has not filled its buffer, so an arc already buzzing
@@ -529,10 +545,18 @@ class AbstractEventRecorder(ABC):
             return
         try:
             self._flush_tail()
+            # Inside the guard with it, because closing is a write too.  `wave` flushes
+            # the data and patches the header sizes here, so a disk that filled during
+            # the event fails at exactly this point.
+            #
+            # Outside the guard the exception escapes with _writer still set, and the
+            # recorder then believes it is recording for the rest of the run.  The next
+            # event replaces the writer without closing it, which leaks the handle and
+            # leaves this file claiming the zero frames it was opened with.
+            self._writer.close()
         except Exception as exc:
             self._abandon(exc)
             return
-        self._writer.close()
         self._writer = None
         self._write_metadata(ended)
         # Broken down, because the total is not the number any setting names, and
@@ -693,6 +717,7 @@ class AudioEventRecorder(AbstractEventRecorder):
     SAMPLE_WIDTH_BYTES = 2      # 16-bit PCM, matching the int16 capture format end to end
     SAMPLE_DTYPE = '<i2'
     KIND = 'powerline QRM event'
+    RATE_SETTING = '[audio] sample_rate'
 
     def __init__(self, pipeline: RingBufferPipeline, config: BuzzConfig,
                  charged_wait_seconds: float) -> None:
@@ -746,6 +771,7 @@ class IqEventRecorder(AbstractEventRecorder):
     CHANNELS = 2
     KIND = 'raw IQ capture'
     FILENAME_SUFFIX = '-iq'
+    RATE_SETTING = '[rtlsdr] iq_sample_rate'
     # No fade.  See the class docstring; fade_ramp(0) is empty, so the machinery in
     # AbstractEventRecorder holds nothing back and every write goes straight out.
     FADE_SECONDS = 0.0
@@ -1034,7 +1060,11 @@ class RecordingTrigger:
         # nothing itself has no other way to know one, and asking afterwards would put
         # a query back into a relationship that is otherwise all pushing.
         self._filename = next((name for name in opened if name), None)
-        if not all(opened):
+        # Counted rather than only inspected, because _publish swallows what a listener
+        # raises and one that raised leaves no entry at all.  all() over the entries
+        # that did arrive reads a crash as everybody succeeding, which is the one
+        # answer this must not give.
+        if len(opened) < len(self._listeners) or not all(opened):
             # What a single recorder already did on a failed open: a file that cannot
             # be created is a configuration problem rather than a passing one, so
             # recording stops instead of dropping a stray file per poll.

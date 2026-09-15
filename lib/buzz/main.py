@@ -320,6 +320,15 @@ def open_live_source(config: BuzzConfig) -> RingBufferPipeline:
             'value has a meaning.  Correct it in the config file, or run '
             'python -m buzz.setup to set it.')
     if config.audio.source == SOUNDCARD:
+        # Said here because this is where the source is known.  BuzzConfig.record_iq
+        # already answers no, so nothing downstream misbehaves.  What it cannot do is
+        # tell the operator, and a setting that is on in the file and off in the
+        # program is one somebody hunts for in the wrong place.
+        if config.recording.record_iq:
+            logger.warning(
+                '[recording] record_iq is on, and a sound card has no IQ to record, '
+                'so no IQ file is written.  Only an RTL-SDR receiver produces IQ.  '
+                'Set [audio] source to %r to use it, or turn record_iq off.', RTLSDR)
         return AudioSampler(config).pipeline
 
     from buzz.iq import IqToAudio
@@ -339,6 +348,12 @@ def open_live_source(config: BuzzConfig) -> RingBufferPipeline:
     # receiver cannot produce every rate exactly and everything downstream counts
     # seconds by dividing samples by this figure.
     config.audio.sample_rate = converter.audio_sample_rate
+    # The IQ rate is read back for the same reason.  A 28.8 MHz divider cannot hit
+    # every request, so the buffer an IQ recording reads holds samples at the rate the
+    # device settled on.  Writing the requested figure into the .wav header would
+    # describe those samples as something they are not, and IqEventRecorder counts its
+    # lead-in by the same number.
+    config.rtlsdr.iq_sample_rate = source.iq_sample_rate
 
     logger.info('Listening on %.4f MHz with an RTL-SDR tuned to %.4f MHz, %.1f dB '
                 'gain, %d Hz of %s sideband, %d Hz audio.',
@@ -355,10 +370,10 @@ def open_live_source(config: BuzzConfig) -> RingBufferPipeline:
             'error to change if the gain does.  Set [rtlsdr] calibrated_offset_db '
             'once you have compared against a receiver you trust on the same antenna.',
             settings.level_offset_db)
-    if config.recording.record_iq:
+    if config.record_iq:
         logger.info('Keeping the last several seconds of raw IQ, so that an IQ '
                     'recording gets the same run-up its audio does.')
-    return RtlSdrPipeline(source, converter, keep_iq=config.recording.record_iq)
+    return RtlSdrPipeline(source, converter, keep_iq=config.record_iq)
 
 
 def _start_playback(pipeline: RingBufferPipeline, playing_back: str | None) -> None:

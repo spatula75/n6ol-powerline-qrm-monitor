@@ -895,6 +895,46 @@ class TestOpeningAReceiverAsTheLiveSource:
         assert on.iq_buffer is not None
         assert on.iq_buffer.dtype.itemsize == 1, 'an RTL-SDR delivers unsigned bytes'
 
+    def test_the_iq_rate_is_taken_from_the_hardware_too(self):
+        """The buffer an IQ recording reads is filled at the rate the device settled
+        on, and IqEventRecorder takes its own rate from the config.  If the config
+        keeps the requested figure, the two disagree.  The .wav header then describes
+        the samples as something they are not, and the recorder counts its lead-in at
+        one rate against a capacity counted at the other.
+        """
+        from tests.test_sdr_source import FakeDevice
+        config = self.rtlsdr_config()
+        config.recording.record_iq = True
+        settled = 256_016
+        pipeline = self.open_with_a_fake_receiver(config, FakeDevice(actual_rate=settled))
+
+        assert config.rtlsdr.iq_sample_rate == settled, (
+            f'[rtlsdr] iq_sample_rate was left at {config.rtlsdr.iq_sample_rate} while '
+            f'the device settled on {settled}.')
+        assert pipeline.iq_buffer.capacity_samples > 0
+
+    def test_record_iq_on_a_sound_card_says_so(self, caplog):
+        """There is no IQ anywhere on a sound card, so the setting cannot be honored.
+        Nothing misbehaved while it was silent, which is the problem: the config file
+        said one thing and the program did another, with nothing to connect the two.
+        """
+        config = BuzzConfig()
+        config.audio.source = 'soundcard'
+        config.recording.record_iq = True
+        with caplog.at_level('WARNING'):
+            with patch_in(main_module, AudioSampler):
+                open_live_source(config)
+        assert 'record_iq' in caplog.text
+        assert 'rtlsdr' in caplog.text, 'the message should say what would work instead'
+
+    def test_a_sound_card_that_never_asked_for_iq_hears_nothing_about_it(self, caplog):
+        config = BuzzConfig()
+        config.audio.source = 'soundcard'
+        with caplog.at_level('WARNING'):
+            with patch_in(main_module, AudioSampler):
+                open_live_source(config)
+        assert 'record_iq' not in caplog.text
+
     def test_a_section_that_cannot_work_is_refused_before_anything_starts(self):
         """2.4 MS/s decimated by 16 gives 150 kHz of audio.  Nothing used to check it,
         so the monitor ran with a ring buffer holding one second instead of 9.6 and

@@ -904,8 +904,8 @@ class IqRingBuffer(RingBufferPipeline):
     slicing exists so get_snapshot returns a full window to the analyzer, and nothing
     reads this by chunk count - a recording reads it sequentially with read_from.
 
-    Built only when [rtlsdr] record_iq is on, because it is not small: 4.7 MB at the
-    default 256 kHz, and 44 MB at the 2.4 MHz the hardware will accept.
+    Built only when [recording] record_iq is on, because it is not small: 4.7 MB at
+    the default 256 kHz, and 44 MB at the 2.4 MHz the hardware will accept.
     """
 
     def __init__(self, iq_sample_rate: int, block_samples: int) -> None:
@@ -950,7 +950,7 @@ class RtlSdrPipeline(RingBufferPipeline):
         self._source = source
         self._converter = converter
         # Off unless an IQ recording is going to want it.  See IqRingBuffer for what
-        # it costs, which is enough to be worth not paying by default.
+        # it costs, which is why nothing pays for it by default.
         self._iq_buffer = (IqRingBuffer(source.iq_sample_rate, source.block_samples)
                            if keep_iq else None)
         self._clipped = 0

@@ -244,6 +244,15 @@ class TestRecordingDirectory:
             _make_recorder(tmp_path, sample_rate=0)
         assert 'sample rate' in caplog.text
 
+    def test_the_report_names_the_setting_that_supplied_the_rate(self, tmp_path, caplog):
+        """Whoever reads this goes and edits whatever it names, so naming the wrong
+        section costs them the search.  The audio recorder's rate is the one in
+        [audio]; see TestRecordingRawIq for the other.
+        """
+        with caplog.at_level('ERROR'):
+            _make_recorder(tmp_path, sample_rate=0)
+        assert '[audio] sample_rate' in caplog.text
+
     def test_an_impossible_sample_rate_records_nothing(self, tmp_path):
         """Rather than failing once per poll and leaving a stray file behind each time."""
         recorder, pipeline, analyzer = _make_recorder(tmp_path, sample_rate=0)
@@ -1684,6 +1693,23 @@ class TestTheTriggerOnlyPublishes:
         trigger.tick()
         assert 'begin' in good.calls, 'a raising listener stopped the one after it'
 
+    def test_a_subscriber_that_raises_while_opening_disarms_the_trigger(self, tmp_path):
+        """A listener that refuses leaves a None among the names; one that raises
+        leaves nothing at all, because _publish swallowed it.  The trigger reads a
+        crash as every recorder having opened when it judges only the names that did
+        arrive, and it then goes on polling one that never started.
+        """
+        broken = MagicMock()
+        broken.can_record.return_value = True
+        broken.has_room.return_value = True
+        broken.begin.side_effect = RuntimeError('boom')
+        trigger, pipeline, analyzer = self._trigger(tmp_path, broken)
+        _feed(pipeline, 1)
+        analyzer.lock()
+        trigger.tick()
+        assert trigger.status().armed is False, (
+            'a recorder that crashed on open was counted as having opened')
+
     def test_a_subscriber_that_cannot_write_keeps_it_disarmed(self, tmp_path):
         """Arming is refused while anything that would be asked to write cannot.
         Decided as subscribers arrive, since none has at construction time.
@@ -1781,6 +1807,73 @@ class TestAFailedWrite:
             recorder.tick()
             recorder.disarm()      # publishes finish to a recorder with no writer
         assert recorder.status().recording is False
+
+    def test_a_closing_write_that_fails_does_not_leave_it_recording(self, tmp_path):
+        """Closing is a write too, and the last one a full disk gets to refuse.
+        `wave.close` flushes the data and patches the header sizes, so ENOSPC arrives
+        there rather than at any writeframes call.
+
+        Outside the guard it left _writer set, and the recorder then believed it was
+        recording for the rest of the run: the next event replaced the writer without
+        closing it, which leaks the handle and leaves this file claiming the zero
+        frames its header was opened with.
+        """
+        recorder, pipeline = self._recording(tmp_path)
+        audio = recorder._listeners[0]
+        with patch.object(audio._writer, 'close',
+                          side_effect=OSError('No space left on device')):
+            recorder.disarm()
+        assert audio.is_recording is False, (
+            'the close failed and the recorder still believes a file is open')
+
+
+class TestAFailedOpeningWrite:
+    """The disk is already full when the event starts, so what fails is the lead-in
+    write rather than the open.  Every recording opens by writing everything the ring
+    buffer holds, so that write is the first one of the event and the first thing a
+    full disk refuses.
+
+    That write sat outside the guard covering the open, so it escaped into the
+    trigger, which logs what a listener raises and carries on.  No name was appended,
+    so all() over the names that did arrive reported every recorder open.  The trigger
+    stayed armed and opened another file on the next poll, which is one stray .wav per
+    poll for as long as the signal lasted.  That is the failure begin()'s own open
+    guard exists to prevent.
+    """
+
+    def _ticking(self, tmp_path, ticks):
+        """Run `ticks` polls of a locked signal with every write refused."""
+        recorder, pipeline, analyzer = _make_recorder(tmp_path, max_events=3)
+        audio = recorder._listeners[0]
+        analyzer.lock()
+        with patch.object(audio, '_emit',
+                          side_effect=OSError('No space left on device')):
+            for _ in range(ticks):
+                _feed(pipeline, 1)
+                recorder.tick()
+        return recorder, audio
+
+    def test_it_opens_one_file_rather_than_one_per_poll(self, tmp_path):
+        self._ticking(tmp_path, ticks=5)
+        assert len(_wav_files(tmp_path)) == 1, (
+            f'five polls of a full disk left {len(_wav_files(tmp_path))} files behind')
+
+    def test_it_disarms_rather_than_trying_again(self, tmp_path):
+        recorder, _ = self._ticking(tmp_path, ticks=1)
+        assert recorder.status().armed is False, (
+            'a disk with no room left is a standing condition, not a passing one')
+
+    def test_it_is_not_left_believing_it_is_recording(self, tmp_path):
+        recorder, audio = self._ticking(tmp_path, ticks=1)
+        assert recorder.status().recording is False
+        assert audio.is_recording is False, 'the writer was left open on a dead file'
+
+    def test_it_says_so_once(self, tmp_path, caplog):
+        with caplog.at_level('ERROR'):
+            self._ticking(tmp_path, ticks=5)
+        failures = [r for r in caplog.records if r.levelname == 'ERROR']
+        assert len(failures) == 1, (
+            f'a full disk was reported {len(failures)} times rather than once')
 
 
 class TestKeepingSomeDiskFree:
@@ -2001,6 +2094,20 @@ class TestRecordingRawIq:
         ramp = np.array([0.0, 0.5, 1.0])
         mono = np.full(3, 100, dtype=np.int16)
         assert np.array_equal(AudioEventRecorder._ramp_for(ramp, mono), ramp)
+
+    def test_an_impossible_iq_rate_names_the_setting_it_came_from(self, tmp_path, caplog):
+        """The IQ recorder's rate comes from [rtlsdr], not from [audio].  The message
+        used to name [audio] sample_rate whichever recorder refused, which sends the
+        operator to edit a setting that is not the one at fault.
+        """
+        iq = RingBufferPipeline(sample_rate=self.IQ_RATE, chunk_size=self.IQ_RATE,
+                                dtype=np.uint8)
+        config = _make_config(tmp_path)
+        config.audio.source = 'rtlsdr'
+        config.rtlsdr.iq_sample_rate = 0
+        with caplog.at_level('ERROR'):
+            build_recording(PipelineThatKeptIq(iq), FakeAnalyzer(), config)
+        assert '[rtlsdr] iq_sample_rate' in caplog.text
 
     def test_no_iq_recorder_without_a_buffer_to_read(self, tmp_path):
         """A sound card, and a receiver that was never asked to keep any."""

@@ -7,8 +7,9 @@ from pathlib import Path
 import pytest
 
 from buzz.config import (
-    AudioConfig, BuzzConfig, RecordingConfig, RtlSdrConfig, ServerConfig,
-    StationConfig, WeatherConfig, _load_section, is_runtime, validate_sample_rate,
+    RTLSDR, SOUNDCARD, AudioConfig, BuzzConfig, RecordingConfig, RtlSdrConfig,
+    ServerConfig, StationConfig, WeatherConfig, _load_section, is_runtime,
+    validate_sample_rate,
 )
 from buzz.constants import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 
@@ -361,3 +362,40 @@ class TestTheQuotedSizeOfACappedIqRecording:
             f'{name} no longer quotes the size of a capped IQ recording, so this pin has '
             f'nothing to hold there.  Drop it from _QUOTING_THE_FIGURE if that was '
             f'deliberate.')
+
+
+class TestRecordIqNeedsAReceiver:
+    """A sound card delivers audio and there is no IQ anywhere to write, so the
+    setting cannot mean anything on one.
+
+    The setup program never offers it there, and nothing in the program misbehaved
+    when it was on: build_recording asks the pipeline whether it kept any IQ, and a
+    sound card kept none.  What was missing was an honest answer to the question.  A
+    config file saying record_iq = true while the program records no IQ is exactly
+    the kind of disagreement an operator hunts for in the wrong place.
+    """
+
+    def _config(self, source: str, record_iq: bool) -> BuzzConfig:
+        config = BuzzConfig()
+        config.audio.source = source
+        config.recording.record_iq = record_iq
+        return config
+
+    def test_a_sound_card_has_no_iq_to_record(self):
+        assert self._config(SOUNDCARD, record_iq=True).record_iq is False
+
+    def test_a_receiver_records_it_when_asked(self):
+        assert self._config(RTLSDR, record_iq=True).record_iq is True
+
+    def test_a_receiver_leaves_it_off_when_not_asked(self):
+        assert self._config(RTLSDR, record_iq=False).record_iq is False
+
+    def test_the_setting_itself_survives_a_spell_on_a_sound_card(self):
+        """Resolved rather than overwritten, for the reason the sound card's device
+        name is kept while a station runs a receiver: a station that goes back gets
+        its choice back, instead of finding it silently turned off.
+        """
+        config = self._config(SOUNDCARD, record_iq=True)
+        assert config.recording.record_iq is True
+        config.audio.source = RTLSDR
+        assert config.record_iq is True

@@ -438,6 +438,24 @@ class BuzzConfig:
             return self.rtlsdr.level_offset_db
         return self.station.audio_rf_conversion_db
 
+    @property
+    def record_iq(self) -> bool:
+        """Whether an event gets a raw IQ recording beside its audio.
+
+        Off for a sound card whatever [recording] record_iq says, because a sound card
+        delivers audio and there is no IQ anywhere to write.  Only a receiver produces
+        it.  The setting itself is left as the operator set it, so a station that goes
+        back to a receiver gets its choice back.  That is how the sound card's device
+        name survives a spell on a receiver, and for the same reason.
+
+        Resolved here rather than at each reader, for the reason level_offset_db is.
+        The question has one answer, and a reader that works it out alone is a reader
+        that can get it wrong.  The setup program never offers the setting on a sound
+        card, so reaching this with it on means a config file edited by hand.
+        buzz.main says so at startup, where somebody is watching.
+        """
+        return self.recording.record_iq and self.audio.source == RTLSDR
+
     @classmethod
     def from_toml(cls, path: Path | str = CONFIG_PATH) -> 'BuzzConfig':
         with open(path, 'rb') as f:

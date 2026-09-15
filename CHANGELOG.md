@@ -240,6 +240,32 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   decimation, bandwidth, tuning offset and sideband.
 
 ### Fixed
+- A disk that was already full when an event started dropped a stray `.wav` on every
+  poll for as long as the signal lasted. The opening write sat outside the guard that
+  covers the file being opened, so it escaped into the trigger, which logs what a
+  listener raises and carries on. No filename came back, and the trigger read the
+  absence as a recorder that writes nothing rather than as one that failed, so it
+  stayed armed and opened another file on the next poll. It now counts the recorders
+  that answered rather than reading only the answers that arrived, and a lead-in write
+  that fails gives up on the file the same way a later one does.
+- A recording whose closing write failed left the recorder believing a file was still
+  open for the rest of the run, so the next event replaced the writer without closing
+  it. `wave` flushes the data and patches the header sizes when the file is closed,
+  which is where a disk that filled during the event refuses. The close is inside the
+  same guard as the rest of the writing now.
+- The message refusing an impossible sample rate named `[audio] sample_rate` whichever
+  recorder refused, so an IQ recording's bad rate sent the operator to edit a setting
+  that was not the one at fault. Each recorder names the section its own rate came
+  from.
+- `[recording] record_iq` was ignored without a word on a station reading a sound
+  card. A sound card has no IQ to record, and the setup program does not offer the
+  setting there, but a hand-edited config file could still turn it on and get no
+  files and no explanation. The monitor says so at startup, and `BuzzConfig.record_iq`
+  now answers the question in one place rather than at each reader.
+- An IQ recording wrote the requested receiver sample rate into its `.wav` header
+  rather than the rate the hardware settled on, which is the rate the samples in the
+  file are actually at. A 28.8 MHz divider cannot hit every request, so the two can
+  differ. The audio rate was already read back off the device for the same reason.
 - A recording whose disk filled part way through went on failing and saying so on
   every poll for the rest of the event, and never closed the file it could no longer
   write to. `wave` writes data and header sizes lazily, so a writer left open leaves
