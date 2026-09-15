@@ -7,6 +7,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.0.0] - 2026-09-14
+
 ### Added
 - `[recording] min_free_disk_percent`, a share of the disk to leave free. Recording is
   held off while the disk is below it and starts again on its own once there is room,
@@ -69,6 +71,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is refused at startup rather than treated as a sound card, since `[rtlsdr]` has no
   setup screen yet and reaches the file by hand.
 
+  Frequencies in that section are given in kHz: `frequency_khz`, `bandwidth_khz` and
+  `tuning_offset_khz`. It ships tuned to 3588 kHz with a 50 kHz offset, so the whole
+  256 kHz span falls inside 80m and clear of the CW DX window, and powerline noise is
+  generally worse low in HF. `gain_db` ships at 22.9, which the automatic calibration
+  measured on the antenna this was developed against. It gives up some noise-floor
+  accuracy for headroom, which is the right way round: a clipped arc cannot be
+  recovered.
+
   Two limits apply to that section, and the monitor names both when it refuses one.
   The IQ rate divided by the decimation has to fall between 8000 Hz and 48000 Hz,
   which is the band the rest of the program already works in: 2400000 Hz at the
@@ -79,7 +89,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   8000 Hz the top of the band folds back onto the bottom 6 dB down, and a broadband
   arc has energy exactly there.
 
-  `[rtlsdr] audio_rf_conversion_db` does for a receiver what
+  `[rtlsdr] calibrated_offset_db` does for a receiver what
   `[station] audio_rf_conversion_db` does for a sound card. It sits in its own
   section because the figure depends on the tuner gain above it. Left unset, it is
   estimated as the negative of that gain. Measured on one receiver, the estimate
@@ -206,16 +216,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   the budget however many files it produced. Nothing an operator sets or sees changes.
   `docs-notebook/iq-recording-design.md` records why, and raw IQ capture is what it is
   for.
-- `[rtlsdr]` frequencies are given in kHz: `frequency_khz`, `bandwidth_khz` and
-  `tuning_offset_khz` replace the Hz-denominated keys. Nobody wants to type three
-  zeroes on the end of every frequency.
-- `[rtlsdr] audio_rf_conversion_db` is now `calibrated_offset_db`. It was never the
-  same setting as `[station] audio_rf_conversion_db`, only the same name, and sharing
-  one read as a single setting stored in two places.
-- `[rtlsdr] gain_db` ships as 28.0 rather than 40.2, which is what the automatic
-  calibration measured on the antenna this was developed against. It gives up some
-  noise-floor accuracy for headroom, which is the right way round: a clipped arc
-  cannot be recovered.
 - The receiver section sits directly below the audio section in the setup program and
   second in `config.example.toml`, next to the source that selects it.
 - `tools/ste_lint.py` applies the wordy-word substitutions to strict text only, as
@@ -230,10 +230,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and the reasons differ: `ensure` is a disagreement with the source, and `acquire` is
   domain vocabulary here, since this program acquires a lock rather than obtaining an
   object.
-- `[rtlsdr] frequency_hz` defaults to 3.588 MHz rather than 7.074. The receiver tunes
-  50 kHz above it, so the whole 256 kHz span falls inside 80m and clear of the CW DX
-  window. Powerline noise is generally worse low in HF. An existing config keeps
-  whatever it already says.
 - Settings that exist but that nobody should meet in a menu are marked `x-file-only`
   in the schema. They stay documented in `config.example.toml`, which is the only way
   anybody could edit them by hand. The five are the receiver's sample rate,
@@ -415,6 +411,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   misspelling its own argument.
 - The attribution link in `docs/ste-writing.md` pointed at a path that no longer
   exists. The MIT notice has to travel with the work, so a dead pointer weakens it.
+- `tools/release_render_check.py` picked an IQ capture as its source. A station with
+  `[recording] record_iq` on writes one beside every audio recording and closes it
+  last, so it was always the newer file and the check took it every time. Rendering
+  then ran against 256 kHz of raw IQ: five rates passed on resampled nonsense, and the
+  sixth failed only because the program refuses that rate. It skips IQ captures now,
+  reading the suffix from the recorder rather than spelling it again.
 
 ## [1.5.3] - 2026-08-24
 

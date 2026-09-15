@@ -75,6 +75,7 @@ sys.path.insert(0, str(_REPO_ROOT / 'lib'))
 from buzz.config import CONFIG_PATH, BuzzConfig  # noqa: E402
 from buzz.constants import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE  # noqa: E402
 from buzz.ffmpeg import FfmpegError, find_ffmpeg, run  # noqa: E402
+from buzz.recorder import IqEventRecorder  # noqa: E402
 
 # Rates a file from another operator's sound card is plausibly recorded at -
 # the same set tests/integration/test_render_end_to_end.py's FOREIGN_RATES
@@ -122,9 +123,23 @@ _MIN_LUMA_RANGE = 0.5
 
 # --------------------------------------------------------------------- source selection
 
+# What an IQ capture's filename ends with.  Taken from the recorder rather than
+# spelled here, so renaming the suffix reaches this tool instead of silently
+# un-skipping the files it exists to skip.
+_IQ_TAIL = f'{IqEventRecorder.FILENAME_SUFFIX}.wav'
+
+
 def newest_recording(directory: Path) -> Path | None:
-    """The most recently modified .wav in `directory`, or None if there isn't one."""
-    candidates = sorted(directory.glob('*.wav'), key=lambda p: p.stat().st_mtime)
+    """The most recently modified audio .wav in `directory`, or None if there is none.
+
+    IQ captures are skipped.  A station with [recording] record_iq on writes one
+    beside every audio recording and closes it last, so it is always the newer file
+    and this picked it every time.  Rendering then ran against 256 kHz of raw IQ:
+    five rates passed on resampled nonsense, and the sixth failed because the program
+    refuses that rate, which is how this was found.
+    """
+    audio = (p for p in directory.glob('*.wav') if not p.name.endswith(_IQ_TAIL))
+    candidates = sorted(audio, key=lambda p: p.stat().st_mtime)
     return candidates[-1] if candidates else None
 
 

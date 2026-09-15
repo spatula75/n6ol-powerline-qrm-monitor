@@ -66,6 +66,26 @@ class TestNewestRecording:
         (tmp_path / 'notes.txt').write_text('not a recording')
         assert newest_recording(tmp_path) is None
 
+    def test_ignores_iq_captures(self, tmp_path):
+        """An IQ capture is not a recording this check can render.
+
+        The recorder closes it after the audio file, so it is always the newer of the
+        two and a plain newest-file rule picks it.  That produced a release check that
+        rendered resampled IQ at five rates and reported them ok.
+        """
+        import os
+        audio = _write_wav(tmp_path / 'event-20260101-000000-0000.wav')
+        iq = _write_wav(tmp_path / 'event-20260101-000000-0000-iq.wav')
+        os.utime(audio, (1_000_000, 1_000_000))
+        os.utime(iq, (2_000_000, 2_000_000))
+        assert newest_recording(tmp_path) == audio, (
+            'the release check picked the IQ capture, which is raw samples at the '
+            'receiver rate rather than audio this program can replay')
+
+    def test_a_directory_of_only_iq_captures_has_no_newest(self, tmp_path):
+        _write_wav(tmp_path / 'event-20260101-000000-0000-iq.wav')
+        assert newest_recording(tmp_path) is None
+
 
 class TestAgeDays:
     def test_a_file_from_exactly_one_day_ago(self, tmp_path):
