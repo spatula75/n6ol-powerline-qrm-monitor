@@ -67,6 +67,13 @@ considered and cannot work: the callback runs inside `libusb_handle_events` hold
 libusb's event lock, so blocking there while another thread does a synchronous
 transfer deadlocks for the same reason writing from the callback fails.
 
+One option is untried rather than ruled out.  Stopping the async read around each
+change and restarting it afterwards removes the concurrency instead of avoiding it,
+where pausing only moves it.  It costs a cancel and a pool refill at every one of the
+sweep's 145 steps, and `cancel_read_async` is itself implicated in the hang above, so
+nobody has taken that trade without measuring it first.  Anybody who wants the sweep
+to stream should measure that before anything else.
+
 What it gives up is continuity, since samples between one read and the next are
 missed.  That costs a sweep nothing and would ruin the monitor, which is why
 `RtlSdrSource` still streams and the two now differ deliberately.
