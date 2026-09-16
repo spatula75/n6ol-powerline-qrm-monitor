@@ -18,6 +18,7 @@ from buzz.gain_sweep import (
     SweepResult,
 )
 from buzz.sdr import CLIPPING_WORTH_NOTICING, IqBlock
+from buzz.sdr_device import RTL_SDR_FORMAT
 
 # The 29 steps an RTL-SDR Blog V4 reports, which is what the real sweep walks.
 # The receiver rate these captures stand for, which sets the frame length.
@@ -101,7 +102,7 @@ class FakeReceiver:
         z = z + complex(self.dc_offset, self.dc_offset)
         interleaved = np.stack([z.real, z.imag], axis=-1).ravel()
         raw = np.clip(np.round((interleaved + 1) * 127.5), 0, 255).astype(np.uint8)
-        return IqBlock(raw=raw, arrived_at=0.0, index=self.reads)
+        return IqBlock(raw=raw, fmt=RTL_SDR_FORMAT, arrived_at=0.0, index=self.reads)
 
 
 class TestTheKneeFitRecoversWhatItWasGiven:

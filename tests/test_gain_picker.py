@@ -19,6 +19,7 @@ from textual.widgets import OptionList, Static
 
 from buzz.setup.app import SetupApp
 from buzz.setup.screens.base import CANCELLED
+from buzz.sdr_device import RtlSdrDevice
 from buzz.setup.screens.gain_picker import (
     UNAVAILABLE,
     GainPickerDialog,
@@ -36,7 +37,7 @@ RTLSDR_VALUES = {'device_index': 0, 'frequency_khz': 3588.0, 'gain_db': 40.2}
 
 def _fake_device(gains=None):
     device = MagicMock()
-    device.valid_gains_db = list(V4_GAINS if gains is None else gains)
+    device.supported_gains_db = list(V4_GAINS if gains is None else gains)
     return device
 
 
@@ -51,38 +52,38 @@ async def _wait_until(pilot, condition, description, timeout=5.0):
 
 class TestReadingTheGainsOffTheReceiver:
     def test_it_returns_the_receivers_own_list_sorted(self):
-        with patch('buzz.sdr.open_device', return_value=_fake_device()) as open_device:
+        with patch.object(RtlSdrDevice, 'open', return_value=_fake_device()) as open_device:
             gains = supported_gains(RTLSDR_VALUES)
-        open_device.assert_called_once_with(0)
+        assert open_device.call_args.args[0] == 0
         assert gains == sorted(V4_GAINS)
 
     def test_it_opens_the_configured_receiver(self):
-        with patch('buzz.sdr.open_device', return_value=_fake_device()) as open_device:
+        with patch.object(RtlSdrDevice, 'open', return_value=_fake_device()) as open_device:
             supported_gains(dict(RTLSDR_VALUES, device_index=3))
-        open_device.assert_called_once_with(3)
+        assert open_device.call_args.args[0] == 3
 
     def test_the_receiver_is_released_again(self):
         """Held open, it would stop the monitor and the sweep from opening it.  The
         dialog needs one answer, not a stream.
         """
         device = _fake_device()
-        with patch('buzz.sdr.open_device', return_value=device):
+        with patch.object(RtlSdrDevice, 'open', return_value=device):
             supported_gains(RTLSDR_VALUES)
         device.close.assert_called_once()
 
     def test_it_is_released_even_when_reading_the_list_fails(self):
         device = _fake_device()
-        type(device).valid_gains_db = property(
+        type(device).supported_gains_db = property(
             lambda self: (_ for _ in ()).throw(RuntimeError('the tuner stopped')))
-        with patch('buzz.sdr.open_device', return_value=device):
+        with patch.object(RtlSdrDevice, 'open', return_value=device):
             with pytest.raises(RuntimeError):
                 supported_gains(RTLSDR_VALUES)
         device.close.assert_called_once()
 
     def test_missing_receiver_settings_fall_back_to_the_defaults(self):
-        with patch('buzz.sdr.open_device', return_value=_fake_device()) as open_device:
+        with patch.object(RtlSdrDevice, 'open', return_value=_fake_device()) as open_device:
             supported_gains({})
-        open_device.assert_called_once_with(0)
+        assert open_device.call_args.args[0] == 0
 
 
 class TestTheDialogOffersWhatTheTunerHas:
@@ -93,8 +94,8 @@ class TestTheDialogOffersWhatTheTunerHas:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                patcher = (patch('buzz.sdr.open_device', side_effect=error) if error
-                           else patch('buzz.sdr.open_device',
+                patcher = (patch.object(RtlSdrDevice, 'open', side_effect=error) if error
+                           else patch.object(RtlSdrDevice, 'open',
                                       return_value=device or _fake_device()))
                 with patcher:
                     dialog = GainPickerDialog(SPEC, current, RTLSDR_VALUES)
@@ -177,7 +178,7 @@ class TestWhenTheReceiverCannotBeReached:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.sdr.open_device',
+                with patch.object(RtlSdrDevice, 'open',
                            side_effect=RuntimeError('nothing there')):
                     dialog = GainPickerDialog(SPEC, 40.2, RTLSDR_VALUES)
                     app.push_screen(dialog, lambda value: result.update(value=value))
@@ -198,7 +199,7 @@ class TestWhenTheReceiverCannotBeReached:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.sdr.open_device', return_value=_fake_device()):
+                with patch.object(RtlSdrDevice, 'open', return_value=_fake_device()):
                     dialog = GainPickerDialog(SPEC, 40.2, RTLSDR_VALUES)
                     app.push_screen(dialog, lambda value: result.update(value=value))
                     await _wait_until(pilot, lambda: bool(dialog._gains),

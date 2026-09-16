@@ -30,7 +30,8 @@ from typing import Protocol
 
 import numpy as np
 
-from buzz.sdr import CLIPPING_WORTH_NOTICING, IqBlock
+from buzz.sdr import CLIPPING_WORTH_NOTICING
+from buzz.sdr_device import IqBlock
 
 logger = logging.getLogger(__name__)
 

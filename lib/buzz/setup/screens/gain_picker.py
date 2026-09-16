@@ -42,20 +42,24 @@ def supported_gains(rtlsdr_values: SectionValues) -> list[float]:
 
     The device is opened and released rather than held, because the dialog needs one
     answer and holding the receiver would stop the monitor and the sweep from opening
-    it.  Whatever this raises carries wording open_device wrote for whoever is
-    standing at the radio.
+    it.  Whatever this raises carries wording `RtlSdrDevice.open` wrote for whoever
+    is standing at the radio.
     """
-    from buzz.sdr import close_device, open_device
+    from buzz.sdr_device import RtlSdrDevice
 
     settings = RtlSdrConfig(**(rtlsdr_values or {}))
-    device = open_device(settings.device_index)
+    device = RtlSdrDevice.open(
+        settings.device_index,
+        tuned_hz=settings.frequency_hz + settings.tuning_offset_hz,
+        gain_db=settings.gain_db,
+        iq_sample_rate=settings.iq_sample_rate)
     try:
-        return sorted(float(gain) for gain in device.valid_gains_db)
+        return sorted(device.supported_gains_db)
     finally:
-        # close_device rather than device.close(), because rtlsdr_close can block
+        # The device's own close is already bounded, because rtlsdr_close can block
         # inside libusb and never return, and this runs on a thread asyncio waits
         # THREAD_JOIN_TIMEOUT seconds for before the program will exit.
-        close_device(device)
+        device.close()
 
 
 class GainPickerDialog(ScopeModalScreen[Any]):

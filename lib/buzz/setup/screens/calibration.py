@@ -104,14 +104,16 @@ def _open_sdr_level_stream(rtlsdr_values: SectionValues, offset_db: float) -> Le
     moving promptly instead of after most of a second.
     """
     from buzz.iq import IqToAudio
-    from buzz.sdr import RtlSdrSource, SdrLevelStream, open_device
+    from buzz.sdr import RtlSdrSource, SdrLevelStream
+    from buzz.sdr_device import RtlSdrDevice
 
     settings = RtlSdrConfig(**rtlsdr_values)
     source = RtlSdrSource(
-        open_device(settings.device_index),
-        frequency_hz=settings.frequency_hz, gain_db=settings.gain_db,
-        iq_sample_rate=settings.iq_sample_rate,
-        tuning_offset_hz=settings.tuning_offset_hz,
+        RtlSdrDevice.open(
+            settings.device_index,
+            tuned_hz=settings.frequency_hz + settings.tuning_offset_hz,
+            gain_db=settings.gain_db,
+            iq_sample_rate=settings.iq_sample_rate),
         block_samples=_SDR_METER_BLOCK_SAMPLES)
     converter = IqToAudio(source.iq_sample_rate, settings.decimation,
                           settings.bandwidth_hz, settings.tuning_offset_hz,

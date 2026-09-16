@@ -57,19 +57,20 @@ def open_sweep(rtlsdr_values: SectionValues) -> tuple['SweepReader', GainSweep]:
     line of its constructor, so a failure inside configure_device would leave an open
     receiver that no object owns and no hook covers.
     """
-    from buzz.sdr import SweepReader, close_device, open_device
+    from buzz.sdr import SweepReader
+    from buzz.sdr_device import RtlSdrDevice
 
     settings = RtlSdrConfig(**rtlsdr_values)
-    device = open_device(settings.device_index)
+    device = RtlSdrDevice.open(
+        settings.device_index,
+        tuned_hz=settings.frequency_hz + settings.tuning_offset_hz,
+        gain_db=settings.gain_db,
+        iq_sample_rate=settings.iq_sample_rate)
     try:
-        reader = SweepReader(
-            device,
-            frequency_hz=settings.frequency_hz, gain_db=settings.gain_db,
-            iq_sample_rate=settings.iq_sample_rate,
-            tuning_offset_hz=settings.tuning_offset_hz)
+        reader = SweepReader(device)
         return reader, GainSweep(reader, settings.arc_headroom_db)
     except BaseException:
-        close_device(device)
+        device.close()
         raise
 
 

@@ -20,6 +20,10 @@ from buzz.setup.app import SetupApp
 from buzz.setup.screens.base import CANCELLED
 from buzz.setup.screens.gain_calibration import GainCalibrationDialog
 from buzz.setup.screens.section_menu import _ACTIONS, _SWEEP_ID, SectionMenuScreen
+from buzz import sdr as sdr_module
+from buzz.sdr import SweepReader
+from buzz.sdr_device import RtlSdrDevice
+from tests.patching import patch_in
 
 RTLSDR_VALUES = {'frequency_khz': 3588.0, 'gain_db': 40.2, 'device_index': 0,
                  'iq_sample_rate': 256_000, 'decimation': 16, 'bandwidth_khz': 4.0,
@@ -389,14 +393,16 @@ class TestOpeningTheRealReceiver:
     def test_it_opens_the_configured_device(self, tmp_path):
         from buzz.setup.screens.gain_calibration import open_sweep
 
-        with patch('buzz.sdr.open_device') as open_device, \
-             patch('buzz.sdr.SweepReader') as reader_class:
+        with patch.object(RtlSdrDevice, 'open') as open_device, \
+             patch_in(sdr_module, SweepReader) as reader_class:
             values = dict(RTLSDR_VALUES, device_index=2)
             source, sweep = open_sweep(values)
 
-        open_device.assert_called_once_with(2)
-        # The receiver is set in Hz; only the config key moved to kHz.
-        assert reader_class.call_args.kwargs['frequency_hz'] == 3_588_000
+        assert open_device.call_args.args[0] == 2
+        # The receiver is set in Hz; only the config key moved to kHz.  The device is
+        # tuned off to one side, so it gets the sum of the two settings.
+        assert open_device.call_args.kwargs['tuned_hz'] == 3_588_000 + 50_000
+        assert reader_class.call_args.args[0] is open_device.return_value
         assert source is reader_class.return_value
 
     def test_it_reads_synchronously_rather_than_streaming(self):
@@ -406,8 +412,8 @@ class TestOpeningTheRealReceiver:
         """
         from buzz.setup.screens.gain_calibration import open_sweep
 
-        with patch('buzz.sdr.open_device'), \
-             patch('buzz.sdr.SweepReader'), \
+        with patch.object(RtlSdrDevice, 'open'), \
+             patch_in(sdr_module, SweepReader), \
              patch('buzz.sdr.RtlSdrSource') as streaming:
             open_sweep(dict(RTLSDR_VALUES))
         streaming.assert_not_called()
@@ -418,7 +424,7 @@ class TestOpeningTheRealReceiver:
         """
         from buzz.setup.screens.gain_calibration import open_sweep
 
-        with patch('buzz.sdr.open_device'), patch('buzz.sdr.SweepReader'):
+        with patch.object(RtlSdrDevice, 'open'), patch_in(sdr_module, SweepReader):
             _, sweep = open_sweep(dict(RTLSDR_VALUES, arc_headroom_db=26.0))
         assert sweep._headroom_db == 26.0
 
@@ -621,20 +627,19 @@ class TestTheReceiverIsAlwaysReleased:
 
     def test_a_receiver_that_will_not_configure_is_not_left_open(self):
         """The other half of the leak: open_device succeeds and SweepReader raises
-        somewhere inside configure_device, which leaves a handle no object owns.  The
-        atexit hook is registered on the constructor's last line, so it covers nothing
-        here.
+        somewhere after it, which would leave a receiver no object owns.  The device
+        registers its atexit hook on its constructor's last line, so a failure after
+        the open but before the reader exists is not covered by it.
         """
         from buzz.setup.screens.gain_calibration import open_sweep
 
-        with patch('buzz.sdr.open_device') as open_device, \
-             patch('buzz.sdr.close_device') as close_device, \
-             patch('buzz.sdr.SweepReader',
-                   side_effect=RuntimeError('the tuner would not take a rate')):
+        with patch.object(RtlSdrDevice, 'open') as open_device, \
+             patch_in(sdr_module, SweepReader,
+                      side_effect=RuntimeError('the tuner would not take a rate')):
             with pytest.raises(RuntimeError):
                 open_sweep(dict(RTLSDR_VALUES))
 
-        close_device.assert_called_once_with(open_device.return_value)
+        open_device.return_value.close.assert_called_once_with()
 
     def test_cancelling_while_the_receiver_opens_still_releases_it(self, tmp_path):
         """The defect this class exists for, in the one place it was still possible.
