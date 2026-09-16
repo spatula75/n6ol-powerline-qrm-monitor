@@ -41,11 +41,15 @@ ProgressCallback = Callable[[int, int, float], None]
 
 
 class SweepSource(Protocol):
-    """The part of RtlSdrSource a sweep uses.
+    """What a sweep needs of whatever it reads from.  `buzz.sdr.SweepReader` is it.
 
     This is declared rather than imported so that the whole sweep runs against a
     stand-in with no receiver attached, the same reason RtlSdrDevice exists one layer
     down.
+
+    A sweep moves the gain between measurements, which an RTL-SDR refuses while it
+    streams, so the only implementation reads synchronously.  A streaming source cannot
+    satisfy this and is not meant to: `set_gain` is the member it cannot offer.
     """
 
     @property

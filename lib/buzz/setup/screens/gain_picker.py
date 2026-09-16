@@ -34,32 +34,26 @@ UNAVAILABLE = object()
 
 
 def supported_gains(rtlsdr_values: SectionValues) -> list[float]:
-    """Open the receiver, read the gains it offers, and close it again.
+    """Read the gains the receiver offers, and leave it as it was found.
 
-    The imports sit inside the function for the reason buzz.main.open_live_source
+    The import sits inside the function for the reason buzz.main.open_live_source
     gives: a station using a sound card should never load pyrtlsdr, which resolves a
     symbol as it imports and so fails at import rather than at first call.
 
-    The device is opened and released rather than held, because the dialog needs one
-    answer and holding the receiver would stop the monitor and the sweep from opening
-    it.  Whatever this raises carries wording `RtlSdrDevice.open` wrote for whoever
-    is standing at the radio.
+    This asks for the list rather than opening a configured device, because the two
+    are different requests.  Configuring writes a sample rate, a tuning, an AGC
+    setting and a gain, and it logs that the operator's gain was snapped to a step
+    while the operator is part way through choosing that gain.  The steps a tuner
+    offers do not depend on any of it.
+
+    The receiver is released rather than held, because holding it would stop the
+    monitor and the sweep from opening it.  Whatever this raises carries wording
+    `RtlSdrDevice` wrote for whoever is standing at the radio.
     """
     from buzz.sdr_device import RtlSdrDevice
 
     settings = RtlSdrConfig(**(rtlsdr_values or {}))
-    device = RtlSdrDevice.open(
-        settings.device_index,
-        tuned_hz=settings.frequency_hz + settings.tuning_offset_hz,
-        gain_db=settings.gain_db,
-        iq_sample_rate=settings.iq_sample_rate)
-    try:
-        return sorted(device.supported_gains_db)
-    finally:
-        # The device's own close is already bounded, because rtlsdr_close can block
-        # inside libusb and never return, and this runs on a thread asyncio waits
-        # THREAD_JOIN_TIMEOUT seconds for before the program will exit.
-        device.close()
+    return sorted(RtlSdrDevice.supported_gains(settings.device_index))
 
 
 class GainPickerDialog(ScopeModalScreen[Any]):
@@ -171,7 +165,7 @@ class GainPickerDialog(ScopeModalScreen[Any]):
 
         Dismissing here would be tidier and would throw the message away: the dialog
         would close in the same instant it explained itself, and the operator would
-        see a text box appear for no stated reason.  open_device words these for
+        see a text box appear for no stated reason.  RtlSdrDevice words these for
         whoever is standing at the radio, naming the driver to install or what else
         holds the receiver, so it has to stay on screen long enough to read.
         """

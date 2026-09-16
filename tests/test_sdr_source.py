@@ -12,7 +12,7 @@ test that can hang.
 import queue
 
 import pytest
-from buzz.sdr import DEFAULT_BLOCK_SAMPLES, RtlSdrSource
+from buzz.sdr import _DISCARD_LOG_EVERY, DEFAULT_BLOCK_SAMPLES, RtlSdrSource
 from tests.fake_sdr import V4_GAINS, FakeSdrDevice
 
 BLOCK = 64
@@ -100,6 +100,38 @@ class TestWhenTheConsumerFallsBehind:
         assert caplog.text.count('fell behind') == 1, (
             'the discard warning repeated, which floods a log that is already busy')
 
+    def test_a_sustained_problem_keeps_being_reported(self, caplog):
+        """The rate limit is a distance rather than a multiple, because this counter is
+        not read at every value.
+
+        The device counts refusals on its own thread, and a consumer that has fallen
+        behind meets several between two reads, so a test for `discarded % 100 == 0`
+        steps over almost every multiple.  Refusals arriving three at a time run 3, 6,
+        9 and up to 99, 102, and the next multiple of a hundred they meet is 300.  A
+        station discarding blocks all night reported it about a third as often as the
+        constant says, at intervals of 300 rather than 100.
+        """
+        device = FakeSdrDevice()
+        s = source(device, buffer_blocks=1)
+        s.start()
+        refusals_per_read = 3
+        reads = 105
+        with caplog.at_level('WARNING'):
+            for _ in range(reads):
+                device.deliver(samples=BLOCK)      # fills the queue
+                for _ in range(refusals_per_read):
+                    device.deliver(samples=BLOCK)  # refused, so the count moves in threes
+                s.read(timeout=0.1)
+
+        discarded = s.blocks_discarded
+        said = caplog.text.count('fell behind')
+        # One at the start, then one per _DISCARD_LOG_EVERY after it.  The modulus
+        # version manages two over this run: the first, and the one at 300.
+        assert said >= discarded // _DISCARD_LOG_EVERY, (
+            f'{discarded} blocks were discarded and the warning was given {said} '
+            f'time(s), where roughly one per {_DISCARD_LOG_EVERY} was intended.  A '
+            f'count that arrives in bursts steps over the exact multiples.')
+
     def test_reporting_happens_on_the_consumers_thread(self):
         """Not in the device's callback, where logging can raise and can block on I/O
         while the receiver's own FIFO holds 3.67 ms.  Delivering alone logs nothing.
@@ -172,37 +204,11 @@ class TestWhatItDelegates:
     def test_the_tuned_frequency_comes_from_the_device(self):
         assert source(FakeSdrDevice(tuned_hz=3_638_000)).tuned_hz == 3_638_000
 
-    def test_the_discard_count_is_the_streaming_one(self):
-        """A streaming source drains a transfer pool, where a synchronous read has
-        none.  Taking the reading figure here would discard too few.
-        """
-        device = FakeSdrDevice(blocks_to_discard_streaming=16,
-                               blocks_to_discard_reading=2)
-        assert source(device).blocks_to_discard_after_gain_change == 16
-
     def test_the_block_size_is_the_one_it_was_given(self):
         assert source(block_samples=2048).block_samples == 2048
 
     def test_the_default_block_size_is_the_modules(self):
         assert RtlSdrSource(FakeSdrDevice()).block_samples == DEFAULT_BLOCK_SAMPLES
-
-
-class TestDraining:
-    """Two buffers sit between the tuner and a caller, and counting only one is not
-    enough.  This queue is the one the source can see.
-    """
-
-    def test_it_empties_the_queue_and_says_how_many(self):
-        device = FakeSdrDevice()
-        s = source(device)
-        s.start()
-        for _ in range(3):
-            device.deliver(samples=BLOCK)
-        assert s.drain() == 3
-        assert s.read(timeout=0.01) is None
-
-    def test_draining_an_empty_queue_is_nothing(self):
-        assert source().drain() == 0
 
 
 class TestClosing:

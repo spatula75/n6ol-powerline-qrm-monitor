@@ -81,8 +81,11 @@ missed.  That costs a sweep nothing and would ruin the monitor, which is why
 One constraint came with it.  `rtlsdr_read_sync` wants a whole number of 512-byte USB
 packets and pyrtlsdr admits as much in a FIXME without enforcing it.  A bad size does
 not fail loudly: librtlsdr reads what it can, pyrtlsdr sees a short read, closes the
-device and raises a libusb error that says nothing about sizes.  `validate_sweep_block`
-refuses one before the device is touched.
+device and raises a libusb error that says nothing about sizes.
+`SdrDevice.validate_sync_block` refuses one before the device is touched.  A device
+states its own constraint there, because this one belongs to librtlsdr's transport
+rather than to SDRs, and `SweepReader` asks at construction so that a bad size is
+refused before a sweep starts rather than from inside one.
 
 ## Three artifacts that follow the tuner
 

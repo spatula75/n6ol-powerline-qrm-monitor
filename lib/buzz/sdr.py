@@ -1,53 +1,49 @@
-"""Raw IQ capture from an RTL-SDR receiver, and nothing else.
+"""Raw IQ from a receiver, turned into the audio and the measurements above it.
 
-This module holds the hardware.  It opens the device, configures it, and hands out
-blocks of raw bytes exactly as they arrived.  It has no opinion about what happens
-next.  The conversion to audio lives in buzz.iq, and the ring buffer everything else
-reads lives in buzz.sampler.  Keeping the three apart is what lets the conversion be
-tested exhaustively with no receiver attached.  It also leaves somewhere for IQ
-recording to tap in later, without disturbing either neighbor.
+The hardware itself is `buzz.sdr_device`, which owns every operation performed against
+a device.  This module is what sits between that and the rest of the program:
+`RtlSdrSource` queues the blocks a streaming device delivers, `SweepReader` reads one
+at a time for a gain sweep, `RtlSdrPipeline` converts and fills the shared ring buffer,
+`IqRingBuffer` keeps the raw bytes when an IQ recording wants a lead-in, and
+`SdrLevelStream` answers the setup program's meters.
 
-Why the callback does almost nothing
+Nothing here imports a driver library.  That is the point of the split: the arithmetic
+and the buffering are exercised exhaustively with no receiver attached, and a second
+kind of receiver arrives as another `SdrDevice` without touching any of this.
+
+Why the draining thread is the one with a deadline
+--------------------------------------------------
+A device copies each block on the driver's own thread and does nothing else there, for
+the reasons `buzz.sdr_device` gives.  The work falls to whichever thread drains it,
+which is `RtlSdrPipeline`'s feeder, and that thread has to average less than a block's
+own duration.  That is 64 ms at the default settings against roughly 2 ms of work.
+
+Run longer than it and librtlsdr's pool of USB transfers drains.  The pool is what
+meets the receiver's real deadline: its FIFO holds 1880 bytes, which is 940 complex
+samples, so at 256 kHz it overflows 3.67 ms after collection stops.  That is far
+shorter than a Windows scheduler quantum, and nothing anywhere reports the loss,
+because it happens in hardware upstream of every piece of software.  A sound card can
+report an overflow because the driver owns the buffer that overflowed.  Here nobody
+owns it.  Measured on this hardware the pool holds about 960 ms at our block size, so
+the 3.67 ms deadline is met by the USB stack rather than by Python.
+
+The pool absorbs bursts rather than sustained slowness.  Measurement showed that a
+callback stalled 60 ms against a 64 ms block stayed clean, while one stalled 200 ms
+lost 67% of the stream and kept losing it.  So the feeder loop does the least it can,
+which is to convert, count and append.
+
+What cannot be counted, and what can
 ------------------------------------
-The receiver's own FIFO holds 1880 bytes, which is 940 complex samples, so at 256 kHz
-it overflows 3.67 ms after collection stops.  That is far shorter than a Windows
-scheduler quantum, and nothing anywhere reports the loss, because it happens in
-hardware upstream of every piece of software.  A sound card can report an overflow
-because the driver owns the buffer that overflowed.  Here nobody owns it.
+A loss inside the receiver cannot be counted at all, which is why
+`RtlSdrSource.clock_drift_seconds` exists: elapsed time minus the audio that arrived
+for it is the only evidence available.  Read it as a symptom rather than a
+measurement, since the receiver's crystal and the system clock separate slowly even
+when nothing is wrong.
 
-What saves the arrangement is librtlsdr's pool of USB transfers, which the host
-controller fills by DMA without our thread being scheduled at all.  Measured on this
-hardware, that pool holds about 960 ms at our block size, so the 3.67 ms deadline is
-met by the USB stack rather than by Python.
-
-The deadline that does fall to us is softer and different.  Each callback carries
-`block_samples` worth of audio, so the callback must average less than that duration
-or the pool drains and never recovers.  Measurement showed that a callback stalled
-60 ms against a 64 ms block stayed clean, while one stalled 200 ms lost 67% of the
-stream and kept losing it.  The pool absorbs bursts, not sustained slowness.
-
-So the callback copies its block, timestamps it, and returns.  Every other piece of
-work, including converting to complex and counting clipped samples, belongs to
-whatever thread drains this class.
-
-Why close() is also registered with atexit
-------------------------------------------
-A receiver that is never closed keeps running.  It goes on streaming with nothing
-collecting the samples, which wastes power and warms the tuner for no purpose.  See
-https://github.com/librtlsdr/librtlsdr/issues/116
-
-Be careful what that does and does not cost, because the obvious guess is wrong.
-Measured on this hardware, across a process that exits without closing, the next
-process opened the device in 0.72 s on its first attempt.  Closing first made no
-difference, at 0.75 s and also on the first attempt.  The operating system reclaims the USB handle
-when a process ends, so a skipped close does not strand the device for anybody else.
-
-The hook is therefore ordinary resource hygiene rather than a fix for a measured
-failure.  It costs nothing, the explicit call is the one that normally runs, and the
-hook covers paths that skip it such as an unhandled exception on another thread.
-close() is idempotent because during an orderly shutdown both will fire.
-
-Nothing saves a device from a hard kill, and nothing can.
+Blocks this program refused because its own queue was full are a different thing and
+stay apart on purpose.  The device counts those, because a refusal happens on the
+driver's thread where logging can raise and can block on I/O, and `RtlSdrSource`
+reports them from the thread that fell behind.
 """
 
 import logging
@@ -85,9 +81,15 @@ DEFAULT_BLOCK_SAMPLES = 16_384
 # neither.
 DEFAULT_BUFFER_BLOCKS = 8
 
-# How often to repeat the discard warning, counted in discarded blocks.  The first is
-# always reported and then every hundredth, so a sustained problem stays visible
-# without costing a log line per block.
+# How far the discard count must move before the warning is repeated, in blocks.  The
+# first is always reported and then every hundred after it, so a sustained problem
+# stays visible without costing a log line per block.
+#
+# A distance rather than a multiple, because this counter is not read at every value.
+# The device increments it on its own thread and a consumer that has fallen behind
+# refuses several blocks between two reads, so the exact multiple is usually stepped
+# over: refusals arriving three at a time run 3, 6, 9 and up to 99, 102, and a test
+# for `% 100 == 0` then never fires again after the first report.
 _DISCARD_LOG_EVERY = 100
 
 # How long to wait for a thread to finish during shutdown, in seconds.
@@ -221,15 +223,6 @@ class RtlSdrSource:
         return self._device.tuned_hz
 
     @property
-    def blocks_to_discard_after_gain_change(self) -> int:
-        """Blocks that may predate a gain change, and so have to be thrown away.
-
-        The streaming figure, because this drains a transfer pool.  A synchronous read
-        has none and takes the smaller one.  See DeviceProfile.
-        """
-        return self._device.profile.blocks_to_discard_streaming
-
-    @property
     def blocks_discarded(self) -> int:
         """Blocks refused because the draining thread had not kept up.
 
@@ -276,29 +269,6 @@ class RtlSdrSource:
         self._report_any_discards()
         return block
 
-    def drain(self) -> int:
-        """Throw away every block already queued, and say how many that was.
-
-        There are two buffers between the tuner and a caller, and counting only one of
-        them is not enough.  blocks_to_discard_after_gain_change covers the driver's
-        transfer pool, which is the buffering nobody here can see.  This queue is the
-        other one, and anything sitting in it when the gain changes was captured before
-        the change.
-
-        Without this, the counted discard spends itself on stale queue entries first
-        and lets that many true post-change callbacks through in their place, so up to
-        buffer_blocks blocks of the previous gain reach the measurement.  It is worst
-        at the first step of a gain sweep, where the queue has been filling since
-        start() with nobody reading.
-        """
-        dropped = 0
-        while True:
-            try:
-                self._blocks.get_nowait()
-            except queue.Empty:
-                return dropped
-            dropped += 1
-
     def close(self) -> bool:
         """Stop capture and release the device.
 
@@ -341,11 +311,11 @@ class RtlSdrSource:
         log while stealing time from a thread that is already behind.
         """
         discarded = self._device.blocks_refused
-        if discarded == self._reported_discards:
+        if not discarded:
             return
         first = self._reported_discards == 0
-        self._reported_discards = discarded
-        if first or discarded % _DISCARD_LOG_EVERY == 0:
+        if first or discarded - self._reported_discards >= _DISCARD_LOG_EVERY:
+            self._reported_discards = discarded
             logger.warning(
                 'Discarded %d block(s) of receiver samples because the conversion '
                 'thread fell behind.  The audio now has gaps in it, so levels and '
@@ -381,6 +351,12 @@ class SweepReader:
 
     def __init__(self, device: SdrDevice, *,
                  block_samples: int = DEFAULT_SWEEP_BLOCK_SAMPLES) -> None:
+        # Asked here as well as at each read, so that a size the device cannot serve is
+        # refused while the caller is still building the reader.  If read_block were
+        # the only check, this would construct, the dialog would report how long the
+        # sweep will take, and the first measurement would raise out of GainSweep.run
+        # into a Textual worker.
+        device.validate_sync_block(block_samples)
         self._device = device
         self._block_samples = block_samples
         self._closed = False
@@ -404,8 +380,8 @@ class SweepReader:
     def blocks_to_discard_after_gain_change(self) -> int:
         """Blocks to read and throw away after moving the gain.
 
-        The reading figure rather than the streaming one, because a synchronous read
-        has no transfer pool behind it.  See DeviceProfile.
+        This takes the reading figure rather than the streaming one, because a
+        synchronous read has no transfer pool behind it.  See DeviceProfile.
         """
         return self._device.profile.blocks_to_discard_reading
 
@@ -490,10 +466,11 @@ class IqRingBuffer(RingBufferPipeline):
 class RtlSdrPipeline(RingBufferPipeline):
     """Feeds the shared ring buffer from a receiver, converting on the way.
 
-    This is the third of the three pieces.  RtlSdrSource holds the hardware,
-    IqToAudio holds the arithmetic, and this owns the thread that carries blocks from
-    one to the other.  Everything downstream reads this exactly as it reads the sound card, and
-    cannot tell which it has.
+    The last of four pieces.  SdrDevice holds the hardware, RtlSdrSource holds the
+    queue between the driver's thread and this one, IqToAudio holds the arithmetic,
+    and this owns the thread that carries blocks from the queue to the buffer.
+    Everything downstream reads this exactly as it reads the sound card, and cannot
+    tell which it has.
 
     This thread is the one with a deadline, because it must average less than a
     block's own duration.  That is 64 ms at the default settings against roughly 2 ms

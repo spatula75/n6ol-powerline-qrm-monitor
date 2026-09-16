@@ -652,8 +652,9 @@ Practical consequences:
 - **Encapsulate in a class by default.** A bare function in a module is the exception,
   not the starting point. Anything closely tied to a class belongs on that class, as a
   method or a `@staticmethod`, next to the state and the other operations it goes with.
-  The exceptions are a factory that builds something (`buzz.sdr.open_device`,
-  `buzz.main.open_live_source`), a private helper belonging to one of those factories,
+  The exceptions are a factory that builds something (`buzz.main.open_live_source`,
+  `buzz.setup.screens.gain_picker.supported_gains`), a private helper belonging to one
+  of those factories,
   and a module that is procedural by nature such as `main.py`. `buzz.iq.filter_length`
   and `buzz.sdr.count_clipped` both started bare and were wrong that way: only
   `IqToAudio` builds a filter, and only `IqBlock` holds raw bytes.
@@ -782,10 +783,10 @@ Practical consequences:
   needs them, so a re-export would only add a second name for the same thing.
 - **`open` acquires, `from_` converts.** `BuzzConfig.from_toml` and `from_config`
   build an object out of a specification that already describes it, and cannot fail
-  because somebody else holds something. `open_device`, `open_live_source`,
-  `open_sweep` and `RtlSdrDevice.open` begin access to a thing that exists
+  because somebody else holds something. `open_live_source`, `open_sweep`,
+  `open_playback_pipeline` and `RtlSdrDevice.open` begin access to a thing that exists
   independently and can refuse, so each owes a `close`. The codebase had split this
-  way on its own, six `open_*` against two `from_*`, before anybody wrote it down.
+  way on its own, several `open_*` against two `from_*`, before anybody wrote it down.
   An alternative constructor of either kind is a `@classmethod` rather than a
   `@staticmethod`, so a subclass gets its own type back and can override what the
   factory reaches for; `RtlSdrDevice.open` named its own class twice until it was

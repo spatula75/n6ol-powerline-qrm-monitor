@@ -12,7 +12,9 @@ flowchart TB
     end
 
     MIC --> RB[("Ring Buffer<br/>9.6 s of audio")]
-    SDR --> IQ["IQ to audio<br/>mix, filter, decimate,<br/>take the real part"]
+    SDR --> DEVICE["SdrDevice<br/>opens, configures, sets gain,<br/>streams or reads one block"]
+    DEVICE -->|one IqBlock per callback| CAPTURE["RtlSdrSource<br/>queue, refusal count,<br/>clock drift"]
+    CAPTURE -->|drained by the feeder thread| IQ["IQ to audio<br/>mix, filter, decimate,<br/>take the real part"]
     IQ --> RB
     WAVFILE --> RB
 

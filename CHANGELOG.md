@@ -7,6 +7,56 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `lib/buzz/sdr_device.py`, which holds every operation performed against a receiver:
+  opening it, configuring it, moving its gain, streaming from it, reading one block,
+  and closing it. Nothing above it imports a driver library, so a second kind of
+  receiver means writing another `SdrDevice` rather than editing the code that
+  acquires IQ. `SampleFormat` carries what it takes to read one device's raw samples,
+  so an 8-bit RTL-SDR and a 16-bit converter both arrive on one scale with no branch
+  on device type. `DeviceProfile` states what a device is, including whether its gain
+  may move while it streams, which an RTL-SDR refuses and another device may not.
+  Nothing an operator sets or sees changes.
+- A gain sweep reads synchronously through `SweepReader` rather than streaming.
+  Changing an RTL-SDR's gain during an async read is two threads on one device, and it
+  left a receiver that never answered again, twice in a few dozen sweeps.
+  `docs-notebook/rtl-sdr-hardware.md` records what else was tried. A synchronous read
+  misses the samples between one call and the next, which costs a sweep nothing and
+  would ruin the monitor, and in exchange there is no second thread to race. The
+  device refuses the unsafe order outright rather than leaving it to a convention.
+
+### Changed
+- The tuner gain picker reads the list of steps without configuring the receiver.
+  Opening a configured device to answer a read-only question writes a sample rate, a
+  tuning, an AGC setting and a gain, and it logged that the operator's gain had been
+  snapped to a step while the operator was part way through choosing that gain.
+
+### Fixed
+- A receiver was left open when configuring it failed. The atexit hook that closes one
+  is registered only once configuring has succeeded, so a tuner that stopped answering
+  part way through left the device held by a process with no object able to close it,
+  and the next run met `LIBUSB_ERROR_ACCESS`. That reads as a permissions problem and
+  is not one.
+- A receiver the driver had already closed was reported as still held. pyrtlsdr closes
+  the device itself on any read error, and the flag saying so was the same one meaning
+  "close has run", so the gain calibration dialog told the operator to restart the
+  setup program over a receiver that nothing was holding.
+- The warning that the conversion thread has fallen behind is repeated once per
+  hundred discarded blocks, as its constant has always said. It tested the running
+  count for an exact multiple of a hundred, and the device increments that count in
+  bursts from its own thread, so the multiples were stepped over: with refusals
+  arriving three at a time the warning appeared about once per three hundred.
+- `DeviceProfile.gain_changes_while_streaming` now decides whether a gain may move
+  during a stream. The refusal was hardcoded beside it, so a device declaring it could
+  retune was refused anyway, and the documented contract disagreed with the only
+  implementation of it.
+- A second `start_stream` on one device is refused rather than starting a second
+  capture thread and dropping the reference to the first. Two threads inside
+  `rtlsdr_read_async` on one handle is the wedge the synchronous sweep exists to avoid.
+- A synchronous read size the driver cannot serve is refused when the reader is built
+  rather than on the first read, so it surfaces before a sweep starts instead of from
+  inside one.
+
 ## [2.0.0] - 2026-09-14
 
 ### Added

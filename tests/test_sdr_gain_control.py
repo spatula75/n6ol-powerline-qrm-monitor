@@ -60,14 +60,20 @@ class TestTheSynchronousReader:
         """
         assert _reader().drain() == 0
 
-    def test_far_less_is_discarded_than_a_streaming_source_needs(self):
+    def test_far_less_is_discarded_than_a_stream_would_need(self):
         """Two against seventeen.  There is no transfer pool to drain, so what is left
         is the tuner settling and whatever the USB pipe already held.
+
+        Read off the profile rather than off a streaming source, which no longer offers
+        the figure: a sweep moves the gain, and a streaming RTL-SDR refuses that, so
+        only a synchronous reader can be a SweepSource at all.
         """
         device = FakeSdrDevice(blocks_to_discard_streaming=16,
                                blocks_to_discard_reading=2)
         assert _reader(device).blocks_to_discard_after_gain_change == 2
-        assert RtlSdrSource(device).blocks_to_discard_after_gain_change == 16
+        assert device.profile.blocks_to_discard_streaming == 16, (
+            'the two figures are meant to differ, so a test using the same one twice '
+            'would pass whichever the reader picked')
 
     def test_a_device_that_has_stopped_answering_reports_none(self):
         """pyrtlsdr closes the device itself on a read error, so a failure is the end
@@ -111,37 +117,15 @@ class TestGainCannotMoveWhileStreaming:
         assert not hasattr(RtlSdrSource(FakeSdrDevice()), 'set_gain')
 
 
-class TestBothBuffersAreCleared:
-    """Two buffers stand between the tuner and a measurement, and counting only one is
-    not enough.  blocks_to_discard_after_gain_change covers the driver's transfer pool.
-    The source's own queue is the other, and anything in it when the gain changed was
-    captured before the change.
+class TestTheSweepStillDrainsWhateverItReads:
+    """A sweep calls drain() before it counts its discard, and SweepReader answers 0
+    because a synchronous read has no queue.
+
+    The class this replaces tested a streaming source's queue.  That path is gone: a
+    sweep moves the gain between measurements, a streaming RTL-SDR refuses that, and
+    RtlSdrSource no longer offers set_gain or drain at all.  What still has to hold is
+    the wiring, since a drain nobody calls helps nobody.
     """
-
-    def test_the_counted_discard_alone_leaves_stale_blocks_behind(self):
-        """The defect, stated as arithmetic.  With the queue full, the count is spent
-        on entries from before the change and lets that many post-change blocks
-        through in their place.
-        """
-        device = FakeSdrDevice()
-        source = RtlSdrSource(device, block_samples=BLOCK, buffer_blocks=8)
-        source.start()
-        for _ in range(8):
-            device.deliver(samples=BLOCK)
-        pool = source.blocks_to_discard_after_gain_change
-        assert 8 + pool - pool == 8, (
-            'eight stale blocks reach the measurement when only the pool is counted')
-
-    def test_draining_first_makes_the_count_mean_what_it_says(self):
-        device = FakeSdrDevice()
-        source = RtlSdrSource(device, block_samples=BLOCK, buffer_blocks=8)
-        source.start()
-        for _ in range(8):
-            device.deliver(samples=BLOCK)
-        assert source.drain() == 8
-        assert source.read(timeout=0.01) is None, (
-            'every block after this one is a post-change block, so the count that '
-            'follows waits out the pool rather than the queue')
 
     def test_the_sweep_drains_before_it_counts(self):
         """Wiring, since drain being right helps nobody if the sweep never calls it."""

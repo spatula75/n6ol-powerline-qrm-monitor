@@ -9,6 +9,7 @@ hazard that used to live only in a docstring into something that fails loudly.
 """
 import threading
 import time
+from dataclasses import replace
 
 import numpy as np
 import pytest
@@ -120,16 +121,22 @@ class TestTheSampleFormat:
         assert rails[0] == -1 - 1j
         assert rails[1] == 1 + 1j
 
-    def test_a_sixteen_bit_device_reaches_the_same_rails(self):
+    def test_a_sixteen_bit_device_reaches_one_step_below_the_top_rail(self):
         """The descriptor is not shaped around one receiver.
 
         A 14-bit converter delivers 16-bit signed samples, and the same two fields
-        have to carry it without any branch on device type.
+        have to carry it without any branch on device type.  A two's complement range
+        is asymmetric, so the top comes to 32767/32768 and not to 1.0.  The assertion
+        says that exactly rather than approximately, because an approximate one is
+        what let the docstrings claim both formats reach the same rails.
         """
         edges = np.array([-32768, -32768, 32767, 32767], np.int16)
         rails = IqBlock(edges, INT16_FORMAT, 0.0, 1).as_complex()
         assert rails[0] == -1 - 1j
-        assert rails[1] == pytest.approx(1 + 1j, abs=1e-4)
+        assert rails[1] == complex(32767 / 32768, 32767 / 32768)
+        assert rails[1] != 1 + 1j, (
+            'a signed top rail is one step short of full scale.  An exact +1.0 here '
+            'means the format or the docstring moved.')
 
     def test_samples_counts_frames_rather_than_bytes(self):
         """The units trap that already bit the IQ ring buffer once.
@@ -234,6 +241,26 @@ class TestGainWhileStreaming:
         finally:
             device.close()
 
+    def test_the_profile_is_what_decides_rather_than_a_hardcoded_refusal(self):
+        """DeviceProfile states the fact and the device was refusing regardless of it.
+
+        Two statements of one thing, with nothing holding them together: the class
+        docstring says the SDRplay API has sdrplay_api_Update for exactly this, so
+        another device may answer differently, while `if self.is_streaming` gave every
+        device the RTL-SDR's answer.  A subclass declaring it could move the gain got
+        the refusal anyway, and the fake in tests/fake_sdr.py already read the flag,
+        so the contract and its only real implementation disagreed.
+        """
+        device = _device()
+        device._profile = replace(device.profile, gain_changes_while_streaming=True)
+        device.start_stream(CountingSink(), 512)
+        try:
+            assert device.set_gain_db(8.7) == 8.7, (
+                'the profile says this device can retune while streaming and it was '
+                'refused anyway, so the flag decides nothing')
+        finally:
+            device.close()
+
     def test_it_allows_a_change_once_the_stream_has_stopped(self):
         device = _device()
         device.start_stream(CountingSink(), 512)
@@ -282,6 +309,25 @@ class TestStreaming:
         device._on_block(np.zeros(4, np.uint8))
         assert device.blocks_refused == 1
 
+    def test_a_second_stream_is_refused_rather_than_started(self):
+        """Two threads inside rtlsdr_read_async on one handle is the wedge this module
+        exists to avoid, and the second call used to overwrite the reference to the
+        first, leaving a thread nothing could cancel or join.
+
+        While the thread was built in RtlSdrSource.__init__, threading.Thread refused
+        this on its own: a second start() raises.  Moving the thread onto the device
+        took that refusal away, so the device states it.
+        """
+        device = _device()
+        device.start_stream(CountingSink(), 512)
+        first = device._thread
+        try:
+            with pytest.raises(RuntimeError, match='already streaming'):
+                device.start_stream(CountingSink(), 512)
+            assert device._thread is first, 'the running capture thread was orphaned'
+        finally:
+            device.close()
+
     def test_is_streaming_reports_the_thread(self):
         device = _device()
         assert device.is_streaming is False
@@ -312,6 +358,27 @@ class TestSynchronousReads:
         assert device.read_block(256) is None
         assert caplog.text.count('cannot continue') == 1, (
             'a failed read reported itself more than once')
+
+    def test_a_device_the_driver_closed_reports_itself_released(self):
+        """pyrtlsdr closes the device on a read error, so it is already free.
+
+        The two facts were one flag: read_block marked the device closed, and close()
+        read that same flag as "close has already run" and returned _released, still
+        False.  Everything downstream believed the receiver was held.  The gain
+        calibration dialog then told the operator to restart the setup program, over a
+        receiver nothing was holding.
+        """
+        device = _device(FakeHandle(read_raises=True))
+        assert device.read_block(256) is None
+        assert device.close() is True, (
+            'a receiver the driver had already closed was reported as still held')
+
+    def test_a_device_the_driver_closed_will_not_start_streaming(self):
+        """The handle is gone, so a capture thread would read through nothing."""
+        device = _device(FakeHandle(read_raises=True))
+        device.read_block(256)
+        with pytest.raises(RuntimeError, match='closed'):
+            device.start_stream(CountingSink(), 512)
 
     def test_blocks_are_numbered_in_the_order_the_device_made_them(self):
         device = _device()
@@ -433,6 +500,85 @@ class TestOpening:
             monkeypatch, lambda index: seen.append(index) or FakeHandle())
         RtlSdrDevice.open(3, **SETTINGS)
         assert seen == [3]
+
+    def test_a_failure_while_configuring_closes_the_handle(self, monkeypatch):
+        """The window between opening the device and owning it.
+
+        __init__ configures before it registers the atexit hook, so an exception in
+        there left the receiver held by a process with no object able to close it, and
+        the next run met LIBUSB_ERROR_ACCESS and read as a permissions problem.  While
+        configuring was a separate call, open_sweep's own guard covered this.
+        """
+        handle = FakeHandle()
+        self._with_rtlsdr_module(monkeypatch, lambda index: handle)
+
+        def explode(self, *args, **kwargs):
+            raise OSError('the tuner stopped answering')
+
+        monkeypatch.setattr(RtlSdrDevice, '_configure', explode)
+        with pytest.raises(OSError, match='stopped answering'):
+            RtlSdrDevice.open(0, **SETTINGS)
+        assert handle.closed is True, (
+            'configuring failed and the receiver was left open with nothing holding it')
+
+    def test_a_close_that_also_fails_does_not_hide_why_configuring_did(self, monkeypatch):
+        """The operator needs the reason the device would not configure, not the
+        secondary failure of tidying up after it.
+        """
+        handle = FakeHandle()
+        handle.close = lambda: (_ for _ in ()).throw(OSError('and the close failed too'))
+        self._with_rtlsdr_module(monkeypatch, lambda index: handle)
+
+        def explode(self, *args, **kwargs):
+            raise OSError('the tuner stopped answering')
+
+        monkeypatch.setattr(RtlSdrDevice, '_configure', explode)
+        with pytest.raises(OSError, match='stopped answering'):
+            RtlSdrDevice.open(0, **SETTINGS)
+
+    def test_reading_the_gain_steps_does_not_configure_the_receiver(self, monkeypatch):
+        """The gain picker wants one read-only answer.
+
+        Going through open to get it writes a sample rate, a tuning, an AGC setting
+        and a gain, and logs that the operator's gain was snapped to a step, while the
+        operator is part way through choosing that gain.  A tuner's steps do not
+        depend on any of it.
+        """
+        handle = FakeHandle()
+        self._with_rtlsdr_module(monkeypatch, lambda index: handle)
+        assert RtlSdrDevice.supported_gains(0) == handle.valid_gains_db
+        assert handle.agc_mode is None, 'reading a list turned the AGC off'
+        assert handle.sample_rate == 0.0, 'reading a list set the sample rate'
+        assert handle.center_freq == 0, 'reading a list retuned the receiver'
+        assert handle.gain == 0.0, 'reading a list wrote a gain'
+
+    def test_reading_the_gain_steps_releases_the_receiver(self, monkeypatch):
+        """Held open, it would stop the monitor and the sweep from opening it."""
+        handle = FakeHandle()
+        self._with_rtlsdr_module(monkeypatch, lambda index: handle)
+        RtlSdrDevice.supported_gains(0)
+        assert handle.closed is True
+
+    def test_reading_the_gain_steps_releases_it_even_when_the_read_fails(self, monkeypatch):
+        handle = FakeHandle()
+        type(handle).valid_gains_db = property(
+            lambda self: (_ for _ in ()).throw(OSError('the tuner stopped')))
+        try:
+            self._with_rtlsdr_module(monkeypatch, lambda index: handle)
+            with pytest.raises(OSError, match='the tuner stopped'):
+                RtlSdrDevice.supported_gains(0)
+            assert handle.closed is True
+        finally:
+            del type(handle).valid_gains_db
+
+    def test_reading_the_gain_steps_rewords_a_device_that_will_not_open(self, monkeypatch):
+        """The same wording open gives, because both go through _open_handle."""
+        def refuse(index):
+            raise OSError('LIBUSB_ERROR_ACCESS')
+
+        self._with_rtlsdr_module(monkeypatch, refuse)
+        with pytest.raises(RuntimeError, match='could not be opened'):
+            RtlSdrDevice.supported_gains(0)
 
     def test_a_missing_library_names_what_to_install(self, monkeypatch):
         import builtins

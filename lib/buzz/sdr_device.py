@@ -38,6 +38,7 @@ import atexit
 import logging
 import threading
 from abc import ABC, abstractmethod
+from contextlib import suppress
 from dataclasses import dataclass
 from time import monotonic
 from typing import Protocol, Self
@@ -89,8 +90,11 @@ class SampleFormat:
     """How to read one device's raw samples.
 
     `dtype` and `bytes_per_frame` say how the bytes are laid out, where a frame is one
-    complex sample, I then Q.  A sample converts with `raw / half_span - zero_offset`.
-    That reaches exactly -1.0 and +1.0 at the rails, whatever the converter's width.
+    complex sample, I then Q.  A sample converts with `raw / half_span - zero_offset`,
+    which puts full scale at about -1.0 and +1.0 whatever the converter's width.  How
+    close depends on the format: an unsigned 8-bit device reaches both exactly, where a
+    signed 16-bit one runs from -1.0 to 32767/32768, since a two's complement range is
+    one step short at the top.  Anything testing for a rail tests the raw value.
 
     That expression is pyrtlsdr's own, and it is deliberately not the tidier
     `(raw - midpoint) / half_span`.  The two are the same algebraically, but floating
@@ -200,13 +204,15 @@ class IqBlock:
         return int(np.count_nonzero(at_rail))
 
     def as_complex(self) -> np.ndarray:
-        """Return the samples as complex128, with a rail at exactly -1.0 or +1.0.
+        """Return the samples as complex128, scaled to about -1.0 through +1.0.
 
         A float64 array viewed as complex128 takes consecutive values as the real and
         imaginary parts, and that is how a receiver interleaves I and Q.  The divisor
-        and the offset both come from `fmt`.  So a signed 16-bit device and an unsigned
-        8-bit one reach the same rails, and `clipped_samples` above means the same
-        thing for either.
+        and the offset both come from `fmt`, so every device arrives on one scale and a
+        consumer needs to know nothing about the converter.  See SampleFormat for how
+        near the top rail comes, which differs between a signed format and an unsigned
+        one.  `clipped_samples` counts raw values rather than these, so it means the
+        same thing for either.
         """
         paired = self.raw.astype(np.float64).view(np.complex128)
         return paired / self.fmt.half_span - self.fmt.zero_offset
@@ -322,6 +328,18 @@ class SdrDevice(ABC):
     def close(self) -> bool:
         """Release the device, and say whether it actually closed."""
 
+    def validate_sync_block(self, block_samples: int) -> None:
+        """Raise if this device cannot serve a synchronous read of that size.
+
+        Concrete rather than abstract, and does nothing by default, because a size
+        constraint is a fact about one driver's transport rather than about SDRs.  A
+        device with no such constraint overrides nothing and admits any size.
+
+        Public so that a caller can ask before it commits to a size.  read_block
+        checks it as well, and a size refused only there surfaces from inside a running
+        sweep rather than when the reader was built.
+        """
+
 
 class RtlSdrHandle(Protocol):
     """The part of pyrtlsdr's RtlSdr that RtlSdrDevice uses.
@@ -372,17 +390,65 @@ class RtlSdrDevice(SdrDevice):
         back and can reword the failure below.  A hardcoded class name would hand every
         subclass an RtlSdrDevice and this module's diagnostics instead.
 
-        The import sits inside this method so that a station using a sound card never
-        loads pyrtlsdr.  pyrtlsdr looks up rtlsdr_set_dithering as it imports, so a
-        mismatched librtlsdr fails the import rather than the first call.  buzz.render
-        takes the same approach with ffmpeg for the same reason.
-
-        Everything raised here is a RuntimeError carrying a message for the operator,
-        which is what lets main.py print one rather than a traceback.
+        `_open_handle` does the loading and the opening, and `supported_gains` shares
+        it, so that a picker wanting one list does not have to configure a receiver to
+        get it.
 
         Nothing tries to take the receiver from whoever already holds it.  A device
         cannot be closed without the handle that opened it, and every cause of a
         failure here is a case where taking it would be wrong.
+        """
+        handle = cls._open_handle(index)
+        try:
+            return cls(handle, tuned_hz=tuned_hz, gain_db=gain_db,
+                       iq_sample_rate=iq_sample_rate)
+        except BaseException:
+            # The handle is open and nothing owns it yet.  __init__ registers the
+            # atexit hook only once configuring has succeeded, so a failure in there
+            # would leave the receiver held by a process that has no object able to
+            # close it, and the next run meets LIBUSB_ERROR_ACCESS.
+            #
+            # A plain close is enough here where close() needs a thread and a timeout,
+            # because this device has never streamed.  What makes rtlsdr_close block is
+            # an async read whose transfers were never cancelled, and there has been no
+            # async read.  Suppressed so that the failure the operator needs to see is
+            # the one that propagates.
+            with suppress(Exception):
+                handle.close()
+            raise
+
+    @classmethod
+    def supported_gains(cls, index: int = 0) -> list[float]:
+        """The gain steps the tuner at `index` offers, leaving it as it was found.
+
+        Opening and configuring are one step in `open`, because a half-built device is
+        no use to anything that wants to read.  This is the exception, and it exists
+        because the gain picker wants one list and nothing else.  Going through `open`
+        for it writes a sample rate, a tuning, an AGC setting and a gain, and logs that
+        the operator's current gain was snapped to a step, while the operator is part
+        way through choosing that very gain.
+
+        The list is a property of the tuner rather than of how it was set up, so
+        nothing has to be configured for the answer to be right.
+        """
+        handle = cls._open_handle(index)
+        try:
+            return list(handle.valid_gains_db)
+        finally:
+            with suppress(Exception):
+                handle.close()
+
+    @classmethod
+    def _open_handle(cls, index: int) -> RtlSdrHandle:
+        """Load the driver and open the device, rewording both ways it can fail.
+
+        The import sits in here so that a station using a sound card never loads
+        pyrtlsdr.  pyrtlsdr looks up rtlsdr_set_dithering as it imports, so a
+        mismatched librtlsdr fails the import rather than the first call.  buzz.render
+        takes the same approach with ffmpeg for the same reason.
+
+        Everything raised is a RuntimeError carrying a message for the operator, which
+        is what lets main.py print one rather than a traceback.
         """
         try:
             from rtlsdr import RtlSdr
@@ -394,12 +460,10 @@ class RtlSdrDevice(SdrDevice):
                 'install "pyrtlsdr[lib]", or set [audio] source back to soundcard.'
             ) from exc
         try:
-            handle = RtlSdr(index)
+            return RtlSdr(index)
         except Exception as exc:
             raise RuntimeError(
                 cls._why_the_receiver_would_not_open(index, exc)) from exc
-        return cls(handle, tuned_hz=tuned_hz, gain_db=gain_db,
-                   iq_sample_rate=iq_sample_rate)
 
     def __init__(self, handle: RtlSdrHandle, *, tuned_hz: int, gain_db: float,
                  iq_sample_rate: int) -> None:
@@ -409,6 +473,11 @@ class RtlSdrDevice(SdrDevice):
         self._produced = 0
         self._closed = False
         self._released = False
+        # Set when the driver closed the device out from under us, which pyrtlsdr does
+        # on any read error.  Kept apart from _closed, which means close() has run:
+        # reading the two as one flag reported a released receiver as still held, and
+        # told the operator to restart the setup program over nothing.
+        self._released_by_driver = False
         self._sink: BlockSink | None = None
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
@@ -485,7 +554,7 @@ class RtlSdrDevice(SdrDevice):
         never returned.  See docs-notebook/rtl-sdr-hardware.md, which also records why
         writing the gain from inside the callback is worse rather than better.
         """
-        if self.is_streaming:
+        if self.is_streaming and not self._profile.gain_changes_while_streaming:
             raise RuntimeError(
                 'The receiver gain cannot move while it is streaming, because the gain '
                 'is a USB control transfer and the capture thread already has the '
@@ -500,7 +569,21 @@ class RtlSdrDevice(SdrDevice):
 
         read_bytes_async does not return until the read is cancelled, so it cannot run
         on the caller's thread.
+
+        A second call is refused rather than allowed to replace the thread reference.
+        Two threads inside rtlsdr_read_async on one handle is the hazard this module
+        exists to keep away from, and dropping the first thread's reference would leave
+        it running with nothing able to cancel or join it.  Before the device owned its
+        own thread, threading.Thread refused this on its own.
         """
+        if self._closed or self._released_by_driver:
+            raise RuntimeError(
+                'The receiver cannot start streaming because it is closed.  Open it '
+                'again with RtlSdrDevice.open.')
+        if self.is_streaming:
+            raise RuntimeError(
+                'The receiver is already streaming, and one device cannot serve two '
+                'capture threads.  Call stop_stream first.')
         self._sink = sink
         self._stopping.clear()
         self._thread = threading.Thread(
@@ -543,13 +626,13 @@ class RtlSdrDevice(SdrDevice):
         reports it once and returns None from then on.
         """
         self.validate_sync_block(block_samples)
-        if self._closed:
+        if self._closed or self._released_by_driver:
             return None
         try:
             buffer = self._handle.read_bytes(
                 block_samples * self._profile.sample_format.bytes_per_frame)
         except Exception:
-            self._closed = True
+            self._released_by_driver = True
             logger.warning(
                 'Reading from the receiver failed, and the library closes the device '
                 'on any read error, so this read cannot continue.  Whatever was '
@@ -581,6 +664,12 @@ class RtlSdrDevice(SdrDevice):
             return self._released
         self._closed = True
         atexit.unregister(self.close)
+        if self._released_by_driver:
+            # pyrtlsdr closed the device itself after a read error, so there is nothing
+            # left to close and nothing still held.  Saying otherwise sends the operator
+            # to restart the program over a receiver that is already free.
+            self._released = True
+            return True
         # A join that timed out leaves the capture thread inside librtlsdr's own read.
         # Closing now would free the handle it is reading through, which is a crash in
         # C rather than an exception here.  The cost of skipping the close is measured
@@ -594,6 +683,20 @@ class RtlSdrDevice(SdrDevice):
             return False
         self._released = self._close_handle()
         return self._released
+
+    def validate_sync_block(self, block_samples: int) -> None:
+        """Refuse a synchronous read size librtlsdr cannot serve exactly.
+
+        rtlsdr_read_sync wants a whole number of 512-byte USB packets.  A bad size does
+        not fail loudly, so this refuses one before the device is touched.
+        """
+        wanted = _USB_PACKET_BYTES // RTL_SDR_FORMAT.bytes_per_frame
+        if block_samples <= 0 or block_samples % wanted:
+            raise ValueError(
+                f'A synchronous block of {block_samples} samples is '
+                f'{block_samples * RTL_SDR_FORMAT.bytes_per_frame} bytes, and the '
+                f'receiver reads whole {_USB_PACKET_BYTES}-byte USB packets.  Use a '
+                f'multiple of {wanted} samples.')
 
     # ------------------------------------------------------------------ static
 
@@ -623,21 +726,6 @@ class RtlSdrDevice(SdrDevice):
     def nearest_supported_gain(gain_db: float, supported: list[float]) -> float:
         """The value from `supported` closest to `gain_db`."""
         return min(supported, key=lambda candidate: abs(candidate - gain_db))
-
-    @staticmethod
-    def validate_sync_block(block_samples: int) -> None:
-        """Refuse a synchronous read size librtlsdr cannot serve exactly.
-
-        rtlsdr_read_sync wants a whole number of 512-byte USB packets.  A bad size does
-        not fail loudly, so this refuses one before the device is touched.
-        """
-        wanted = _USB_PACKET_BYTES // RTL_SDR_FORMAT.bytes_per_frame
-        if block_samples <= 0 or block_samples % wanted:
-            raise ValueError(
-                f'A synchronous block of {block_samples} samples is '
-                f'{block_samples * RTL_SDR_FORMAT.bytes_per_frame} bytes, and the '
-                f'receiver reads whole {_USB_PACKET_BYTES}-byte USB packets.  Use a '
-                f'multiple of {wanted} samples.')
 
     # ----------------------------------------------------------------- private
 

@@ -24,6 +24,7 @@ from buzz import sdr as sdr_module
 from buzz.sdr import SweepReader
 from buzz.sdr_device import RtlSdrDevice
 from tests.patching import patch_in
+from tests.test_sdr_device import FakeHandle
 
 RTLSDR_VALUES = {'frequency_khz': 3588.0, 'gain_db': 40.2, 'device_index': 0,
                  'iq_sample_rate': 256_000, 'decimation': 16, 'bandwidth_khz': 4.0,
@@ -222,7 +223,7 @@ class TestTheDialogReportsWhatTheSweepFound:
         run(scenario())
 
     def test_a_receiver_that_will_not_open_is_reported_rather_than_raised(self, tmp_path):
-        """open_device rewords libusb's own message for whoever is at the radio, so
+        """RtlSdrDevice rewords libusb's own message for whoever is at the radio, so
         the wording has to reach the screen rather than a traceback.
         """
         async def scenario():
@@ -625,21 +626,32 @@ class TestTheReceiverIsAlwaysReleased:
         self._run(_FakeSource(), sweep, lambda s, count: opened.append((s, count)))
         assert opened == [(sweep, len(_FakeSource.supported_gains_db))]
 
-    def test_a_receiver_that_will_not_configure_is_not_left_open(self):
-        """The other half of the leak: open_device succeeds and SweepReader raises
-        somewhere after it, which would leave a receiver no object owns.  The device
-        registers its atexit hook on its constructor's last line, so a failure after
-        the open but before the reader exists is not covered by it.
+    def test_a_block_size_the_device_refuses_does_not_leave_it_open(self):
+        """The half of the leak that is still open_sweep's to cover.
+
+        RtlSdrDevice.open closes its own handle now when configuring fails, which used
+        to be this guard's job and is tested where that code lives.  What is left
+        between the open and the return is SweepReader refusing a read size the driver
+        cannot serve exactly, and building the sweep.  Either one raising after a
+        successful open leaves a receiver that no object owns.
+
+        The refusal is the device's real one rather than a stubbed SweepReader, and
+        the assertion is on the driver handle rather than on a mock, so nothing here
+        can pass by agreeing with itself.
         """
         from buzz.setup.screens.gain_calibration import open_sweep
 
-        with patch.object(RtlSdrDevice, 'open') as open_device, \
-             patch_in(sdr_module, SweepReader,
-                      side_effect=RuntimeError('the tuner would not take a rate')):
-            with pytest.raises(RuntimeError):
+        handle = FakeHandle()
+        device = RtlSdrDevice(handle, tuned_hz=3_638_000, gain_db=22.9,
+                              iq_sample_rate=256_000)
+        with patch.object(RtlSdrDevice, 'open', return_value=device),              patch.object(RtlSdrDevice, 'validate_sync_block',
+                          side_effect=ValueError('reads whole 512-byte USB packets')):
+            with pytest.raises(ValueError, match='USB packets'):
                 open_sweep(dict(RTLSDR_VALUES))
 
-        open_device.return_value.close.assert_called_once_with()
+        assert handle.closed is True, (
+            'the reader refused the block size and the receiver was left open'
+        )
 
     def test_cancelling_while_the_receiver_opens_still_releases_it(self, tmp_path):
         """The defect this class exists for, in the one place it was still possible.
