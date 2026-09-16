@@ -19,7 +19,7 @@ from buzz.sdr_device import (
 WHY = RtlSdrDevice._why_the_receiver_would_not_open
 SETTINGS = dict(tuned_hz=3_638_000, gain_db=22.9, iq_sample_rate=256_000)
 
-# A 14-bit converter's format, which is what an SDRplay would present.  Declared in the
+# A 14-bit converter's format, which is what an SDRplay would present.  It sits in the
 # tests rather than in the module because no device here produces it yet, and its job
 # is to prove the descriptor is not shaped around one receiver.
 INT16_FORMAT = SampleFormat(

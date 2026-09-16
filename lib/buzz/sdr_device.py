@@ -129,12 +129,13 @@ RTL_SDR_FORMAT = SampleFormat(
 class DeviceProfile:
     """What a device is, as the code above it needs to know.
 
-    Built once the device is configured rather than declared as a class constant,
-    because a device may answer differently depending on how it was set up.
+    A device builds this once it is configured, rather than declaring it as a class
+    constant, because a device may answer differently depending on how it was set up.
 
-    Two discard counts, because the right one depends on how the caller reads rather
-    than on the device alone.  Both say how many blocks may predate a gain change and
-    so have to be thrown away.  `blocks_to_discard_streaming` covers the driver's
+    There are two discard counts, because the right one depends on how the caller
+    reads rather than on the device alone.  Both say how many blocks may predate a
+    gain change and so have to be thrown away.  `blocks_to_discard_streaming` covers
+    the driver's
     transfer pool, which is full of samples captured before the change.
     `blocks_to_discard_reading` covers a synchronous read, which has no pool at all,
     so only the tuner settling and whatever the USB pipe already held remain.
@@ -176,7 +177,7 @@ class IqBlock:
     def samples(self) -> int:
         """How many complex samples this block carries.
 
-        Counted in values rather than bytes, because `raw` is a typed array and its
+        This counts values rather than bytes, because `raw` is a typed array and its
         length is already an element count.  Dividing by bytes_per_frame would be right
         for an 8-bit device by coincidence and wrong for every wider one.
         """
@@ -276,8 +277,8 @@ class SdrDevice(ABC):
     def blocks_refused(self) -> int:
         """Blocks a sink had no room for.
 
-        Counted here because this is where the refusal happens, and reported by the
-        consumer, so that no logging runs on a driver's callback thread.
+        The device counts these, because this is where a refusal happens, and the
+        consumer reports them, so that no logging runs on a driver's callback thread.
         """
 
     @property
@@ -296,7 +297,11 @@ class SdrDevice(ABC):
 
     @abstractmethod
     def start_stream(self, sink: BlockSink, block_samples: int) -> None:
-        """Begin delivering blocks of `block_samples` to `sink`, on the device's thread."""
+        """Begin delivering blocks of `block_samples` to `sink`.
+
+        The device runs this on a thread of its own, because a driver's read does not
+        return until it is cancelled.
+        """
 
     @abstractmethod
     def stop_stream(self) -> bool:
@@ -310,7 +315,7 @@ class SdrDevice(ABC):
     def read_block(self, block_samples: int) -> IqBlock | None:
         """Read one block on the calling thread, or None once the device has stopped.
 
-        Not valid while a stream is running.
+        This is not valid while a stream is running.
         """
 
     @abstractmethod
@@ -321,8 +326,8 @@ class SdrDevice(ABC):
 class RtlSdrHandle(Protocol):
     """The part of pyrtlsdr's RtlSdr that RtlSdrDevice uses.
 
-    Declared so a test can supply something else, which is what lets the shim be
-    exercised with no receiver attached.
+    This is declared so a test can supply something else, which is what lets the shim
+    be exercised with no receiver attached.
     """
 
     sample_rate: float
@@ -596,7 +601,7 @@ class RtlSdrDevice(SdrDevice):
     def _why_the_receiver_would_not_open(index: int, exc: Exception) -> str:
         """Turn a libusb failure into something that names what to try.
 
-        Split out from `open` so the wording can be read and tested without a
+        This sits apart from `open` so the wording can be read and tested without a
         receiver, and so the two likely causes stay side by side where they can be
         compared.  libusb's own wording sends people the wrong way: "Entity not found"
         reads like a missing library and means no driver is bound to the device.

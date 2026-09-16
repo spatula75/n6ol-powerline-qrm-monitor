@@ -461,8 +461,9 @@ class IqRingBuffer(RingBufferPipeline):
     nothing reads this by chunk count - a recording reads it sequentially with
     read_from.
 
-    Built only when [recording] record_iq is on, because it is not small: 4.7 MB at
-    the default 256 kHz, and 44 MB at the 2.4 MHz the hardware will accept.
+    The pipeline builds this only when [recording] record_iq is on, because it is not
+    small: 4.7 MB at the default 256 kHz, and 44 MB at the 2.4 MHz the hardware will
+    accept.
     """
 
     def __init__(self, iq_sample_rate: int, block_samples: int) -> None:
