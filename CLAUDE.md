@@ -279,13 +279,39 @@ In that order:
    ratchets a little closer to full compliance instead of drifting further from it one
    untouched sentence at a time.
 
-   **The three rules it cannot check need a deliberate reading pass, not a glance.**
-   Sentence fragments, passive voice, and an `-ing` form used as the main verb are
-   invisible to it, so a clean run says nothing at all about any of them. A first
-   draft of `lib/buzz/sdr.py` shipped eight fragments straight past a clean run,
-   among them "Deliberately almost empty." and "Good enough to start, not good
-   enough to publish." Both read fine in place, which is exactly why nothing catches
-   them but looking.
+   **Check the prose already in the file too, against the rules as they stand now.**
+   The paragraph above covers the prose a change writes. That leaves everything
+   written before the newest rule existed, which passes every mechanical check and
+   which nothing ever sends anybody back to. "Safe to call more than once, and it will
+   be." shipped in `sdr.py` and survived until somebody happened to read it again in a
+   new file. It is a headless fragment whose "it" names nothing, and no tool can see
+   either fault.
+
+   So a change that opens a file is the moment to reread what is in it. The rules grow
+   and the files do not hear about it otherwise.
+
+   Two limits, so this does not turn into a sweep. Keep it to what you are already
+   reading, because a docstring three functions from the change can wait for the
+   change that opens it. And where a file turns out to want a large prose pass, do
+   that as its own commit rather than folding it into a feature, for the reason the
+   "worth" cleanup gives further down: the diff then buries whatever the change was
+   for.
+
+   **Run the `prose-check` skill over any file whose prose this change touched.** It
+   carries the procedure: the mechanical commands, and the reading pass for the three
+   rules no tool can check, which are sentence fragments, passive voice, and an `-ing`
+   form used as the main verb. A clean `ste_lint` run says nothing about any of the
+   three. A first draft of `lib/buzz/sdr.py` shipped eight fragments straight past a
+   clean run, among them "Deliberately almost empty." and "Good enough to start, not
+   good enough to publish." Both read fine in place, which is exactly why nothing
+   catches them but looking.
+
+   The skill exists because this step kept being skipped, and the reason it was
+   skipped is instructive: every rule here that gets followed without fail is a short
+   invocable command, and every rule that gets missed is prose inside a long file.
+   Its reading pass is scoped to the first sentence of each paragraph, because all
+   seven fragments in the review that produced it sat in that one position and none
+   sat anywhere else.
 
    `--fragments` covers part of the first of those three and is off by default on
    purpose. It cannot be made reliable: spotting a clause with no finite verb means
@@ -754,6 +780,17 @@ Practical consequences:
   `buzz.dsp.SILENCE_DBFS` and `PULSE_WIDTH_SAMPLES` are already this kind of shared
   constant and stay in `dsp.py` rather than moving: dsp is imported everywhere that
   needs them, so a re-export would only add a second name for the same thing.
+- **`open` acquires, `from_` converts.** `BuzzConfig.from_toml` and `from_config`
+  build an object out of a specification that already describes it, and cannot fail
+  because somebody else holds something. `open_device`, `open_live_source`,
+  `open_sweep` and `RtlSdrDevice.open` begin access to a thing that exists
+  independently and can refuse, so each owes a `close`. The codebase had split this
+  way on its own, six `open_*` against two `from_*`, before anybody wrote it down.
+  An alternative constructor of either kind is a `@classmethod` rather than a
+  `@staticmethod`, so a subclass gets its own type back and can override what the
+  factory reaches for; `RtlSdrDevice.open` named its own class twice until it was
+  changed, which is exactly what `cls` is for.
+
 - **A value that has to satisfy two constraints gets derived from both, not from
   whichever one is currently binding.** The shared panel width must be a whole number
   of the scope's `H_DIVISIONS`, so the graticule falls on exact pixels, and it must be
@@ -1142,6 +1179,66 @@ load-bearing line" is the line that matters; "the value lands at 128" is the val
 - **Two spaces after a period.** House style, not an STE rule - keep it in both
   strict and flavored text. The extra space is what makes prose easy to scan at
   a glance, sentence by sentence.
+
+- **Don't make the reader hold anything in suspense.** Four habits do this. They came
+  out of one review of `lib/buzz/sdr_device.py`, and they share a cause: the sentence
+  withholds what it is about until the reader has already had to carry something.
+
+  - **A noun phrase in the subject slot with no verb after it.** "Two reading modes,
+    and the difference is deliberate rather than historical." and "A classmethod
+    rather than a static one, because this is an alternative constructor." Both read
+    as a heading bolted onto a clause, and "This is a classmethod rather than..."
+    fixes it for two words. This is the fragment rule above, and the tell is a
+    sentence that opens with a bare noun phrase, then a comma, then *and*, *because*
+    or *rather than*. **`ste_lint --fragments` does not catch it**, because its check
+    is for a participle in that slot rather than a noun.
+  - **A long gerund subject whose verb reads as a noun.** "Viewing a float64 array as
+    complex128 pairs consecutive values into real and imaginary parts" is a garden
+    path: *complex128 pairs* parses as a noun phrase until *consecutive values*
+    arrives and forces a re-read.
+  - **A trailing `, which is ...` clause**, especially two sentences running, so the
+    point arrives last every time.
+  - **A pronoun with a nearer candidate sitting between it and its antecedent.**
+    "Tuning to one side and mixing back in `buzz.iq` moves it out of the measured
+    band" puts `buzz.iq` between *it* and the signal it means. Name the noun.
+
+  Say what a thing does before saying why. A docstring that opens with the mechanism
+  can reach its end without ever stating what the method returns, which is how
+  `IqBlock.as_complex` was first written.
+
+- **A fact with no consequence attached is half a sentence.** Say what follows from
+  it, in the same breath. A reader cannot supply the consequence themselves, because
+  the reason the fact was written down at all is that they did not already know it.
+  This is the single change that most improves a hard paragraph, and it costs one
+  clause.
+
+  From the same review. Before:
+
+      The two agree in arithmetic and differ by one unit in the last place in
+      floating point.
+
+  After:
+
+      The two are the same algebraically, but floating point rounds them
+      differently, so the results can disagree in the last bit.  Golden files
+      downstream pin these samples, so this program keeps the expression it has
+      always used.
+
+  Three faults, and the third is the one that made it unreadable rather than merely
+  clumsy. "Agree in arithmetic" was carrying "algebraically identical" and could not.
+  "One unit in the last place" is the numerics term for a ULP written out, which helps
+  nobody who does not already know it. And nothing said why a reader should care, so
+  there was no way to tell whether the sentence mattered.
+
+  This is not the same as "comment the why, not the what" further down, which is about
+  choosing the subject of a comment. This is about finishing a sentence once the
+  subject is already right.
+
+- **Qualify a domain noun in a module that doesn't establish it.** Bare "sweep" reads
+  fine in `gain_sweep.py`, which is about nothing else, and is ambiguous in
+  `sdr_device.py`, which is about hardware. The fix is not a repo-wide rename: it is
+  to ask whether the surrounding module supplies the context, and to write "gain
+  sweep" where it does not.
 
 - **Comment the why, not the what** - especially where a deliberate choice looks wrong
   at a glance. Worth preserving: peak amplitude rather than RMS (impulse noise, not sine
