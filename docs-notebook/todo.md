@@ -135,12 +135,26 @@ What the port would touch, read off the code rather than off the device:
   differently, so the question to answer early is whether it can be made to offer a
   ladder, or whether the sweep has to handle a continuous range.  The knee fit itself
   does not care, because it fits whatever gains it was given.
+- A receiver that reports its own gain honestly would remove work rather than add it.
+  The V4 cannot: measured on that hardware, the setter works and the getter returns
+  0.0 whatever is set, so `RtlSdrSource` remembers what it asked for.  SDRplay is said
+  to calibrate its devices so that a gain setting means what it says.  That is
+  reported to the author rather than confirmed here, and nobody has held one.  If it
+  holds, the remembered value stops being necessary, and `calibrated_offset_db` may
+  follow from the gain rather than needing a sweep to measure it.  Check it against
+  the hardware first, because the calibration path assumes throughout that the device
+  will not tell the truth about itself.
 - The extra bits change the trade the sweep exists to make.  `arc_headroom_db`
   reserves 32 dB because an 8-bit converter has little to spare.  More dynamic range
   should make the floor bound and the headroom bound stop crossing on the quiet
   antennas where they cross now, which is worth measuring rather than assuming.
 
-What stops it is that nobody owns one, and the SoapySDR question is unanswered.
+An RSP1B was ordered on 2026-09-15 and is expected within about a week, so the half of
+this that needed hardware is on its way.  The SoapySDR question needs no hardware at
+all, and it is the one to settle before the device arrives.  It reads off SDRplay's own
+documentation, and its answer decides whether this is a new module beside `sdr.py` or a
+new dependency for the whole program.  Settling it first means the port starts when the
+box does.
 
 ### A third source is the moment to stop dispatching on the source by name
 
@@ -168,6 +182,48 @@ SDRplay work makes that second case real, and not before.
 
 
 ## Setup program
+
+### Setup installs every driver whether or not the station will use one
+
+`pyproject.toml` already gets this right: `pyrtlsdr[lib]` is declared as the `rtlsdr`
+extra, and `buzz.sdr` imports it inside `open_device`, so a sound-card station never
+loads it.  `requirements.txt` then undoes that by listing the same package
+unconditionally, and `setup.bat` and `setup.sh` both run `pip install -r
+requirements.txt`.  Every operator installs a USB library for hardware most of them do
+not own.
+
+An SDRplay makes it worse rather than adding one more line.  That is a third driver
+stack, and the reading so far says it wants SoapySDR, which is a system package on some
+platforms rather than a wheel.  Installing it for somebody who owns an RTL-SDR, or no
+receiver at all, is a bigger imposition than `pyrtlsdr` is.
+
+The same file also carries `ruff` and `pytest-cov`, so every operator installs the test
+tooling too.  That is the same defect with a different audience and it wants the same
+fix.
+
+Three ways to do it, and the constraint that decides between them:
+
+- **Split the requirements files** and prompt from the shell scripts.  Cheapest to
+  write, and it puts the same prompt in two shell dialects, which is how the two drift
+  apart.
+- **A chooser program the bootstrap runs before installing.**  One implementation for
+  both platforms.  It can use only the standard library, because nothing is installed
+  yet, so it cannot be a Textual screen like the rest of the setup program.  It should
+  call pip as `subprocess.run([sys.executable, '-m', 'pip', 'install', ...])`, since
+  pip does not support being imported and says so.
+- **Install the core only, and let `buzz.setup` add the driver when the operator picks
+  `[audio] source`.**  This asks once rather than twice, and it asks at the moment the
+  answer is already being given.  The first two both ask in the bootstrap and again in
+  the setup program, and nothing reconciles the two answers.
+
+The third looks best and is the one with an unanswered question: whether installing
+into the running interpreter mid-program is safe enough here.  The device is not opened
+until a later screen, so it may be, and nobody has tried it.
+
+Two things the change must not break.  An operator with no receiver at all still needs
+a working install, which is the case that gets forgotten because nobody developing this
+is in it.  CI installs `requirements.txt` at `.github/actions/setup/action.yml:47` and
+has to keep installing everything, or the suite quietly stops covering a driver path.
 
 ### Tuner gain should be a picker, not a text box
 
