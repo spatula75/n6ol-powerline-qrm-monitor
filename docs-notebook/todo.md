@@ -189,6 +189,42 @@ Until somebody runs it, the release notes say plainly that Linux is untested and
 for reports.  A single person running it once and saying what happened closes this.
 
 
+### A gain sweep over an SDRplay walks 101 steps where an RTL-SDR walks 29
+
+`SdrplayDevice.supported_gains_db` reports one rung per decibel, from -20 dB down to
+-120 dB, because that is what the two knobs reach.  An RTL-SDR tuner offers 29 steps
+over 57.5 dB.  `GainSweep.run` visits every gain on every pass, so at the default 5
+passes and 0.25 seconds a step the sweep goes from about 36 seconds to about 126, before
+the per-step overhead either one pays.
+
+The device is not the place to fix this.  Reporting a thinned list would mean the
+receiver lying about what it offers, and the figure a sweep picks would then be a rung
+somebody chose rather than one the hardware has.  `GainSweep` is the component with a
+time budget, so it is the one that should decide how many rungs to visit.
+
+The shape worth trying is a coarse pass followed by a focused one: walk every fourth
+rung, find the region the floor target sits in, then walk that region a decibel at a
+time.  One constraint has to survive it.  Passes alternate direction so that a slow
+drift over the sweep cancels instead of reading as a slope against gain, and that
+cancellation assumes every pass visits the same set of gains.  A refinement pass visits
+a different set, so the drift argument has to be made again rather than inherited.
+
+Nothing is blocked on this.  An RTL-SDR sweep is unchanged either way, and no SDRplay
+has run a sweep yet, so the 126 seconds is arithmetic rather than a measurement.
+
+### ste_lint reads a backticked identifier as prose
+
+The tool reported a comment as a British spelling, where the word it caught was inside
+one of SDRplay's own error symbols.  That symbol spells "initialized" the British way,
+and this project cannot rename somebody else's API, so the comment lost the word
+instead.  Every C library this program binds to can do this again.
+
+Writing the entry you are reading tripped the same rule, for the same reason.
+
+The fix is to skip spans between backticks the way the tool already skips command
+syntax.  It is not urgent, because the finding is visible and rewording costs a minute,
+and a rule that silently skips text is worse than one that occasionally asks.
+
 ### The header generator reads C with regexes and has no preprocessor
 
 `tools/generate_sdrplay_api.py` matches declarations with one combined regex and reads
