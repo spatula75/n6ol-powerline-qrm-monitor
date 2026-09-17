@@ -8,6 +8,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- `lib/buzz/sdrplay_api.py`, ctypes declarations for the SDRplay Hardware API, and
+  `tools/generate_sdrplay_api.py`, which writes that module from SDRplay's own C
+  headers.  The headers are vendored under `vendor/sdrplay-api-3.15/` with their BSD
+  3-Clause notice, so the bindings regenerate and verify on a machine with no receiver
+  and no API installed.  A wrong struct field here is memory corruption rather than an
+  exception, which is why the declarations are generated rather than transcribed, and
+  why `tests/test_sdrplay_api.py` pins the size of all 32 structs.  No SDRplay receiver
+  works yet: this is the layer a device shim will call.
 - `lib/buzz/sdr_device.py`, which holds every operation performed against a receiver:
   opening it, configuring it, moving its gain, streaming from it, reading one block,
   and closing it. Nothing above it imports a driver library, so a second kind of

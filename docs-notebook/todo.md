@@ -167,6 +167,49 @@ abstraction built for a second case that does not exist yet.  Revisit it when th
 SDRplay work makes that second case real, and not before.
 
 
+### SDRplay support is written for Linux and has never run there
+
+The bindings are one set for both platforms rather than two, and that is sound by
+construction rather than by luck.  No struct field uses a type whose width differs
+between Win64 and Linux x86-64: the headers use only char, unsigned char, unsigned
+short, int, unsigned int, float, double, pointers and nested structs, with no bare
+`long` and no `#pragma pack`.  SDRplay ship one header set for both platforms and put
+the differences inside it, which is visible where `HANDLE` is a real handle under MSVC
+and `void *` under GCC.
+
+So the only platform-specific code is the loader, which tries `sdrplay_api.dll`, then
+`libsdrplay_api.so`, then `libsdrplay_api.so.3`.
+
+What no test covers is whether SDRplay's Linux headers match the Windows ones we
+vendored.  The layout test compares our bindings against numbers we wrote down, not
+against the library, so a divergence would pass everything we can run and fail on the
+first real call.  Nobody here has a Linux machine, so this cannot be closed locally.
+
+Until somebody runs it, the release notes say plainly that Linux is untested and ask
+for reports.  A single person running it once and saying what happened closes this.
+
+
+### The header generator reads C with regexes and has no preprocessor
+
+`tools/generate_sdrplay_api.py` matches declarations with one combined regex and reads
+every branch of a `#if` as though the compiler took it.  That suits these headers,
+where the four conditional blocks gate nothing the generator emits: the header guards,
+the `HANDLE` typedef under GCC, the two `_SDRPLAY_DLL_QUALIFIER` macros that are not
+numbers, and the `extern "C"` wrapper around the exports.
+
+Two silent failures were possible and now raise.  A numeric `#define` given two values
+in exclusive branches would have been emitted twice, and Python keeps the last, which
+would hand a Linux build the Windows number with nothing to notice.  An enum member
+inside `#if 0` reached Python looking exactly like a live one.  A whole struct inside
+a `#ifdef` is still emitted unconditionally, and that stays open because an extra
+struct nothing embeds by value costs nothing.
+
+The next fault of this kind is the moment to stop.  A real C preprocessor on PyPI,
+`pcpp` or `pycparser` with its own `cpp` step, would replace the guessing with an
+answer.  That is a dependency and a build step for a file that regenerates about once
+per API release, so the trade only pays once the regexes are wrong about something
+that matters.
+
 ## Setup program
 
 ### Tuner gain should be a picker, not a text box
