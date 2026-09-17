@@ -5,8 +5,8 @@ typed 41.0 became 40.2 and nothing told the operator.  The picker exists so that
 number shown is the number in use.
 
 The list comes from hardware, so every test here supplies it through a patched
-open_device.  The absence of a receiver must not move the coverage number, the same
-rule ffmpeg follows in render.py.
+`RtlSdrDevice.supported_gains`.  The absence of a receiver must not move the coverage
+number, the same rule ffmpeg follows in render.py.
 """
 import asyncio
 import time
@@ -19,6 +19,7 @@ from textual.widgets import OptionList, Static
 
 from buzz.setup.app import SetupApp
 from buzz.setup.screens.base import CANCELLED
+from buzz.sdr_device import RtlSdrDevice
 from buzz.setup.screens.gain_picker import (
     UNAVAILABLE,
     GainPickerDialog,
@@ -34,10 +35,16 @@ SPEC = {'type': 'number', 'title': 'Tuner gain (dB)', 'default': 40.2,
 RTLSDR_VALUES = {'device_index': 0, 'frequency_khz': 3588.0, 'gain_db': 40.2}
 
 
-def _fake_device(gains=None):
-    device = MagicMock()
-    device.valid_gains_db = list(V4_GAINS if gains is None else gains)
-    return device
+def _offering(gains=None):
+    """Patch the one call the picker makes: the list, with no device configured.
+
+    It used to patch RtlSdrDevice.open and hand back a MagicMock device, from which
+    the picker read supported_gains_db.  Going through open meant configuring a
+    receiver to answer a read-only question, which is what RtlSdrDevice.supported_gains
+    now avoids; tests/test_sdr_device.py covers the opening and closing underneath it.
+    """
+    return patch.object(RtlSdrDevice, 'supported_gains',
+                        return_value=list(V4_GAINS if gains is None else gains))
 
 
 async def _wait_until(pilot, condition, description, timeout=5.0):
@@ -51,51 +58,45 @@ async def _wait_until(pilot, condition, description, timeout=5.0):
 
 class TestReadingTheGainsOffTheReceiver:
     def test_it_returns_the_receivers_own_list_sorted(self):
-        with patch('buzz.sdr.open_device', return_value=_fake_device()) as open_device:
+        with _offering() as asked:
             gains = supported_gains(RTLSDR_VALUES)
-        open_device.assert_called_once_with(0)
+        assert asked.call_args.args[0] == 0
         assert gains == sorted(V4_GAINS)
 
-    def test_it_opens_the_configured_receiver(self):
-        with patch('buzz.sdr.open_device', return_value=_fake_device()) as open_device:
+    def test_it_reads_the_configured_receiver(self):
+        with _offering() as asked:
             supported_gains(dict(RTLSDR_VALUES, device_index=3))
-        open_device.assert_called_once_with(3)
+        assert asked.call_args.args[0] == 3
 
-    def test_the_receiver_is_released_again(self):
-        """Held open, it would stop the monitor and the sweep from opening it.  The
-        dialog needs one answer, not a stream.
+    def test_it_asks_for_the_list_rather_than_a_configured_device(self):
+        """The picker wants one read-only answer.
+
+        Opening a configured device to get it writes a sample rate, a tuning, an AGC
+        setting and a gain, and logs that the operator's gain was snapped to a step
+        while the operator is part way through choosing that gain.  The steps a tuner
+        offers do not depend on any of that.
         """
-        device = _fake_device()
-        with patch('buzz.sdr.open_device', return_value=device):
+        with patch.object(RtlSdrDevice, 'open') as opened, _offering():
             supported_gains(RTLSDR_VALUES)
-        device.close.assert_called_once()
-
-    def test_it_is_released_even_when_reading_the_list_fails(self):
-        device = _fake_device()
-        type(device).valid_gains_db = property(
-            lambda self: (_ for _ in ()).throw(RuntimeError('the tuner stopped')))
-        with patch('buzz.sdr.open_device', return_value=device):
-            with pytest.raises(RuntimeError):
-                supported_gains(RTLSDR_VALUES)
-        device.close.assert_called_once()
+        opened.assert_not_called()
 
     def test_missing_receiver_settings_fall_back_to_the_defaults(self):
-        with patch('buzz.sdr.open_device', return_value=_fake_device()) as open_device:
+        with _offering() as asked:
             supported_gains({})
-        open_device.assert_called_once_with(0)
+        assert asked.call_args.args[0] == 0
 
 
 class TestTheDialogOffersWhatTheTunerHas:
-    def _open(self, tmp_path, current=40.2, device=None, error=None):
+    def _open(self, tmp_path, current=40.2, gains=None, error=None):
         """Drive the dialog until it has either a list or a message."""
         state = {}
 
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                patcher = (patch('buzz.sdr.open_device', side_effect=error) if error
-                           else patch('buzz.sdr.open_device',
-                                      return_value=device or _fake_device()))
+                patcher = (patch.object(RtlSdrDevice, 'supported_gains',
+                                        side_effect=error) if error
+                           else _offering(gains))
                 with patcher:
                     dialog = GainPickerDialog(SPEC, current, RTLSDR_VALUES)
                     app.push_screen(dialog)
@@ -131,7 +132,7 @@ class TestTheDialogOffersWhatTheTunerHas:
         """The list is read rather than assumed, so a tuner with three steps gets
         three rows and no invented ones.
         """
-        state = self._open(tmp_path, device=_fake_device([0.0, 20.0, 40.0]))
+        state = self._open(tmp_path, gains=[0.0, 20.0, 40.0])
         assert state['gains'] == [0.0, 20.0, 40.0]
 
     def test_the_current_value_starts_highlighted(self, tmp_path):
@@ -177,7 +178,7 @@ class TestWhenTheReceiverCannotBeReached:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.sdr.open_device',
+                with patch.object(RtlSdrDevice, 'supported_gains',
                            side_effect=RuntimeError('nothing there')):
                     dialog = GainPickerDialog(SPEC, 40.2, RTLSDR_VALUES)
                     app.push_screen(dialog, lambda value: result.update(value=value))
@@ -198,7 +199,7 @@ class TestWhenTheReceiverCannotBeReached:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.sdr.open_device', return_value=_fake_device()):
+                with _offering():
                     dialog = GainPickerDialog(SPEC, 40.2, RTLSDR_VALUES)
                     app.push_screen(dialog, lambda value: result.update(value=value))
                     await _wait_until(pilot, lambda: bool(dialog._gains),
@@ -211,7 +212,7 @@ class TestWhenTheReceiverCannotBeReached:
         assert result['value'] is CANCELLED
 
     def test_the_message_stays_on_screen_rather_than_vanishing(self, tmp_path):
-        """open_device words these for whoever is standing at the radio, naming the
+        """RtlSdrDevice words these for whoever is standing at the radio, naming the
         driver to install.  A dialog that closed as it explained itself would throw
         that away and show a text box for no stated reason.
         """
@@ -222,7 +223,7 @@ class TestWhenTheReceiverCannotBeReached:
 
     def test_a_receiver_reporting_no_gains_is_the_same_case(self, tmp_path):
         state = TestTheDialogOffersWhatTheTunerHas()._open(
-            tmp_path, device=_fake_device([]))
+            tmp_path, gains=[])
         assert 'no gain settings' in state['status']
 
     def test_showing_the_list_after_dismissal_does_not_raise(self, tmp_path):

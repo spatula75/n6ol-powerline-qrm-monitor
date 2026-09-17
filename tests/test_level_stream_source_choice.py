@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from buzz.setup.screens.calibration import _open_level_stream
+from buzz.sdr_device import RtlSdrDevice
 
 AUDIO_SOUNDCARD = {'source': 'soundcard', 'sample_rate': 16000, 'pulse_rate': 120,
                    'input_device_name': 'Test'}
@@ -31,7 +32,7 @@ class TestTheMeterOpensTheConfiguredSource:
 
     def test_a_receiver_station_gets_a_receiver_stream(self):
         """The bug this file exists for: no sound card is opened at all."""
-        with patch('buzz.sdr.open_device') as open_device, \
+        with patch.object(RtlSdrDevice, 'open') as open_device, \
              patch('buzz.sdr.RtlSdrSource') as source, \
              patch('buzz.sdr.SdrLevelStream') as stream, \
              patch('buzz.iq.IqToAudio') as converter, \
@@ -39,7 +40,7 @@ class TestTheMeterOpensTheConfiguredSource:
             result = _open_level_stream(AUDIO_RTLSDR, -40.2, RTLSDR_VALUES)
         assert result is stream.return_value
         query.assert_not_called()
-        open_device.assert_called_once_with(0)
+        assert open_device.call_args.args[0] == 0
         assert source.called and converter.called
 
     def test_the_receiver_is_opened_with_a_small_block(self):
@@ -47,7 +48,7 @@ class TestTheMeterOpensTheConfiguredSource:
         shallow, so the reading starts moving promptly instead of after most of a
         second.
         """
-        with patch('buzz.sdr.open_device'), \
+        with patch.object(RtlSdrDevice, 'open'), \
              patch('buzz.sdr.RtlSdrSource') as source, \
              patch('buzz.sdr.SdrLevelStream'), \
              patch('buzz.iq.IqToAudio'):
@@ -64,7 +65,7 @@ class TestTheMeterOpensTheConfiguredSource:
             _open_level_stream(AUDIO_SOUNDCARD, -12.5)
         assert card.call_args[0][0].station.audio_rf_conversion_db == -12.5
 
-        with patch('buzz.sdr.open_device'), patch('buzz.sdr.RtlSdrSource'), \
+        with patch.object(RtlSdrDevice, 'open'), patch('buzz.sdr.RtlSdrSource'), \
              patch('buzz.sdr.SdrLevelStream') as sdr, patch('buzz.iq.IqToAudio'):
             _open_level_stream(AUDIO_RTLSDR, -12.5, RTLSDR_VALUES)
         assert sdr.call_args[0][2] == -12.5
@@ -74,11 +75,11 @@ class TestTheMeterOpensTheConfiguredSource:
         existed.  Falling back to the dataclass defaults beats raising a KeyError at
         an operator who only wanted to look at a meter.
         """
-        with patch('buzz.sdr.open_device') as open_device, \
+        with patch.object(RtlSdrDevice, 'open') as open_device, \
              patch('buzz.sdr.RtlSdrSource'), patch('buzz.sdr.SdrLevelStream'), \
              patch('buzz.iq.IqToAudio'):
             _open_level_stream(AUDIO_RTLSDR, -40.2, None)
-        open_device.assert_called_once_with(0)
+        assert open_device.call_args.args[0] == 0
 
     def test_an_unknown_source_is_treated_as_a_sound_card(self):
         """Matching what the rest of the setup program does with a value the schema
@@ -166,7 +167,7 @@ class TestTheMeterLabelsTheReadingWithTheRightOffset:
         from buzz.setup.screens.calibration import level_offset_for
         values = dict(RTLSDR_VALUES, calibrated_offset_db=None, gain_db=40.2)
         offset = level_offset_for(AUDIO_RTLSDR, self.STATION, values)
-        with patch('buzz.sdr.open_device'), patch('buzz.sdr.RtlSdrSource'), \
+        with patch.object(RtlSdrDevice, 'open'), patch('buzz.sdr.RtlSdrSource'), \
              patch('buzz.sdr.SdrLevelStream') as stream, patch('buzz.iq.IqToAudio'):
             _open_level_stream(AUDIO_RTLSDR, offset, values)
         assert stream.call_args[0][2] == -40.2

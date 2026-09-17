@@ -30,8 +30,8 @@ from buzz.main import (
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher
 from buzz.sampler import AudioSampler, RingBufferPipeline
-from buzz.sdr import open_device
 from buzz.weather import CumulusMXWeatherClient, NullWeatherClient, OpenMeteoWeatherClient
+from buzz.sdr_device import RtlSdrDevice
 from tests.patching import patch_in
 
 
@@ -853,8 +853,16 @@ class TestOpeningAReceiverAsTheLiveSource:
         Everything above the device is the production code, so the converter, the
         pipeline and the rate bookkeeping are all the real ones.
         """
-        from tests.test_sdr_source import FakeDevice
-        with patch_in(sdr_module, open_device, return_value=device or FakeDevice()):
+        from tests.fake_sdr import FakeSdrDevice
+
+        def opens(index, *, tuned_hz, gain_db, iq_sample_rate):
+            # Honours the request rather than answering from a fixture.  A fake that
+            # reported a fixed rate would hide every check reading the rate back,
+            # including the one that refuses a section the hardware cannot work at.
+            return device or FakeSdrDevice(iq_sample_rate=iq_sample_rate,
+                                           tuned_hz=tuned_hz, gain_db=gain_db)
+
+        with patch.object(RtlSdrDevice, 'open', side_effect=opens):
             return open_live_source(config)
 
     def rtlsdr_config(self, **overrides):
@@ -902,11 +910,12 @@ class TestOpeningAReceiverAsTheLiveSource:
         the samples as something they are not, and the recorder counts its lead-in at
         one rate against a capacity counted at the other.
         """
-        from tests.test_sdr_source import FakeDevice
+        from tests.fake_sdr import FakeSdrDevice
         config = self.rtlsdr_config()
         config.recording.record_iq = True
         settled = 256_016
-        pipeline = self.open_with_a_fake_receiver(config, FakeDevice(actual_rate=settled))
+        pipeline = self.open_with_a_fake_receiver(
+            config, FakeSdrDevice(iq_sample_rate=settled))
 
         assert config.rtlsdr.iq_sample_rate == settled, (
             f'[rtlsdr] iq_sample_rate was left at {config.rtlsdr.iq_sample_rate} while '
@@ -1001,7 +1010,8 @@ class TestThePyrtlsdrImportFailureIsExplained:
 
         with patch.object(builtins, '__import__', refuse_rtlsdr):
             with pytest.raises(RuntimeError) as caught:
-                open_device(0)
+                RtlSdrDevice.open(0, tuned_hz=3_638_000, gain_db=22.9,
+                                  iq_sample_rate=256_000)
 
         message = str(caught.value)
         assert 'pyrtlsdr[lib]' in message, (

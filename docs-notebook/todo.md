@@ -302,6 +302,11 @@ nine files:
 | 4 | `test_render.py` | `wavmeta.read_settings` |
 | 2 | `test_recorder.py` | `wavmeta.append_metadata` |
 
+Those counts predate the `SdrDevice` work, which rewrote most of the first two rows:
+`open_device`, `configure_device` and `close_device` are gone, and the tests that
+named them now patch `RtlSdrDevice` members through `patch.object`.  Recount the three
+SDR files before planning against this table.
+
 The last two need the owning module rather than the calling one, for the reason
 `tests/patching.py` now explains: a target that reaches through a module binding
 patches whoever owns the attribute, so `buzz.render.wavmeta.read_settings` already

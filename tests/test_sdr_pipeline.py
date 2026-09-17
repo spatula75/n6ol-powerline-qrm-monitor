@@ -16,6 +16,7 @@ from buzz import sdr as sdr_module
 from buzz.iq import IqToAudio
 from buzz.sampler import buffer_chunks
 from buzz.sdr import IqBlock, RtlSdrPipeline
+from buzz.sdr_device import RTL_SDR_FORMAT
 
 IQ_RATE, DECIMATION, BANDWIDTH, OFFSET = 256_000, 16, 4_000, 50_000
 BLOCK = 16_384
@@ -72,14 +73,15 @@ def pipeline(clock=None, keep_iq=False):
 
 def raw_to_complex(raw):
     """The conversion under test, reached the way the pipeline reaches it."""
-    return IqBlock(raw=np.asarray(raw, dtype=np.uint8), arrived_at=0.0, index=0).as_complex()
+    return IqBlock(raw=np.asarray(raw, dtype=np.uint8), fmt=RTL_SDR_FORMAT,
+                   arrived_at=0.0, index=0).as_complex()
 
 
 def block(n_samples=BLOCK, seed=0, clipped=0):
     rng = np.random.default_rng(seed)
     raw = rng.integers(40, 215, size=n_samples * 2, dtype=np.uint8)
     raw[:clipped] = 255
-    return IqBlock(raw=raw, arrived_at=0.0, index=1)
+    return IqBlock(raw=raw, fmt=RTL_SDR_FORMAT, arrived_at=0.0, index=1)
 
 
 class TestTheRawConversion:

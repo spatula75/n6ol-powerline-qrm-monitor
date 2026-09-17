@@ -332,14 +332,15 @@ def open_live_source(config: BuzzConfig) -> RingBufferPipeline:
         return AudioSampler(config).pipeline
 
     from buzz.iq import IqToAudio
-    from buzz.sdr import RtlSdrPipeline, RtlSdrSource, open_device
+    from buzz.sdr import RtlSdrPipeline, RtlSdrSource
+    from buzz.sdr_device import RtlSdrDevice
 
     settings = config.rtlsdr
-    source = RtlSdrSource(
-        open_device(settings.device_index),
-        frequency_hz=settings.frequency_hz, gain_db=settings.gain_db,
-        iq_sample_rate=settings.iq_sample_rate,
-        tuning_offset_hz=settings.tuning_offset_hz)
+    source = RtlSdrSource(RtlSdrDevice.open(
+        settings.device_index,
+        tuned_hz=settings.frequency_hz + settings.tuning_offset_hz,
+        gain_db=settings.gain_db,
+        iq_sample_rate=settings.iq_sample_rate))
     converter = IqToAudio(
         source.iq_sample_rate, settings.decimation, settings.bandwidth_hz,
         settings.tuning_offset_hz, settings.sideband)
