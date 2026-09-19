@@ -12,7 +12,7 @@ test that can hang.
 import queue
 
 import pytest
-from buzz.sdr import _DISCARD_LOG_EVERY, DEFAULT_BLOCK_SAMPLES, RtlSdrSource
+from buzz.sdr import _what_the_drift_means, _DISCARD_LOG_EVERY, DEFAULT_BLOCK_SAMPLES, RtlSdrSource
 from tests.fake_sdr import V4_GAINS, FakeSdrDevice
 
 BLOCK = 64
@@ -185,6 +185,33 @@ class TestTheClockDriftSymptom:
         device.deliver(samples=BLOCK, arrived_at=1000.0)
         s.read(timeout=0.1)
         assert s.clock_drift_seconds == 0.0
+
+
+class TestWhatTheDriftWarningSays:
+    """The check fires on either sign and the two signs are different faults.
+
+    It said "samples were probably lost, check what else is taking the CPU" for both,
+    which is wrong for a negative figure and sent somebody hunting a busy machine that
+    had eleven idle cores.
+    """
+
+    def test_less_audio_than_the_interval_is_a_loss(self):
+        message = _what_the_drift_means(0.058)
+        assert 'samples were lost' in message
+        assert 'CPU' in message
+
+    def test_more_audio_than_the_interval_is_not_a_loss(self):
+        """It cannot be.  A receiver that delivered more audio than the wall clock
+        between its blocks accounts for handed over a backlog, which is the opposite
+        of dropping samples and has the opposite cause.
+        """
+        message = _what_the_drift_means(-0.058)
+        assert 'nothing was lost' in message
+        assert 'backlog' in message
+        assert 'CPU' not in message
+
+    def test_the_two_directions_do_not_share_wording(self):
+        assert _what_the_drift_means(0.058) != _what_the_drift_means(-0.058)
 
 
 class TestWhatItDelegates:

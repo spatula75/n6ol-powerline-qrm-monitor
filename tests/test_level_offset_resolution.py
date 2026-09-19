@@ -11,7 +11,7 @@ the running config no longer matched the file it came from.
 """
 import pytest
 
-from buzz.config import RTLSDR, SOUNDCARD, BuzzConfig
+from buzz.config import RTLSDR, SDRPLAY, SOUNDCARD, BuzzConfig
 from buzz.setup.schema import (
     defaults,
     field_names,
@@ -51,6 +51,20 @@ class TestOneQuestionHasOneAnswer:
 
     def test_an_uncalibrated_receiver_is_estimated_from_its_gain(self):
         assert _config(RTLSDR, gain=32.8, receiver=None).level_offset_db == -32.8
+
+    def test_an_uncalibrated_sdrplay_uses_its_device_estimate(self):
+        config = BuzzConfig()
+        config.audio.source = SDRPLAY
+        config.sdrplay.gain_db = 13.0
+        config.sdrplay.calibrated_offset_db = None
+        assert config.level_offset_db == -2.0
+
+    def test_measured_sdrplay_calibration_replaces_the_estimate(self):
+        config = BuzzConfig()
+        config.audio.source = SDRPLAY
+        config.sdrplay.gain_db = 17.0
+        config.sdrplay.calibrated_offset_db = -7.25
+        assert config.level_offset_db == -7.25
 
     def test_the_station_figure_never_reaches_a_receiver(self):
         """However it is set.  This is the defect stated directly: the two must not be
@@ -199,15 +213,32 @@ class TestAStaleCalibrationIsReported:
     and reports the wrong levels.
     """
 
-    def _check(self, caplog, **settings):
+    def _check(self, caplog, section='rtlsdr', config_class=None, **settings):
         import logging
 
         from buzz.config import RtlSdrConfig
         from buzz.main import _warn_if_the_calibration_predates_the_gain
 
+        config_class = config_class or RtlSdrConfig
         with caplog.at_level(logging.WARNING, logger='buzz.main'):
-            _warn_if_the_calibration_predates_the_gain(RtlSdrConfig(**settings))
+            _warn_if_the_calibration_predates_the_gain(section,
+                                                       config_class(**settings))
         return caplog.messages
+
+    def test_the_warning_names_the_section_the_operator_has_to_edit(self, caplog):
+        """Each receiver keeps its own calibration, so naming the wrong section sends
+        somebody to edit a setting the program never read.
+
+        The figures here are an SDRplay's, where the gain is negative because an RSP is
+        set in gain reduction.  The arithmetic has to survive that sign.
+        """
+        from buzz.config import SdrplayConfig
+
+        messages = self._check(caplog, section='sdrplay', config_class=SdrplayConfig,
+                               gain_db=-55.0, calibrated_offset_db=40.0,
+                               calibrated_at_gain_db=-40.0)
+        assert any('[sdrplay] calibrated_offset_db' in m for m in messages), messages
+        assert not any('[rtlsdr]' in m for m in messages), messages
 
     def test_a_gain_that_moved_since_the_calibration_warns(self, caplog):
         messages = self._check(caplog, gain_db=32.8, calibrated_offset_db=-38.5,

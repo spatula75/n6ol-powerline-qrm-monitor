@@ -15,11 +15,12 @@
 
 # Where live audio comes from, and what the analyzer expects of it.
 [audio]
-# Where live audio comes from, either a radio feeding a sound card or an
-# RTL-SDR receiver.
+# Where live audio comes from: a radio feeding a sound card, or one of the
+# receivers this program drives.
 #
 #   Sound card - a radio in SSB, wired to an audio input
 #   RTL-SDR - a receiver, set up in the RTL-SDR section
+#   SDRplay - an RSP1A or RSP1B, set up in the SDRplay section
 source = "soundcard"
 
 # The sound card that carries the RF-to-audio converted signal.
@@ -75,8 +76,10 @@ frequency_khz = 3588.0
 # The monitor snaps this to the nearest step the tuner offers, since the
 # tuner accepts only a fixed set.
 #
-# Choose the lowest gain at which band noise sits about 10 dB above the
-# receiver's own noise. Lower leaves more room for loud events. Higher
+# Choose the lowest gain at which band noise just overtakes the receiver's
+# own noise. An 8-bit receiver cannot afford more than that, because the
+# room an arc needs takes most of its range, so the noise floor it reports
+# reads about 3 dB high. Lower leaves more room for loud events. Higher
 # measures the receiver rather than the band.
 gain_db = 22.9
 
@@ -169,6 +172,139 @@ tuning_offset_khz = 50.0
 #   Upper - the spectrum above the listening frequency
 #   Lower - the spectrum below it, shown reversed
 sideband = "upper"
+
+
+# Settings for an SDRplay RSP1A or RSP1B. Used only when the audio source is
+# set to SDRplay.
+[sdrplay]
+# The frequency to listen on. The receiver tunes 50 kHz above it and the
+# difference is undone in software, so this is the frequency that gets
+# measured.
+#
+# In kHz, so 80m is around 3588 and 40m around 7074. Tenths are allowed if
+# you want a frequency to the nearest hundred Hz.
+#
+# The default puts the whole 256 kHz the receiver samples inside 80m and
+# clear of the CW DX window. Powerline noise is generally worse low in HF.
+# Example: 3588.0
+frequency_khz = 3588.0
+
+# The monitor snaps this to the nearest whole decibel the receiver reaches,
+# from -29 to 71.
+#
+# An RSP is set in gain reduction rather than in gain, and this states it as
+# gain anyway, so that it means the same thing here as it does for an
+# RTL-SDR.
+#
+# Choose the lowest gain at which band noise sits about 10 dB above the
+# receiver's own noise. A 14-bit receiver has the range for that, so the
+# noise floor it reports reads well under a decibel high, where an 8-bit one
+# has to settle for about 3 dB. Automatic gain selection aims at the same
+# place, and the headroom and overload limits still take priority. Lower
+# leaves more room for loud events. Higher measures the receiver rather than
+# the band.
+gain_db = 40.0
+
+# The offset that converts audio amplitude to RF level at the receiver
+# input, the same job [station] audio_rf_conversion_db does for a sound
+# card. Leave it unset until you have calibrated.
+#
+# This replaces [station] audio_rf_conversion_db whenever [audio] source is
+# sdrplay. The two carry different names because they are different
+# quantities: that one describes a radio and its wiring, this one is mostly
+# the negative of the gain above and moves whenever the gain does.
+#
+# Unset means the monitor estimates it as 11 dB minus the receiver gain. The
+# 11 dB fixed conversion estimate came from one RSP1B above its noise-floor
+# knee, so expect another unit to differ. The [station] figure is not a
+# fallback and is never used for a receiver.
+#
+# To find the figure, read the noise floor on a radio you trust, on the same
+# antenna at the same time, with its filter set to match the bandwidth
+# above. The difference between the two readings is what goes here.
+#
+# It depends on the receiver gain, so changing that means finding it again.
+#
+# Unset by default.
+# calibrated_offset_db = -40.0
+
+# The receiver gain the level calibration was measured against. The
+# calibration tool writes this, and nobody sets it by hand.
+#
+# The calibration tool writes this when it measures the level calibration
+# above.
+#
+# Change the receiver gain afterwards and the calibration is wrong by
+# roughly the difference, so startup compares the two and says so. Run the
+# calibration again rather than editing this.
+#
+# Unset by default.
+# calibrated_at_gain_db = 40.0
+
+# Room the gain calibration keeps above the quiet band noise, so that an arc
+# has somewhere to go before it clips.
+#
+# This value comes from measurement rather than choice. Over 11147 locked
+# minutes at one station the loudest arc reached 30.95 dB above its own
+# noise floor, and nothing reached 35. The extra covers the wider bandwidth
+# the receiver clips across.
+#
+# Raising it lowers the gain the calibration will pick, so more of the
+# reported noise floor becomes the receiver's own rather than the band's.
+arc_headroom_db = 32.0
+
+# Which receiver to use when more than one RSP is plugged in.
+device_index = 0
+
+# How fast the receiver samples. It must divide evenly by the decimation
+# below.
+#
+# 256000 divided by 16 gives 16000 Hz of audio, the rate a sound-card
+# station uses.
+#
+# The receiver rate divided by the decimation has to come to between 8000 Hz
+# and 48000 Hz. A receiver rate of 2400000 needs a decimation between 50 and
+# 300.
+iq_sample_rate = 256000
+
+# Receiver samples per audio sample. The audio rate is the receiver rate
+# divided by this.
+decimation = 16
+
+# How much of the band to measure, on one side of the listening frequency.
+#
+# 4 kHz matches a typical SSB filter, so levels compare with a radio tuned
+# to the same spot.
+#
+# At most the receiver rate divided by the decimation, divided again by 2.5.
+# That is 6.4 kHz with the settings above. The filter needs the extra room
+# past the band edge, and the monitor refuses a wider setting and says what
+# the limit is.
+bandwidth_khz = 4.0
+
+# How far from the listening frequency to tune the hardware. Undone in
+# software, so it changes nothing you measure.
+#
+# A receiver puts a strong false signal at exactly its own tuning frequency,
+# and this moves that out of the measured band. The monitor undoes it in
+# software.
+tuning_offset_khz = 50.0
+
+# Which side of the listening frequency to hear.
+#
+#   Upper - the spectrum above the listening frequency
+#   Lower - the spectrum below it, shown reversed
+sideband = "upper"
+
+# Where the SDRplay API library is, for an installation the monitor cannot
+# find on its own. Leave it unset to search.
+#
+# Unset means the monitor tries the plain library name first, so an
+# installation already on the search path wins, then the directories an
+# installer uses.
+#
+# Unset by default.
+# api_path =
 
 
 # Who measures, from where, and the calibration that turns audio into dBm.

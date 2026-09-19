@@ -34,6 +34,7 @@ import ctypes
 import logging
 import queue
 import threading
+from math import ceil
 from pathlib import Path
 from time import monotonic
 from typing import Protocol, Self
@@ -41,7 +42,8 @@ from typing import Protocol, Self
 import numpy as np
 
 from buzz import sdrplay_api as api
-from buzz.sdr_device import VALUES_PER_FRAME, BlockSink, DeviceProfile, IqBlock, SampleFormat, SdrDevice
+from buzz.config import SdrConfig
+from buzz.sdr_device import VALUES_PER_FRAME, BlockSink, DeviceProfile, IqBlock, OverloadStatus, SampleFormat, SdrDevice
 
 logger = logging.getLogger(__name__)
 
@@ -60,15 +62,10 @@ KNOWN_LIBRARY_DIRECTORIES = (
     Path('/usr/lib'),
 )
 
-# How the RSP's samples are read.  The library delivers signed 16-bit values, so the
-# rails are the ends of that range.
-#
-# Whether a real RSP reaches them has not been checked on hardware.  The converter is
-# narrower than 16 bits and the library decimates for us, which adds bits back, so the
-# decimated stream may or may not reach the ends of the container.  `clipped_samples`
-# is what a gain sweep uses to reject a gain, so a rail that never occurs would let the
-# sweep pick a gain that clips.  The overload event below is the hardware's own answer
-# to the same question and does not depend on this figure.  See `docs-notebook`.
+# The API delivers signed 16-bit I/Q values.  These endpoints describe that output
+# format, not every stage that can overload inside the receiver.  Filtering and
+# decimation can move clipped values away from an endpoint, so the hardware overload
+# reports remain a separate indication.
 SDRPLAY_FORMAT = SampleFormat(
     dtype=np.dtype(np.int16),
     bytes_per_frame=VALUES_PER_FRAME * 2,
@@ -96,6 +93,68 @@ HF_LNA_MAX_HZ = {
     api.SDRPLAY_RSP1B_ID: 50_000_000,
     api.SDRPLAY_RSP1A_ID: 60_000_000,
 }
+
+# The gain an RSP1A or RSP1B has on HF before any reduction is applied, in dB.
+#
+# The value came from measuring, not from theory.  On an RSP1B listening at 3530 kHz,
+# the gain the library reports in `gainVals.curr` was read at eleven settings
+# spanning the whole ladder.  This is what each implies once the reduction is added
+# back:
+#
+#     LNA state    0     1     2     4     5     6
+#     implied   91.4  91.4  91.0  91.3  91.5  91.6
+#
+# Two things follow.  The vendored LNA table is right, because a wrong entry would put
+# its own rows somewhere else entirely rather than within half a decibel of the others.
+# And the receiver's gain is this figure minus the total reduction, which is what lets
+# the ladder below be stated in real dB rather than as the negative of a reduction.
+#
+# This is a fallback rather than the figure normally used.  It came from one receiver
+# at one frequency, and the conversion gain is not flat across HF, so a device asks its
+# own hardware for the figure at open and keeps that for the session.  See
+# `_learn_conversion_gain`.  This is what a receiver gets when the library declines to
+# report a gain at all, which is also the only case where nobody can do better.
+HF_CONVERSION_GAIN_DB = 91.4
+
+# Fixed part of the uncalibrated API-output dBFS to receiver-input estimate.
+#
+# On 2026-09-18 at 3540 kHz, comparisons with a calibrated receiver put one RSP1B's
+# intercept near 11 dB at gains of 13 and 19 dB.  Measurements close to the noise-floor
+# knee varied more, which is why the gain probe adds the padding below.  This gives a
+# new station a useful starting point; measured level calibration still replaces it.
+# See docs-notebook/sdrplay-gain.md.
+ESTIMATED_CALIBRATION_INTERCEPT_DB = 11.0
+
+# How far above the noise-floor knee to put the gain the sweep chooses.
+#
+# See `SdrplayDevice.floor_margin_db` for the measurement and the reasoning.  It is a
+# module constant so that a test can state the figure without an open receiver.
+FLOOR_MARGIN_DB = 10.0
+
+# Samples per block while nothing has asked for a size yet.
+#
+# A device initializes the library at open so that `gainVals.curr` is filled in before
+# anybody asks for the gain ladder, and stops it again straight away.  Nothing is
+# listening for the moment it runs, so the size only has to be a size.
+_INITIAL_BLOCK_SAMPLES = 2048
+
+# How long to let the receiver run before reading the gain it settled on.
+#
+# The wait is for a delivery rather than for a duration, and this only bounds it.  What
+# it buys is that the library has demonstrably applied the settings, where a read taken
+# the instant `sdrplay_api_Init` returns rests on the assumption that it fills
+# `gainVals.curr` before returning, which nobody here has checked.
+#
+# Half a second is long against the milliseconds a receiver takes to start and short
+# against anything an operator would notice at startup.  Reaching it means the receiver
+# is not delivering at all, and the ladder then falls back to the measured constant,
+# which is the same answer this program would have given before it learned to ask.
+_GAIN_REPORT_WAIT_SECONDS = 0.5
+
+# How far the hardware's own figure may sit from what the table predicts before this
+# says so.  Three decibels: the spread above is 0.6 across LNA states at one frequency,
+# so this allows several times that for the rest of the band before calling it wrong.
+_GAIN_DISAGREEMENT_DB = 3.0
 
 # The baseband gain reduction range, in dB.  The minimum is the API's own
 # NORMAL_MIN_GR, which is the setting this device uses: EXTENDED_MIN_GR opens up 0 to
@@ -127,6 +186,28 @@ _SYNC_READ_TIMEOUT_SECONDS = 5.0
 # because nothing useful happens after it, and the same reasoning as
 # `RtlSdrDevice.close`: a call that has not returned by now is inside the library.
 _DEVICE_CLOSE_TIMEOUT_SECONDS = 3.0
+
+# How long to keep dropping blocks while waiting for the library to mark one with
+# `grChanged`.
+#
+# A ceiling rather than a measurement.  `grChanged` is the exact answer and this is
+# what happens when it never comes: the specification says the library sets it on the
+# block where a gain change took effect, and nobody here has confirmed that against
+# hardware.  Without a bound, a library that never sets it drops every block from the
+# first gain change onwards, and the receiver goes silent for the rest of the session.
+#
+# That is not hypothetical.  It is what made a gain sweep report the lowest gain on
+# the ladder: every gain after the first measured nothing, so the only gain with
+# readings was the one the sweep started at.
+#
+# Half a second for scale: an RTL-SDR's transfer pool holds about 960 ms at the
+# default block and 256 kHz, so this is well inside what a comparable receiver buffers.
+#
+# The two ways to be wrong are not equal, which is what sets it this high.  Too short
+# and a sweep measures the previous gain and picks the wrong one, silently, which is
+# the fault this bound exists to prevent.  Too long and the sweep takes half a second
+# more per gain step.  Nothing pays it at all while the flag arrives.
+_GAIN_CHANGE_SETTLE_SECONDS = 0.5
 
 # Blocks for a consumer to throw away after a gain change, on top of what this device
 # has already dropped.
@@ -362,6 +443,66 @@ class SdrplayDevice(SdrDevice):
     """
 
     @classmethod
+    def floor_margin_db(cls) -> float:
+        """Ten decibels above the knee, which fourteen bits can afford.
+
+        An RSP has about 84 dB of converter range against an RTL-SDR's 48, so the same
+        32 dB arc reserve leaves about 52 dB rather than 16.  Ten of those buy a
+        reported floor that reads 0.4 dB high instead of 3.0.
+
+        Measured on an RSP1B on a rooftop antenna at 3530 kHz.  The knee sat at 1 dB of
+        gain, where the reported floor read 3.8 dB high, SNR read the same amount low
+        against a calibrated receiver, and the scope trace sat under the auto-range
+        floor.  Ten dB of margin moves the choice to 11 dB and leaves 60 dB of arc room
+        against the 32 dB reserve, so nothing is given up to buy it.
+
+        Ten rather than some other figure because that is what this program tells an
+        SDRplay operator to aim for, in schema.json and config.example.toml.  A handful
+        of manual trials on the same station had arrived at about six from the other
+        direction.
+        """
+        return FLOOR_MARGIN_DB
+
+    @classmethod
+    def estimated_calibration_offset_db(cls, gain_db: float) -> float:
+        """Undo receiver gain after adding the measured API-output intercept."""
+        return -gain_db + ESTIMATED_CALIBRATION_INTERCEPT_DB
+
+    @classmethod
+    def open_from(cls, settings: SdrConfig) -> Self:
+        """Open the receiver these settings describe.  See `SdrDevice.open_from`.
+
+        `api_path` is read here and nowhere else, because it is the one setting an
+        RSP needs that an RTL-SDR has no use for.
+        """
+        return cls.open(
+            settings.device_index,
+            tuned_hz=settings.frequency_hz + settings.tuning_offset_hz,
+            gain_db=settings.gain_db,
+            iq_sample_rate=settings.iq_sample_rate,
+            api_path=getattr(settings, 'api_path', None))
+
+    @classmethod
+    def supported_gains(cls, settings: SdrConfig) -> list[float]:
+        """Every gain an RSP1A or RSP1B offers on HF.
+
+        No hardware is opened, unlike an RTL-SDR's, because the reduction ladder comes
+        from the gain reduction tables rather than from the unit: every RSP1A and RSP1B
+        reaches the same 101 rungs below the band edge.  An RTL-SDR has to ask, since
+        its steps belong to the tuner chip that happens to be fitted.
+
+        What that costs is where the hundred decibels sit.  An open device asks the
+        receiver for its conversion gain, and this cannot, so the rungs here are the
+        fallback's and may be a decibel or two from the ones the device settles on.
+        That is what a picker needs, because the device snaps whatever is chosen to its
+        own nearest rung anyway.
+
+        `settings` is accepted and unread, so that a caller holding a config section
+        can ask either receiver the same question.
+        """
+        return cls._gain_ladder()
+
+    @classmethod
     def open(cls, index: int = 0, *, tuned_hz: int, gain_db: float,
              iq_sample_rate: int, api_path: Path | str | None = None) -> Self:
         """Open the receiver at `index`, configure it, and return it ready to read.
@@ -398,16 +539,27 @@ class SdrplayDevice(SdrDevice):
         self._tuned_hz = tuned_hz
         self._blocks_refused = 0
         self._produced = 0
-        self._overloads = 0
+        self._overload_lock = threading.Lock()
+        self._accept_overload_events = False
+        self._overload_status = OverloadStatus(active=False, detections=0)
+        self._overload_error: str | None = None
         self._closed = False
         self._released = False
         self._initialized = False
         self._sink: BlockSink | None = None
         self._sync_sink: _SyncBlocks | None = None
         self._gain_table_checked = False
+        self._gain_flag_reported = False
         # Blocks to drop before anything is offered, because a gain change is in
-        # flight.  The block the library marks with `grChanged` clears it.
+        # flight.  The block the library marks with `grChanged` clears it, and
+        # `_settle_blocks` is the ceiling that clears it when no such block arrives.
         self._awaiting_gain_change = False
+        self._dropped_waiting = 0
+        self._settle_blocks = 0
+        # Set by the stream callback on any delivery, including one nothing is
+        # listening for.  What it says is that the library is running and has applied
+        # what it was given, which is when `gainVals.curr` means something.
+        self._delivered = threading.Event()
         # Partly filled block, as arrays in arrival order, with their total length.
         # Only the stream callback touches either.
         self._pending: list[np.ndarray] = []
@@ -418,6 +570,23 @@ class SdrplayDevice(SdrDevice):
         self._check_band()
         self._params = library.device_params(int(device.dev))
         self._iq_sample_rate = self._configure(iq_sample_rate)
+        # Written against the fallback, because nothing has asked the hardware yet and
+        # a gain has to be set before the library will report one.
+        self._conversion_gain_db = HF_CONVERSION_GAIN_DB
+        self._write_gain(self.nearest_supported_gain(gain_db, self.supported_gains_db))
+        # Started only to make the library answer, and stopped again before anything
+        # else happens.  A library left running here spends the gap until the first
+        # read filling its own buffers, and hands the backlog over in a burst as soon
+        # as a consumer attaches.  That burst carries more audio than the wall clock
+        # between its blocks accounts for, which `RtlSdrSource.clock_drift_seconds`
+        # reads as the receiver clock running away from the system one.
+        self._begin(_INITIAL_BLOCK_SAMPLES)
+        self._delivered.wait(timeout=_GAIN_REPORT_WAIT_SECONDS)
+        self._conversion_gain_db = self._learn_conversion_gain()
+        self._end()
+        # Written again, now that the ladder means what it says.  The first write put
+        # the receiver wherever the fallback pointed, which is the right rung only when
+        # the fallback happened to be right for this band.
         self._gain_db = self._write_gain(self.nearest_supported_gain(
             gain_db, self.supported_gains_db))
         self._profile = DeviceProfile(
@@ -463,25 +632,57 @@ class SdrplayDevice(SdrDevice):
     def supported_gains_db(self) -> list[float]:
         """Every gain this receiver offers on HF, from the most to the least.
 
-        Each figure is the negative of a total gain reduction, so the list runs from
-        -20 dB down to -120 dB in one-dB steps.  Two knobs reach most of those totals
-        more than one way, and `_knobs_for` picks which pair to use.
+        Real gain rather than the negative of a reduction, so the figures mean the
+        same thing here as they do on an RTL-SDR and as they do in the level offset a
+        station calibrates.  The list runs from about +71 dB down to about -29 dB in
+        one-dB steps.  Two knobs reach most of those more than one way, and
+        `_knobs_for` picks which pair to use.
+
+        Where the hundred decibels sit depends on this receiver at this frequency, and
+        `_learn_conversion_gain` asked it rather than assuming.  So the same rung is a
+        different number on another band, which is the point: the number is the gain.
         """
-        return [float(-total) for total in self._gain_reduction_ladder()]
+        return self._gain_ladder(self._conversion_gain_db)
 
     @property
     def blocks_refused(self) -> int:
         return self._blocks_refused
 
     @property
-    def overloads(self) -> int:
-        """How many times the receiver has reported its front end overloading.
+    def reported_gain_db(self) -> float:
+        """What the receiver says its gain is now, straight out of the struct.
 
-        The library raises this as an event, so it is the hardware's own answer to the
-        question `clipped_samples` asks by looking at the samples.  It does not depend
-        on where the rails of the decimated stream sit, which nobody here has measured.
+        `gain_db` prefers this and falls back to the figure that was asked for when it
+        reads zero, because a zero means the change has not been applied yet.  This one
+        does not fall back, so a caller can tell the two apart.  `tools/sdr_gain_probe`
+        is that caller: a column of zeros there says the library is not filling the
+        field in, and a column that never moves says the gain is not arriving.
         """
-        return self._overloads
+        return float(self._params.rxChannelA.contents.tunerParams.gain.gainVals.curr)
+
+    @property
+    def overloads(self) -> int:
+        """How many overload detection events the receiver has reported."""
+        with self._overload_lock:
+            return self._overload_status.detections
+
+    @property
+    def overload_status(self) -> OverloadStatus:
+        """The last hardware state and detection count, read together.
+
+        The callback updates both under one lock, so a reader cannot pair an old count
+        with a new state.  A failed acknowledgement makes the indication unreliable.
+        Report that failure here, because an exception cannot leave the C callback.
+        """
+        with self._overload_lock:
+            status = self._overload_status
+            error = self._overload_error
+        if error is not None:
+            raise RuntimeError(
+                f'The SDRplay overload callback failed: {error.rstrip(".")}.  '
+                'Hardware overload reporting is unreliable.  Close the receiver '
+                'and restart the probe before using its overload readings.')
+        return status
 
     @property
     def is_streaming(self) -> bool:
@@ -514,6 +715,13 @@ class SdrplayDevice(SdrDevice):
         # the receiver is idle would drop every block of the stream that follows, with
         # nothing ever arriving to clear it.
         self._awaiting_gain_change = self._initialized
+        self._dropped_waiting = 0
+        # Whatever a synchronous reader already has in hand predates this change, so
+        # it goes now.  The drop above covers blocks the library has yet to deliver
+        # and cannot reach one already queued, which a reader would otherwise take as
+        # a measurement of the new gain.
+        if self._sync_sink is not None:
+            self._sync_sink.clear()
         self._gain_db = self._write_gain(wanted)
         return self._gain_db
 
@@ -621,8 +829,27 @@ class SdrplayDevice(SdrDevice):
                        for baseband in range(MIN_GAIN_REDUCTION_DB,
                                              MAX_GAIN_REDUCTION_DB + 1)})
 
-    @staticmethod
-    def _knobs_for(gain_db: float) -> tuple[int, int]:
+    @classmethod
+    def _gain_ladder(cls,
+                     conversion_gain_db: float = HF_CONVERSION_GAIN_DB) -> list[float]:
+        """Every gain this receiver reaches on HF, in real dB, highest first.
+
+        The reduction ladder subtracted from the conversion gain, and rounded to whole
+        decibels, so that an operator types a round number and the round trip through
+        `_knobs_for` returns the same rung.
+
+        This has to be the scale `set_gain_db` answers on, because a gain sweep files
+        each reading under whatever that returns and then looks those keys up in this
+        list.  Returning the hardware's figure while this held the negative of a
+        reduction put every reading under a key no lookup would ever ask for, so a
+        sweep kept only its first gain and reported that as the answer.
+        """
+        return [float(round(conversion_gain_db - total))
+                for total in cls._gain_reduction_ladder()]
+
+    @classmethod
+    def _knobs_for(cls, gain_db: float,
+                   conversion_gain_db: float = HF_CONVERSION_GAIN_DB) -> tuple[int, int]:
         """Split one gain into the LNA state and the baseband reduction to write.
 
         Most totals are reachable more than one way, and this takes the least LNA
@@ -631,16 +858,16 @@ class SdrplayDevice(SdrDevice):
         reduction taken at baseband does not.  The receiver reports an overload event
         when that choice is wrong for the signal present.
         """
-        total = int(round(-gain_db))
+        total = int(round(conversion_gain_db - gain_db))
         for lna_state, lna_reduction in enumerate(HF_LNA_GAIN_REDUCTION_DB):
             baseband = total - lna_reduction
             if MIN_GAIN_REDUCTION_DB <= baseband <= MAX_GAIN_REDUCTION_DB:
                 return lna_state, baseband
+        ladder = cls._gain_ladder(conversion_gain_db)
         raise ValueError(
-            f'A gain of {gain_db:.0f} dB needs a total reduction of {total} dB, and '
-            f'this receiver reaches {SdrplayDevice._gain_reduction_ladder()[0]} '
-            f'through {SdrplayDevice._gain_reduction_ladder()[-1]} dB.  Pick a gain '
-            f'from supported_gains_db.')
+            f'A gain of {gain_db:.0f} dB needs a total reduction of {total} dB, which '
+            f'is outside what this receiver reaches.  It runs from {ladder[-1]:.0f} to '
+            f'{ladder[0]:.0f} dB.  Pick a gain from supported_gains_db.')
 
     @staticmethod
     def _rate_plan(iq_sample_rate: int) -> tuple[float, int]:
@@ -755,7 +982,7 @@ class SdrplayDevice(SdrDevice):
         running to update.  Afterwards they go through `sdrplay_api_Update`, which is
         what makes a gain change during a stream the supported order.
         """
-        lna_state, baseband = self._knobs_for(gain_db)
+        lna_state, baseband = self._knobs_for(gain_db, self._conversion_gain_db)
         gain = self._params.rxChannelA.contents.tunerParams.gain
         gain.gRdB = baseband
         gain.LNAstate = lna_state
@@ -763,34 +990,73 @@ class SdrplayDevice(SdrDevice):
             self._library.update(
                 int(self._device.dev), int(self._device.tuner),
                 api.sdrplay_api_ReasonForUpdateT.sdrplay_api_Update_Tuner_Gr)
-        return self._reported_gain(gain_db, lna_state, baseband)
+        self._check_reported_gain(gain_db, lna_state, baseband)
+        return gain_db
 
-    def _reported_gain(self, wanted_db: float, lna_state: int,
-                       baseband: int) -> float:
-        """The receiver's own figure, and a warning when the table disagrees with it.
+    def _learn_conversion_gain(self) -> float:
+        """The gain this receiver has before any reduction, asked of the receiver.
 
-        `gainVals.curr` is an output parameter, so this is what the hardware says its
-        gain is rather than what the vendored table predicts.  The two are compared
-        once per session: a table that has gone stale then reports itself instead of
-        shifting every measurement by a fixed amount with nothing to notice.
+        `gainVals.curr` is what the library says the gain is now, and the reduction
+        just written is known, so the sum of the two is the fixed part.  That fixed
+        part is what the whole ladder is measured from, and it belongs to this unit at
+        this frequency rather than to SDRplay receivers in general.
+
+        Asked once and kept for the session.  A ladder that moved under a gain sweep
+        would change what each of its readings was filed under half way through.
+
+        A library that reports nothing leaves the fallback in place, which is the one
+        case where no better answer exists.  It is logged rather than raised, because
+        a figure that is a decibel or two out costs an operator a level offset they
+        recalibrate anyway.
+        """
+        reported = self.reported_gain_db
+        if not reported:
+            logger.info(
+                'The receiver did not report its own gain within %.1f seconds, so '
+                'levels use the conversion gain measured on one RSP1B at 3530 kHz.  '
+                'Expect the gain figures to be a decibel or two out on other bands.',
+                _GAIN_REPORT_WAIT_SECONDS)
+            return HF_CONVERSION_GAIN_DB
+        gain = self._params.rxChannelA.contents.tunerParams.gain
+        learned = reported + HF_LNA_GAIN_REDUCTION_DB[gain.LNAstate] + gain.gRdB
+        logger.debug('This receiver has %.1f dB of gain before reduction at %.4f MHz.',
+                     learned, self._tuned_hz / 1e6)
+        return learned
+
+    def _check_reported_gain(self, wanted_db: float, lna_state: int,
+                             baseband: int) -> None:
+        """Compare the hardware's own figure against the table, and warn once.
+
+        `gainVals.curr` is an output parameter, so this is what the receiver says its
+        gain is rather than what the vendored table and the conversion gain predict.
+        A disagreement means one of those is wrong for this band or this unit, and
+        every level the station reports is then out by the difference.
+
+        This only reports, and the caller returns the predicted figure regardless.  The
+        two are on the same scale now, so the hardware's would be the better answer
+        were it not that a gain sweep files readings under it and looks them up in
+        `supported_gains_db`.  A figure half a decibel off a rung is a key that list
+        does not contain, and the reading is then dropped rather than used.
 
         The receiver fills the figure in as it applies the change, so a zero means the
-        change has not taken effect yet and the predicted figure is the better answer.
+        change has not taken effect yet and there is nothing to compare.
         """
         gain = self._params.rxChannelA.contents.tunerParams.gain
         reported = float(gain.gainVals.curr)
-        if not reported:
-            return wanted_db
-        if not self._gain_table_checked:
-            self._gain_table_checked = True
-            if round(reported) != round(wanted_db):
-                logger.warning(
-                    'The receiver reports %.1f dB of gain at LNA state %d and %d dB '
-                    'of baseband reduction.  The gain table in buzz.sdrplay_device '
-                    'predicts %.1f dB.  The hardware figure is the one in use.  The '
-                    'table may be out of date for this receiver or this band.',
-                    reported, lna_state, baseband, wanted_db)
-        return reported
+        # Only while the library is running, because only then has it just applied what
+        # was written.  Otherwise the field still holds the answer to an older question,
+        # and comparing the new prediction against it reports a disagreement that is
+        # only the two being about different settings.
+        if not self._initialized or not reported or self._gain_table_checked:
+            return
+        self._gain_table_checked = True
+        if abs(reported - wanted_db) > _GAIN_DISAGREEMENT_DB:
+            logger.warning(
+                'The receiver reports %.1f dB of gain at LNA state %d and %d dB of '
+                'baseband reduction, where this program predicts %.1f dB.  Levels will '
+                'read about %.1f dB out.  The LNA gain table in buzz.sdrplay_device is '
+                'wrong for this receiver or this band.',
+                reported, lna_state, baseband, wanted_db, reported - wanted_db)
 
     def _begin(self, block_samples: int) -> None:
         """Hand the library its callbacks and start it delivering.
@@ -803,6 +1069,11 @@ class SdrplayDevice(SdrDevice):
         self._block_values = block_samples * VALUES_PER_FRAME
         self._pending = []
         self._pending_values = 0
+        # How many blocks make up the settling ceiling, at this block size and rate.
+        # This follows the block size rather than being fixed, so a different block
+        # size does not silently change how long the device waits.
+        self._settle_blocks = max(1, ceil(
+            _GAIN_CHANGE_SETTLE_SECONDS * self._iq_sample_rate / block_samples))
         if self._initialized:
             # No caller reaches this today, and what keeps it that way sits in three
             # other methods: start_stream refuses when either sink is set, stop_stream
@@ -818,13 +1089,26 @@ class SdrplayDevice(SdrDevice):
             StreamACbFn=self._stream_callback,
             StreamBCbFn=api.sdrplay_api_StreamCallback_t(),
             EventCbFn=self._event_callback)
-        self._library.init(int(self._device.dev), self._callbacks)
+        with self._overload_lock:
+            self._overload_status = OverloadStatus(False, self._overload_status.detections)
+            self._accept_overload_events = True
+        try:
+            self._library.init(int(self._device.dev), self._callbacks)
+        except Exception:
+            with self._overload_lock:
+                self._accept_overload_events = False
+            raise
         self._initialized = True
 
     def _end(self) -> bool:
         """Stop the library delivering, and say whether its uninit returned."""
         if not self._initialized:
             return True
+        # An RSP1B trace with API 3.15 showed clearance during Uninit, when Update
+        # rejected the acknowledgement.  See docs-notebook/sdrplay-gain.md.
+        # Stop accepting events first so teardown cannot spoil the next capture.
+        with self._overload_lock:
+            self._accept_overload_events = False
         self._initialized = False
         return _bounded(lambda: self._library.uninit(int(self._device.dev)),
                         'stopping the receiver')
@@ -842,6 +1126,15 @@ class SdrplayDevice(SdrDevice):
         everything up to and including it predates the new gain and goes in the bin.
         """
         try:
+            self._delivered.set()
+            if self._sink is None and self._sync_sink is None:
+                # Delivered before any consumer attached, which happens between the
+                # open and the first read, because the library is initialized at open
+                # so that it can report its own gain.  A refusal means a consumer had
+                # no room, so this is not one.
+                self._pending = []
+                self._pending_values = 0
+                return
             count = int(num_samples)
             if count <= 0:
                 return
@@ -878,6 +1171,21 @@ class SdrplayDevice(SdrDevice):
         """
         self._produced += 1
         if self._awaiting_gain_change:
+            self._dropped_waiting += 1
+            if self._dropped_waiting < self._settle_blocks:
+                return
+            # The ceiling, rather than the marked block, is what cleared this.  Say so
+            # once: every later gain change will do the same, and a sweep moves the
+            # gain hundreds of times.
+            self._awaiting_gain_change = False
+            if not self._gain_flag_reported:
+                self._gain_flag_reported = True
+                logger.warning(
+                    'The receiver delivered %d blocks after a gain change without '
+                    'marking one as changed, so this discards by count instead.  '
+                    'Measurements stay correct.  The first block after a change may '
+                    'predate it, which matters to a gain sweep and to nothing else.',
+                    self._dropped_waiting)
             return
         block = IqBlock(raw=raw, fmt=SDRPLAY_FORMAT, arrived_at=monotonic(),
                         index=self._produced)
@@ -885,22 +1193,36 @@ class SdrplayDevice(SdrDevice):
         if sink is None or not sink.offer(block):
             self._blocks_refused += 1
 
-    def _on_event(self, event_id: int, _tuner: int, params: object,
+    def _on_event(self, event_id: int, tuner: int, params: object,
                   _context: object) -> None:
         """Take one event from the library, on the library's own thread.
 
-        Nothing here is allowed to raise, for the same reason `_on_stream` may not.
-        Counting is all this does, and whoever reads the counter on an ordinary thread
-        reports it, because logging can block on I/O.
+        Exceptions must stay inside this C callback.  Save failures for the caller
+        that reads overload_status, and keep logging off the callback thread.
+
+        The API requires an acknowledgement for both detection and clearance events.
+        SDRplay's examples/sdrplay_api_example.c sends it from EventCallback with the
+        tuner supplied by the event.  Release our state lock before that API call.
         """
         try:
-            if event_id == api.sdrplay_api_EventT.sdrplay_api_PowerOverloadChange:
-                overload = params.contents.powerOverloadParams.powerOverloadChangeType
-                if overload == (api.sdrplay_api_PowerOverloadCbEventIdT
-                                .sdrplay_api_Overload_Detected):
-                    self._overloads += 1
-        except Exception:  # pragma: no cover -- the last resort in a C callback
-            pass
+            if event_id != api.sdrplay_api_EventT.sdrplay_api_PowerOverloadChange:
+                return
+            overload = params.contents.powerOverloadParams.powerOverloadChangeType
+            active = overload == api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Detected
+            with self._overload_lock:
+                if not self._accept_overload_events:
+                    return
+                self._overload_status = OverloadStatus(
+                    active=active,
+                    detections=self._overload_status.detections + int(active))
+            self._library.update(
+                int(self._device.dev), tuner,
+                api.sdrplay_api_ReasonForUpdateT.sdrplay_api_Update_Ctrl_OverloadMsgAck)
+        except Exception as exc:
+            with self._overload_lock:
+                # Uninit can start after the callback releases the lock to acknowledge.
+                if self._accept_overload_events:
+                    self._overload_error = str(exc)
 
 
 class _SyncBlocks:
@@ -922,6 +1244,20 @@ class _SyncBlocks:
             return True
         except queue.Full:
             return False
+
+    def clear(self) -> None:
+        """Throw away whatever is waiting, because it describes the old settings.
+
+        Called from the thread that moves the gain rather than from the callback, so
+        this races the callback's own put.  A block that arrives between the two is
+        dropped by the `grChanged` wait instead, which is the check that covers
+        everything the library has not delivered yet.
+        """
+        while True:
+            try:
+                self._queue.get_nowait()
+            except queue.Empty:
+                return
 
     def take(self, timeout: float) -> IqBlock | None:
         """The next block, or None once nothing is arriving."""

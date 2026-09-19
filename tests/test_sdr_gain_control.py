@@ -140,6 +140,8 @@ class TestTheSweepStillDrainsWhateverItReads:
                 drained.append('set')
                 return gain_db
 
+            floor_margin_db = 0.0
+
             def drain(self):
                 drained.append('drain')
                 return 0

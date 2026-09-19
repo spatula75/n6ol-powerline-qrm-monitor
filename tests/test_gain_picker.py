@@ -59,14 +59,14 @@ async def _wait_until(pilot, condition, description, timeout=5.0):
 class TestReadingTheGainsOffTheReceiver:
     def test_it_returns_the_receivers_own_list_sorted(self):
         with _offering() as asked:
-            gains = supported_gains(RTLSDR_VALUES)
-        assert asked.call_args.args[0] == 0
+            gains = supported_gains('rtlsdr', RTLSDR_VALUES)
+        assert asked.call_args.args[0].device_index == 0
         assert gains == sorted(V4_GAINS)
 
     def test_it_reads_the_configured_receiver(self):
         with _offering() as asked:
-            supported_gains(dict(RTLSDR_VALUES, device_index=3))
-        assert asked.call_args.args[0] == 3
+            supported_gains('rtlsdr', dict(RTLSDR_VALUES, device_index=3))
+        assert asked.call_args.args[0].device_index == 3
 
     def test_it_asks_for_the_list_rather_than_a_configured_device(self):
         """The picker wants one read-only answer.
@@ -77,13 +77,13 @@ class TestReadingTheGainsOffTheReceiver:
         offers do not depend on any of that.
         """
         with patch.object(RtlSdrDevice, 'open') as opened, _offering():
-            supported_gains(RTLSDR_VALUES)
+            supported_gains('rtlsdr', RTLSDR_VALUES)
         opened.assert_not_called()
 
     def test_missing_receiver_settings_fall_back_to_the_defaults(self):
         with _offering() as asked:
-            supported_gains({})
-        assert asked.call_args.args[0] == 0
+            supported_gains('rtlsdr', {})
+        assert asked.call_args.args[0].device_index == 0
 
 
 class TestTheDialogOffersWhatTheTunerHas:
@@ -98,7 +98,7 @@ class TestTheDialogOffersWhatTheTunerHas:
                                         side_effect=error) if error
                            else _offering(gains))
                 with patcher:
-                    dialog = GainPickerDialog(SPEC, current, RTLSDR_VALUES)
+                    dialog = GainPickerDialog(SPEC, current, 'rtlsdr', RTLSDR_VALUES)
                     app.push_screen(dialog)
                     await _wait_until(
                         pilot,
@@ -180,7 +180,7 @@ class TestWhenTheReceiverCannotBeReached:
             async with app.run_test() as pilot:
                 with patch.object(RtlSdrDevice, 'supported_gains',
                            side_effect=RuntimeError('nothing there')):
-                    dialog = GainPickerDialog(SPEC, 40.2, RTLSDR_VALUES)
+                    dialog = GainPickerDialog(SPEC, 40.2, 'rtlsdr', RTLSDR_VALUES)
                     app.push_screen(dialog, lambda value: result.update(value=value))
                     await _wait_until(pilot, lambda: dialog._unreachable,
                                       'the dialog to report the receiver missing')
@@ -200,7 +200,7 @@ class TestWhenTheReceiverCannotBeReached:
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
                 with _offering():
-                    dialog = GainPickerDialog(SPEC, 40.2, RTLSDR_VALUES)
+                    dialog = GainPickerDialog(SPEC, 40.2, 'rtlsdr', RTLSDR_VALUES)
                     app.push_screen(dialog, lambda value: result.update(value=value))
                     await _wait_until(pilot, lambda: bool(dialog._gains),
                                       'the list to fill')
@@ -231,7 +231,7 @@ class TestWhenTheReceiverCannotBeReached:
         that finishes in that instant still resumes and reaches a screen whose widgets
         have gone.  Called directly, the way the device picker's own test does.
         """
-        dialog = GainPickerDialog(SPEC, 40.2, RTLSDR_VALUES)
+        dialog = GainPickerDialog(SPEC, 40.2, 'rtlsdr', RTLSDR_VALUES)
         dialog._gains = list(V4_GAINS)
         dialog._show_gains()
         dialog._give_up('no receiver')
@@ -491,7 +491,7 @@ class TestLeavingTheMeterDoesNotFreezeTheUi:
         source = Path(
             'lib/buzz/setup/screens/gain_calibration.py').read_text(encoding='utf-8')
         assert 'def _open_sweep_then_release(' in source
-        assert 'source.close()' in source
+        assert 'reader.close()' in source
         assert source.count('asyncio.to_thread(') == 1, (
             'the device has to be opened and released by one thread, so that nothing '
             'the event loop does can strand it')

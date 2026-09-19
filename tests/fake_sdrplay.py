@@ -18,6 +18,11 @@ from buzz import sdrplay_api as api
 # change that has not taken effect, so a fake reporting zero must mean it deliberately.
 NO_REPORTED_GAIN = 0.0
 
+# LNA gain reduction by state, the same row the device carries.  Restated rather than
+# imported, so that a test of the device's table against the hardware is not checking
+# the table against itself.  See `tests/test_sdrplay_device.py`.
+HF_LNA_GAIN_REDUCTION_DB = (0, 6, 12, 18, 37, 42, 61)
+
 
 class FakeSdrplayApi:
     """An `SdrplayApi` that remembers what it was told and can deliver samples.
@@ -31,6 +36,7 @@ class FakeSdrplayApi:
     def __init__(self, *, hw_ver: int = api.SDRPLAY_RSP1B_ID,
                  serial: str = '2405203460', devices: int = 1,
                  reported_gain_db: float = NO_REPORTED_GAIN,
+                 conversion_gain_db: float | None = None,
                  api_version: float = api.API_VERSION) -> None:
         self.calls: list[str] = []
         self.callbacks: api.sdrplay_api_CallbackFnsT | None = None
@@ -46,6 +52,11 @@ class FakeSdrplayApi:
         self.fail_on: dict[str, Exception] = {}
         self._api_version = api_version
         self._reported_gain_db = reported_gain_db
+        # When set, the fake answers the way a receiver does: its gain is this figure
+        # less whatever reduction was written, so a device that adds the reduction back
+        # recovers exactly this.  `reported_gain_db` forces one figure instead, which is
+        # how a test makes the hardware and the table disagree on purpose.
+        self._conversion_gain_db = conversion_gain_db
 
         # The library owns this memory and hands back a pointer into it, so the fake
         # has to hold the parts alive for as long as the device holds the whole.
@@ -105,6 +116,18 @@ class FakeSdrplayApi:
         self.callbacks = callbacks
         self.initialised = True
         self.started.set()
+        # A real library fills this in as it applies the settings it was given, which
+        # is before anything has had a chance to call update.
+        self._fill_gain_values()
+        # And it calls straight away.  A device waits for that before it reads the
+        # gain, because a library that has called has demonstrably applied its
+        # settings, so a fake that never calls would leave every test waiting out that
+        # timeout.
+        #
+        # With no samples, so that a device already holding a sink does not receive one
+        # block of this fake announcing itself.  A real library would deliver samples
+        # here and the device would treat them as the stream, which they would be.
+        self.deliver([], [])
 
     def uninit(self, handle: int) -> None:
         self._record('uninit')
@@ -115,8 +138,7 @@ class FakeSdrplayApi:
         self._record('update')
         assert self.initialised, 'update() was called before init()'
         self.updates.append((handle, tuner, reason))
-        if self._reported_gain_db:
-            self.gain.gainVals.curr = self._reported_gain_db
+        self._fill_gain_values()
 
     # ------------------------------------------------------- what a test drives
 
@@ -146,8 +168,28 @@ class FakeSdrplayApi:
         return self._dev_params.fsFreq.fsHz
 
     def set_reported_gain_db(self, gain_db: float) -> None:
-        """Make the receiver report this gain from the next update onwards."""
+        """Make the receiver report this one gain, whatever reduction is written.
+
+        For a test that wants the hardware and the gain table to disagree.  A receiver
+        answering like this is one whose table is wrong, which is what the device warns
+        about.
+        """
         self._reported_gain_db = gain_db
+        self._fill_gain_values()
+
+    def set_conversion_gain_db(self, conversion_gain_db: float) -> None:
+        """Make the receiver answer the way a real one does, from this fixed gain."""
+        self._reported_gain_db = NO_REPORTED_GAIN
+        self._conversion_gain_db = conversion_gain_db
+        self._fill_gain_values()
+
+    def _fill_gain_values(self) -> None:
+        """Write gainVals.curr, as the library does when it applies a gain."""
+        if self._reported_gain_db:
+            self.gain.gainVals.curr = self._reported_gain_db
+        elif self._conversion_gain_db is not None:
+            reduction = HF_LNA_GAIN_REDUCTION_DB[self.gain.LNAstate] + self.gain.gRdB
+            self.gain.gainVals.curr = self._conversion_gain_db - reduction
 
     def deliver(self, i_values: list[int], q_values: list[int], *,
                 gr_changed: bool = False) -> None:

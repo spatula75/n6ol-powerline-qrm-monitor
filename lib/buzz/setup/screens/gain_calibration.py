@@ -20,7 +20,7 @@ from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.widgets import Button, Static
 
-from buzz.config import RtlSdrConfig
+from buzz.config import receiver_settings_from
 from buzz.gain_sweep import GainSweep, ProgressCallback, SweepResult
 from buzz.setup.schema import SectionValues
 from buzz.setup.screens.base import CANCELLED, ScopeModalScreen
@@ -30,42 +30,45 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Told the dialog that the receiver answered: the sweep now built over it, and how
-# many gains the tuner reported.  Both figures belong to the device, so nothing can
-# state them before it is open.
-OpenedCallback = Callable[[GainSweep, int], None]
+# Told the dialog that the receiver answered: the sweep now built over it, and the
+# gains the receiver reported.  Both belong to the device, so nothing can state them
+# before it is open.  The ladder rather than a count of it, because how long a sweep
+# takes depends on how far apart the rungs are as well as how many there are.
+OpenedCallback = Callable[[GainSweep, list[float]], None]
 
 
-def open_sweep(rtlsdr_values: SectionValues) -> tuple['SweepReader', GainSweep]:
-    """Open the receiver and build a sweep over it.
+def open_sweep(source: str,
+               values: SectionValues) -> tuple['SweepReader', GainSweep]:
+    """Open whichever receiver `source` names and build a sweep over it.
 
     A SweepReader rather than the RtlSdrSource the monitor uses.  It reads
     synchronously on one thread, so changing gain cannot race a capture thread that
     is driving libusb's event loop, which is what left a receiver wedged and the
-    program hung.  See its own docstring.
+    program hung.  See its own docstring.  An SDRplay has no synchronous read at all,
+    so its own SweepReader runs a stream and takes one block from it.
 
     The imports sit inside the function for the reason buzz.main.open_live_source
-    gives: a station using a sound card should never load pyrtlsdr, which resolves a
-    symbol as it imports and so fails at import rather than at first call.
+    gives: a station using a sound card should never load a driver for hardware it does
+    not own.
 
     Whatever this raises carries a message written for whoever is standing at the
-    radio, because RtlSdrDevice.open rewords libusb's own wording.  The dialog shows it
+    radio, because each device rewords its own driver's wording.  The dialog shows it
     rather than letting a traceback through.
 
     The device is closed again if anything after the open raises, because nothing else
-    would.  RtlSdrDevice.open covers its own handle now, so what is left for this guard
-    is the read size SweepReader refuses and whatever building the sweep does.  Either
-    one leaves a receiver no object owns and no atexit hook covers.
+    would.  Each `open` covers its own handle, so what is left for this guard is the
+    read size SweepReader refuses and whatever building the sweep does.  Either one
+    leaves a receiver no object owns and no atexit hook covers.
     """
     from buzz.sdr import SweepReader
-    from buzz.sdr_device import RtlSdrDevice
+    from buzz.sdr_device import open_receiver
 
-    settings = RtlSdrConfig(**rtlsdr_values)
-    device = RtlSdrDevice.open(
-        settings.device_index,
-        tuned_hz=settings.frequency_hz + settings.tuning_offset_hz,
-        gain_db=settings.gain_db,
-        iq_sample_rate=settings.iq_sample_rate)
+    settings = receiver_settings_from(source, values)
+    if settings is None:
+        raise RuntimeError(
+            f'[audio] source is {source!r}, and a gain sweep needs a receiver.  Set it '
+            f'to a receiver first, then calibrate its gain.')
+    device = open_receiver(source, settings)
     try:
         reader = SweepReader(device)
         return reader, GainSweep(reader, settings.arc_headroom_db)
@@ -74,7 +77,8 @@ def open_sweep(rtlsdr_values: SectionValues) -> tuple['SweepReader', GainSweep]:
         raise
 
 
-def _open_sweep_then_release(rtlsdr_values: SectionValues, on_open: OpenedCallback,
+def _open_sweep_then_release(source: str, values: SectionValues,
+                             on_open: OpenedCallback,
                              on_progress: ProgressCallback) -> tuple[SweepResult, bool]:
     """Open the receiver, sweep it, and release it, all on the calling thread.
 
@@ -107,9 +111,9 @@ def _open_sweep_then_release(rtlsdr_values: SectionValues, on_open: OpenedCallba
     longer inside libusb only hangs the program, so this can be False after an
     otherwise perfect sweep.
     """
-    source, sweep = open_sweep(rtlsdr_values)
+    reader, sweep = open_sweep(source, values)
     try:
-        on_open(sweep, len(source.supported_gains_db))
+        on_open(sweep, reader.supported_gains_db)
         result = sweep.run(on_progress)
     finally:
         # Assigned here and returned below rather than built into the return above,
@@ -119,7 +123,7 @@ def _open_sweep_then_release(rtlsdr_values: SectionValues, on_open: OpenedCallba
         # block inside libusb and never return.  See its own docstring; the bound
         # lives there because every other path that closes a receiver needs it too,
         # the atexit hook among them.
-        released = source.close()
+        released = reader.close()
         if not released:
             logger.warning(
                 'The receiver was still held after the sweep, so the next attempt to '
@@ -183,9 +187,10 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
         ('escape', 'cancel', 'Cancel'),
     ]
 
-    def __init__(self, rtlsdr_values: SectionValues) -> None:
+    def __init__(self, source: str, values: SectionValues) -> None:
         super().__init__()
-        self._rtlsdr_values = rtlsdr_values
+        self._source = source
+        self._values = values
         self._sweep: GainSweep | None = None
         self._result: SweepResult | None = None
         self._offers_gain = False
@@ -231,7 +236,7 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
         loop = asyncio.get_running_loop()
         try:
             result, released = await asyncio.to_thread(
-                _open_sweep_then_release, self._rtlsdr_values,
+                _open_sweep_then_release, self._source, self._values,
                 self._opening_reporter(loop), self._progress_reporter(loop))
         except Exception as exc:
             opened = self._sweep is not None
@@ -293,27 +298,33 @@ class GainCalibrationDialog(ScopeModalScreen[Any]):
         answers at all, and the sweep to cancel does not exist yet, so the thread
         checks whether one was asked for as soon as it has something to ask.
         """
-        def opened(sweep: GainSweep, gain_count: int) -> None:
+        def opened(sweep: GainSweep, gains: list[float]) -> None:
             self._sweep = sweep
             if self._cancel_requested:
                 sweep.cancel()
             try:
                 loop.call_soon_threadsafe(self._say_what_the_sweep_will_do, sweep,
-                                          gain_count)
+                                          gains)
             except RuntimeError:
                 pass
 
         return opened
 
-    def _say_what_the_sweep_will_do(self, sweep: GainSweep, gain_count: int) -> None:
+    def _say_what_the_sweep_will_do(self, sweep: GainSweep, gains: list[float]) -> None:
         """Replace the opening advice with the figures the device has now supplied.
 
-        Both belong to the device: a V4 has 29 steps and another tuner has its own
-        count, so the opening text cannot state either of them before it is open.
+        These belong to the device: a V4 has 29 gains and an RSP has 101, so the
+        opening text cannot state either before the receiver is open.
+
+        It says the sweep narrows rather than quoting one gain count, because the two
+        phases visit different numbers of gains and a single figure would be wrong for
+        both.  What an operator is deciding here is whether to wait, so the duration is
+        the part that has to be right.
         """
         self._set('#instructions', self._instructions(
-            f'each of the {gain_count} gains the tuner offers, {sweep.passes} times '
-            f'over, which takes {self._duration_phrase(sweep.estimated_seconds(gain_count))}'))
+            f'the {len(gains)} gains the receiver offers, coarsely at first and then '
+            f'closely around the answer, which takes '
+            f'{self._duration_phrase(sweep.estimated_seconds(gains))}'))
 
     def _progress_reporter(self, loop: asyncio.AbstractEventLoop) -> ProgressCallback:
         """A progress callback the sweep's own thread can use without waiting.

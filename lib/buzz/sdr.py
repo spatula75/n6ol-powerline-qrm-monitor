@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from buzz.sampler import LevelStream, RingBufferPipeline
-from buzz.sdr_device import VALUES_PER_FRAME, IqBlock, SdrDevice
+from buzz.sdr_device import VALUES_PER_FRAME, IqBlock, OverloadStatus, SdrDevice
 
 if TYPE_CHECKING:
     from buzz.iq import IqToAudio
@@ -138,6 +138,20 @@ _HEALTH_INTERVAL_SECONDS = 60.0
 # tens of parts per million, so 500 leaves room for a poor one and still catches a
 # loss, which runs to thousands.  See RtlSdrSource.clock_drift_seconds.
 _DRIFT_PPM_LIMIT = 500
+
+
+def _what_the_drift_means(moved: float) -> str:
+    """Which fault a drift of this sign is, and what to do about it.
+
+    Split out so the wording can be read and tested without a receiver, and so the
+    two cases sit side by side where they can be compared.
+    """
+    if moved > 0:
+        return ('Less audio arrived than that interval holds, so samples were lost.  '
+                'Check what else on this machine is taking the CPU.')
+    return ('More audio arrived than that interval holds, so nothing was lost and '
+            'the receiver delivered a backlog in one burst.  Expect it once at '
+            'startup, and look at what stalled the receiver if it repeats.')
 
 
 class RtlSdrSource:
@@ -377,6 +391,27 @@ class SweepReader:
         return self._device.gain_db
 
     @property
+    def overload_status(self) -> OverloadStatus | None:
+        """Hardware overload reports, or None when the receiver provides none."""
+        return self._device.overload_status
+
+    @property
+    def reported_gain_db(self) -> float | None:
+        """What the receiver says its gain is, or None where it says nothing.
+
+        Distinct from `gain_db`, which falls back to the figure that was written when
+        the hardware has none to offer.  Nothing in the sweep reads this: it is here so
+        that `tools/sdr_gain_probe` can show the fallback and the hardware side by side,
+        which is how a gain that never reaches the receiver is told from one that does.
+        """
+        return getattr(self._device, 'reported_gain_db', None)
+
+    @property
+    def floor_margin_db(self) -> float:
+        """How far above the knee this receiver puts the floor bound, in dB."""
+        return self._device.floor_margin_db()
+
+    @property
     def blocks_to_discard_after_gain_change(self) -> int:
         """Blocks to read and throw away after moving the gain.
 
@@ -499,7 +534,9 @@ class RtlSdrPipeline(RingBufferPipeline):
         self._health_checked_at = clock()
         self._clipped_reported = 0
         self._saturated_reported = 0
-        self._drift_reported = 0.0
+        # None until the first report, which takes the baseline rather than assuming
+        # the stream started at zero drift.  See _warn_about_drift.
+        self._drift_reported: float | None = None
 
     @property
     def clipped_samples(self) -> int:
@@ -636,17 +673,42 @@ class RtlSdrPipeline(RingBufferPipeline):
         so "any movement" would report every minute of a healthy run.  What is
         measured here is the change since the last report rather than the total, so a
         steady offset settles instead of accumulating into a warning.
+
+        The first interval sets the baseline instead of being measured against zero,
+        because a receiver's own startup falls entirely inside it.
+
+        The two directions are different faults and the message says which.  Less
+        audio than the interval means samples went missing, and a machine with
+        nothing left to give is the usual cause.  More audio than the interval
+        cannot be a loss: it is a run of blocks delivered faster than real time,
+        which is what a receiver does when it hands over a backlog it built up
+        while something was holding it back.
         """
         drift = self._source.clock_drift_seconds
+        if self._drift_reported is None:
+            # The first interval is the baseline rather than a measurement.  A receiver
+            # fills its pipeline as it starts and delivers that first stretch faster
+            # than real time, so the drift accumulated by the end of the first interval
+            # describes the startup and not the run.  Measured on an SDRplay RSP1B, it
+            # came to 37 ms, which is twenty times what a crystal explains and entirely
+            # gone by the next interval.
+            #
+            # What this gives up is a loss during the first interval, which goes
+            # unreported.  A rate that is wrong still shows up, because it keeps
+            # moving and this only absorbs what had already happened.
+            self._drift_reported = drift
+            logger.debug('Receiver clock baseline is %+.0f ms after the first %.0f '
+                         'seconds.', drift * 1e3, elapsed)
+            return
         moved = drift - self._drift_reported
         self._drift_reported = drift
         if abs(moved) <= elapsed * _DRIFT_PPM_LIMIT / 1e6:
             return
         logger.warning(
             'The receiver and system clocks moved %+.0f ms apart over the last %.0f '
-            'seconds, which is more than a crystal explains.  Samples were probably '
-            'lost, so levels and grid frequency from this period are suspect.  Check '
-            'what else on this machine is taking the CPU.', moved * 1e3, elapsed)
+            'seconds, which is more than a crystal explains.  %s  Levels and grid '
+            'frequency from this period are suspect.',
+            moved * 1e3, elapsed, _what_the_drift_means(moved))
 
     def _append_in_chunks(self, audio: np.ndarray) -> None:
         """Hand the audio over in pieces of exactly CHUNK_SIZE, holding any remainder.

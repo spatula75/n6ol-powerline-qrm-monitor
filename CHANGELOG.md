@@ -8,6 +8,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- The gain probe reports exact I/Q endpoint counts alongside their percentage and
+  SDRplay hardware overload state. A percentage that rounds to zero no longer hides
+  a small number of endpoint hits.
 - `lib/buzz/sdrplay_api.py`, ctypes declarations for the SDRplay Hardware API, and
   `tools/generate_sdrplay_api.py`, which writes that module from SDRplay's own C
   headers.  The headers are vendored under `vendor/sdrplay-api-3.15/` with their BSD
@@ -34,12 +37,35 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   device refuses the unsafe order outright rather than leaving it to a convention.
 
 ### Changed
+- Gain selection aims the noise floor where each receiver can afford to put it. An
+  SDRplay puts the band noise 10 dB above the receiver's own, which is what the setup
+  notes have always told operators to aim for, and its reported floor then reads under
+  half a decibel high instead of three. An RTL-SDR keeps the knee itself, because 8
+  bits spend most of their range on arc headroom and cannot afford the climb. The
+  headroom and overload bounds still take priority over either. The SDRplay's
+  uncalibrated level offset starts at 11 dB minus receiver gain. Each device driver
+  owns both figures.
+- Automatic gain selection no longer writes a level calibration. It sets the gain and
+  leaves `calibrated_offset_db` unset, because each device already estimates the offset
+  from its own gain, so storing that estimate moved the reported level by nothing while
+  making an estimate look like a measurement. The setup program keeps marking it
+  `(estimated)` until a real calibration replaces it.
+- A hardware overload during gain selection now triggers two immediate checks at the
+  same gain. At least two overloaded intervals out of three make that gain and every
+  higher gain unsafe. One isolated report is recorded without imposing a gain limit,
+  and confirmation samples do not receive extra weight in the noise-floor fit.
+- The gain probe describes measured level changes without claiming that the level
+  curve proves whether the receiver applied the gain. Signals can change between rows.
 - The tuner gain picker reads the list of steps without configuring the receiver.
   Opening a configured device to answer a read-only question writes a sample rate, a
   tuning, an AGC setting and a gain, and it logged that the operator's gain had been
   snapped to a step while the operator was part way through choosing that gain.
 
 ### Fixed
+- The SDRplay driver acknowledges both overload detection and clearance events, as
+  the API requires. The probe reports acknowledgement failures instead of trusting
+  further overload readings. Shutdown events no longer trigger acknowledgements after
+  the API has stopped accepting them, or leave a failure for the next capture.
 - A receiver was left open when configuring it failed. The atexit hook that closes one
   is registered only once configuring has succeeded, so a tuner that stopped answering
   part way through left the device held by a process with no object able to close it,

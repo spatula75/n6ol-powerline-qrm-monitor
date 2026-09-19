@@ -771,7 +771,10 @@ class IqEventRecorder(AbstractEventRecorder):
     CHANNELS = 2
     KIND = 'raw IQ capture'
     FILENAME_SUFFIX = '-iq'
-    RATE_SETTING = '[rtlsdr] iq_sample_rate'
+    # Set per instance rather than per class, because which section holds the rate
+    # depends on which receiver is in use, and a message naming the wrong one sends
+    # somebody to edit a setting the program never read.
+    RATE_SETTING = '[audio] source'
     # No fade.  See the class docstring; fade_ramp(0) is empty, so the machinery in
     # AbstractEventRecorder holds nothing back and every write goes straight out.
     FADE_SECONDS = 0.0
@@ -779,7 +782,17 @@ class IqEventRecorder(AbstractEventRecorder):
     def __init__(self, pipeline: RingBufferPipeline, config: BuzzConfig,
                  charged_wait_seconds: float) -> None:
         recording = config.recording
-        settings = config.rtlsdr
+        # Whichever receiver produced these samples, rather than the RTL-SDR by name.
+        # Reading the wrong section would label every capture with another receiver's
+        # frequency, gain and sample rate, and nothing in the file would say so.
+        settings = config.receiver_settings
+        if settings is None:
+            raise ValueError(
+                'An IQ recording needs a receiver, and [audio] source names '
+                f'{config.audio.source!r}.  A sound card produces no IQ.  This is a '
+                'fault in this program rather than in the configuration, because '
+                'BuzzConfig.record_iq already answers no for a sound card.')
+        self.RATE_SETTING = f'[{config.audio.source}] iq_sample_rate'
         # Before the base constructor, which shapes its first empty frame buffer from
         # these.  Per instance rather than per class, unlike every other recorder's,
         # because the answer belongs to the hardware that filled the buffer.

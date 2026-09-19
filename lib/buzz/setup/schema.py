@@ -154,12 +154,16 @@ def is_visible(schema: dict[str, Any], section: str, field: str,
     and is overwritten at startup when the source is a receiver, so it has to read
     audio.source to know whether it applies at all.  This is the same shape
     section_is_visible already uses, rather than a second spelling of one idea.
+
+    `equals` may be a list, which means any one of those values.  recording.record_iq
+    is the case: IQ comes from a receiver and there is more than one kind, so the gate
+    has to name each rather than being written again per receiver.
     """
     condition = field_schema(schema, section, field).get('x-visible-when')
     if condition is None:
         return True
     where = values.get(condition.get('section', section), {})
-    return where.get(condition['field']) == condition['equals']
+    return _matches(where.get(condition['field']), condition['equals'])
 
 
 def section_is_visible(schema: dict[str, Any], section: str,
@@ -175,7 +179,19 @@ def section_is_visible(schema: dict[str, Any], section: str,
     condition = schema['properties'][section].get('x-visible-when')
     if condition is None:
         return True
-    return values.get(condition['section'], {}).get(condition['field']) == condition['equals']
+    where = values.get(condition['section'], {})
+    return _matches(where.get(condition['field']), condition['equals'])
+
+
+def _matches(actual: Any, expected: Any) -> bool:
+    """Whether a setting satisfies what an `x-visible-when` condition asks for.
+
+    A list means any one of its values, so a gate that applies to several receivers
+    names them rather than being repeated per receiver.
+    """
+    if isinstance(expected, list):
+        return actual in expected
+    return actual == expected
 
 
 def file_field_names(schema: dict[str, Any], section: str,

@@ -23,7 +23,7 @@ from textual.css.query import NoMatches
 from textual.widgets import OptionList, Static
 from textual.widgets.option_list import Option
 
-from buzz.config import RtlSdrConfig
+from buzz.config import receiver_settings_from
 from buzz.setup.schema import SectionValues
 from buzz.setup.screens.base import CANCELLED, ScopeModalScreen
 
@@ -33,27 +33,30 @@ from buzz.setup.screens.base import CANCELLED, ScopeModalScreen
 UNAVAILABLE = object()
 
 
-def supported_gains(rtlsdr_values: SectionValues) -> list[float]:
-    """Read the gains the receiver offers, and leave it as it was found.
+def supported_gains(source: str, values: SectionValues) -> list[float]:
+    """The gains this receiver offers, leaving it as it was found.
 
     The import sits inside the function for the reason buzz.main.open_live_source
-    gives: a station using a sound card should never load pyrtlsdr, which resolves a
-    symbol as it imports and so fails at import rather than at first call.
+    gives: a station should never load a driver for hardware it does not own.
 
     This asks for the list rather than opening a configured device, because the two
     are different requests.  Configuring writes a sample rate, a tuning, an AGC
     setting and a gain, and it logs that the operator's gain was snapped to a step
-    while the operator is part way through choosing that gain.  The steps a tuner
+    while the operator is part way through choosing that gain.  The steps a receiver
     offers do not depend on any of it.
 
-    The receiver is released rather than held, because holding it would stop the
-    monitor and the sweep from opening it.  Whatever this raises carries wording
-    `RtlSdrDevice` wrote for whoever is standing at the radio.
+    An RTL-SDR has to be opened to answer, and an RSP does not: its ladder comes from
+    the published gain tables rather than from the unit.  Whichever it is, the device
+    is released rather than held, because holding it would stop the monitor and the
+    sweep from opening it.  Whatever this raises carries wording the device wrote for
+    whoever is standing at the radio.
     """
-    from buzz.sdr_device import RtlSdrDevice
+    from buzz.sdr_device import supported_gains as gains_for
 
-    settings = RtlSdrConfig(**(rtlsdr_values or {}))
-    return sorted(RtlSdrDevice.supported_gains(settings.device_index))
+    settings = receiver_settings_from(source, values)
+    if settings is None:
+        return []
+    return sorted(gains_for(source, settings))
 
 
 class GainPickerDialog(ScopeModalScreen[Any]):
@@ -86,12 +89,13 @@ class GainPickerDialog(ScopeModalScreen[Any]):
     """
     BINDINGS = [('escape', 'cancel', 'Cancel')]
 
-    def __init__(self, spec: dict[str, Any], current: Any,
-                 rtlsdr_values: SectionValues | None = None) -> None:
+    def __init__(self, spec: dict[str, Any], current: Any, source: str = '',
+                 receiver_values: SectionValues | None = None) -> None:
         super().__init__()
         self._spec = spec
         self._current = current
-        self._rtlsdr_values = rtlsdr_values or {}
+        self._source = source
+        self._receiver_values = receiver_values or {}
         self._gains: list[float] = []
         # Set when the receiver could not be reached, which changes what Escape means:
         # backing out of a list is a cancel, and leaving a dialog that has no list is
@@ -112,7 +116,8 @@ class GainPickerDialog(ScopeModalScreen[Any]):
     @work
     async def _load_gains(self) -> None:
         try:
-            self._gains = await asyncio.to_thread(supported_gains, self._rtlsdr_values)
+            self._gains = await asyncio.to_thread(
+                supported_gains, self._source, self._receiver_values)
         except Exception as exc:
             self._give_up(f'Could not read the gains: {exc}')
             return

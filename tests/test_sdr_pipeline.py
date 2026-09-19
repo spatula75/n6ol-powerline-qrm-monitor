@@ -340,16 +340,54 @@ class TestTheHealthCountersReachTheLog:
     def test_a_receiver_clock_running_away_is_reported(self, caplog):
         """The only evidence that samples went missing, since nothing else can count
         them.  See RtlSdrSource.clock_drift_seconds.
+
+        The drift appears after the first interval, because the first one is the
+        baseline and anything already there when it ends is taken as the starting
+        point rather than as a minute's worth of movement.
         """
         clock = FakeClock()
         p, _ = pipeline(clock)
-        p.source.clock_drift_seconds = 0.5      # 500 ms of audio missing
 
         with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
-            self.consume_for(p, clock, 120.0)
+            self.consume_for(p, clock, 60.0)
+            p.source.clock_drift_seconds = 0.5      # 500 ms of audio missing
+            self.consume_for(p, clock, 60.0)
 
         assert len(caplog.messages) == 1, f'expected one warning, got {caplog.messages}'
         assert 'clocks moved' in caplog.messages[0] and '+500 ms' in caplog.messages[0]
+
+    def test_the_first_interval_is_a_baseline_rather_than_a_measurement(self, caplog):
+        """A receiver fills its pipeline as it starts and delivers that first stretch
+        faster than real time, so the drift standing at the end of the first interval
+        describes the startup rather than the run.
+
+        Measured on an SDRplay RSP1B, that came to 37 ms against a 30 ms limit, so it
+        warned once at exactly one minute on every single run and never again.  The
+        message told the operator their levels were suspect when nothing was wrong.
+        """
+        clock = FakeClock()
+        p, _ = pipeline(clock)
+        p.source.clock_drift_seconds = -0.037   # a startup burst, and nothing after it
+
+        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+            self.consume_for(p, clock, 60.0)
+            self.consume_for(p, clock, 60.0)
+
+        assert not caplog.messages, caplog.messages
+
+    def test_a_drift_that_keeps_moving_is_still_reported(self, caplog):
+        """What the baseline must not hide.  A rate that is wrong keeps
+        separating the two clocks, so it survives having its first interval absorbed.
+        """
+        clock = FakeClock()
+        p, _ = pipeline(clock)
+
+        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+            for interval in range(4):
+                p.source.clock_drift_seconds = -0.037 - 0.05 * interval
+                self.consume_for(p, clock, 60.0)
+
+        assert len(caplog.messages) == 3, caplog.messages
 
     def test_two_crystals_disagreeing_is_not_reported(self, caplog):
         """This counter needs a limit where the others do not, because it is never

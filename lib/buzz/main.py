@@ -38,7 +38,7 @@ from typing import TYPE_CHECKING, TypeVar
 from buzz import wavmeta
 from buzz.analyzer import ContinuousAnalyzer
 from buzz.collector import Collector
-from buzz.config import CONFIG_PATH, RTLSDR, SOUNDCARD, BuzzConfig, RtlSdrConfig, validate_sample_rate
+from buzz.config import CONFIG_PATH, RTLSDR, SDRPLAY, SOUNDCARD, BuzzConfig, SdrConfig, validate_sample_rate
 from buzz.csv_store import CsvStore
 from buzz.playback import (
     FilePlaybackPipeline,
@@ -65,6 +65,7 @@ if TYPE_CHECKING:
     # would undo both.
     from PySide6.QtWidgets import QApplication
 
+    from buzz.sdr_device import SdrDevice
     from buzz.waterfall import DisplayRecorder, MainWindow
 
 faulthandler.enable()
@@ -267,8 +268,9 @@ def open_playback_pipeline(config: BuzzConfig, name: str, muted: bool = False,
     return pipeline
 
 
-def _warn_if_the_calibration_predates_the_gain(settings: RtlSdrConfig) -> None:
-    """Say so when the tuner gain has moved since the level offset was measured.
+def _warn_if_the_calibration_predates_the_gain(section: str,
+                                               settings: SdrConfig) -> None:
+    """Say so when the receiver gain has moved since the level offset was measured.
 
     The offset is mostly the negative of the gain, so changing one without the other
     leaves every dBm reading wrong by the difference.  Nothing else notices: lock,
@@ -281,66 +283,93 @@ def _warn_if_the_calibration_predates_the_gain(settings: RtlSdrConfig) -> None:
     A calibration with no recorded gain is left alone.  It came from a file written
     before the figure was stored, or from somebody who set the offset directly, and
     neither is evidence of drift.
+
+    `section` names the config section to correct, because each receiver keeps its own
+    calibration and naming the wrong one sends somebody to edit a setting that is not
+    in use.
     """
     measured_at = settings.calibrated_at_gain_db
     if measured_at is None or measured_at == settings.gain_db:
         return
     logger.warning(
-        'The level calibration was measured at %.1f dB of tuner gain.  The gain is '
+        'The level calibration was measured at %.1f dB of receiver gain.  The gain is '
         'now %.1f dB, so every level will read about %.1f dB out.  Nothing else will '
         'look wrong, because lock and SNR do not depend on it.  Run the calibration '
-        'again, or set [rtlsdr] calibrated_offset_db to %.1f to carry the old '
-        'measurement across.',
-        measured_at, settings.gain_db, abs(settings.gain_db - measured_at),
+        'again, or set [%s] calibrated_offset_db to %.1f to carry the old measurement '
+        'across.',
+        measured_at, settings.gain_db, abs(settings.gain_db - measured_at), section,
         settings.level_offset_db - (settings.gain_db - measured_at))
 
 
 def open_live_source(config: BuzzConfig) -> RingBufferPipeline:
     """Build whichever live audio source the config asks for.
 
-    Both return a RingBufferPipeline, so nothing after this point knows or cares which
-    it has.  That is the whole reason the SDR path was built the way it was.
+    Every source returns a RingBufferPipeline, so nothing after this point knows or
+    cares which it has.  That is the whole reason the SDR path was built the way it was.
 
-    The RTL-SDR imports are local so that a sound-card station never loads pyrtlsdr.
-    The library resolves a symbol at import time, so a mismatched librtlsdr breaks the
-    import rather than the first call, and a station that owns no receiver should not be
-    able to fail on one.
+    The dispatch is a table rather than a chain of comparisons, because the source name
+    was compared in four places before a second receiver existed, and a third would have
+    meant finding all four.  `buzz.config.SOURCES` holds the other half of it, and a
+    drift pin fails when the two tables stop agreeing.
 
     A source this does not recognize is refused rather than treated as a sound card.
-    Nothing else checks the setting.  The schema states the two values it allows and
-    the setup program enforces them, but _load_section copies whatever the file holds.
-    The setup program does enforce it, but a config file is still edited by hand and a
-    misspelling there would otherwise open the sound card named in [audio]
-    input_device_name and log a day of whatever that input is hearing.
+    Nothing else checks the setting.  The schema states the values it allows and the
+    setup program enforces them, but _load_section copies whatever the file holds, and a
+    misspelling in a hand-edited file would otherwise open the sound card named in
+    [audio] input_device_name and log a day of whatever that input is hearing.
     """
-    if config.audio.source not in (SOUNDCARD, RTLSDR):
+    opener = _OPENERS.get(config.audio.source)
+    if opener is None:
+        offered = ', '.join(repr(name) for name in _OPENERS)
         raise RuntimeError(
-            f'[audio] source is {config.audio.source!r}, and it must be {SOUNDCARD!r} '
-            f'or {RTLSDR!r}.  It selects where live audio comes from, and no other '
-            'value has a meaning.  Correct it in the config file, or run '
-            'python -m buzz.setup to set it.')
-    if config.audio.source == SOUNDCARD:
-        # Said here because this is where the source is known.  BuzzConfig.record_iq
-        # already answers no, so nothing downstream misbehaves.  What it cannot do is
-        # tell the operator, and a setting that is on in the file and off in the
-        # program is one somebody hunts for in the wrong place.
-        if config.recording.record_iq:
-            logger.warning(
-                '[recording] record_iq is on, and a sound card has no IQ to record, '
-                'so no IQ file is written.  Only an RTL-SDR receiver produces IQ.  '
-                'Set [audio] source to %r to use it, or turn record_iq off.', RTLSDR)
-        return AudioSampler(config).pipeline
+            f'[audio] source is {config.audio.source!r}, and it must be one of '
+            f'{offered}.  It selects where live audio comes from, and no other value '
+            f'has a meaning.  Correct it in the config file, or run '
+            f'python -m buzz.setup to set it.')
+    return opener(config)
 
+
+def _open_sound_card(config: BuzzConfig) -> RingBufferPipeline:
+    """A radio in SSB, wired to an audio input."""
+    # Said here because this is where the source is known.  BuzzConfig.record_iq
+    # already answers no, so nothing downstream misbehaves.  What it cannot do is tell
+    # the operator, and a setting that is on in the file and off in the program is one
+    # somebody hunts for in the wrong place.
+    if config.recording.record_iq:
+        logger.warning(
+            '[recording] record_iq is on, and a sound card has no IQ to record, so no '
+            'IQ file is written.  Only a receiver produces IQ.  Set [audio] source to '
+            '%r or %r to use it, or turn record_iq off.', RTLSDR, SDRPLAY)
+    return AudioSampler(config).pipeline
+
+
+def _open_receiver(config: BuzzConfig) -> RingBufferPipeline:
+    """Whichever receiver [audio] source names, through the shared factory.
+
+    The import is local so that a station never loads a driver for hardware it does not
+    own.  pyrtlsdr resolves a symbol as it imports, and the SDRplay module loads a
+    shared library only an SDRplay station installs, so either would fail at import on
+    a machine with no business touching it.
+    """
+    from buzz.sdr_device import open_receiver
+
+    settings = config.receiver_settings
+    return _pipeline_for(config, settings,
+                         open_receiver(config.audio.source, settings))
+
+
+def _pipeline_for(config: BuzzConfig, settings: SdrConfig,
+                  device: 'SdrDevice') -> RingBufferPipeline:
+    """Wrap an open receiver in the IQ chain that every receiver shares.
+
+    Everything here is the same whichever hardware opened, which is what the `SdrDevice`
+    contract exists to make true.  Only opening differs, so only opening lives in the
+    two functions above.
+    """
     from buzz.iq import IqToAudio
     from buzz.sdr import RtlSdrPipeline, RtlSdrSource
-    from buzz.sdr_device import RtlSdrDevice
 
-    settings = config.rtlsdr
-    source = RtlSdrSource(RtlSdrDevice.open(
-        settings.device_index,
-        tuned_hz=settings.frequency_hz + settings.tuning_offset_hz,
-        gain_db=settings.gain_db,
-        iq_sample_rate=settings.iq_sample_rate))
+    source = RtlSdrSource(device)
     converter = IqToAudio(
         source.iq_sample_rate, settings.decimation, settings.bandwidth_hz,
         settings.tuning_offset_hz, settings.sideband)
@@ -349,32 +378,66 @@ def open_live_source(config: BuzzConfig) -> RingBufferPipeline:
     # receiver cannot produce every rate exactly and everything downstream counts
     # seconds by dividing samples by this figure.
     config.audio.sample_rate = converter.audio_sample_rate
-    # The IQ rate is read back for the same reason.  A 28.8 MHz divider cannot hit
-    # every request, so the buffer an IQ recording reads holds samples at the rate the
-    # device settled on.  Writing the requested figure into the .wav header would
-    # describe those samples as something they are not, and IqEventRecorder counts its
-    # lead-in by the same number.
-    config.rtlsdr.iq_sample_rate = source.iq_sample_rate
+    # The IQ rate is read back for the same reason.  An RTL-SDR derives it from a
+    # 28.8 MHz divider and cannot hit every request, so the buffer an IQ recording
+    # reads holds samples at the rate the device settled on.  Writing the requested
+    # figure into the .wav header would describe those samples as something they are
+    # not, and IqEventRecorder counts its lead-in by the same number.
+    settings.iq_sample_rate = source.iq_sample_rate
 
-    logger.info('Listening on %.4f MHz with an RTL-SDR tuned to %.4f MHz, %.1f dB '
-                'gain, %d Hz of %s sideband, %d Hz audio.',
-                settings.frequency_hz / 1e6, source.tuned_hz / 1e6, source.gain_db,
-                settings.bandwidth_hz, settings.sideband, converter.audio_sample_rate)
+    logger.info('Listening on %.4f MHz with %s tuned to %.4f MHz, %s, %d Hz of %s '
+                'sideband, %d Hz audio.',
+                settings.frequency_hz / 1e6, device.profile.name,
+                source.tuned_hz / 1e6, _gain_in_use(device, source.gain_db),
+                settings.bandwidth_hz, settings.sideband,
+                converter.audio_sample_rate)
     if settings.calibrated_offset_db is not None:
-        _warn_if_the_calibration_predates_the_gain(settings)
+        _warn_if_the_calibration_predates_the_gain(config.audio.source, settings)
         logger.info('Levels are offset by %+.1f dB, the calibrated figure for this '
                     'station.', settings.level_offset_db)
     else:
         logger.warning(
             'This receiver has not been calibrated, so levels are offset by %+.1f dB, '
-            'estimated from the tuner gain.  Expect them to be a few dB out, and the '
-            'error to change if the gain does.  Set [rtlsdr] calibrated_offset_db '
-            'once you have compared against a receiver you trust on the same antenna.',
-            settings.level_offset_db)
+            'estimated from the receiver gain.  Expect them to be a few dB out, and '
+            'the error to change if the gain does.  Set [%s] calibrated_offset_db once '
+            'you have compared against a receiver you trust on the same antenna.',
+            settings.level_offset_db, config.audio.source)
     if config.record_iq:
         logger.info('Keeping the last several seconds of raw IQ, so that an IQ '
                     'recording gets the same run-up its audio does.')
     return RtlSdrPipeline(source, converter, keep_iq=config.record_iq)
+
+
+# Which function opens each source.  `buzz.config.SOURCES` names the same sources and
+# says where each one's settings live, and this says how to open one.  The two are
+# apart because a factory belongs with the pipeline it builds, and the config module
+# imports no driver.
+_OPENERS = {
+    SOUNDCARD: _open_sound_card,
+    RTLSDR: _open_receiver,
+    SDRPLAY: _open_receiver,
+}
+
+
+def _gain_in_use(device: 'SdrDevice', asked_db: float) -> str:
+    """The gain that was set, and what the receiver says it is where it says anything.
+
+    The two come from different places and can disagree.  A receiver that reports its
+    own gain is answering about the hardware, where the figure this program wrote is a
+    prediction from a table, so a difference here means one of them is wrong and every
+    level the station reports is out by it.
+
+    It matters most at startup, because that is the one path nothing else exercises.
+    The monitor writes the gain before the device is initialized and lets the library
+    apply it, where a gain sweep and the probe both write it through an update on a
+    running stream.  A fault in the first would be invisible to either of those.
+
+    An RTL-SDR reports nothing, so it gets the plain figure rather than a blank.
+    """
+    reported = getattr(device, 'reported_gain_db', None)
+    if not reported:
+        return f'{asked_db:.1f} dB gain'
+    return f'{asked_db:.1f} dB gain, which the receiver reports as {reported:.1f} dB'
 
 
 def _start_playback(pipeline: RingBufferPipeline, playing_back: str | None) -> None:

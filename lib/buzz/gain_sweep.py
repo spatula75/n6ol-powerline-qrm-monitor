@@ -31,7 +31,7 @@ from typing import Protocol
 import numpy as np
 
 from buzz.sdr import CLIPPING_WORTH_NOTICING
-from buzz.sdr_device import IqBlock
+from buzz.sdr_device import IqBlock, OverloadStatus
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +64,11 @@ class SweepSource(Protocol):
     def blocks_to_discard_after_gain_change(self) -> int:
         ...
 
+    @property
+    def floor_margin_db(self) -> float:
+        """How far above the knee this receiver can afford to put the floor bound."""
+        ...
+
     def drain(self) -> int:
         ...
 
@@ -71,6 +76,10 @@ class SweepSource(Protocol):
         ...
 
     def read(self, timeout: float = 1.0) -> IqBlock | None:
+        ...
+
+    @property
+    def overload_status(self) -> OverloadStatus | None:
         ...
 
 # Percentile of per-frame RMS taken as the quiet level.
@@ -123,31 +132,54 @@ _QUIET_FRAME_SECONDS = 0.001
 # Only the headroom bound sees it, against a reserve of 32 dB.
 _MIN_QUIET_FRAME_SAMPLES = 64
 
-# The antenna's share of the reported noise floor to aim for.
+# How far above the receiver's own noise the band noise should sit, when a receiver
+# states nothing else.
 #
-# The converter's own noise adds to the antenna's and the sum is what gets reported,
-# so this share is the whole quantity the lower bound is about.  One half is the knee
-# of the curve, where the antenna and the converter contribute equally.
-_ANTENNA_SHARE_TARGET = 0.5
+# Zero, which is the knee of the curve, where the antenna and the converter contribute
+# equally and the reported floor reads 3.01 dB high.  Sitting at the knee is a
+# compromise rather than a target worth aiming at, and it is the right one only where
+# a receiver cannot afford to climb past it.  Each device states its own figure; see
+# `SdrDevice.floor_margin_db`.
+_DEFAULT_FLOOR_MARGIN_DB = 0.0
 
-# The same figure as the error it costs, which is what anybody weighing it thinks in.
-# It is derived rather than written as 3.0, so the two can never disagree.
-_FLOOR_ERROR_TARGET_DB = -10.0 * np.log10(_ANTENNA_SHARE_TARGET)
+
+def antenna_share_for(margin_db: float) -> float:
+    """The antenna's share of the reported floor that a margin comes to.
+
+    The converter's own noise adds to the antenna's and the sum is what gets reported,
+    so this share is the whole quantity the lower bound is about.  A margin and a share
+    are the same statement: the knee is a margin of zero and a share of one half, and
+    every decibel above it scales the antenna term alone.
+
+    Derived rather than written down beside the margin, because two figures for one
+    idea are two figures to keep in step.
+    """
+    ratio = 10.0 ** (margin_db / 10.0)
+    return ratio / (1.0 + ratio)
+
+
+def floor_error_for(margin_db: float) -> float:
+    """The same margin as the error it costs, which is what anybody weighing it thinks
+    in.  Zero dB of margin costs 3.01 dB, ten dB costs 0.41."""
+    return float(-10.0 * np.log10(antenna_share_for(margin_db)))
 
 
 @dataclass(frozen=True)
 class _PassReading:
     """What one pass over one gain step measured, before the passes are combined.
 
-    A record rather than a tuple because it carries two counts of different things,
-    and `r[2]` against `r[3]` is the kind of distinction that survives review and then
-    goes wrong in an edit.
+    The overload counts include any immediate confirmation intervals, while the signal
+    figures describe only the normal interval.  Confirmation therefore cannot give an
+    overloaded gain extra weight in the noise-floor fit.
     """
 
     quiet_dbfs: float
     peak_dbfs: float
     clipped: int
     raw_values: int
+    overload_observations: int
+    overload_checks: int
+    overload_confirmed: bool
 
 
 # Holds every pass measured so far, keyed by the gain the tuner settled on rather than
@@ -167,6 +199,10 @@ class GainMeasurement:
     `raw_values` is how many converter outputs `clipped` was counted out of, totalled
     the same way, and it is here so that the count can be read as a share.  Both count
     I and Q separately, which is how IqBlock reports them.
+
+    Hardware overload remains separate.  `overload_observations` records every
+    interval where the receiver reported it, while `confirmed_overloads` counts normal
+    intervals whose two immediate retries produced a two-out-of-three majority.
     """
 
     gain_db: float
@@ -175,6 +211,9 @@ class GainMeasurement:
     clipped: int
     raw_values: int
     passes: int
+    overload_observations: int = 0
+    overload_checks: int = 0
+    confirmed_overloads: int = 0
 
     @property
     def clipping_worth_noticing(self) -> bool:
@@ -194,6 +233,11 @@ class GainMeasurement:
         single 4 ms burst covers at this rate.
         """
         return self.clipped > 0 and self.clipped >= self.raw_values * CLIPPING_WORTH_NOTICING
+
+    @property
+    def hardware_overload_confirmed(self) -> bool:
+        """Whether repeated hardware reports showed overload at this gain."""
+        return self.confirmed_overloads > 0
 
 
 @dataclass(frozen=True)
@@ -373,7 +417,9 @@ class KneeFit:
             return float('inf')
         return float(-10.0 * np.log10(share))
 
-    def gain_nearest_the_floor_target(self, gains_db: list[float]) -> float | None:
+    def gain_nearest_the_floor_target(self, gains_db: list[float],
+                                      margin_db: float = _DEFAULT_FLOOR_MARGIN_DB
+                                      ) -> float | None:
         """The offered gain whose reported floor sits closest to the target error.
 
         Nearest rather than the lowest gain inside a budget, which is what this was
@@ -401,12 +447,12 @@ class KneeFit:
         it, because a rounded knee could name a gain the hardware does not have.
         """
         ordered = sorted(gains_db)
-        if not ordered or self.antenna_share(ordered[-1]) < _ANTENNA_SHARE_TARGET:
+        if not ordered or self.antenna_share(ordered[-1]) < antenna_share_for(margin_db):
             return None
         # Ascending, so min() breaks a tie towards the lower gain.  That is the side to
         # err on, because the decibel it costs the floor is one an arc gets to use.
         return min(ordered, key=lambda gain: abs(
-            self.floor_error_db(gain) - _FLOOR_ERROR_TARGET_DB))
+            self.floor_error_db(gain) - floor_error_for(margin_db)))
 
 
 class GainChooser:
@@ -414,15 +460,18 @@ class GainChooser:
 
     Two bounds, from opposite directions:
 
-      * The **floor bound** is the gain whose reported noise floor reads closest to
-        _FLOOR_ERROR_TARGET_DB above the truth.  Below it too much of what the station
-        reports is its own receiver.
+      * The **floor bound** is the gain putting the band noise `floor_margin_db`
+        above the receiver's own, which is the same thing as a share of the reported
+        floor and so as an error in it.  Below it too much of what the station reports
+        is its own receiver.
       * The **headroom bound** is the highest gain at which the quiet level still
         leaves `headroom_db` before a sample reaches the rail.  Above it an arc clips.
 
-    The answer is the floor bound, checked against the headroom bound.  It sits at
-    the knee rather than comfortably above it, because every dB above what the antenna
-    needs is a dB an arc no longer has.
+    The answer is the floor bound, checked against the headroom bound.  How far above
+    the knee the floor bound sits belongs to the receiver, because what a station can
+    afford there is decided by its converter: an 8-bit RTL-SDR spends 32 of its 48 dB
+    on arc headroom and has to take the knee itself, where a 14-bit RSP has about 52 dB
+    left and can climb clear of it.  See `SdrDevice.floor_margin_db`.
 
     They can cross.  An antenna quiet enough to need most of the tuner's range to beat
     the converter may need more gain than the headroom allows.
@@ -439,9 +488,11 @@ class GainChooser:
     the figures needed to make it.
     """
 
-    def __init__(self, measurements: tuple[GainMeasurement, ...], headroom_db: float) -> None:
+    def __init__(self, measurements: tuple[GainMeasurement, ...], headroom_db: float,
+                 floor_margin_db: float = _DEFAULT_FLOOR_MARGIN_DB) -> None:
         self._measurements = measurements
         self._headroom_db = headroom_db
+        self._floor_margin_db = floor_margin_db
 
     def choose(self) -> SweepResult:
         """Pick a gain, or explain why the two bounds leave nothing."""
@@ -451,7 +502,7 @@ class GainChooser:
         gains = [m.gain_db for m in self._measurements]
         fit = KneeFit(np.array(gains),
                       np.array([self._power_of(m) for m in self._measurements]))
-        floor_bound = fit.gain_nearest_the_floor_target(gains)
+        floor_bound = fit.gain_nearest_the_floor_target(gains, self._floor_margin_db)
         headroom_bound = self._highest_gain_with_headroom()
 
         # Headroom first, because it is measured directly where the floor bound comes
@@ -461,12 +512,12 @@ class GainChooser:
         if headroom_bound is None:
             return SweepResult(
                 None,
-                f'Even the lowest gain leaves less than {self._headroom_db:.0f} dB '
-                'before clipping, so the band is loud enough that an arc would clip '
-                'whatever this is set to.  Try a higher band, where powerline noise '
-                'is weaker, or a frequency further from where the antenna is '
-                'resonant.  An attenuator ahead of the receiver is the last resort '
-                'and the only one that helps if every band is this loud.',
+                f'No gain both leaves {self._headroom_db:.0f} dB before clipping and '
+                'stays below the clipping or hardware overload observed in this '
+                'sweep.  Try a higher band, where powerline noise is weaker, or a '
+                'frequency further from where the antenna is resonant.  An attenuator '
+                'ahead of the receiver is the last resort and the only one that helps '
+                'if every band is this loud.',
                 fit.antenna_share(min(gains)), floor_bound, None, self._measurements)
         # The two bounds are not the same kind of thing, and the answer follows from
         # that.  Headroom is a hard limit, because clipping is nonlinear and cannot be
@@ -493,19 +544,28 @@ class GainChooser:
 
         # Both bounds are named, not just the one that won.  An operator whose arcs
         # clip at the chosen gain has no way to act otherwise: the remedy is to raise
-        # [rtlsdr] arc_headroom_db until the headroom bound falls below this one, and
+        # the receiver's arc_headroom_db until the headroom bound falls below this one, and
         # that is impossible to judge without knowing where it currently sits.
+        chosen = self._gain_nearest(min(floor_bound, headroom_bound), gains)
+        decision = ('the floor and headroom bounds meet at this gain'
+                    if floor_bound == headroom_bound else 'the floor is what set this')
         return SweepResult(
-            floor_bound,
-            f'{floor_bound:.1f} dB is the gain whose reported noise floor comes '
-            f'closest to the {_FLOOR_ERROR_TARGET_DB:.1f} dB target, reading about '
-            f'{fit.floor_error_db(floor_bound):.1f} dB high.  It leaves at least '
-            f'{self._headroom_db:.0f} dB for an arc, where clipping alone would have '
-            f'allowed up to {headroom_bound:.1f} dB, so the floor is what set this.  If '
-            f'arcs still clip at this gain, raise [rtlsdr] arc_headroom_db to bring '
-            f'that {headroom_bound:.1f} dB down.',
-            fit.antenna_share(floor_bound), floor_bound, headroom_bound,
+            chosen,
+            f'{floor_bound:.1f} dB is the gain putting the band noise about '
+            f'{self._floor_margin_db:.0f} dB above the receiver\'s own, where the '
+            f'reported floor reads {fit.floor_error_db(floor_bound):.1f} dB high.  It '
+            f'leaves at '
+            f'least {self._headroom_db:.0f} dB for an arc, where the headroom checks '
+            f'would have allowed up to {headroom_bound:.1f} dB, so {decision}.  If '
+            f'arcs still clip at this gain, raise arc_headroom_db to bring that '
+            f'{headroom_bound:.1f} dB down.',
+            fit.antenna_share(chosen), floor_bound, headroom_bound,
             self._measurements)
+
+    @staticmethod
+    def _gain_nearest(wanted: float, gains: list[float]) -> float:
+        """The measured gain nearest `wanted`, preferring the lower one on a tie."""
+        return min(gains, key=lambda gain: (abs(gain - wanted), gain))
 
     def _highest_gain_with_headroom(self) -> float | None:
         """The largest gain that leaves room for an arc, by both the model and the
@@ -515,12 +575,11 @@ class GainChooser:
         than from an observed peak, which is what lets this run on a dead band: sizing
         from a peak needs an arc to be present and nothing arranges that.
 
-        The evidence is any clipping the sweep actually saw, above the share at which
-        clipping means anything.  A gain that clipped is not a prediction about arcs,
-        it is one that happened, so it outranks the reserve and so does every gain
-        above it.  The five passes are what make this evidence rather than luck: an
-        intermittent arc that fires during any one of them is caught, where a single
-        pass would usually miss it.
+        The evidence is delivered samples clipping above the share at which clipping
+        means anything, or a hardware overload confirmed in two out of three adjacent
+        intervals.  Either happened at that gain, so it outranks the reserve and rules
+        out every gain above it.  A lone hardware report triggers the two retries but
+        does not impose a bound.
 
         Both are needed.  The reserve alone let a station settle one step too high,
         because the sweep ran between bursts and the reserve turned out slightly tight
@@ -530,9 +589,16 @@ class GainChooser:
         clipping_started_at = min(
             (m.gain_db for m in self._measurements if m.clipping_worth_noticing),
             default=None)
+        overload_started_at = min(
+            (m.gain_db for m in self._measurements if m.hardware_overload_confirmed),
+            default=None)
+        unsafe_started_at = min(
+            (gain for gain in (clipping_started_at, overload_started_at)
+             if gain is not None),
+            default=None)
         safe = [m.gain_db for m in self._measurements
                 if m.quiet_dbfs + self._headroom_db <= 0.0
-                and (clipping_started_at is None or m.gain_db < clipping_started_at)]
+                and (unsafe_started_at is None or m.gain_db < unsafe_started_at)]
         return max(safe) if safe else None
 
     @staticmethod
@@ -569,6 +635,32 @@ class GainSweep:
     DEFAULT_PASSES = 5
     DEFAULT_SECONDS_PER_STEP = 0.25
 
+    # One report can be a brief local signal.  Read two more intervals at the same
+    # gain and require a majority before treating hardware overload as a hard bound.
+    # Three and two are policy choices to test on live receivers, not measured optima.
+    _OVERLOAD_CHECKS = 3
+    _OVERLOADS_REQUIRED = 2
+
+    # How many of those passes walk the whole ladder at a coarse spacing, before the
+    # rest walk only the part they point at.
+    #
+    # Two, because one cannot tell a knee from an outlier and three would spend a pass
+    # on a question the first two have already answered.  The remaining passes are what
+    # the final median is taken over, and there are an odd number of them for the
+    # reason the constructor gives.
+    COARSE_PASSES = 2
+
+    # The coarse spacing, in dB, and the half-width of the range that follows.
+    #
+    # An SDRplay offers 101 rungs a decibel apart, so walking all of them five times is
+    # 505 steps and about four minutes.  Ten dB gives 11 coarse steps, and the range
+    # around the answer is at most 21 rungs, which is 85 steps in total.
+    #
+    # The half-width matches the spacing rather than halving it, so the true answer
+    # cannot fall outside the range: the coarse grid can put the knee anywhere between
+    # two of its rungs, so the pick is up to one full spacing away from it.
+    _COARSE_STEP_DB = 10.0
+
     # What a step costs beyond the samples it collects: the gain write, the blocks
     # thrown away while the tuner settles, and the USB turnaround on every read.
     #
@@ -588,10 +680,14 @@ class GainSweep:
         # picking one.  That is exactly the outlier rejection the median is here for,
         # so an even count quietly gives up the thing the passes were added to buy.
         #
-        # Measured against a simulated arc that lifts the band noise for a stretch of
-        # the sweep: three, five and seven passes all recovered the arc-free answer in
-        # 25 runs out of 25, and two passes recovered it in none of them.
+        # The figure came from a simulated arc that lifts the band noise for a
+        # stretch of the sweep.  Three, five and seven passes all recovered the
+        # arc-free answer in 25 runs out of 25, and two passes recovered it in none.
         self._passes = passes + 1 if passes % 2 == 0 else passes
+        # What is left after the coarse passes, and the count the median is taken over
+        # for the gains that matter.  Odd for the reason above, which holds because the
+        # rounding above leaves an odd total and COARSE_PASSES is even.
+        self._fine_passes = max(1, self._passes - self.COARSE_PASSES)
         self._seconds_per_step = seconds_per_step
         self._cancelled = False
 
@@ -600,47 +696,132 @@ class GainSweep:
         """How many times each gain gets measured, after the rounding above."""
         return self._passes
 
-    def estimated_seconds(self, gain_count: int) -> float:
-        """About how long a sweep of this many gains will take.
+    def estimated_seconds(self, gains: list[float]) -> float:
+        """About how long a sweep of this ladder will take.
 
-        Derived rather than stated, because the gain count belongs to the tuner.  A
-        V4 offers 29 steps and other receivers offer more or fewer, so any fixed
-        figure is right for one device and wrong for the rest.
+        Derived rather than stated, because the ladder belongs to the receiver.  A V4
+        offers 29 steps over 50 dB and an RSP offers 101 over 100, so any fixed figure
+        is right for one device and wrong for the rest.
+
+        This counts the steps the two phases actually walk rather than every gain on
+        every pass, which is what takes an RSP from about four minutes to about one and
+        a half.  It takes the ladder rather than a count of it, because how many coarse
+        steps a ladder comes to depends on how far apart its rungs are.
         """
-        return (self._passes * gain_count
-                * (self._seconds_per_step + self._STEP_OVERHEAD_SECONDS))
+        ladder = sorted(gains)
+        if not ladder:
+            return 0.0
+        steps = (self.COARSE_PASSES * len(self._coarse_ladder(ladder))
+                 + self._fine_passes * self._widest_range(ladder))
+        return steps * (self._seconds_per_step + self._STEP_OVERHEAD_SECONDS)
 
     def cancel(self) -> None:
         """Ask the sweep to stop at the next step.  Safe from another thread."""
         self._cancelled = True
 
     def run(self, on_progress: ProgressCallback | None = None) -> SweepResult:
-        """Sweep every gain and return the choice.
+        """Sweep in two phases and return the choice.
+
+        The first phase walks the whole ladder at `_COARSE_STEP_DB` spacing, which is
+        enough to say roughly where the knee is.  The second walks only the rungs
+        within one spacing of that answer, at whatever spacing the receiver offers.
+        Every reading from both phases feeds the final fit, so the coarse rungs still
+        give it the wide baseline a knee fit wants, and the rungs near the answer are
+        the ones measured most often.
+
+        A ladder too short to be worth splitting is walked whole.  `_plan` decides,
+        and an RTL-SDR's 29 steps over 50 dB come out barely coarser than the ladder
+        itself.
 
         `on_progress` is called with (step, total, gain_db) before each step, so a
         dialog can say where it is.  It runs on this thread and must not block.
+        `total` is the worst case, because the second phase cannot be counted until
+        the first has chosen, so a sweep can finish a few steps short of it.
         """
         gains = sorted(self._source.supported_gains_db)
         if not gains:
             return SweepResult(None, 'The receiver reported no gain settings.',
                                0.0, None, None, ())
         readings: _Readings = {gain: [] for gain in gains}
-        total = self._passes * len(gains)
-        step = 0
-        for index in range(self._passes):
+        coarse = self._coarse_ladder(gains)
+        total = (self.COARSE_PASSES * len(coarse)
+                 + self._fine_passes * self._widest_range(gains))
+        step = self._walk(coarse, readings, range(self.COARSE_PASSES), 0, total,
+                          on_progress)
+        if self._cancelled:
+            return self._combine(readings, gains)
+        fine = self._range_around(gains, self._coarse_pick(readings, coarse))
+        self._walk(fine, readings,
+                   range(self.COARSE_PASSES, self.COARSE_PASSES + self._fine_passes),
+                   step, total, on_progress)
+        return self._combine(readings, gains)
+
+    def _walk(self, ladder: list[float], readings: _Readings, passes: range,
+              step: int, total: int,
+              on_progress: ProgressCallback | None) -> int:
+        """Measure every gain in `ladder` once per pass, and return the step reached.
+
+        The pass numbers are the sweep's own rather than starting again at zero, so
+        the direction keeps alternating across the phase boundary.
+        """
+        for index in passes:
             # Alternating direction is what stops a slow drift over the sweep from
             # reading as a slope against gain.  Ascending and descending passes put
             # opposite ends of the range at opposite ends of the drift, so combining
             # them cancels what one pass alone would bake in.
-            order = gains if index % 2 == 0 else list(reversed(gains))
+            order = ladder if index % 2 == 0 else list(reversed(ladder))
             for gain in order:
                 if self._cancelled:
-                    return self._combine(readings, gains)
+                    return step
                 if on_progress is not None:
                     on_progress(step, total, gain)
                 self._measure_one(gain, readings)
                 step += 1
-        return self._combine(readings, gains)
+        return step
+
+    def _coarse_pick(self, readings: _Readings, coarse: list[float]) -> float:
+        """Where the coarse passes say the answer is, as one gain.
+
+        The chosen gain when there is one.  Otherwise the floor bound, which exists
+        even where headroom rules the choice out, because it still says which end of
+        the ladder to look at.  Otherwise the middle of what was measured, which is
+        what is left when the coarse passes found nothing at all.
+        """
+        result = self._combine(readings, coarse)
+        for candidate in (result.chosen_db, result.floor_bound_db):
+            if candidate is not None:
+                return candidate
+        measured = [gain for gain in coarse if readings.get(gain)]
+        return measured[len(measured) // 2] if measured else coarse[len(coarse) // 2]
+
+    @classmethod
+    def _coarse_ladder(cls, gains: list[float]) -> list[float]:
+        """Rungs about `_COARSE_STEP_DB` apart, including both ends of the ladder.
+
+        Both ends are always in, because the headroom bound is usually at one of them
+        and the fit wants the widest baseline it can have.
+        """
+        picked = [gains[0]]
+        for gain in gains[1:]:
+            if gain - picked[-1] >= cls._COARSE_STEP_DB:
+                picked.append(gain)
+        if picked[-1] != gains[-1]:
+            picked.append(gains[-1])
+        return picked
+
+    @classmethod
+    def _range_around(cls, gains: list[float], center: float) -> list[float]:
+        """Every rung within one coarse spacing of `center`."""
+        return [gain for gain in gains if abs(gain - center) <= cls._COARSE_STEP_DB]
+
+    @classmethod
+    def _widest_range(cls, gains: list[float]) -> int:
+        """How many rungs the second phase walks in the worst case.
+
+        This counts over the ladder rather than assuming a spacing, because the
+        rungs are evenly spaced on one receiver and not on another.
+        """
+        return max(len(cls._range_around(gains, gain)) for gain in gains)
 
     def _measure_one(self, gain_db: float, readings: _Readings) -> None:
         """Set one gain, wait out the stale blocks, and record what follows."""
@@ -653,13 +834,54 @@ class GainSweep:
         for _ in range(self._source.blocks_to_discard_after_gain_change):
             if self._source.read() is None:
                 return
+        overload_before = self._source.overload_status
         samples, clipped, raw_values = self._collect(actual)
         if len(samples) == 0:
             return
+        overload_after = self._source.overload_status
+        overload_observations, overload_checks, overload_confirmed = (
+            self._confirm_hardware_overload(actual, overload_before, overload_after))
         readings.setdefault(actual, []).append(_PassReading(
             quiet_dbfs=BandMeasurement.quiet_dbfs(samples, self._source.iq_sample_rate),
             peak_dbfs=BandMeasurement.peak_dbfs(samples),
-            clipped=clipped, raw_values=raw_values))
+            clipped=clipped, raw_values=raw_values,
+            overload_observations=overload_observations,
+            overload_checks=overload_checks,
+            overload_confirmed=overload_confirmed))
+
+    def _confirm_hardware_overload(
+            self, gain_db: float, before: OverloadStatus | None,
+            after: OverloadStatus | None) -> tuple[int, int, bool]:
+        """Retry one hardware overload and return observations, checks, and verdict.
+
+        The first interval belongs to the normal sweep.  Its two retries answer only
+        whether the overload persists, so their samples do not enter the floor fit,
+        peak, or endpoint count.
+        """
+        overloaded = self._overload_between(before, after)
+        observations = int(overloaded is True)
+        checks = int(overloaded is not None)
+        if overloaded:
+            for _ in range(self._OVERLOAD_CHECKS - 1):
+                retry_before = self._source.overload_status
+                retry_samples, _, _ = self._collect(gain_db)
+                if len(retry_samples) == 0:
+                    break
+                retry_after = self._source.overload_status
+                retry_overload = self._overload_between(retry_before, retry_after)
+                observations += int(retry_overload is True)
+                checks += int(retry_overload is not None)
+        confirmed = (checks == self._OVERLOAD_CHECKS
+                     and observations >= self._OVERLOADS_REQUIRED)
+        return observations, checks, confirmed
+
+    @staticmethod
+    def _overload_between(before: OverloadStatus | None,
+                          after: OverloadStatus | None) -> bool | None:
+        """Whether hardware reported overload during one measurement interval."""
+        if before is None or after is None:
+            return None
+        return before.active or after.active or after.detections > before.detections
 
     def _collect(self, gain_db: float) -> tuple[np.ndarray, int, int]:
         """Gather about seconds_per_step of samples at the gain already set.
@@ -698,6 +920,10 @@ class GainSweep:
         is the only interesting one: a median peak would size the headroom for a quiet
         moment.  The two counts are totalled together so that the share they form
         describes the same audio.
+
+        Hardware overload counts are also totalled for inspection.  Each confirmed
+        result already represents a majority of adjacent intervals, so one confirmation
+        is enough to impose the headroom bound.
         """
         measurements = tuple(
             GainMeasurement(
@@ -706,6 +932,10 @@ class GainSweep:
                 peak_dbfs=float(np.max([r.peak_dbfs for r in readings[gain]])),
                 clipped=sum(r.clipped for r in readings[gain]),
                 raw_values=sum(r.raw_values for r in readings[gain]),
-                passes=len(readings[gain]))
+                passes=len(readings[gain]),
+                overload_observations=sum(r.overload_observations for r in readings[gain]),
+                overload_checks=sum(r.overload_checks for r in readings[gain]),
+                confirmed_overloads=sum(r.overload_confirmed for r in readings[gain]))
             for gain in gains if readings.get(gain))
-        return GainChooser(measurements, self._headroom_db).choose()
+        return GainChooser(measurements, self._headroom_db,
+                           self._source.floor_margin_db).choose()

@@ -12,19 +12,31 @@ in `docs-notebook/todo.md`.
 import ctypes
 import logging
 import threading
+import time
 from pathlib import Path
 
 import numpy as np
 import pytest
 from buzz import sdrplay_api as api
-from buzz.sdr_device import IqBlock
-from buzz.sdrplay_device import (HF_LNA_GAIN_REDUCTION_DB, MAX_GAIN_REDUCTION_DB,
-                                 MIN_GAIN_REDUCTION_DB, SDRPLAY_FORMAT,
-                                 SdrplayDevice, SdrplayLibrary, _SyncBlocks)
+from buzz.config import SdrplayConfig
+from buzz.sdr import SweepReader
+from buzz.sdr_device import IqBlock, OverloadStatus
+from buzz.sdrplay_device import (ESTIMATED_CALIBRATION_INTERCEPT_DB, FLOOR_MARGIN_DB,
+                                 HF_CONVERSION_GAIN_DB, HF_LNA_GAIN_REDUCTION_DB,
+                                 MAX_GAIN_REDUCTION_DB, MIN_GAIN_REDUCTION_DB,
+                                 SDRPLAY_FORMAT, SdrplayDevice, SdrplayLibrary,
+                                 _SyncBlocks)
 from fake_sdrplay import FakeSdrplayApi
 
 TUNED_HZ = 7_050_000
 IQ_SAMPLE_RATE = 256_000
+
+
+def test_an_sdrplay_estimate_includes_its_measured_output_intercept():
+    assert ESTIMATED_CALIBRATION_INTERCEPT_DB == 11.0
+    assert SdrplayDevice.estimated_calibration_offset_db(13.0) == -2.0
+    assert FLOOR_MARGIN_DB == 10.0
+    assert SdrplayDevice.floor_margin_db() == FLOOR_MARGIN_DB == 10.0
 
 
 class CollectingSink:
@@ -41,7 +53,7 @@ class CollectingSink:
         return True
 
 
-def make_device(library: FakeSdrplayApi | None = None, *, gain_db: float = -40.0,
+def make_device(library: FakeSdrplayApi | None = None, *, gain_db: float = 40.0,
                 tuned_hz: int = TUNED_HZ,
                 iq_sample_rate: int = IQ_SAMPLE_RATE) -> tuple[SdrplayDevice,
                                                                FakeSdrplayApi]:
@@ -124,28 +136,58 @@ class TestConfiguring:
 
 
 class TestTheGainLadder:
-    def test_it_runs_from_20_to_120_db_of_reduction_without_a_gap(self):
+    def test_it_runs_from_71_down_to_minus_29_db_without_a_gap(self):
         """Two knobs, and the ranges they reach overlap into one unbroken run.
 
-        The figures are negative because the contract is gain and both knobs are
-        reduction.  Sweeping the ladder therefore walks from the most gain to the
-        least, which is the order a sweep already expects.
+        The figures state gain rather than the negative of a reduction, which is
+        what makes them mean the same thing as an RTL-SDR's and what makes the level
+        offset a station calibrates come out on the same scale for either receiver.
         """
         device, _ = make_device()
         ladder = device.supported_gains_db
-        assert ladder[0] == -20.0
-        assert ladder[-1] == -120.0
-        assert ladder == [float(-step) for step in range(20, 121)]
+        assert ladder[0] == 71.0
+        assert ladder[-1] == -29.0
+        assert ladder == [float(round(HF_CONVERSION_GAIN_DB - total))
+                          for total in range(20, 121)]
+
+    def test_the_picker_offers_the_same_ladder_the_device_uses(self):
+        """A drift pin.  The classmethod answers a gain picker that has no device open
+        and the property answers one that does, and nothing else makes them agree.
+
+        They came apart exactly once: the property moved to real gain and the
+        classmethod was left returning the negative of a reduction, so the setup
+        program offered -20 through -120 for a setting the monitor then displayed as
+        +3.  Every figure on screen was right and no two of them were the same thing.
+        """
+        device, _ = make_device()
+        offered = SdrplayDevice.supported_gains(SdrplayConfig())
+        assert offered == device.supported_gains_db
+        assert offered[0] > 0, 'the picker went back to quoting reductions'
+
+    def test_the_conversion_gain_is_what_the_receiver_reported(self):
+        """A drift pin against hardware.  The figure came from reading gainVals.curr
+        at eleven settings on an RSP1B at 3530 kHz and adding the reduction back, which
+        gave 91.0 to 91.6 across every LNA state.
+
+        It is pinned because nothing else in the program would notice it moving, and a
+        wrong conversion gain shifts every level the station reports by the difference
+        while the sweep and the display carry on looking healthy.
+        """
+        assert 91.0 <= HF_CONVERSION_GAIN_DB <= 91.6
 
     def test_the_least_lna_reduction_that_fits_is_the_one_used(self):
         """Reduction at the front end costs noise figure where baseband reduction does
         not, so a total reachable two ways takes the quieter pair.
+
+        The pairs here are the ones an RSP1B actually held: each was set through the
+        real library and the gain it reported back agreed with the table to within half
+        a decibel.  See tools/sdr_gain_probe.
         """
-        assert SdrplayDevice._knobs_for(-20) == (0, 20)
-        assert SdrplayDevice._knobs_for(-59) == (0, 59)
-        # 60 is past what LNA state 0 reaches, so the next state takes over.
-        assert SdrplayDevice._knobs_for(-60) == (1, 54)
-        assert SdrplayDevice._knobs_for(-120) == (6, 59)
+        assert SdrplayDevice._knobs_for(71.0) == (0, 20)
+        assert SdrplayDevice._knobs_for(40.0) == (0, 51)
+        # Past what LNA state 0 reaches, so the next state takes over.
+        assert SdrplayDevice._knobs_for(31.0) == (1, 54)
+        assert SdrplayDevice._knobs_for(-29.0) == (6, 59)
 
     def test_every_rung_of_the_ladder_splits_into_knobs_the_hardware_admits(self):
         """The ladder and the splitter are written apart, so nothing makes them agree.
@@ -158,29 +200,111 @@ class TestTheGainLadder:
             lna_state, baseband = SdrplayDevice._knobs_for(gain_db)
             assert 0 <= lna_state < len(HF_LNA_GAIN_REDUCTION_DB)
             assert MIN_GAIN_REDUCTION_DB <= baseband <= MAX_GAIN_REDUCTION_DB
-            assert HF_LNA_GAIN_REDUCTION_DB[lna_state] + baseband == round(-gain_db)
+            total = HF_LNA_GAIN_REDUCTION_DB[lna_state] + baseband
+            assert round(HF_CONVERSION_GAIN_DB - total) == gain_db
 
     def test_a_gain_outside_the_ladder_is_refused_by_name(self):
-        with pytest.raises(ValueError, match='reaches 20 through 120 dB'):
+        with pytest.raises(ValueError, match='runs from -29 to 71 dB'):
             SdrplayDevice._knobs_for(-200)
 
     def test_a_request_is_snapped_to_the_ladder(self):
         """The ladder is whole decibels, so a fractional request has to move."""
         device, library = make_device()
-        assert device.set_gain_db(-40.4) == -40.0
-        assert library.gain.gRdB == 40
+        assert device.set_gain_db(40.4) == 40.0
+        assert library.gain.gRdB == 51
+
+
+class TestTheConversionGainComesFromTheReceiver:
+    """Where the hundred decibels of ladder sit depends on the unit and the band.
+
+    The figure measured on one RSP1B at 3530 kHz is a fallback, not the answer.  Asking
+    the hardware is what stops a band change quietly relabelling every rung, which is
+    the one thing about this that could go wrong without anything noticing.
+    """
+
+    def test_it_asks_the_hardware_rather_than_using_the_fallback(self):
+        """The receiver here has 10 dB less conversion gain than the one the fallback
+        came from, so every rung of its ladder sits 10 dB lower.
+        """
+        silent = FakeSdrplayApi()
+        device, _ = make_device(silent)
+        assert device.supported_gains_db[0] == 71.0    # the fallback, so far
+
+        talkative = FakeSdrplayApi(conversion_gain_db=81.4)
+        device, _ = make_device(talkative)
+        assert device._conversion_gain_db == pytest.approx(81.4)
+        assert device.supported_gains_db[0] == 61.0
+        assert device.supported_gains_db[-1] == -39.0
+
+    def test_the_gain_asked_for_is_the_gain_the_ladder_ends_at(self):
+        """The first write goes out against the fallback, because the library reports
+        nothing until a gain has been set.  So the device writes again once it knows
+        what the rungs mean, or it would sit wherever the fallback pointed.
+        """
+        library = FakeSdrplayApi(conversion_gain_db=81.4)
+        device, _ = make_device(library, gain_db=40.0)
+        assert device.gain_db == 40.0
+        assert device.gain_db in device.supported_gains_db
+        # 81.4 less the 41 dB of reduction that a 40 dB gain needs on this receiver.
+        # Written while the library is stopped, so it takes effect at the next init
+        # rather than through an update.
+        assert library.gain.gRdB == 41
+        assert library.gain.LNAstate == 0
+
+    def test_a_library_that_reports_nothing_keeps_the_measured_fallback(self, caplog):
+        """The one case where nobody can do better, so it says so and carries on."""
+        library = FakeSdrplayApi()
+        with caplog.at_level(logging.INFO):
+            device, _ = make_device(library)
+        assert device._conversion_gain_db == HF_CONVERSION_GAIN_DB
+        assert 'did not report its own gain' in caplog.text
+
+    def test_the_ladder_is_still_a_hundred_and_one_whole_decibels(self):
+        """Learning moves where the ladder sits and not what it is made of, because a
+        sweep walks the rungs and a shifting spacing would change what it measured.
+        """
+        library = FakeSdrplayApi(conversion_gain_db=81.4)
+        device, _ = make_device(library)
+        ladder = device.supported_gains_db
+        assert len(ladder) == 101
+        assert all(a - b == 1.0 for a, b in zip(ladder, ladder[1:]))
+
+    def test_every_rung_still_splits_into_knobs_the_hardware_admits(self):
+        """The ladder and the splitter both take the learned figure, and nothing else
+        makes them agree.  A rung that would not split raises out of set_gain_db part
+        way through a sweep, which is the one place it cannot be handled.
+        """
+        library = FakeSdrplayApi(conversion_gain_db=81.4)
+        device, _ = make_device(library)
+        for gain_db in device.supported_gains_db:
+            lna_state, baseband = SdrplayDevice._knobs_for(gain_db,
+                                                           device._conversion_gain_db)
+            assert 0 <= lna_state < len(HF_LNA_GAIN_REDUCTION_DB)
+            assert MIN_GAIN_REDUCTION_DB <= baseband <= MAX_GAIN_REDUCTION_DB
 
 
 class TestWhatTheReceiverSaysItsGainIs:
-    def test_the_hardware_figure_wins_over_the_table(self):
-        """gainVals.curr is an output parameter, so this is measured rather than
-        assumed.  An RTL-SDR V4 cannot answer the same question at all.
+    def test_the_figure_returned_is_always_one_from_the_ladder(self):
+        """The fault that made a sweep answer with the gain it started at.
+
+        A sweep files each reading under whatever set_gain_db returns and then looks
+        those keys up in supported_gains_db.  Returning the hardware's own figure put
+        every reading under a key that list does not contain, so every gain but the
+        first was dropped and the chooser had one measurement to work with.
         """
         device, library = make_device()
         device.start_stream(CollectingSink(), 4)
-        library.set_reported_gain_db(-38.5)
-        assert device.set_gain_db(-40.0) == -38.5
-        assert device.gain_db == -38.5
+        library.set_reported_gain_db(38.5)
+        assert device.set_gain_db(40.0) == 40.0
+        assert device.gain_db in device.supported_gains_db
+
+    def test_the_hardware_figure_is_still_available_on_its_own(self):
+        """For tools/sdr_gain_probe, which is what told the two apart."""
+        device, library = make_device()
+        device.start_stream(CollectingSink(), 4)
+        library.set_reported_gain_db(38.5)
+        device.set_gain_db(40.0)
+        assert device.reported_gain_db == 38.5
 
     def test_a_disagreement_is_reported_once_rather_than_every_time(self, caplog):
         """A stale table would otherwise shift every measurement with nothing to
@@ -190,19 +314,31 @@ class TestWhatTheReceiverSaysItsGainIs:
         device.start_stream(CollectingSink(), 4)
         library.set_reported_gain_db(-38.5)
         with caplog.at_level(logging.WARNING):
-            device.set_gain_db(-40.0)
-            device.set_gain_db(-41.0)
+            device.set_gain_db(40.0)
+            device.set_gain_db(41.0)
         warnings = [r for r in caplog.records if 'gain table' in r.message]
         assert len(warnings) == 1
 
+    def test_a_small_disagreement_is_left_alone(self, caplog):
+        """The conversion gain came from one receiver at one frequency and is not flat
+        across HF, so a decibel of difference elsewhere in the band is expected rather
+        than a fault worth warning about.
+        """
+        device, library = make_device()
+        device.start_stream(CollectingSink(), 4)
+        library.set_reported_gain_db(41.0)
+        with caplog.at_level(logging.WARNING):
+            device.set_gain_db(40.0)
+        assert not [r for r in caplog.records if 'gain table' in r.message]
+
     def test_a_zero_reading_is_read_as_not_yet_applied(self):
         """The receiver fills the figure in as it applies the change, so a zero means
-        the change has not taken effect and the predicted figure is the better answer.
+        the change has not taken effect and there is nothing to compare against.
         """
         device, library = make_device()
         library.set_reported_gain_db(0.0)
         device.start_stream(CollectingSink(), 4)
-        assert device.set_gain_db(-55.0) == -55.0
+        assert device.set_gain_db(-25.0) == -25.0
 
 
 class TestStreaming:
@@ -370,17 +506,84 @@ class TestDiscardingAfterAGainChange:
         library.deliver([3, 3], [3, 3])
         assert [block.index for block in sink.blocks] == [1, 3]
 
-    def test_a_gain_change_while_idle_does_not_arm_the_discard(self):
-        """No update goes out before the library is running, so no marked block will
-        ever arrive.  Arming it here would drop every block of the stream that follows,
-        with nothing able to clear it.
+    def test_the_drop_gives_up_rather_than_waiting_for_a_marker_forever(self):
+        """The fault that made a gain sweep report the lowest gain on the ladder.
+
+        Nobody has confirmed that a real RSP sets `grChanged`, and without a bound a
+        library that never sets it drops every block from the first gain change
+        onwards.  The receiver then goes silent, every gain after the first measures
+        nothing, and the only gain with readings is the one the sweep started at.
         """
         device, library = make_device()
-        device.set_gain_db(-60.0)
         sink = CollectingSink()
         device.start_stream(sink, 2)
-        library.deliver([1, 1], [1, 1])
-        assert len(sink.blocks) == 1
+        device.set_gain_db(-60.0)
+        for _ in range(device._settle_blocks + 1):
+            library.deliver([4, 4], [4, 4])      # never marked
+        assert sink.blocks, 'the stream never recovered from a gain change'
+
+    def test_it_says_so_once_when_the_marker_never_comes(self, caplog):
+        """A sweep moves the gain hundreds of times, so this cannot warn per change."""
+        device, library = make_device()
+        device.start_stream(CollectingSink(), 2)
+        with caplog.at_level(logging.WARNING):
+            for _ in range(2):
+                device.set_gain_db(-60.0)
+                for _ in range(device._settle_blocks + 1):
+                    library.deliver([4, 4], [4, 4])
+        assert len([r for r in caplog.records if 'marking one as changed' in r.message]) == 1
+
+    def test_a_queued_block_from_before_the_change_is_thrown_away(self):
+        """The drop covers what the library has yet to deliver and cannot reach a block
+        already sitting in the reader's queue.
+
+        A sweep reads one block after moving the gain, so a stale one left in the queue
+        is not a delay: it is the measurement, taken at the previous gain.
+        """
+        device, library = make_device()
+        timer = _once_reading(device, lambda: library.deliver([1, 1], [1, 1]))
+        device.read_block(2)
+        timer.join()
+        library.deliver([9, 9], [9, 9])          # queued at the old gain
+        device.set_gain_db(-60.0)
+        for _ in range(device._settle_blocks + 1):
+            library.deliver([5, 5], [5, 5])
+        block = device.read_block(2)
+        assert block is not None
+        assert block.raw.tolist() == [5, 5, 5, 5], 'a pre-change block was served'
+
+    def test_the_settling_ceiling_follows_the_rate_and_the_block_size(self):
+        """Derived rather than fixed, so a different block size does not silently
+        change how long the device waits.
+        """
+        device, _ = make_device()
+        device.start_stream(CollectingSink(), 2048)
+        assert device._settle_blocks == 63       # 0.5 s of 256 kHz, in 2048s
+
+    def test_a_gain_change_before_any_consumer_still_clears_itself(self):
+        """The library runs from the moment the receiver opens, so a gain change here
+        does send an update and does arm the discard.
+
+        What must not happen is the arming outliving the change.  Before the ceiling
+        existed this was the shape that dropped every block of the stream that
+        followed, with nothing able to clear it.
+        """
+        device, library = make_device()
+        device.set_gain_db(31.0)
+        sink = CollectingSink()
+        device.start_stream(sink, 2)
+        for _ in range(device._settle_blocks + 1):
+            library.deliver([1, 1], [1, 1])
+        assert sink.blocks, 'the discard outlived the gain change'
+
+    def test_a_marked_block_clears_it_without_waiting_for_the_ceiling(self):
+        device, library = make_device()
+        device.set_gain_db(31.0)
+        sink = CollectingSink()
+        device.start_stream(sink, 2)
+        library.deliver([2, 2], [2, 2], gr_changed=True)
+        library.deliver([3, 3], [3, 3])
+        assert [block.raw.tolist() for block in sink.blocks] == [[3, 3, 3, 3]]
 
     def test_the_gain_moves_through_update_rather_than_being_refused(self):
         """The API supports a gain change during a stream, so this device answers the
@@ -404,7 +607,7 @@ class TestSynchronousReads:
         def deliver_once() -> None:
             library.deliver([7, 8], [7, 8])
 
-        timer = _after_init(library, deliver_once)
+        timer = _once_reading(device, deliver_once)
         block = device.read_block(2)
         timer.join()
         assert block is not None
@@ -416,7 +619,7 @@ class TestSynchronousReads:
         conclude that a capture is running.
         """
         device, library = make_device()
-        timer = _after_init(library, lambda: library.deliver([1, 1], [1, 1]))
+        timer = _once_reading(device, lambda: library.deliver([1, 1], [1, 1]))
         device.read_block(2)
         timer.join()
         assert device.is_streaming is False
@@ -426,7 +629,7 @@ class TestSynchronousReads:
         deliveries and the first would simply stop receiving any.
         """
         device, library = make_device()
-        timer = _after_init(library, lambda: library.deliver([1, 1], [1, 1]))
+        timer = _once_reading(device, lambda: library.deliver([1, 1], [1, 1]))
         device.read_block(2)
         timer.join()
         with pytest.raises(RuntimeError, match='serving synchronous reads'):
@@ -456,11 +659,67 @@ class TestSynchronousReads:
 
 
 class TestEvents:
-    def test_an_overload_is_counted(self):
-        """The receiver's own answer to the question clipped_samples asks by looking at
-        samples.  It does not depend on where the rails of the decimated stream sit,
-        which nobody here has measured.
-        """
+    def test_shutdown_events_cannot_spoil_the_next_capture(self) -> None:
+        class ClearanceDuringShutdown(FakeSdrplayApi):
+            def uninit(self, handle: int) -> None:
+                super().uninit(handle)
+                self.raise_event(api.sdrplay_api_EventT.sdrplay_api_PowerOverloadChange,
+                                 api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Corrected)
+
+        device, library = make_device(ClearanceDuringShutdown())
+        assert device.overload_status == OverloadStatus(False, 0)
+        assert library.updates == []
+        assert library.calls.count('update') == 0
+        device.start_stream(CollectingSink(), 4)
+        library.raise_event(api.sdrplay_api_EventT.sdrplay_api_PowerOverloadChange,
+                            api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Detected)
+        assert device.overload_status == OverloadStatus(True, 1)
+        device.stop_stream()
+        device.start_stream(CollectingSink(), 4)
+        assert device.overload_status == OverloadStatus(False, 1)
+        assert len(library.updates) == 1
+        device.close()
+        assert library.calls.count('update') == 1
+
+    def test_a_failed_start_does_not_accept_further_overload_events(self) -> None:
+        device, library = make_device()
+        library.fail_on['init'] = RuntimeError('startup failed')
+        with pytest.raises(RuntimeError, match='startup failed'):
+            device.start_stream(CollectingSink(), 4)
+        library.raise_event(api.sdrplay_api_EventT.sdrplay_api_PowerOverloadChange,
+                            api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Detected)
+        assert device.overload_status == OverloadStatus(False, 0)
+        assert library.calls.count('update') == 0
+
+    def test_events_inside_init_are_acknowledged_before_init_returns(self) -> None:
+        class DetectionDuringStartup(FakeSdrplayApi):
+            def init(self, handle: int, callbacks: api.sdrplay_api_CallbackFnsT) -> None:
+                super().init(handle, callbacks)
+                self.raise_event(api.sdrplay_api_EventT.sdrplay_api_PowerOverloadChange,
+                                 api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Detected)
+
+        device, library = make_device(DetectionDuringStartup())
+        assert device.overload_status == OverloadStatus(True, 1)
+        assert library.updates == [
+            (int(library.device.dev), api.sdrplay_api_TunerSelectT.sdrplay_api_Tuner_A,
+             api.sdrplay_api_ReasonForUpdateT.sdrplay_api_Update_Ctrl_OverloadMsgAck)]
+
+    def test_shutdown_during_acknowledgement_does_not_latch_a_capture_error(self) -> None:
+        device, library = make_device()
+        device.start_stream(CollectingSink(), 4)
+
+        def shutdown_in_update(handle: int, tuner: int, reason: int) -> None:
+            device.stop_stream()
+            raise RuntimeError('API stopped during acknowledgement')
+
+        library.update = shutdown_in_update
+        library.raise_event(api.sdrplay_api_EventT.sdrplay_api_PowerOverloadChange,
+                            api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Detected)
+        device.start_stream(CollectingSink(), 4)
+        assert device.overload_status == OverloadStatus(False, 1)
+
+    def test_an_overload_is_counted(self) -> None:
+        """Hardware reports overload independently of delivered sample endpoints."""
         device, library = make_device()
         device.start_stream(CollectingSink(), 4)
         library.raise_event(
@@ -476,11 +735,71 @@ class TestEvents:
             api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Corrected)
         assert device.overloads == 0
 
-    def test_another_event_is_ignored(self):
+    def test_another_event_is_ignored(self) -> None:
         device, library = make_device()
         device.start_stream(CollectingSink(), 4)
         library.raise_event(api.sdrplay_api_EventT.sdrplay_api_DeviceRemoved)
         assert device.overloads == 0
+        assert library.updates == []
+
+    def test_reader_retains_state_and_counts_across_detection_and_clearance(self) -> None:
+        device, library = make_device()
+        device.start_stream(CollectingSink(), 4)
+        reader = SweepReader(device)
+        initial = reader.overload_status
+        assert initial == OverloadStatus(False, 0)
+
+        library.raise_event(api.sdrplay_api_EventT.sdrplay_api_PowerOverloadChange,
+                            api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Detected)
+        detected = reader.overload_status
+        assert detected == OverloadStatus(True, 1)
+
+        library.raise_event(api.sdrplay_api_EventT.sdrplay_api_PowerOverloadChange,
+                            api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Corrected)
+        assert reader.overload_status == OverloadStatus(False, 1)
+        assert initial == OverloadStatus(False, 0)
+        assert detected == OverloadStatus(True, 1)
+
+        library.raise_event(api.sdrplay_api_EventT.sdrplay_api_PowerOverloadChange,
+                            api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Detected)
+        assert reader.overload_status == OverloadStatus(True, 2)
+
+    @pytest.mark.parametrize('event', [
+        api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Detected,
+        api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Corrected,
+    ])
+    @pytest.mark.parametrize('tuner', [api.sdrplay_api_TunerSelectT.sdrplay_api_Tuner_A,
+                                      api.sdrplay_api_TunerSelectT.sdrplay_api_Tuner_B])
+    def test_both_overload_events_acknowledge_the_tuner_from_the_callback(
+            self, event: int, tuner: int) -> None:
+        device, library = make_device()
+        device.start_stream(CollectingSink(), 4)
+        params = api.sdrplay_api_EventParamsT()
+        params.powerOverloadParams.powerOverloadChangeType = event
+        library.callbacks.EventCbFn(api.sdrplay_api_EventT.sdrplay_api_PowerOverloadChange,
+                                    tuner, ctypes.pointer(params), None)
+        assert library.updates == [
+            (int(library.device.dev), tuner,
+             api.sdrplay_api_ReasonForUpdateT.sdrplay_api_Update_Ctrl_OverloadMsgAck)]
+
+    @pytest.mark.parametrize('message', ['service disconnected', 'service disconnected.'])
+    def test_acknowledgement_failure_reaches_the_reader_without_escaping_the_callback(
+            self, capsys: pytest.CaptureFixture[str], message: str) -> None:
+        device, library = make_device()
+        device.start_stream(CollectingSink(), 4)
+        library.fail_on['update'] = RuntimeError(message)
+        library.raise_event(api.sdrplay_api_EventT.sdrplay_api_PowerOverloadChange,
+                            api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Detected)
+        assert capsys.readouterr().err == ''
+        with pytest.raises(RuntimeError, match='service disconnected.*unreliable') as failure:
+            _ = SweepReader(device).overload_status
+        assert 'disconnected.  Hardware' in str(failure.value)
+
+        library.fail_on.clear()
+        library.raise_event(api.sdrplay_api_EventT.sdrplay_api_PowerOverloadChange,
+                            api.sdrplay_api_PowerOverloadCbEventIdT.sdrplay_api_Overload_Corrected)
+        with pytest.raises(RuntimeError, match='restart the probe'):
+            _ = device.overload_status
 
 
 class TestClosing:
@@ -502,13 +821,15 @@ class TestClosing:
         assert device.close() is True
         assert library.calls[-3:] == ['uninit', 'release', 'close']
 
-    def test_a_receiver_that_never_streamed_is_not_uninitialised(self):
-        """sdrplay_api_Uninit on a device that was never initialized is an error the
-        library reports, and there is nothing to stop.
+    def test_a_receiver_is_always_stopped_because_it_is_always_started(self):
+        """The library is initialized at open rather than at the first read, so that it
+        has filled in gainVals.curr before anything asks for the gain ladder.  Every
+        device therefore has something to stop by the time it closes.
         """
         device, library = make_device()
+        assert 'init' in library.calls
         device.close()
-        assert 'uninit' not in library.calls
+        assert library.calls.index('uninit') > library.calls.index('init')
 
     def test_it_is_safe_to_call_twice(self):
         """Shutdown calls it and the atexit hook fires afterwards regardless."""
@@ -622,16 +943,21 @@ class TestTheSampleFormat:
         assert block.clipped_samples == 2
 
 
-def _after_init(library: FakeSdrplayApi, deliver: object) -> object:
-    """Run `deliver` once the device has initialized the library.
+def _once_reading(device: SdrplayDevice, deliver: object) -> object:
+    """Run `deliver` once `read_block` has somewhere to put what arrives.
 
-    `read_block` starts the stream on its first call and then waits, so a delivery has
-    to come from another thread.  This waits on the signal that the stream started
-    rather than sleeping a fixed time, for the reason `CLAUDE.md` gives about
-    `pilot.pause`: a sleep has to suit the slowest machine that will ever run it.
+    `read_block` attaches its queue and then waits, so a delivery has to come from
+    another thread.  Waiting on the library being initialized is not enough any more,
+    because that happens at open: a block delivered before the queue exists is
+    discarded, which is right for the device and leaves the reader waiting forever.
+
+    It waits on the condition rather than sleeping, for the reason `CLAUDE.md` gives
+    about `pilot.pause`: a sleep has to suit the slowest machine that will ever run it.
     """
     def run() -> None:
-        library.started.wait(timeout=5.0)
+        deadline = time.monotonic() + 5.0
+        while device._sync_sink is None and time.monotonic() < deadline:
+            time.sleep(0.001)
         deliver()
 
     thread = threading.Thread(target=run, daemon=True)

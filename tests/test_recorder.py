@@ -1960,6 +1960,44 @@ class TestRecordingRawIq:
 
     IQ_RATE = 4 * SAMPLE_RATE      # a whole number of IQ samples per audio sample
 
+    def test_it_reads_the_section_of_the_receiver_in_use(self, tmp_path):
+        """An IQ file carries the frequency, gain and rate it was captured at, and
+        nothing in the file says which section those came from.
+
+        Reading [rtlsdr] on an SDRplay station would label every capture with another
+        receiver's figures, all of them plausible and none of them true.  The rate is
+        the worst of them, because durations and the lead-in are counted by it.
+        """
+        iq = RingBufferPipeline(sample_rate=self.IQ_RATE, chunk_size=self.IQ_RATE,
+                                dtype=np.int16)
+        config = _make_config(tmp_path)
+        config.audio.source = 'sdrplay'
+        config.sdrplay.iq_sample_rate = self.IQ_RATE
+        config.sdrplay.frequency_khz = 7050.0
+        config.sdrplay.gain_db = -55.0
+        config.rtlsdr.iq_sample_rate = 999      # what it must not pick up
+
+        recorder = IqEventRecorder(iq, config, charged_wait_seconds=0.0)
+        settings = recorder._metadata_settings('test')
+
+        assert settings['sample_rate'] == self.IQ_RATE
+        assert settings['listening_frequency_hz'] == 7_050_000
+        assert settings['gain_db'] == -55.0
+        assert recorder.RATE_SETTING == '[sdrplay] iq_sample_rate'
+
+    def test_a_sound_card_cannot_produce_one(self, tmp_path):
+        """BuzzConfig.record_iq already answers no, so reaching here means a caller
+        built the recorder without asking.  Failing by name beats labelling a capture
+        with a receiver that was never open.
+        """
+        iq = RingBufferPipeline(sample_rate=self.IQ_RATE, chunk_size=self.IQ_RATE,
+                                dtype=np.int16)
+        config = _make_config(tmp_path)
+        config.audio.source = 'soundcard'
+
+        with pytest.raises(ValueError, match='needs a receiver'):
+            IqEventRecorder(iq, config, charged_wait_seconds=0.0)
+
     def _trigger(self, tmp_path, **recording):
         iq = RingBufferPipeline(sample_rate=self.IQ_RATE, chunk_size=self.IQ_RATE,
                                 dtype=np.uint8)
