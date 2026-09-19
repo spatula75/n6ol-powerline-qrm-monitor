@@ -111,16 +111,29 @@ class TestGcGuarded:
 
         assert func() == 42
 
-    def test_collect_runs_after_call(self):
+    def test_no_collection_is_forced(self):
+        """When to collect is the interpreter's decision, not this decorator's.
+
+        Forcing a pass only moves when it happens, and choosing a generation to force
+        chooses which of its survivors are promoted past the next pass.  An earlier
+        version forced one on the grounds that it freed 9000 objects after a render.
+        That figure says there was cyclic garbage, not that this code had to free it.
+
+        The disable is not optional and is not what this guards: the shiboken crash
+        needs it.  See the decorator's own comment.
+        """
         calls = []
 
         @_gc_guarded
         def func():
-            assert calls == []   # not yet called during the guarded call
+            return 42
 
         with patch('buzz.plotter.gc.collect', side_effect=lambda *_: calls.append(1) or 0):
-            func()
-        assert calls == [1]
+            assert func() == 42
+        assert calls == [], (
+            'The guard called gc.collect() itself.  Deciding when to collect is the '
+            "interpreter's job, and forcing one here promotes whatever survives it "
+            'past the pass that would have caught it.')
 
 
 class TestARenderWithNothingToPlot:
@@ -150,81 +163,65 @@ class TestARenderWithNothingToPlot:
             'later render adds another.')
 
 
-class TestTheGuardCollectsWhatAFullPassWould:
-    """The guard collects generation 0 rather than the whole heap.
+class TestEveryRenderClosesItsFigure:
+    """What the guard leans on, now that it forces no collection.
 
-    That is only sufficient because gc.disable() runs for the whole render.  With
-    collection off, nothing is promoted out of generation 0, so every object the render
-    made is still sitting there when the guard collects.  Drop the disable and automatic
-    passes resume mid-render, survivors move up a generation, and this pass starts
-    missing the garbage it exists to free.  Nothing else couples the two lines.
+    A handle that is still referenced is not reclaimed by any collection, so
+    plt.close() in each render is the only thing that releases one.  A fourth chart
+    method that forgot the call would leak with nothing else to catch it, and the leak
+    shows as renders that slow down over hours and come right after a restart.
 
-    Measured on the development machine over five renders each: a full pass freed 5707
-    objects in 19.6 ms, and a generation 0 pass freed the same 5707 in 2.0 ms.  On a
-    running monitor the full pass took 73 to 86 ms twice a minute, holding the GIL away
-    from the receiver callback.  See docs-notebook/receiver-clock-drift.md.
+    Measured on a running monitor, renders went from about 300 ms to about 1250 ms
+    within a minute and stayed there until a restart, while the charts afterwards drew
+    from more data and were faster.  That is the shape this guards against.
     """
 
     @staticmethod
-    def _garbage_after_an_unguarded_render(tmp_path):
-        """Render with no guard at all, and return what one render leaves behind.
+    def _open_figures():
+        import matplotlib.pyplot as plt
+        return plt.get_fignums()
 
-        This calls __wrapped__ rather than the public method, because the public one is
-        decorated and would collect its own garbage before this could count it.  The
-        figure is the reference the test measures the guard against, and the guard has
-        no way to influence it.
-        """
-        tmp_path.mkdir(parents=True, exist_ok=True)
-        render = Plotter.generate_graph_from_csv.__wrapped__
+    def test_a_daily_chart_closes_its_figure(self, tmp_path):
         plotter, _ = _make_plotter(tmp_path)
         csv_path = tmp_path / 'data.csv'
-        _write_csv(csv_path, n_rows=200)
-        # A first render warms the font cache and matplotlib's own module state, so the
-        # measured one counts a render's garbage and not an import's.
-        render(plotter, csv_path, tmp_path / 'warm.png')
-        gc.collect()
+        _write_csv(csv_path, n_rows=20)
+        plotter.generate_graph_from_csv(csv_path, tmp_path / 'out.png')
+        assert self._open_figures() == [], (
+            'generate_graph_from_csv left a figure open, so pyplot holds it for the '
+            'life of the process and every later render carries it.')
 
-        was_enabled = gc.isenabled()
-        gc.disable()
-        try:
-            render(plotter, csv_path, tmp_path / 'measured.png')
-        finally:
-            if was_enabled:
-                gc.enable()
-        return gc.collect()
-
-    def test_the_guard_leaves_almost_nothing_for_a_later_pass(self, tmp_path):
-        """This drives the real decorated method, so it fails if either half moves.
-
-        The reference comes from an undecorated render, which is the one figure the
-        guard cannot influence.  Running the guarded method should then leave a later
-        full pass with almost none of that to find.  Narrow the collection too far, or
-        remove the disable so that objects are promoted mid-render, and the leftovers
-        climb back toward the reference.
+    def test_a_smoothed_chart_closes_its_figure(self, tmp_path):
+        """The same method again with smoothing, because the collector calls it twice
+        a minute and the second call takes a different path through the series code.
         """
-        reference = self._garbage_after_an_unguarded_render(tmp_path / 'reference')
-        assert reference > 0, (
-            'An undecorated render left no cyclic garbage, so the assertion below '
-            'would hold whatever the guard did.  Either matplotlib stopped leaking, '
-            'in which case the collection in _gc_guarded can go, or this test stopped '
-            'rendering anything.')
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv(csv_path, n_rows=20)
+        plotter.generate_graph_from_csv(csv_path, tmp_path / 'smooth.png', smooth=6)
+        assert self._open_figures() == [], (
+            'generate_graph_from_csv left a figure open when smoothing.')
 
-        measured = tmp_path / 'guarded'
-        measured.mkdir(parents=True, exist_ok=True)
-        plotter, _ = _make_plotter(measured)
-        csv_path = measured / 'data.csv'
-        _write_csv(csv_path, n_rows=200)
-        plotter.generate_graph_from_csv(csv_path, measured / 'warm.png')
-        gc.collect()
-        plotter.generate_graph_from_csv(csv_path, measured / 'out.png')
-        left_behind = gc.collect()
+    def test_a_frequency_chart_closes_its_figure(self, tmp_path):
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv(csv_path, n_rows=20)
+        plotter.generate_frequency_graph(csv_path, tmp_path / 'freq.png',
+                                         datetime(2024, 1, 1, 12, tzinfo=_TZ))
+        assert self._open_figures() == [], (
+            'generate_frequency_graph left a figure open.')
 
-        assert left_behind < reference * 0.25, (
-            f'A full pass after the guard still found {left_behind} objects, against '
-            f'{reference} that one render makes.  The guard collects generation 0, '
-            'which works only while gc.disable() keeps a render from promoting its '
-            'garbage out of that generation.  A figure this high means the two have '
-            'come apart.')
+    def test_a_summary_chart_closes_its_figure(self, tmp_path):
+        """The no-data path of this one was already covered.  The path that actually
+        draws was not, which is the one the collector runs on the hour.
+        """
+        plotter, store = _make_plotter(tmp_path)
+        store.read_range_scores = MagicMock(return_value={
+            datetime(2024, 1, 1, hour, minute, tzinfo=_TZ): 0.5
+            for hour in range(24) for minute in (0, 15, 30, 45)})
+        plotter.generate_summary_graph(tmp_path / 'summary.png',
+                                       datetime(2024, 1, 1, tzinfo=_TZ))
+        assert self._open_figures() == [], (
+            'generate_summary_graph left a figure open on the path that draws.')
 
 
 class TestFreezingTheStartupHeap:

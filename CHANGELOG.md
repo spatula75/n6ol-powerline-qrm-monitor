@@ -78,12 +78,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   and warns once when that total walks past 300 ms. A leak of twenty milliseconds a
   minute never crosses the per-interval limit, would corrupt every measurement the
   station takes, and nothing in the monitor could see it before.
-- Chart rendering collects generation 0 rather than the whole heap, and
-  `buzz.main.freeze_live_heap` takes the long-lived objects out of every later
-  collection. A full collection stops every thread for its whole duration, measured at
-  46.6 ms against a heap of 400,000 objects, and the monitor was forcing one twice a
-  minute after every chart. The forced collections went from 160 ms a minute to about
-  6 ms, and they free the same objects.
+- Chart rendering no longer forces a garbage collection, and
+  `buzz.main.freeze_live_heap` takes the long-lived objects out of every later one. A
+  full collection stops every thread for its whole duration, measured at 46.6 ms
+  against a heap of 400,000 objects, and the monitor was forcing one twice a minute
+  after every chart. Deciding when to collect belongs to the interpreter: forcing a
+  pass only moves when it happens, and choosing a generation to force chooses which of
+  its survivors escape the next pass. Each render closes its own figure, which is what
+  keeps matplotlib handles from accumulating, and the tests now hold all four render
+  paths to that.
 - The SDRplay shim fills one block buffer in place rather than allocating an array per
   delivery and joining them at each block boundary. The callback runs on the library's
   own thread and needs the GIL, so allocation churn there is the worst place for it.

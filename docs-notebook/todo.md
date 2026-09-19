@@ -214,7 +214,7 @@ Until somebody runs it, the release notes say plainly that Linux is untested and
 for reports.  A single person running it once and saying what happened closes this.
 
 
-### Qt warned once about flushing a window that had already gone
+### Qt warns about flushing a window that had already gone
 
 On 2026-09-16, closing the monitor printed this and then exited normally:
 
@@ -225,20 +225,47 @@ Qt says that when something asks to paint a window whose native handle the platf
 has already destroyed.  So a repaint reached the display after the window began
 closing, and the paint went nowhere.
 
+It happened again on 2026-09-18, on a different window pointer and with the same clean
+exit.  Twice is not a coincidence of one stale pointer, and it removes the obstacle this
+entry closes on: the warning does recur.
+
 Read it as a race rather than as a sequencing fault that was always there.  The same
 shutdown path has run hundreds of times without saying this, so whatever paints late
-usually finishes first, and this run happened to be slower somewhere.  It appeared
+usually finishes first, and those runs happened to be slower somewhere.  It appeared
 during the SDRplay work and nothing points at the receiver: the display, the analyzer
 and the shutdown order are the same whichever receiver feeds them.
 
-What to look at is whatever can repaint between the window starting to close and Qt
-destroying the handle.  `ContinuousAnalyzer` publishes to its listeners from its own
+Qt's own documentation describes the sequence as a leftover timer or event loop cycle
+firing a final paint after the platform resources are gone, which is the same reading
+this entry arrived at.
+
+One concrete instance of that exists and is not the cause of the reports above, because
+it only runs under `--render`.  `DisplayRecorder` owns a QTimer at the display's own
+cadence, and nothing stops it: `buzz.main` calls `recording_display.start` and never a
+matching stop, and `MainWindow.closeEvent` stops the bar, the scope, the waterfall and
+the meters without knowing the render recorder exists.  So closing a window part way
+through a render leaves a timer taking its pixels.  The class carries a coverage pragma
+for needing a live display, which is why nothing caught it.  A timer that outlives the
+window it reads is a defect whether or not it is the one reported here, and fixing it
+would rule one candidate out of this entry.
+
+What to look at otherwise is whatever can repaint between the window starting to close
+and Qt destroying the handle.  `ContinuousAnalyzer` publishes to its listeners from its own
 thread, and `CLAUDE.md` says a listener body must stay trivial for exactly this
 reason, so the question is whether any of them can reach a widget during teardown.
 
+There is a second thing to rule out now.  `buzz.main.freeze_live_heap` is called again
+once the window is up, which moves every Qt object then alive into the permanent
+generation.  Reference counting still frees them, so an ordinary widget is unaffected,
+but a reference cycle among them is never collected and survives to exit.  If any part
+of teardown depended on the collector breaking such a cycle, that changed on
+2026-09-18.  Check the dates before blaming it: this warning predates that change by
+two days, so it cannot be the original cause, and it could still make the race easier
+to lose.
+
 `QT_FATAL_WARNINGS=1` turns the warning into an abort with a stack, which names the
-caller instead of leaving it to be guessed at.  That is the cheapest way in, and it
-needs the warning to happen again, which is the hard part.
+caller instead of leaving it to be guessed at.  That is the cheapest way in, and the
+warning has now happened twice, so set it on a run that is going to be closed anyway.
 
 Nothing is broken as far as anybody has seen.  The process was already exiting, the
 paint was discarded, and the exit code was clean.  It is here because a warning that

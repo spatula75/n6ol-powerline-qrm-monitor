@@ -2,15 +2,15 @@
 Plot generation for daily noise traces and time-of-day probability summaries.
 
 Plotter.generate_graph_from_csv() renders a daily signal-vs-noise-floor line chart
-from a CSV file. Plotter.generate_summary_graph() renders a bar chart showing the
+from a CSV file.  Plotter.generate_summary_graph() renders a bar chart showing the
 normalized probability of interference at each 15-minute interval of the day,
 aggregated across a configurable date range.
 
-All output is saved as PNG. The _gc_guarded decorator does two things. It forces a
-gc.collect() after each render. That works around a matplotlib memory-leak bug that
-causes handles to accumulate across repeated savefig calls. It also disables the
-cyclic GC for the duration of the render itself, working around a PySide6/shiboken
-crash - see the decorator's docstring for the full story.
+All output is saved as PNG.  The _gc_guarded decorator disables the cyclic GC for the
+duration of a render, working around a PySide6/shiboken crash - see the decorator's
+docstring for the full story.  It re-enables the GC afterwards and forces nothing,
+leaving when to collect to the interpreter.  Each render closes its own figure, which
+is what keeps matplotlib handles from accumulating.
 """
 
 import gc  # noqa: I001
@@ -192,64 +192,51 @@ def _gc_guarded(func: Callable[_P, _R]) -> Callable[_P, _R]:
     # where matplotlib is exercising this code path, since gc.disable() is a
     # single interpreter-wide switch with authority over all of them.
     # ------------------------------------------------------------------------
-    # The collection afterward is unrelated: a workaround for a separate
-    # matplotlib memory leak (https://github.com/matplotlib/matplotlib/issues/27713)
-    # that causes handles to accumulate across repeated savefig calls. It runs
-    # after re-enabling GC, once the render is past the risky window.
+    # Nothing here forces a collection, and that is deliberate.  A render leaves
+    # cyclic garbage behind, and the interpreter collects it on a schedule tuned by
+    # people who have measured far more of this than anybody here.  Forcing a pass
+    # only moves when it happens, and picking a generation to force chooses which of
+    # its survivors get promoted past the next pass.  The disable above is forced on
+    # this code by the shiboken bug; the collection never was.
     #
-    # It collects generation 0 rather than the whole heap, and the disable above is
-    # what makes that sufficient: with collection off for the whole render, nothing is
-    # promoted out of generation 0, so every object the render made is still there.
-    # These two lines are therefore coupled, and dropping the disable would quietly
-    # leave this pass missing the garbage it exists to free.
-    # TestTheGuardCollectsWhatAFullPassWould pins the two together.
+    # An earlier version forced one, on the grounds that a collection after a render
+    # freed 9000 objects.  That figure says there was cyclic garbage, and says nothing
+    # about whether this code had to free it.  Neither reading of the matplotlib leak
+    # it cited argues for forcing one: handles that are still referenced are not
+    # reclaimed by any collection, and plt.close() in each render is what releases
+    # those, while handles that are unreferenced cycles are reclaimed by the automatic
+    # collector without help.  Allocations pile up untouched while the disable is in
+    # force, so the first threshold crossing after gc.enable() collects anyway.
     #
-    # The cost is the heap walk rather than the freeing, which is why this matters at
-    # all.  Measured on a running monitor, a full pass took 73 to 86 ms twice a minute
-    # while freeing about 8500 objects a render had just made; on the development
-    # machine the same render gave 5707 objects in 19.6 ms full against the same 5707
-    # in 2.0 ms for generation 0.  See docs-notebook/receiver-clock-drift.md.
+    # What that leaves resting on plt.close() is the invariant that every render
+    # closes its figure.  TestEveryRenderClosesItsFigure holds the three methods to
+    # it, because a fourth that forgot would leak with nothing to catch it.
     #
-    # Those are wall-clock figures for the call, which bound the stall rather than
-    # measure it.  Marking and sweeping are C and do not release the GIL, but the
-    # finalizers and weakref callbacks a collection runs are Python, and the eval loop
-    # can switch threads there, so some of the 86 ms may have been yielded.  What the
-    # receiver actually lost would have to be measured at the callback, as the largest
-    # gap between two of them.
+    # The figures logged below are the ones that would show that going wrong.  A
+    # figure count that climbs is a render that failed to close one.  Generation
+    # counts that climb are the automatic collector falling behind.  Both were
+    # measured on a running monitor, where renders slowed from about 300 ms to about
+    # 1250 ms over one minute and stayed slow until a restart, while the same charts
+    # drew from more data afterwards.  That is process state accumulating rather than
+    # the day's CSV growing, and these two figures say which kind.
     #
-    # Narrowing this cut the drift spread that buzz.sdr reports, from 12.2 ms to 4.4 ms
-    # of standard deviation, and did not stop the warnings: one came an hour later at
-    # -46.0 ms.  So this was part of what stalled the receiver and was not all of it.
-    # Removing a heap walk that frees nothing stands on its own either way.
+    # The render is timed because it is the part that can stall capture.  A render is
+    # mostly Python and yields every sys.getswitchinterval(), and measured against a
+    # thread sleeping 1 ms in a loop, the longest anybody waited on one was 8.1 ms.
+    # See docs-notebook/receiver-clock-drift.md.
     @wraps(func)
     def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
         was_enabled = gc.isenabled()
         gc.disable()
-        drawing_started = perf_counter()
+        started = perf_counter()
         try:
             result = func(*args, **kwargs)
         finally:
             if was_enabled:
                 gc.enable()
-        drawing_seconds = perf_counter() - drawing_started
-        started = perf_counter()
-        unreachable = gc.collect(0)
-        # Both figures are the measurement that chose generation 0 over a full pass,
-        # and they answer different questions.  The count says whether this collection
-        # still finds the render's garbage, which is the thing a narrower pass could get
-        # wrong.  The duration says what it costs, which is what the narrowing was for.
-        # The render is timed as well as the collection, because the two are
-        # different suspects for the same symptom and only one of them was ever
-        # measured.  A render is mostly Python, which yields to another thread every
-        # sys.getswitchinterval(), but a single C call inside it has no bytecode
-        # boundary to yield at and holds the GIL for as long as it runs.  The receiver
-        # callback is a ctypes callback and has to acquire the GIL to run at all, so a
-        # long C call here delays it.  Measured on an RSP1B, the longest gap between
-        # deliveries grew from 73 ms to 121 ms on the hour, which is when the collector
-        # draws the extra summary charts.
-        logger.debug('%s drew in %.1f ms, and the collection after it freed %d objects '
-                     'in %.1f ms.', func.__name__, drawing_seconds * 1e3, unreachable,
-                     (perf_counter() - started) * 1e3)
+        logger.debug('%s drew in %.1f ms, leaving %d figures open and generation '
+                     'counts %s.', func.__name__, (perf_counter() - started) * 1e3,
+                     len(plt.get_fignums()), gc.get_count())
         return result
     return wrapper
 

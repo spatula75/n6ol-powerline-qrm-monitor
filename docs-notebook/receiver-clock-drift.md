@@ -302,9 +302,21 @@ cycles and asserts silence, and `test_a_leak_too_slow_for_one_interval_is_still_
 asserts the total finds what the interval cannot.
 
 The collection work stands whatever caused the drift.  `buzz.plotter._gc_guarded`
-collects generation 0 rather than the whole heap, which took the forced collections from
-160 ms a minute to 6 ms, and `freeze_live_heap` takes the long-lived objects out of the
-automatic passes as well.
+forces no collection at all now, and `freeze_live_heap` takes the long-lived objects out
+of the automatic passes.
+
+Forcing one was tried first, narrowed to generation 0, which took the forced collections
+from 160 ms a minute to 6 ms.  It was then removed, for a reason the measurement had
+hidden: a collection after a render freed 9000 objects, which says there was cyclic
+garbage and not that this program had to free it.  A handle still referenced is not
+reclaimed by any collection, and `plt.close()` in each render releases those; a handle
+that is an unreferenced cycle is reclaimed by the automatic collector without help.
+Allocations pile up untouched while the disable is in force, so the first threshold
+crossing after `gc.enable()` collects anyway.
+
+What remains is the invariant that every render closes its figure, which
+`TestEveryRenderClosesItsFigure` holds all four render paths to.  Before that, the only
+test asserting it covered the summary chart's no-data early return.
 
 ## What the driver is probably doing
 
