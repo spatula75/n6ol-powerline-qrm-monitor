@@ -134,24 +134,59 @@ _HEALTH_INTERVAL_SECONDS = 60.0
 # How far the receiver clock may run from the system clock, in parts per million,
 # before the difference means lost samples rather than two crystals disagreeing.
 #
+# Only a positive movement is checked against it, because only a positive movement can
+# be a loss: the interval then holds more time than audio.  A negative one is a buffer
+# in the receiver library emptying, which loses nothing.  See _warn_about_drift.
+#
 # The figure is chosen rather than measured.  RTL-SDR crystals are specified in the
 # tens of parts per million, so 500 leaves room for a poor one and still catches a
 # loss, which runs to thousands.  See RtlSdrSource.clock_drift_seconds.
+#
+# Raising this figure is almost never the answer to a wide spread, and twice on one
+# evening it looked like it was.  An RSP1B ran to 12.2 ms of standard deviation, which
+# turned out to be a garbage collection the plotter forced twice a minute, and it
+# settled to 4.4 ms once that was narrowed.  What remained was a buffer in the receiver
+# library filling and emptying, which crosses this limit about every eight minutes and
+# is not a fault at all.  See _warn_about_drift and
+# docs-notebook/receiver-clock-drift.md.
 _DRIFT_PPM_LIMIT = 500
 
+# How far the receiver clock may stand from its baseline before that is a fault rather
+# than a buffer cycling, in seconds.
+#
+# The figure is chosen, from a measurement.  On an RSP1B at 3530 kHz the library's
+# buffer filled for eight or nine minutes to between +48 and +64 ms and then emptied in
+# one interval, three times across two runs, always returning to within 20 ms of zero.
+# 300 ms is about five times the largest excursion seen, so a cycle cannot reach it
+# while a rate error or a steady loss will.  See
+# docs-notebook/receiver-clock-drift.md.
+_CUMULATIVE_DRIFT_LIMIT_SECONDS = 0.300
 
-def _what_the_drift_means(moved: float) -> str:
-    """Which fault a drift of this sign is, and what to do about it.
 
-    Split out so the wording can be read and tested without a receiver, and so the
-    two cases sit side by side where they can be compared.
+def _what_a_loss_means() -> str:
+    """What one interval short of audio is, and what to do about it.
+
+    Split out so the wording can be read and tested without a receiver.
     """
-    if moved > 0:
-        return ('Less audio arrived than that interval holds, so samples were lost.  '
-                'Check what else on this machine is taking the CPU.')
-    return ('More audio arrived than that interval holds, so nothing was lost and '
-            'the receiver delivered a backlog in one burst.  Expect it once at '
-            'startup, and look at what stalled the receiver if it repeats.')
+    return ('Less audio arrived than that interval holds, so samples were lost.  '
+            'Levels and grid frequency from this period are suspect.  Check what else '
+            'on this machine is taking the CPU.')
+
+
+def _what_a_sustained_drift_means(total: float) -> str:
+    """What a clock that has walked away from where it started is, by sign.
+
+    The sign says which fault it is.  A positive total means audio keeps going missing,
+    and a negative one means the receiver produces more audio than the configured rate
+    accounts for.
+    """
+    if total > 0:
+        return ('Less audio has arrived than the run accounts for, so samples are '
+                'going missing steadily rather than once.  Check what else on this '
+                'machine is taking the CPU.')
+    return ('More audio has arrived than the run accounts for, so the receiver runs '
+            'faster than the rate it was configured at.  Check that rate against what '
+            'the receiver reports.')
 
 
 class RtlSdrSource:
@@ -250,14 +285,31 @@ class RtlSdrSource:
     def clock_drift_seconds(self) -> float:
         """Elapsed time minus the audio the device delivered for it.
 
-        The only available evidence that samples went missing, since nothing reports a
-        drop.  A positive figure means less audio arrived than the wall clock says it
-        should have.
+        The only available evidence that a driver dropped samples, since nothing
+        reports that.  A drop on this side of the callback is counted instead, by
+        _emit and _report_any_discards.
+
+        The two signs are not symmetric, because audio cannot be created.  So a
+        negative figure can only be audio that already existed arriving late, and is
+        never a loss.  A positive one is ambiguous: audio is either missing or being
+        held, and one reading cannot say which.
+
+        | Reading                             | What it is                    |
+        |-------------------------------------|-------------------------------|
+        | Negative                            | A buffer draining.            |
+        | Positive, small, and recovering     | A buffer filling.             |
+        | Positive, and the total keeps going | A loss nothing else reports.  |
+
+        Only the third is a fault, which is why _warn_about_drift watches the total
+        since its baseline rather than one interval.  Measured on an RSP1B, the
+        receiver library fills a buffer for eight or nine minutes at about 130 ppm and
+        then empties it in one interval, so the first two rows both happen every eight
+        minutes on a receiver with nothing wrong with it.  See
+        docs-notebook/receiver-clock-drift.md.
 
         Read it as a symptom rather than a measurement.  The receiver's crystal and the
         system clock differ by some parts per million that nobody here has measured, so
-        the two separate slowly even when nothing is wrong.  Milliseconds over a few
-        seconds mean lost samples.  Microseconds mean clocks.
+        the two separate slowly even when nothing is wrong.
         """
         if self._first_arrival is None or self._last_arrival is None:
             return 0.0
@@ -537,6 +589,11 @@ class RtlSdrPipeline(RingBufferPipeline):
         # None until the first report, which takes the baseline rather than assuming
         # the stream started at zero drift.  See _warn_about_drift.
         self._drift_reported: float | None = None
+        # Where the clock stood when the baseline was taken, and whether it has been
+        # reported as having walked away from it.  The second stops one fault being
+        # repeated every minute for as long as it lasts.
+        self._drift_baseline = 0.0
+        self._drift_walked_away = False
 
     @property
     def clipped_samples(self) -> int:
@@ -678,11 +735,34 @@ class RtlSdrPipeline(RingBufferPipeline):
         because a receiver's own startup falls entirely inside it.
 
         The two directions are different faults and the message says which.  Less
-        audio than the interval means samples went missing, and a machine with
-        nothing left to give is the usual cause.  More audio than the interval
-        cannot be a loss: it is a run of blocks delivered faster than real time,
-        which is what a receiver does when it hands over a backlog it built up
-        while something was holding it back.
+        audio than the interval means samples went missing, and a machine with nothing
+        left to give is the usual cause.  More audio than the interval cannot be a
+        loss, because the blocks arrived.  Only the first case spoils a measurement,
+        so only the first case says so.
+
+        This reports every interval at DEBUG and not only the ones over the limit,
+        because one interval says almost nothing.  What a run of them shows is a
+        cumulative figure that climbs for seven or eight minutes and then discharges in
+        one interval, which is what warns.
+
+        Measured on an RSP1B at 3530 kHz on 2026-09-18, over three cycles in two runs:
+        the cumulative climbed to +48.1, +63.5 and +48.7 ms, and discharged -52.3, -56.4
+        and -59.4 ms.  Every one returned to within 20 ms of zero, so nothing was lost
+        or gained.  The third was predicted before it happened, which is the reason to
+        believe the first two.
+
+        `SdrplayDevice._note_the_backlog` measures the receiver side directly, and
+        it rules out a stall.  Over the nine paired minutes the worst wait between
+        deliveries held between 71.6 and 87.6 ms while this figure swung from -56.4 to
+        +22.3, and the minute that warned was 74.4 ms, which is the middle of that
+        band.  The two are uncorrelated at r = -0.416.
+
+        So a negative figure here is a buffer in the library emptying rather than a
+        fault, and the per-interval movement measures buffer depth as well as audio
+        going missing.  The cumulative figure separates them, because a buffer cycle
+        returns to zero and a rate error does not.  See
+        docs-notebook/receiver-clock-drift.md, which holds both tables and says what
+        would be needed to warn on the cumulative instead.
         """
         drift = self._source.clock_drift_seconds
         if self._drift_reported is None:
@@ -697,18 +777,50 @@ class RtlSdrPipeline(RingBufferPipeline):
             # unreported.  A rate that is wrong still shows up, because it keeps
             # moving and this only absorbs what had already happened.
             self._drift_reported = drift
+            self._drift_baseline = drift
             logger.debug('Receiver clock baseline is %+.0f ms after the first %.0f '
                          'seconds.', drift * 1e3, elapsed)
             return
         moved = drift - self._drift_reported
         self._drift_reported = drift
-        if abs(moved) <= elapsed * _DRIFT_PPM_LIMIT / 1e6:
-            return
-        logger.warning(
-            'The receiver and system clocks moved %+.0f ms apart over the last %.0f '
-            'seconds, which is more than a crystal explains.  %s  Levels and grid '
-            'frequency from this period are suspect.',
-            moved * 1e3, elapsed, _what_the_drift_means(moved))
+        total = drift - self._drift_baseline
+        logger.debug('Receiver clock moved %+.1f ms over the last %.0f seconds, and '
+                     'stands %+.1f ms from its baseline.', moved * 1e3, elapsed,
+                     total * 1e3)
+        lost = moved > elapsed * _DRIFT_PPM_LIMIT / 1e6
+        if lost:
+            logger.warning(
+                'The receiver and system clocks moved %+.0f ms apart over the last '
+                '%.0f seconds, which is more than a crystal explains.  %s',
+                moved * 1e3, elapsed, _what_a_loss_means())
+        self._warn_if_the_clock_has_walked_away(total, already_warned=lost)
+
+    def _warn_if_the_clock_has_walked_away(self, total: float,
+                                           already_warned: bool) -> None:
+        """Report a clock that has left its baseline and stayed away.
+
+        This is the check the per-interval one cannot do.  A buffer that fills and
+        empties moves a single interval by tens of milliseconds and comes back, where a
+        rate error or a steady loss keeps going.  Only a total since the baseline tells
+        those apart, and a leak too slow to cross the per-interval limit reaches this
+        one eventually.
+
+        Said once per excursion rather than once a minute for as long as it lasts.  A
+        fault that persists is still the same fault, and repeating it every minute
+        teaches an operator to filter the log.
+
+        `already_warned` says the interval check has spoken about this same minute.  A
+        loss large enough to trip both is one event, and describing it twice buries the
+        part the operator has to act on.  The flag still moves, so the next excursion
+        after a recovery is reported.
+        """
+        outside = abs(total) > _CUMULATIVE_DRIFT_LIMIT_SECONDS
+        if outside and not self._drift_walked_away and not already_warned:
+            logger.warning(
+                'The receiver clock stands %+.0f ms from where it started, which is '
+                'more than a buffer cycle explains.  %s',
+                total * 1e3, _what_a_sustained_drift_means(total))
+        self._drift_walked_away = outside
 
     def _append_in_chunks(self, audio: np.ndarray) -> None:
         """Hand the audio over in pieces of exactly CHUNK_SIZE, holding any remainder.

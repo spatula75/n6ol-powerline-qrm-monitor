@@ -375,19 +375,56 @@ class TestTheHealthCountersReachTheLog:
 
         assert not caplog.messages, caplog.messages
 
-    def test_a_drift_that_keeps_moving_is_still_reported(self, caplog):
-        """What the baseline must not hide.  A rate that is wrong keeps
-        separating the two clocks, so it survives having its first interval absorbed.
+    def test_a_leak_too_slow_for_one_interval_is_still_caught(self, caplog):
+        """The fault the per-interval check cannot see, and the reason the total exists.
+
+        Twenty milliseconds a minute is under the per-interval limit forever, so that
+        check never speaks, while the clock walks away at 333 ppm and every measurement
+        goes quietly wrong.  Only the total since the baseline finds it.
         """
         clock = FakeClock()
         p, _ = pipeline(clock)
+        per_interval = 0.020
+        assert per_interval < 60.0 * sdr_module._DRIFT_PPM_LIMIT / 1e6, (
+            'This has to stay under the per-interval limit, or it proves nothing about '
+            'the total.')
 
         with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
-            for interval in range(4):
-                p.source.clock_drift_seconds = -0.037 - 0.05 * interval
+            for interval in range(1, 25):
+                p.source.clock_drift_seconds = per_interval * interval
                 self.consume_for(p, clock, 60.0)
 
-        assert len(caplog.messages) == 3, caplog.messages
+        assert len(caplog.messages) == 1, (
+            f'A leak of 20 ms a minute should be reported once, when the total passes '
+            f'{sdr_module._CUMULATIVE_DRIFT_LIMIT_SECONDS * 1e3:.0f} ms, and not once '
+            f'per minute afterwards: {caplog.messages}')
+        assert 'from where it started' in caplog.messages[0], caplog.messages
+        assert 'going missing' in caplog.messages[0], (
+            'A positive total is audio disappearing, so the message has to send the '
+            f'operator after load rather than after a sample rate: {caplog.messages}')
+
+    def test_a_buffer_cycling_is_never_reported(self, caplog):
+        """Measured on an RSP1B, the receiver library fills a buffer for eight or nine
+        minutes to between +48 and +64 ms and then empties it in one interval.  Three
+        cycles across two runs all returned to within 20 ms of zero.
+
+        Nothing is lost while that happens, so nothing should be said.  The old check
+        warned on every discharge, which is once every eight minutes for the life of
+        the station.  See docs-notebook/receiver-clock-drift.md.
+        """
+        clock = FakeClock()
+        p, _ = pipeline(clock)
+        cycle = [0.020, 0.042, 0.031, 0.041, 0.043, 0.045, 0.041, 0.064, 0.007]
+
+        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+            for _ in range(3):
+                for total in cycle:
+                    p.source.clock_drift_seconds = total
+                    self.consume_for(p, clock, 60.0)
+
+        assert caplog.messages == [], (
+            'A buffer that fills and empties loses nothing, and the discharge is the '
+            f'largest single movement there is: {caplog.messages}')
 
     def test_two_crystals_disagreeing_is_not_reported(self, caplog):
         """This counter needs a limit where the others do not, because it is never
@@ -406,6 +443,32 @@ class TestTheHealthCountersReachTheLog:
             f'A drift of 20 ppm was reported as lost samples: {caplog.messages}.  '
             f'_DRIFT_PPM_LIMIT is {sdr_module._DRIFT_PPM_LIMIT} ppm, so anything under '
             'that has to pass as two clocks disagreeing.')
+
+    def test_every_interval_is_reported_at_debug_even_when_it_does_not_warn(self, caplog):
+        """Telling a slightly wrong rate from a stall needs the intervals that stayed
+        quiet.  A stall conserves blocks, so it reads positive in the interval that
+        loses them and negative in the interval that gets them back, as a pair.  A rate
+        that is a little wrong reads the same small figure every interval instead, and
+        crosses the limit only when jitter carries it over.  The warning cannot show
+        either shape, because it speaks only when the limit is crossed.
+        """
+        clock = FakeClock()
+        p, _ = pipeline(clock)
+        # 20 ppm per interval, far under the 500 ppm limit, so nothing warns.
+        with caplog.at_level(logging.DEBUG, logger='buzz.sdr'):
+            for interval in range(1, 4):
+                p.source.clock_drift_seconds = -60.0 * 20e-6 * interval
+                self.consume_for(p, clock, 60.0)
+
+        moved = [m for m in caplog.messages if 'Receiver clock moved' in m]
+        assert len(moved) == 2, (
+            'The first interval is the baseline and the two after it are movements, so '
+            f'two lines were expected at DEBUG.  Got {moved} out of {caplog.messages}.')
+        assert all('-1.2 ms' in line for line in moved), (
+            f'Each interval moved 20 ppm of 60 s, which is -1.2 ms.  Got {moved}.')
+        assert not [m for m in caplog.messages if 'more than a crystal' in m], (
+            f'20 ppm is under the {sdr_module._DRIFT_PPM_LIMIT} ppm limit, so the '
+            f'DEBUG line must not come with a warning: {caplog.messages}.')
 
     def test_output_saturation_is_reported_even_without_raw_clipping(self, caplog):
         """The two counts have separate causes, so one can move without the other.  A

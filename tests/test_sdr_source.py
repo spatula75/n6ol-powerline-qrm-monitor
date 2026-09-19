@@ -12,7 +12,8 @@ test that can hang.
 import queue
 
 import pytest
-from buzz.sdr import _what_the_drift_means, _DISCARD_LOG_EVERY, DEFAULT_BLOCK_SAMPLES, RtlSdrSource
+from buzz.sdr import (_what_a_loss_means, _what_a_sustained_drift_means,
+                      _DISCARD_LOG_EVERY, DEFAULT_BLOCK_SAMPLES, RtlSdrSource)
 from tests.fake_sdr import V4_GAINS, FakeSdrDevice
 
 BLOCK = 64
@@ -188,30 +189,48 @@ class TestTheClockDriftSymptom:
 
 
 class TestWhatTheDriftWarningSays:
-    """The check fires on either sign and the two signs are different faults.
+    """One interval short of audio and a clock that has walked away are different
+    faults, and the wording has to send an operator to different places.
 
-    It said "samples were probably lost, check what else is taking the CPU" for both,
-    which is wrong for a negative figure and sent somebody hunting a busy machine that
-    had eleven idle cores.
+    It said "samples were probably lost, check what else is taking the CPU" for both
+    signs once, which is wrong for a negative figure and sent somebody hunting a busy
+    machine that had eleven idle cores.  It then said a stall held the receiver up,
+    which a direct measurement of the callback ruled out: over nine paired minutes on
+    an RSP1B the worst backlog stayed between 71.6 and 87.6 ms while the drift swung
+    from -56.4 to +22.3 ms.  See docs-notebook/receiver-clock-drift.md.
     """
 
-    def test_less_audio_than_the_interval_is_a_loss(self):
-        message = _what_the_drift_means(0.058)
+    def test_a_loss_names_the_measurements_it_spoils(self):
+        message = _what_a_loss_means()
         assert 'samples were lost' in message
+        assert 'suspect' in message, (
+            'Audio that went missing does spoil the minute it went missing from, and '
+            'an operator needs to know which rows to distrust.')
         assert 'CPU' in message
 
-    def test_more_audio_than_the_interval_is_not_a_loss(self):
-        """It cannot be.  A receiver that delivered more audio than the wall clock
-        between its blocks accounts for handed over a backlog, which is the opposite
-        of dropping samples and has the opposite cause.
+    def test_a_sustained_positive_drift_is_a_steady_loss(self):
+        """Audio can only go missing in the direction that leaves the interval holding
+        more time than audio, so a positive total is samples disappearing.
         """
-        message = _what_the_drift_means(-0.058)
-        assert 'nothing was lost' in message
-        assert 'backlog' in message
-        assert 'CPU' not in message
+        message = _what_a_sustained_drift_means(0.4)
+        assert 'going missing' in message
+        assert 'CPU' in message
+
+    def test_a_sustained_negative_drift_is_a_rate_that_is_wrong(self):
+        """A negative total cannot be a loss, so the receiver is producing more audio
+        than the rate it was configured at accounts for.  That is the one fault the
+        per-interval check cannot see, because a buffer cycling looks the same for one
+        minute at a time.
+        """
+        message = _what_a_sustained_drift_means(-0.4)
+        assert 'faster than the rate' in message
+        assert 'CPU' not in message, (
+            'A machine that is too busy cannot make a receiver produce extra audio, so '
+            'sending an operator to look at load would waste their time.')
 
     def test_the_two_directions_do_not_share_wording(self):
-        assert _what_the_drift_means(0.058) != _what_the_drift_means(-0.058)
+        assert _what_a_sustained_drift_means(0.4) != _what_a_sustained_drift_means(-0.4)
+
 
 
 class TestWhatItDelegates:
