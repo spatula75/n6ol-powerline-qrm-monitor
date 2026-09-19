@@ -93,13 +93,24 @@ _USB_PACKET_BYTES = 512
 # EFFECTIVE_BITS in buzz.sdrplay_device.
 EFFECTIVE_BITS = 8
 
-# How many of its own steps this receiver's scope floor is worth.
+# What this receiver's scope asked for with its antenna off, and on a live band, in
+# units of one effective audio step.
 #
-# The value came from measuring rather than from theory.  `RtlSdrDevice.scope_floor_steps`
-# gives the two readings and the window they define, and
-# docs-notebook/scope-auto-range-floor.md says how they were taken.  A module constant
-# so a test can read the figure rather than restate it, matching EFFECTIVE_BITS above.
-SCOPE_FLOOR_STEPS = 1.75
+# The values came from measuring rather than from theory, on 2026-09-19 at 22.9 dB of
+# gain.  `RtlSdrDevice.scope_floor_steps` says what they mean and
+# docs-notebook/scope-auto-range-floor.md says how they were taken.
+SCOPE_DEAD_STEPS = 1.14
+SCOPE_BAND_STEPS = 2.68
+
+# How many of its own steps this receiver's scope floor is worth: the midpoint of
+# those two in decibels, which leaves equal margin against drawing silence at full
+# height and against pinning a live signal.
+#
+# Derived rather than written down, because the midpoint of two measured figures is
+# arithmetic and a third figure beside them is a chance for one to move without the
+# others.  The notebook and these two disagreed by 0.1 dB within a day of being
+# written, from rounding alone.
+SCOPE_FLOOR_STEPS = (SCOPE_DEAD_STEPS * SCOPE_BAND_STEPS) ** 0.5
 
 
 @dataclass(frozen=True)

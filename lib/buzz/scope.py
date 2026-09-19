@@ -423,8 +423,7 @@ def extract_sweeps(samples: np.ndarray, start: int, sweep_samples: int,
 # Auto-ranging
 # ---------------------------------------------------------------------------
 
-def minimum_full_scale(effective_bits: float,
-                       floor_steps: float = _FLOOR_STEPS) -> float:
+def minimum_full_scale(effective_bits: float, floor_steps: float) -> float:
     """The smallest full scale the converted audio resolution justifies.
 
     Everything reaching the scope is int16, whatever the receiver, because
@@ -436,7 +435,12 @@ def minimum_full_scale(effective_bits: float,
     Magnifying past one effective audio step means drawing conversion noise at full
     height.  `floor_steps` is how many steps the source can afford to give up, which
     belongs to the source rather than to this arithmetic: a receiver measured against
-    its own dead channel overrides the default.  See _FLOOR_STEPS,
+    its own dead channel answers differently from one that has not been.
+
+    Both arguments are required.  A default here would be a receiver's measured figure
+    quietly replaced by a general one, which is how `effective_bits` once reached the
+    scope as a sound card's sixteen while two receivers answered otherwise.  Callers
+    that want the unmeasured answer pass `_FLOOR_STEPS` and say so.  See
     `SdrDevice.scope_floor_steps` and docs-notebook/scope-auto-range-floor.md.
     """
     return FULL_SCALE_COUNTS / 2 ** (effective_bits - 1) * floor_steps

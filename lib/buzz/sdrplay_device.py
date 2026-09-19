@@ -135,12 +135,19 @@ ESTIMATED_CALIBRATION_INTERCEPT_DB = 11.0
 # restate it.
 EFFECTIVE_BITS = 15
 
-# How many of its own steps this receiver's scope floor is worth.
+# What this receiver's scope asked for with its antenna off, and on a live band, in
+# units of one effective audio step.
 #
-# The value came from measuring rather than from theory.  `SdrplayDevice.scope_floor_steps`
-# gives the two readings and the window they define, and
+# The values came from measuring rather than from theory, on 2026-09-19 at 14 dB of
+# gain.  `SdrplayDevice.scope_floor_steps` says what they mean and
 # docs-notebook/scope-auto-range-floor.md says how they were taken.
-SCOPE_FLOOR_STEPS = 3.2
+SCOPE_DEAD_STEPS = 1.30
+SCOPE_BAND_STEPS = 7.86
+
+# How many of its own steps this receiver's scope floor is worth: the midpoint of
+# those two in decibels.  Derived rather than written down, for the reason
+# buzz.sdr_device gives beside the same pair.
+SCOPE_FLOOR_STEPS = (SCOPE_DEAD_STEPS * SCOPE_BAND_STEPS) ** 0.5
 
 # How far above the noise-floor knee to put the gain the sweep chooses.
 #

@@ -273,11 +273,11 @@ class TestWhatThePipelineSaysAboutItsReceiver:
         """End to end, in the unit the scope works in: a coarser receiver is allowed
         less magnification, and the arithmetic in between is scope.minimum_full_scale.
         """
-        from buzz.scope import minimum_full_scale
+        from buzz.scope import _FLOOR_STEPS, minimum_full_scale
         p, converter = pipeline()
         expected_bits = min(16.0, 12 + converter.processing_gain_bits)
-        assert minimum_full_scale(p.effective_bits) == pytest.approx(
-            minimum_full_scale(expected_bits))
+        assert minimum_full_scale(p.effective_bits, _FLOOR_STEPS) == pytest.approx(
+            minimum_full_scale(expected_bits, _FLOOR_STEPS))
 
 
 class TestTheHealthCountersReachTheLog:

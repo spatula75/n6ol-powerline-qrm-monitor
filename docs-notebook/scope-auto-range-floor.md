@@ -47,7 +47,7 @@ its own front-end noise multiplied by the configured gain.
 
 | Receiver | No antenna | On a live band | Separation | Floor |
 |---|---|---|---|---|
-| RTL-SDR, gain 22.9 | -59.7 dBFS (1.14 steps) | -52.2 dBFS (2.68 steps) | 7.5 dB | 1.0 step |
+| RTL-SDR, gain 22.9 | -59.7 dBFS (1.14 steps) | -52.2 dBFS (2.68 steps) | 7.4 dB | 1.0 step |
 | RSP1B, gain 14 | -88.0 dBFS (1.30 steps) | -72.4 dBFS (7.86 steps) | 15.6 dB | 1.0 step |
 
 Both dead levels sit above their floors, so the floor binds on neither and the

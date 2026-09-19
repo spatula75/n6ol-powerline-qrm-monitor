@@ -121,7 +121,7 @@ class TestSynchronisation:
 
 
 # A sixteen-bit source, which is a sound card, and the finest floor there is.
-FLOOR = minimum_full_scale(16)
+FLOOR = minimum_full_scale(16, _FLOOR_STEPS)
 
 
 class TestAutoRangeFullScale:
@@ -209,9 +209,10 @@ class TestTheFloorFollowsTheReceiver:
         leaves a step at rather than the whole floor.  How many steps the floor is worth is the
         receiver's own answer, and the tests below cover that.
         """
-        assert minimum_full_scale(self._audio_bits(RtlSdrDevice)) == pytest.approx(
-            30.3, abs=0.1)
-        assert minimum_full_scale(self._audio_bits(SdrplayDevice)) == pytest.approx(1.0)
+        assert minimum_full_scale(self._audio_bits(RtlSdrDevice),
+                                  _FLOOR_STEPS) == pytest.approx(30.3, abs=0.1)
+        assert minimum_full_scale(self._audio_bits(SdrplayDevice),
+                                  _FLOOR_STEPS) == pytest.approx(1.0)
 
     def test_each_receiver_owns_the_multiple_its_floor_is_worth(self):
         """A drift pin between each classmethod and the constant beside it, the same
@@ -357,7 +358,7 @@ class TestTheFloorFollowsTheReceiver:
         coarser steps, so less magnification before the receiver's own noise fills the
         screen.
         """
-        floors = [minimum_full_scale(bits) for bits in (8, 15, 16)]
+        floors = [minimum_full_scale(bits, _FLOOR_STEPS) for bits in (8, 15, 16)]
         assert floors == sorted(floors, reverse=True), floors
 
 
@@ -370,9 +371,9 @@ class TestFullScaleDbfs:
 
     def test_the_formula_accepts_fractional_effective_bits(self):
         """Filter gain rarely equals a whole bit."""
-        assert full_scale_dbfs(minimum_full_scale(16)) == pytest.approx(-90.3, abs=0.1)
-        assert full_scale_dbfs(minimum_full_scale(15)) == pytest.approx(-84.3, abs=0.1)
-        assert full_scale_dbfs(minimum_full_scale(11.15)) == pytest.approx(-61.1, abs=0.1)
+        assert full_scale_dbfs(minimum_full_scale(16, _FLOOR_STEPS)) == pytest.approx(-90.3, abs=0.1)
+        assert full_scale_dbfs(minimum_full_scale(15, _FLOOR_STEPS)) == pytest.approx(-84.3, abs=0.1)
+        assert full_scale_dbfs(minimum_full_scale(11.15, _FLOOR_STEPS)) == pytest.approx(-61.1, abs=0.1)
 
     def test_goes_positive_when_chasing_a_clipping_signal(self):
         """Headroom past the rail is reported rather than clamped, so an overdriven
@@ -389,7 +390,7 @@ class TestFullScaleDbfs:
         or negative argument, for any receiver."""
         silent = np.zeros((4, SWEEP), dtype=np.float32)
         for bits in (8, 15, 16):
-            floor = minimum_full_scale(bits)
+            floor = minimum_full_scale(bits, _FLOOR_STEPS)
             assert full_scale_dbfs(auto_range_full_scale(silent, floor, floor)) < 0.0
 
 
