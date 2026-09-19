@@ -763,5 +763,19 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
             painter.drawText(180, 0, 50, _HEADER_H,
                              Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, 'CLIP')
 
+    def start(self) -> None:
+        """Begin repainting, or begin again once the window is no longer minimized.
+
+        Safe to call while already running.  QTimer.start() on a running timer restarts
+        it rather than leaving a second one behind.
+        """
+        self._timer.start(_UPDATE_MS)
+
     def stop(self) -> None:
+        """Stop repainting, on shutdown or while the window is minimized.
+
+        A minimized window still runs its timers, so without this the widget goes on
+        reading the buffer, doing its arithmetic and painting into a surface that
+        nothing composites.  See MainWindow.changeEvent.
+        """
         self._timer.stop()

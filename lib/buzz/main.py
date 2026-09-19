@@ -57,6 +57,7 @@ from buzz.weather import (
     OpenMeteoWeatherClient,
     WeatherClient,
 )
+from buzz.windows_qos import keep_execution_speed_while_hidden
 
 if TYPE_CHECKING:
     # Named for the type hints below and imported nowhere at runtime.  Qt and the
@@ -722,6 +723,7 @@ def main() -> None:  # pragma: no cover
         args.mute = True
 
     configure_logging(args.log_level)
+    keep_execution_speed_while_hidden()
 
     config = BuzzConfig.from_toml() if CONFIG_PATH.exists() else BuzzConfig()
 

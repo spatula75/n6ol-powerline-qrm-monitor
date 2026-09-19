@@ -24,8 +24,8 @@ from buzz.ffmpeg import find_ffmpeg
 from buzz.loudness import resolve_gain
 from buzz.main import (
     _start_collector, _start_playback, _wait_until_interrupted, build_recording,
-    check_playback_source, configure_logging, make_weather_client, open_live_source,
-    open_playback_pipeline,
+    check_playback_source, configure_logging, keep_execution_speed_while_hidden,
+    make_weather_client, open_live_source, open_playback_pipeline,
 )
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher
@@ -219,6 +219,7 @@ class TestPlaybackWritesNothing:
         with patch('sys.argv', ['buzz', '--headless', *argv]), \
              patch('buzz.main.CONFIG_PATH', tmp_path / 'no-such-config.toml'), \
              patch_in(main_module, configure_logging), \
+             patch_in(main_module, keep_execution_speed_while_hidden) as qos, \
              patch_in(main_module, check_playback_source), \
              patch_in(main_module, open_playback_pipeline) as playback, \
              patch_in(main_module, AudioSampler) as sampler, \
@@ -227,6 +228,7 @@ class TestPlaybackWritesNothing:
              patch_in(main_module, _start_collector) as collector, \
              patch_in(main_module, _wait_until_interrupted):
             main_module.main()
+        qos.assert_called_once_with()
         return playback, sampler, recorder, collector
 
     def test_playback_builds_no_recorder(self, tmp_path):
@@ -914,6 +916,7 @@ class TestAReceiverThatWillNotOpenPrintsItsReason:
         """
         args = ['buzz', '--headless']
         with patch.object(main_module, 'open_live_source', side_effect=failure), \
+                patch.object(main_module, 'keep_execution_speed_while_hidden'), \
                 patch.object(sys, 'argv', args):
             with pytest.raises(SystemExit) as exited:
                 main_module.main()

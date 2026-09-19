@@ -20,10 +20,10 @@ from collections import deque
 from collections.abc import Sequence
 from dataclasses import dataclass
 from math import ceil, lcm
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -689,7 +689,21 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         painter.fillRect(0, _AXIS_H, w, used_h, QColor(0, 0, 0))
         painter.drawImage(self._spectrum_x, _AXIS_H, scaled)
 
+    def start(self) -> None:
+        """Begin repainting, or begin again once the window is no longer minimized.
+
+        Safe to call while already running.  QTimer.start() on a running timer restarts
+        it rather than leaving a second one behind.
+        """
+        self._timer.start(_UPDATE_MS)
+
     def stop(self) -> None:
+        """Stop repainting, on shutdown or while the window is minimized.
+
+        A minimized window still runs its timers, so without this the widget goes on
+        reading the buffer, doing its arithmetic and painting into a surface that
+        nothing composites.  See MainWindow.changeEvent.
+        """
         self._timer.stop()
 
 
@@ -789,7 +803,21 @@ class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt displ
                                  Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
                                  _S_LABELS[i])
 
+    def start(self) -> None:
+        """Begin repainting, or begin again once the window is no longer minimized.
+
+        Safe to call while already running.  QTimer.start() on a running timer restarts
+        it rather than leaving a second one behind.
+        """
+        self._timer.start(_METER_UPDATE_MS)
+
     def stop(self) -> None:
+        """Stop repainting, on shutdown or while the window is minimized.
+
+        A minimized window still runs its timers, so without this the widget goes on
+        reading the buffer, doing its arithmetic and painting into a surface that
+        nothing composites.  See MainWindow.changeEvent.
+        """
         self._timer.stop()
 
 
@@ -953,8 +981,37 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
         self._record.setToolTip(tooltip)
         self._record.setChecked(status is not None and status.armed)
 
+    def start(self) -> None:
+        """Begin repainting, or begin again once the window is no longer minimized.
+
+        Safe to call while already running.  QTimer.start() on a running timer restarts
+        it rather than leaving a second one behind.
+        """
+        self._timer.start(_METER_UPDATE_MS)
+
     def stop(self) -> None:
+        """Stop repainting, on shutdown or while the window is minimized.
+
+        A minimized window still runs its timers, so without this the widget goes on
+        reading the buffer, doing its arithmetic and painting into a surface that
+        nothing composites.  See MainWindow.changeEvent.
+        """
         self._timer.stop()
+
+
+class _Repainting(Protocol):
+    """A widget that repaints on a timer of its own, and can be told to stop.
+
+    This is a protocol rather than a union of the four classes, because MainWindow
+    needs exactly these two methods.  A fifth widget with a timer satisfies it by
+    having them, without a type having to be edited to admit it.
+    """
+
+    def start(self) -> None:
+        ...
+
+    def stop(self) -> None:
+        ...
 
 
 class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
@@ -1094,12 +1151,45 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         return b''.join(raw[y * stride:y * stride + row_bytes]
                         for y in range(image.height()))
 
-    def closeEvent(self, event) -> None:  # noqa: N802
+    def _repainting_widgets(self) -> list[_Repainting]:
+        """Every widget that repaints on a timer of its own.
+
+        This method gathers them in one place because three callers want the same
+        list.  A widget left out of one caller never stops or never starts again.
+        """
+        widgets = [self._scope, self._waterfall, self._meters]
         if self._bar is not None:
-            self._bar.stop()
-        self._scope.stop()
-        self._waterfall.stop()
-        self._meters.stop()
+            widgets.append(self._bar)
+        return widgets
+
+    def changeEvent(self, event) -> None:  # noqa: N802
+        """Stop repainting while minimized, and start again on restore.
+
+        A minimized window still runs its timers.  Each of these widgets would go on
+        reading the ring buffer, doing its arithmetic and painting into a surface that
+        nothing composites, ten times a second, for as long as the window stayed down.
+
+        This does not fix the severe slowdown measured on Windows.  Explicitly clearing
+        Windows' execution-speed throttling fixed that while the window remained
+        minimized.  This smaller measure remains because repainting an invisible
+        display spends CPU without producing anything an operator can see.  See
+        docs-notebook/minimized-window-costs.md.
+
+        The display loses nothing by stopping.  Every widget reads the newest audio
+        when it repaints rather than accumulating between frames, so a restored window
+        shows the present rather than replaying what it missed.
+        """
+        if event.type() == QEvent.Type.WindowStateChange:
+            for widget in self._repainting_widgets():
+                if self.isMinimized():
+                    widget.stop()
+                else:
+                    widget.start()
+        super().changeEvent(event)
+
+    def closeEvent(self, event) -> None:  # noqa: N802
+        for widget in self._repainting_widgets():
+            widget.stop()
         self._analyzer.stop()
         # Before the pipeline: a recording in progress is closed while its audio
         # source is still running, mirroring _wait_until_interrupted().

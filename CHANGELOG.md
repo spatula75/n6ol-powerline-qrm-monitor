@@ -87,6 +87,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   its survivors escape the next pass. Each render closes its own figure, which is what
   keeps matplotlib handles from accumulating, and the tests now hold all four render
   paths to that.
+- On Windows, the monitor now opts out of the execution-speed throttling applied to a
+  minimized window. Two minimized chart renders fell from 936 and 1049 ms to 253 and
+  266 ms after the same request, and the SDRplay stopped crossing 100 ms of delivery
+  backlog. Process priority, Efficiency mode and timer resolution did not explain the
+  difference. Other platforms do not load or call the Windows API.
+- The display stops repainting while its window is minimized, and starts again when the
+  window is restored. Each widget reads the newest audio when it repaints, so pausing
+  work nobody can see loses no display history.
 - The SDRplay shim fills one block buffer in place rather than allocating an array per
   delivery and joining them at each block boundary. The callback runs on the library's
   own thread and needs the GIL, so allocation churn there is the worst place for it.
