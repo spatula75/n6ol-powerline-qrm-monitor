@@ -59,7 +59,13 @@ def keep_execution_speed_while_hidden() -> bool:
             return True
         code = ctypes.get_last_error()
         reason = ctypes.FormatError(code).strip()
-    except OSError as error:
+    except (OSError, AttributeError) as error:
+        # This catches AttributeError because SetProcessInformation arrived in
+        # Windows 8, and ctypes raises that from the argtypes line rather than from
+        # the call when the symbol is absent.  A build of Wine without the symbol
+        # answers the same way.  main() calls this before it reads the config, so
+        # letting either exception out would end the monitor with a traceback where
+        # the warning below is the whole remedy.
         reason = str(error)
 
     logger.warning(

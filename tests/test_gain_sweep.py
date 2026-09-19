@@ -17,6 +17,7 @@ from buzz.gain_sweep import (
     GainSweep,
     KneeFit,
     SweepResult,
+    _PassReading,
 )
 from buzz.sdr import CLIPPING_WORTH_NOTICING, IqBlock
 from buzz.sdr_device import RTL_SDR_FORMAT, OverloadStatus
@@ -798,14 +799,67 @@ class TestTheReceiverDcOffsetDoesNotReachTheFloor:
         assert abs(np.mean(arc)) < 0.002, 'an arc should not look like a DC offset'
 
 
-class TestThePassCountStaysOdd:
-    """The floor is combined with a median, and numpy's median of an even count
-    averages the two middle values rather than picking one.  That gives up exactly the
-    outlier rejection the passes were added to buy.
+class TestTheFloorMedianSurvivesAnEvenCount:
+    """`np.median` of an even count averages the two middle values, which hands back
+    half of an outlier and gives up the rejection the passes were added to buy.
 
-    Measured against a simulated arc that lifts the band noise for a stretch of the
-    sweep: three, five and seven passes each recovered the arc-free answer 25 times out
-    of 25, and two passes recovered it in none of them.
+    No pass allocation avoids an even count, so the guard has to live in the
+    combination rather than in the numbers.  These say what the guard does and why the
+    pass counts cannot do it instead.
+    """
+
+    def test_an_even_count_takes_a_reading_rather_than_an_average(self):
+        """The case the two-phase split creates: a rung the coarse ladder visits and
+        the fine range does not gets exactly COARSE_PASSES readings.
+        """
+        clean, arcing = -84.0, -70.0
+        assert GainSweep._floor_median([clean, arcing]) == clean
+        assert np.median([clean, arcing]) == (clean + arcing) / 2
+
+    def test_an_odd_count_is_the_ordinary_median(self):
+        """Nothing changes where the count was already odd, which is every rung the
+        fine phase reaches.
+        """
+        for readings in ([-84.0, -83.0, -70.0], [-84.0], [-90.0, -84.0, -83.0,
+                                                          -70.0, -69.0]):
+            assert GainSweep._floor_median(readings) == float(np.median(readings))
+
+    def test_the_result_is_always_one_of_the_readings(self):
+        """This is the property the rejection rests on.  An average of two middle
+        values is a figure the receiver never produced at that gain.
+        """
+        readings = [-84.3, -70.1, -83.9, -69.2]
+        assert GainSweep._floor_median(readings) in readings
+
+    def test_no_pass_allocation_makes_every_rung_odd(self):
+        """This is why the guard exists at all.  A rung gets one of three totals, and
+        two odd numbers add to an even one, so at most two of the three can be odd.
+
+        This sweeps every pair of pass counts a sweep could plausibly use, so the
+        claim rests on the arithmetic rather than on the figures shipped today.
+        """
+        assert not [(coarse, fine) for coarse in range(1, 12) for fine in range(1, 12)
+                    if coarse % 2 and fine % 2 and (coarse + fine) % 2]
+
+    def test_a_contaminated_coarse_rung_does_not_drag_the_fit(self):
+        """End to end, through _combine rather than through the helper: an arc during
+        one of the two coarse passes used to pull that rung's floor halfway toward it.
+        """
+        sweep = GainSweep(FakeReceiver(1e-6, 1e-4), 32.0, passes=5,
+                          seconds_per_step=0.0)
+        clean = _PassReading(-84.0, -40.0, 0, 1000, 0, 1, False)
+        arcing = _PassReading(-60.0, -20.0, 0, 1000, 0, 1, False)
+        result = sweep._combine({0.0: [clean, arcing]}, [0.0])
+        assert result.measurements[0].quiet_dbfs == -84.0
+
+
+class TestThePassCountStaysOdd:
+    """The count is rounded up to odd so that the rungs near the answer, which every
+    phase reaches, get a true median rather than the lower of two middle readings.
+
+    The figure came from measuring against a simulated arc that lifts the band noise
+    for a stretch of the sweep.  Three, five and seven passes each recovered the
+    arc-free answer 25 times out of 25, and two passes recovered it in none of them.
     """
 
     @pytest.mark.parametrize('asked,used', [(1, 1), (2, 3), (3, 3), (4, 5), (5, 5),

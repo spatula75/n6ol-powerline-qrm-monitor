@@ -5,6 +5,7 @@ Signals can change during a probe, so its verdict must leave the cause open.
 """
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -17,6 +18,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
 import sdr_gain_probe as probe_module  # noqa: E402
 
 GAINS = [float(-step) for step in range(20, 121)]
+
+
+def probe(reader, gains: list[float], seconds: float) -> list[probe_module.GainRow]:
+    """Walk a ladder and collect every row, for the cases that need the whole table.
+
+    The tool's own main() prints each row as it is measured rather than collecting
+    them, because a probe of a full ladder takes about a minute and an operator
+    watching it wants the rows as they arrive.  That loop is three lines, so this
+    gathering version lives here rather than in the tool where nothing would call it.
+    """
+    return [probe_module.measure_one(reader, gain, seconds) for gain in gains]
 
 
 class NoisyReader:
@@ -80,6 +92,13 @@ class TestTheLadderItWalks:
         v4 = [0.0, 0.9, 1.4, 12.5, 22.9, 33.8, 49.6]
         assert set(probe_module.ladder(v4, 10.0)) <= set(v4)
 
+    def test_a_receiver_with_no_gains_gives_an_empty_ladder(self):
+        """It indexed the first rung with no guard, so a receiver reporting nothing
+        gave an IndexError where every other path in this tool writes a sentence for
+        the operator.  main() has that sentence.
+        """
+        assert probe_module.ladder([], 10.0) == []
+
 
 class TestWhatOneGainReports:
     def test_it_reports_the_gain_the_receiver_settled_on(self):
@@ -119,7 +138,7 @@ class TestTheVerdict:
     @pytest.mark.parametrize('follows', [True, False])
     def test_neither_a_flat_nor_a_rising_curve_proves_the_gain_arrives(self, follows: bool) -> None:
         reader = NoisyReader(follows=follows)
-        rows = probe_module.probe(reader, probe_module.ladder(GAINS, 20.0), 0.01)
+        rows = probe(reader, probe_module.ladder(GAINS, 20.0), 0.01)
         message = probe_module.verdict(rows)
         assert 'Changing signals, receiver noise, and overload can affect this comparison.' in message
         assert 'reaching the hardware' not in message
@@ -139,7 +158,7 @@ class TestTheVerdict:
         """
         reader = NoisyReader()
         reader.read = lambda timeout=1.0: None
-        rows = probe_module.probe(reader, probe_module.ladder(GAINS, 40.0), 0.01)
+        rows = probe(reader, probe_module.ladder(GAINS, 40.0), 0.01)
         assert 'no usable samples' in probe_module.verdict(rows)
 
 
@@ -211,6 +230,26 @@ class TestRunningIt:
             probe_module.main([])
         assert device.closed
 
+    def test_a_receiver_reporting_no_gains_is_explained_rather_than_crashing(
+            self, capsys, monkeypatch):
+        """The driver opens a device it does not recognise and reports an empty gain
+        list, which used to reach the operator as an IndexError from ladder().
+        """
+        device = FakeSdrDevice(gains=[0.0])
+        monkeypatch.setattr(BuzzConfig, 'from_toml',
+                            classmethod(lambda cls, path: self._config('rtlsdr')))
+        monkeypatch.setattr('buzz.sdr_device.open_receiver',
+                            lambda source, settings: device)
+        # The reader is the boundary here, because FakeSdrDevice needs a gain to snap
+        # its own starting figure to and so cannot itself report none.
+        monkeypatch.setattr('buzz.sdr.SweepReader',
+                            lambda device, block_samples: SimpleNamespace(
+                                supported_gains_db=[], iq_sample_rate=256_000))
+
+        assert probe_module.main([]) == 2
+        assert 'reported no gain settings' in capsys.readouterr().out
+        assert device.closed
+
     def test_a_sound_card_is_refused_rather_than_opened(self, capsys, monkeypatch):
         """There is no receiver to walk, and a non-zero exit says so to a shell."""
         monkeypatch.setattr(BuzzConfig, 'from_toml',
@@ -277,7 +316,7 @@ class TestHardwareOverloadDuringCapture:
 
     def test_an_overload_can_persist_across_gains_without_another_detection(self) -> None:
         reader = ScriptedReader(np.zeros(1024, dtype=np.int16), [OverloadStatus(True, 1)] * 4)
-        rows = probe_module.probe(reader, [-20.0, -30.0], 0.002)
+        rows = probe(reader, [-20.0, -30.0], 0.002)
         assert [row.overload_label for row in rows] == ['active', 'active']
 
     def test_an_overload_that_clears_during_discard_does_not_describe_the_capture(self) -> None:

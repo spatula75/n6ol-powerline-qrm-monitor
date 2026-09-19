@@ -26,6 +26,9 @@ from buzz.recorder import (
     build_recording,
 )
 from buzz.sampler import RingBufferPipeline
+from buzz.sdr import IqRingBuffer
+from buzz.sdr_device import IqBlock
+from buzz.sdrplay_device import SDRPLAY_FORMAT
 
 CHUNK = RingBufferPipeline.CHUNK_SIZE
 
@@ -2067,6 +2070,37 @@ class TestRecordingRawIq:
             written = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.uint8)
         assert np.array_equal(written, known), (
             'the file should be the bytes that went in, unaltered at both ends')
+
+    def test_a_sixteen_bit_receiver_writes_a_sixteen_bit_file(self, tmp_path):
+        """The frame width follows the buffer, so a buffer fixed at unsigned bytes
+        wrote the low byte of each SDRplay sample under a header calling it correct.
+
+        This drives the whole path rather than any one part of it, from the buffer
+        SdrPipeline fills through to the header the recorder writes, because those two
+        are what have to agree.  The values are chosen so that keeping the low byte
+        changes every one of them.
+        """
+        iq = IqRingBuffer(self.IQ_RATE, self.IQ_RATE, SDRPLAY_FORMAT)
+        audio = PipelineThatKeptIq(iq)
+        config = _make_config(tmp_path)
+        config.audio.source = 'sdrplay'
+        config.sdrplay.iq_sample_rate = self.IQ_RATE
+        analyzer = FakeAnalyzer()
+        trigger = build_recording(audio, analyzer, config)
+
+        known = np.tile(np.array([-32768, 20000, -5, 7, 32767, -1], dtype=np.int16),
+                        self.IQ_RATE // 3)
+        iq.add(IqBlock(raw=known, fmt=SDRPLAY_FORMAT, arrived_at=0.0, index=1))
+        _feed(audio, 1)
+        analyzer.lock()
+        trigger.tick()
+        trigger.disarm()
+
+        with wave.open(str(self._iq_file(tmp_path)), 'rb') as wav:
+            assert wav.getsampwidth() == 2, 'two bytes per sample, as the device sends'
+            written = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.int16)
+        assert np.array_equal(written, known), (
+            'the file should be the samples that went in, at their full width')
 
     def test_the_metadata_says_where_in_the_spectrum_this_is(self, tmp_path):
         """DC in the file is where the hardware sat, not the frequency the monitor

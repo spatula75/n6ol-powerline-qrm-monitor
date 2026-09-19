@@ -138,10 +138,17 @@ class FakeSdrplayApi:
         self.started.clear()
 
     def update(self, handle: int, tuner: int, reason: int) -> None:
+        """Take a settings change, which does not take effect before this returns.
+
+        The real library applies the change on its own thread and marks the delivery
+        where it did with `grChanged`, so `gainVals.curr` still answers about the
+        previous gain until that block goes out.  This fake used to fill the figure in
+        here instead, which made every gain change look instantaneous and hid a device
+        that read the figure too early.  `deliver(gr_changed=True)` fills it now.
+        """
         self._record('update')
         assert self.initialised, 'update() was called before init()'
         self.updates.append((handle, tuner, reason))
-        self._fill_gain_values()
 
     # ------------------------------------------------------- what a test drives
 
@@ -200,8 +207,15 @@ class FakeSdrplayApi:
 
         The two arrays go over separately, which is the whole point: the device has to
         interleave them, and nothing else in the suite would notice if it did not.
+
+        `gr_changed` marks this as the delivery where a gain change took effect, which
+        is also when the library fills in `gainVals.curr` for the new gain.
         """
         assert self.callbacks is not None, 'deliver() was called before init()'
+        if gr_changed:
+            # The marked delivery is the one where the change took effect, so this is
+            # where the library has an answer about the new gain.  See update().
+            self._fill_gain_values()
         count = len(i_values)
         assert count == len(q_values), 'I and Q must be the same length'
         xi = (ctypes.c_short * count)(*i_values)

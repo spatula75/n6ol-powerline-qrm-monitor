@@ -26,7 +26,7 @@ from buzz.sdrplay_device import (ESTIMATED_CALIBRATION_INTERCEPT_DB, FLOOR_MARGI
                                  HF_CONVERSION_GAIN_DB, HF_LNA_GAIN_REDUCTION_DB,
                                  MAX_GAIN_REDUCTION_DB, MIN_GAIN_REDUCTION_DB,
                                  SDRPLAY_FORMAT, SdrplayDevice, SdrplayLibrary,
-                                 _SyncBlocks)
+                                 _GAIN_DISAGREEMENT_DB, _SyncBlocks)
 from fake_sdrplay import FakeSdrplayApi
 
 TUNED_HZ = 7_050_000
@@ -106,7 +106,7 @@ class TestConfiguring:
     def test_the_agc_is_turned_off(self):
         """The API turns its AGC on by default, and an AGC riding the impulses would
         compress exactly what this program measures while the noise floor still looks
-        healthy.  Same reasoning as the RTL-SDR's digital AGC.
+        healthy.  This is the same reasoning as the RTL-SDR's digital AGC.
         """
         _, library = make_device()
         assert library.control.agc.enable == (
@@ -316,9 +316,50 @@ class TestWhatTheReceiverSaysItsGainIs:
         library.set_reported_gain_db(-38.5)
         with caplog.at_level(logging.WARNING):
             device.set_gain_db(40.0)
+            library.deliver([0] * 4, [0] * 4, gr_changed=True)
             device.set_gain_db(41.0)
+            library.deliver([0] * 4, [0] * 4, gr_changed=True)
         warnings = [r for r in caplog.records if 'gain table' in r.message]
         assert len(warnings) == 1
+
+    def test_nothing_is_compared_until_the_change_has_taken_effect(self, caplog):
+        """sdrplay_api_Update returns before the new gain is in force, so the figure
+        in gainVals.curr at that moment is still about the previous gain.
+
+        This receiver agrees with the gain table at every rung, and the move is much
+        wider than the disagreement threshold.  Comparing at the write would therefore
+        measure the step rather than the table, and a sweep steps by _COARSE_STEP_DB,
+        which is more than three times the threshold.  Every healthy RSP would be told
+        its table is wrong on the second gain of every sweep.
+        """
+        device, library = make_device(gain_db=40.0)
+        device.start_stream(CollectingSink(), 4)
+        moved = min(device.supported_gains_db, key=lambda g: abs(g - 10.0))
+        assert abs(moved - device.gain_db) > _GAIN_DISAGREEMENT_DB
+        with caplog.at_level(logging.WARNING):
+            device.set_gain_db(moved)
+            assert not [r for r in caplog.records if 'gain table' in r.message], (
+                'the table was compared against a figure describing the gain the '
+                'receiver had before the change')
+            library.deliver([0] * 4, [0] * 4, gr_changed=True)
+        assert not [r for r in caplog.records if 'gain table' in r.message]
+
+    def test_a_receiver_that_never_marks_a_block_is_not_compared_at_all(self):
+        """The settling ceiling clears the wait without the receiver ever saying the
+        gain moved, so nothing there says gainVals.curr has caught up.
+
+        _offer already warns about that receiver.  Warning a second time about a
+        disagreement this program cannot establish would send the operator after the
+        gain table instead.
+        """
+        device, library = make_device()
+        device.start_stream(CollectingSink(), 4)
+        library.set_reported_gain_db(-38.5)
+        device.set_gain_db(40.0)
+        for _ in range(device._settle_blocks + 1):
+            library.deliver([0] * 4, [0] * 4)
+        assert device._pending_gain_check is None
+        assert not device._gain_table_checked
 
     def test_a_small_disagreement_is_left_alone(self, caplog):
         """The conversion gain came from one receiver at one frequency and is not flat
@@ -330,7 +371,10 @@ class TestWhatTheReceiverSaysItsGainIs:
         library.set_reported_gain_db(41.0)
         with caplog.at_level(logging.WARNING):
             device.set_gain_db(40.0)
+            library.deliver([0] * 4, [0] * 4, gr_changed=True)
         assert not [r for r in caplog.records if 'gain table' in r.message]
+        assert device._gain_table_checked, (
+            'the comparison has to have run, or this passes because nothing looked')
 
     def test_a_zero_reading_is_a_real_reported_gain(self, caplog):
         """Zero is on the gain ladder and cannot also mean that no report arrived."""
@@ -339,6 +383,7 @@ class TestWhatTheReceiverSaysItsGainIs:
         device.start_stream(CollectingSink(), 4)
         with caplog.at_level(logging.WARNING):
             assert device.set_gain_db(-25.0) == -25.0
+            library.deliver([0] * 4, [0] * 4, gr_changed=True)
         assert 'receiver reports 0.0 dB' in caplog.text
 
 

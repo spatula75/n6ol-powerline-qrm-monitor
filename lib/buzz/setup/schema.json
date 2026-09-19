@@ -433,7 +433,7 @@
           },
           "x-drop-when-hidden": true,
           "x-notes": [
-            "Two settings share this name, and exactly one applies. With [audio] source set to soundcard, this is the one in use. With it set to rtlsdr, the monitor replaces this at startup with the receiver's own figure, so editing it there changes nothing.",
+            "Two settings share this name, and exactly one applies. With [audio] source set to soundcard, this is the one in use. With it set to a receiver, the monitor replaces this at startup with that receiver's own figure, so editing it here changes nothing.",
             "This number is added to the audio level to approximate the RF level in dBm at the receiver input.  For example, if your radio's own S-meter reads -64 dBm and the sound card sees -32 dB of audio for that same signal, set this to -32.",
             "Most receivers: leave this alone.  Open the Calibration meter on the Audio page instead, and adjust the RF and AF gain on the receiver until its own S-meter agrees with the reading there.",
             "Some receivers have no AF gain to adjust - one with its own internal sound device, for instance. Choose this field itself to open a live meter of its own: Up and Down move the offset by 0.1 dB, PageUp and PageDown by 1 dB, Space resets it to the default, and Enter confirms.",

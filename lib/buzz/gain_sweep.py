@@ -546,7 +546,10 @@ class GainChooser:
         # clip at the chosen gain has no way to act otherwise: the remedy is to raise
         # the receiver's arc_headroom_db until the headroom bound falls below this one, and
         # that is impossible to judge without knowing where it currently sits.
-        chosen = self._gain_nearest(min(floor_bound, headroom_bound), gains)
+        # The floor bound, because this branch has already established that it is not
+        # None and does not exceed the headroom bound.  It is one of `gains` by
+        # construction, since gain_nearest_the_floor_target picks from that same list.
+        chosen = floor_bound
         decision = ('the floor and headroom bounds meet at this gain'
                     if floor_bound == headroom_bound else 'the floor is what set this')
         return SweepResult(
@@ -561,11 +564,6 @@ class GainChooser:
             f'{headroom_bound:.1f} dB down.',
             fit.antenna_share(chosen), floor_bound, headroom_bound,
             self._measurements)
-
-    @staticmethod
-    def _gain_nearest(wanted: float, gains: list[float]) -> float:
-        """The measured gain nearest `wanted`, preferring the lower one on a tie."""
-        return min(gains, key=lambda gain: (abs(gain - wanted), gain))
 
     def _highest_gain_with_headroom(self) -> float | None:
         """The largest gain that leaves room for an arc, by both the model and the
@@ -675,25 +673,30 @@ class GainSweep:
                  seconds_per_step: float = DEFAULT_SECONDS_PER_STEP) -> None:
         self._source = source
         self._headroom_db = headroom_db
-        # Rounded up to an odd number, because the floor is combined with a median and
-        # numpy's median of an even count averages the two middle values rather than
-        # picking one.  That is exactly the outlier rejection the median is here for,
-        # so an even count quietly gives up the thing the passes were added to buy.
+        # Rounded up to an odd number, so that the rungs near the answer get a true
+        # median rather than the lower of two middle readings.  `_floor_median` keeps
+        # an even count honest wherever one cannot be avoided, and one cannot be
+        # avoided everywhere: see its own note.
         #
         # The figure came from a simulated arc that lifts the band noise for a
         # stretch of the sweep.  Three, five and seven passes all recovered the
         # arc-free answer in 25 runs out of 25, and two passes recovered it in none.
         self._passes = passes + 1 if passes % 2 == 0 else passes
-        # What is left after the coarse passes, and the count the median is taken over
-        # for the gains that matter.  Odd for the reason above, which holds because the
-        # rounding above leaves an odd total and COARSE_PASSES is even.
+        # What is left after the coarse passes, which is the count a rung reached only
+        # by the second phase is measured over.
         self._fine_passes = max(1, self._passes - self.COARSE_PASSES)
         self._seconds_per_step = seconds_per_step
         self._cancelled = False
 
     @property
     def passes(self) -> int:
-        """How many times each gain gets measured, after the rounding above."""
+        """How many passes the sweep makes in total, after the rounding above.
+
+        This is not how many times a given gain gets measured, because the two phases
+        walk different ladders.  A rung on both gets all of them, a rung reached only
+        by the coarse phase gets `COARSE_PASSES`, and a rung reached only by the fine
+        phase gets the rest.
+        """
         return self._passes
 
     def estimated_seconds(self, gains: list[float]) -> float:
@@ -911,6 +914,30 @@ class GainSweep:
         return ((np.concatenate(parts) if parts else np.empty(0, dtype=np.complex128)),
                 clipped, raw_values)
 
+    @staticmethod
+    def _floor_median(readings: list[float]) -> float:
+        """The middle reading, and the lower of the two middle ones on an even count.
+
+        `np.median` averages the two middle values of an even count, which hands back
+        half of an outlier and gives up the rejection the passes were added to buy.
+        A rung measured twice, with an arc firing through one of them, comes out
+        halfway to the arc.
+
+        No allocation of passes avoids an even count, which is why this exists rather
+        than a rule about the pass numbers.  The two phases give a rung one of three
+        totals: `COARSE_PASSES` on the coarse ladder alone, `_fine_passes` in the fine
+        range alone, or their sum on both.  Two odd numbers add to an even one, so at
+        most two of the three can be odd whatever the figures are.
+
+        The lower of the two middle readings is the right one to take, because what
+        contaminates a floor reading only adds power.  An arc, a carrier and a passing
+        switching supply all lift the quiet level, and none of them lower it.  So
+        between two readings of one rung, the smaller is the less contaminated.
+        """
+        # method='lower' returns a reading rather than an average of two, and on an
+        # odd count it is the ordinary median.
+        return float(np.percentile(readings, 50, method='lower'))
+
     def _combine(self, readings: _Readings, gains: list[float]) -> SweepResult:
         """Fold the passes together, each quantity the way its question needs.
 
@@ -928,7 +955,7 @@ class GainSweep:
         measurements = tuple(
             GainMeasurement(
                 gain_db=gain,
-                quiet_dbfs=float(np.median([r.quiet_dbfs for r in readings[gain]])),
+                quiet_dbfs=self._floor_median([r.quiet_dbfs for r in readings[gain]]),
                 peak_dbfs=float(np.max([r.peak_dbfs for r in readings[gain]])),
                 clipped=sum(r.clipped for r in readings[gain]),
                 raw_values=sum(r.raw_values for r in readings[gain]),

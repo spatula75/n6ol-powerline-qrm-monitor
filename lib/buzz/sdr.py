@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from buzz.sampler import LevelStream, RingBufferPipeline
-from buzz.sdr_device import VALUES_PER_FRAME, DeviceProfile, IqBlock, OverloadStatus, SdrDevice
+from buzz.sdr_device import VALUES_PER_FRAME, DeviceProfile, IqBlock, OverloadStatus, SampleFormat, SdrDevice
 
 if TYPE_CHECKING:
     from buzz.iq import IqToAudio
@@ -524,10 +524,19 @@ class IqRingBuffer(RingBufferPipeline):
     SdrPipeline converts each block and keeps only the audio, and the bytes go out
     of scope immediately after.  This holds them for the same duration instead.
 
-    It stores the bytes the device delivered rather than the complex samples they
-    convert to.  That is eight times smaller, and it is also exactly what a recording
-    writes, since the format on disk is the device's own: unsigned bytes, I then Q.
-    Converting to complex and back would cost the work twice and gain nothing.
+    It stores the samples the device delivered rather than the complex values they
+    convert to.  `as_complex` gives complex128, which is 16 bytes a sample against the
+    device's 2 or 4, so this is four to eight times smaller depending on the converter.
+    It is also exactly what a recording writes, since the format on disk is the
+    device's own, I then Q.  Converting to complex and back would cost the work twice
+    and gain nothing.
+
+    The element type comes from the device rather than from a constant here, because
+    the two receivers do not agree on it.  An RTL-SDR delivers unsigned bytes and an
+    SDRplay delivers signed 16-bit values, so a buffer fixed at the narrower one keeps
+    the low byte of each SDRplay sample and throws the rest away.  `IqEventRecorder`
+    sizes its `.wav` frames from what this reports, so the file would carry that
+    wreckage under a header saying it was correct.
 
     This appends one whole device block at a time rather than in CHUNK_SIZE pieces.
     That slicing exists so get_snapshot returns a full window to the analyzer, and
@@ -535,27 +544,28 @@ class IqRingBuffer(RingBufferPipeline):
     read_from.
 
     The pipeline builds this only when [recording] record_iq is on, because it is not
-    small: 4.7 MB at the default 256 kHz, and 44 MB at the 2.4 MHz the hardware will
-    accept.
+    small.  An 8-bit receiver at the default 256 kHz wants 4.7 MB, and 44 MB at the
+    2.4 MHz the hardware will accept.  A 16-bit receiver wants twice each figure.
     """
 
-    def __init__(self, iq_sample_rate: int, block_samples: int) -> None:
+    def __init__(self, iq_sample_rate: int, block_samples: int,
+                 sample_format: SampleFormat) -> None:
         super().__init__(sample_rate=iq_sample_rate, chunk_size=block_samples,
-                         dtype=np.uint8)
+                         dtype=sample_format.dtype)
 
     def add(self, block: IqBlock) -> None:
-        """Keep one block's raw bytes, shaped one complex sample per row.
+        """Keep one block's raw samples, shaped one complex sample per row.
 
-        Public where every other pipeline here fills itself from inside a subclass,
-        because this one is filled by SdrPipeline, which is a buffer in its own
-        right for the audio.  The push crosses an object boundary, so it gets a name.
+        This is public where every other pipeline here fills itself from inside a
+        subclass, because SdrPipeline fills this one, and SdrPipeline is a buffer in
+        its own right for the audio.  The push crosses an object boundary, so it gets a name.
 
-        The reshape is what keeps the buffer's arithmetic honest.  `raw` is interleaved
-        bytes, so its length counts two per complex sample, while the capacity this
-        buffer was sized to counts one - appending it flat would leave total_samples
-        and capacity_samples in different units, and every duration derived from them
-        wrong by a factor of two.  A row per complex sample also happens to be the
-        frame layout a stereo recording writes, I then Q.
+        The reshape is what keeps the buffer's arithmetic honest.  `raw` is
+        interleaved, so its length counts two values per complex sample, while the
+        capacity this buffer was sized to counts one - appending it flat would leave
+        total_samples and capacity_samples in different units, and every duration
+        derived from them wrong by a factor of two.  A row per complex sample also
+        happens to be the frame layout a stereo recording writes, I then Q.
         """
         self._append(block.raw.reshape(-1, 2))
 
@@ -583,7 +593,8 @@ class SdrPipeline(RingBufferPipeline):
         self._converter = converter
         # Off unless an IQ recording is going to want it.  See IqRingBuffer for what
         # it costs, which is why nothing pays for it by default.
-        self._iq_buffer = (IqRingBuffer(source.iq_sample_rate, source.block_samples)
+        self._iq_buffer = (IqRingBuffer(source.iq_sample_rate, source.block_samples,
+                                        source.profile.sample_format)
                            if keep_iq else None)
         self._clipped = 0
         self._leftover = np.empty(0, dtype=np.int16)

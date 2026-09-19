@@ -106,6 +106,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   own thread and needs the GIL, so allocation churn there is the worst place for it.
 
 ### Fixed
+- An IQ recording from a 16-bit receiver keeps all sixteen bits. The raw IQ ring buffer
+  held unsigned bytes whatever the receiver was, so every SDRplay capture written with
+  `record_iq = true` carried the low byte of each sample under an 8-bit `.wav` header
+  that said it was correct. The buffer takes its element type from the device now.
+- A gain sweep no longer lets an arc through on a rung the coarse ladder alone visits.
+  Those rungs get an even number of readings, and a median of an even count averages
+  the two middle values rather than picking one, so half of an arc reached the knee
+  fit. No pass allocation can make every rung odd, so the combination takes the lower
+  of the two middle readings instead.
+- The SDRplay gain-table check compares the receiver's own figure after the change has
+  taken effect rather than when `sdrplay_api_Update` returns. It read a figure that
+  still described the previous gain, so a healthy receiver reported a wrong gain table
+  on the second gain of every sweep.
+- The monitor warns instead of stopping where Windows has no `SetProcessInformation`,
+  which is any release before Windows 8 and some Wine builds. The startup call raised
+  `AttributeError` past the handler, before the config was even read.
+- `tools/sdr_gain_probe.py` explains a receiver that reports no gain settings rather
+  than failing with an `IndexError`.
 - The monitor checks the loaded SDRplay API version before reading structures generated
   from the 3.15 headers. A different version now produces an actionable error instead
   of risking an ABI mismatch.

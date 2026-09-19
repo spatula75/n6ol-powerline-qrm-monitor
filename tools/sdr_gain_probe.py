@@ -111,8 +111,14 @@ def ladder(gains: list[float], step_db: float) -> list[float]:
 
     This selects a subset of gains so the table stays readable.  It keeps both ends
     to show the measured level across the receiver's full gain range.
+
+    An empty list of gains gives an empty ladder, because a receiver that reports no
+    gains is something for `main` to tell the operator about rather than an IndexError
+    from here.
     """
     ordered = sorted(gains)
+    if not ordered:
+        return []
     picked = [ordered[0]]
     for gain in ordered[1:]:
         if gain - picked[-1] >= step_db:
@@ -162,11 +168,6 @@ def measure_one(reader: ProbeReader, gain_db: float, seconds: float) -> GainRow:
         overload_after=overload_after)
 
 
-def probe(reader: ProbeReader, gains: list[float], seconds: float) -> list[GainRow]:
-    """Every row, in the order the gains were walked."""
-    return [measure_one(reader, gain, seconds) for gain in gains]
-
-
 def verdict(rows: list[GainRow]) -> str:
     """What the table says, in one line, for whoever pasted it into a message.
 
@@ -214,6 +215,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         reader = SweepReader(device, block_samples=BLOCK_SAMPLES)
         gains = ladder(reader.supported_gains_db, args.step)
+        if not gains:
+            print(f'The {config.audio.source} receiver reported no gain settings, so '
+                  'there is nothing to probe.  That usually means the driver opened a '
+                  'device it does not recognise.  Check that the receiver is the one '
+                  f'[{config.audio.source}] describes, then run this again.')
+            return 2
         print(f'{config.audio.source} at {device.tuned_hz / 1e6:.4f} MHz, '
               f'{reader.iq_sample_rate} Hz, {len(gains)} of '
               f'{len(reader.supported_gains_db)} gains')

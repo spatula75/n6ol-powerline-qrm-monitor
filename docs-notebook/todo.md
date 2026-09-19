@@ -373,6 +373,34 @@ The fix is to skip spans between backticks the way the tool already skips comman
 syntax.  It is not urgent, because the finding is visible and rewording costs a minute,
 and a rule that silently skips text is worse than one that occasionally asks.
 
+### An SDRplay IQ recording has never been opened by a person
+
+The raw IQ ring buffer took unsigned bytes whatever the receiver was, so every
+SDRplay capture written before 2026-09-19 held the low byte of each 16-bit sample
+under an 8-bit `.wav` header.  The buffer takes its element type from the device
+profile now, and `tests/integration/test_iq_recording_end_to_end.py` drives both
+receivers through the whole threaded chain to a file and reads the width back.
+
+What the tests cannot say is whether the file means anything.  Nobody has recorded a
+real arc on the RSP1B with `record_iq = true` and opened the result in another
+program, so the sample rate, the center frequency and the I and Q channel order are
+each confirmed only against this program's own idea of them.  That needs a live
+event and a second tool, and the antenna has to be on the SDRplay at the time.
+
+### The gain table is checked against hardware that has never been watched doing it
+
+`SdrplayDevice._check_reported_gain` now reads `gainVals.curr` from the block the
+library marks with `grChanged`, rather than straight after `sdrplay_api_Update`
+returns.  The reasoning is the specification's, which says the library marks the
+block where a gain change took effect.
+
+Nobody has confirmed that against a receiver, which is the same gap
+`_GAIN_CHANGE_SETTLE_SECONDS` and `_BLOCKS_TO_DISCARD_AFTER_GAIN_CHANGE` were both
+written around.  One live sweep with the marked-block path logging at DEBUG would
+settle all three at once: whether `grChanged` arrives at all, how many blocks it
+takes, and whether the figure on that block agrees with the table.  See
+`sdrplay-gain.md`.
+
 ### The header generator reads C with regexes and has no preprocessor
 
 `tools/generate_sdrplay_api.py` matches declarations with one combined regex and reads

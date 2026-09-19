@@ -17,6 +17,7 @@ from buzz.iq import IqToAudio
 from buzz.sampler import buffer_chunks
 from buzz.sdr import IqBlock, SdrPipeline
 from buzz.sdr_device import RTL_SDR_FORMAT, DeviceProfile
+from buzz.sdrplay_device import SDRPLAY_FORMAT
 
 IQ_RATE, DECIMATION, BANDWIDTH, OFFSET = 256_000, 16, 4_000, 50_000
 BLOCK = 16_384
@@ -568,6 +569,36 @@ class TestKeepingRawIq:
         assert span.samples.shape == (BLOCK, 2)
         assert np.array_equal(span.samples[:, 0], one.raw[0::2])   # I
         assert np.array_equal(span.samples[:, 1], one.raw[1::2])   # Q
+
+    def test_a_sixteen_bit_receiver_keeps_all_sixteen_bits(self):
+        """The buffer took unsigned bytes whatever the receiver was, so an SDRplay's
+        signed 16-bit samples were stored in a type that cannot hold them.
+
+        This picks values that keeping the low byte changes, every one of them:
+        -32768 becomes 0, 20000 becomes 32, and -5 becomes 251.  IqEventRecorder
+        reads its frame width off this buffer, so the .wav header would have called
+        those bytes correct.
+        """
+        source = StubSource()
+        source.profile = DeviceProfile('stub', 'sdrplay', SDRPLAY_FORMAT, 0, 0, True)
+        sdr = SdrPipeline(source, IqToAudio(IQ_RATE, DECIMATION, BANDWIDTH, OFFSET),
+                          clock=FakeClock(), keep_iq=True)
+        raw = np.array([-32768, 20000, -5, 7, 32767, -1], dtype=np.int16)
+        sdr._consume(IqBlock(raw=raw, fmt=SDRPLAY_FORMAT, arrived_at=0.0, index=1))
+        span = sdr.iq_buffer.read_from(0)
+        assert sdr.iq_buffer.dtype == np.dtype(np.int16)
+        assert np.array_equal(span.samples.reshape(-1), raw)
+
+    def test_the_element_type_is_the_one_the_receiver_delivers(self):
+        """A drift pin between the buffer and the device profile that fills it.  The
+        two state the same fact and nothing else makes them agree.
+        """
+        for fmt in (RTL_SDR_FORMAT, SDRPLAY_FORMAT):
+            source = StubSource()
+            source.profile = DeviceProfile('stub', 'rtlsdr', fmt, 0, 0, False)
+            sdr = SdrPipeline(source, IqToAudio(IQ_RATE, DECIMATION, BANDWIDTH, OFFSET),
+                              clock=FakeClock(), keep_iq=True)
+            assert sdr.iq_buffer.dtype == fmt.dtype
 
     def test_it_holds_the_same_span_of_time_the_audio_buffer_does(self):
         """The lead-in an IQ recording gets has to match the one its audio gets, or the

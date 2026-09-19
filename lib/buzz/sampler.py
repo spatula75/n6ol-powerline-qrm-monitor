@@ -97,10 +97,10 @@ class RingBufferPipeline:
         # meaning the same thing whatever the audio arrives at.
         #
         # chunk_size and dtype exist for a buffer holding something other than the
-        # monitor's audio.  The raw IQ buffer holds unsigned bytes and is appended one
-        # whole device block at a time, because nothing reads it by chunk count the way
-        # the analyzer reads audio.  Both default to what every audio buffer has always
-        # used, so no existing caller changes.
+        # monitor's audio.  The raw IQ buffer holds whatever its receiver delivers and
+        # is appended one whole device block at a time, because nothing reads it by
+        # chunk count the way the analyzer reads audio.  Both default to what every
+        # audio buffer has always used, so no existing caller changes.
         self._chunk_size = self.CHUNK_SIZE if chunk_size is None else chunk_size
         # Normalized, so that itemsize and str are available to anything asking
         # what this buffer holds.  A recorder sizes its .wav frames from it.

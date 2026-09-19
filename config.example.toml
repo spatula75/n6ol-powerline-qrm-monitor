@@ -339,9 +339,9 @@ noise_min_snr = 12.0
 # in its own section instead and ignores this.
 #
 # Two settings share this name, and exactly one applies. With [audio] source
-# set to soundcard, this is the one in use. With it set to rtlsdr, the
-# monitor replaces this at startup with the receiver's own figure, so
-# editing it there changes nothing.
+# set to soundcard, this is the one in use. With it set to a receiver, the
+# monitor replaces this at startup with that receiver's own figure, so
+# editing it here changes nothing.
 #
 # This number is added to the audio level to approximate the RF level in dBm
 # at the receiver input. For example, if your radio's own S-meter reads -64

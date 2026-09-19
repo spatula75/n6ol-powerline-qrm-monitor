@@ -84,6 +84,30 @@ def test_a_windows_library_failure_uses_the_same_survivable_path(caplog):
     assert 'no kernel32' in caplog.text
 
 
+def test_a_windows_without_the_call_warns_rather_than_crashing(caplog):
+    """SetProcessInformation arrived in Windows 8, and a Wine build may not carry it.
+
+    ctypes raises AttributeError from the argtypes line rather than from the call, so
+    the OSError this once caught never fired.  main() calls this before it reads the
+    config, so the monitor died with a traceback on the oldest machines it claims to
+    run on.  A SimpleNamespace always has the attribute, which is why nothing here
+    saw it.
+    """
+
+    class WithoutTheCall:
+        GetCurrentProcess = MagicMock(return_value=1234)
+
+        def __getattr__(self, name):
+            raise AttributeError(f'function {name!r} not found')
+
+    with patch.object(windows_qos.sys, 'platform', 'win32'),             patch.object(windows_qos.ctypes, 'WinDLL', create=True,
+                         return_value=WithoutTheCall()),             caplog.at_level(logging.WARNING, logger='buzz.windows_qos'):
+        assert windows_qos.keep_execution_speed_while_hidden() is False
+
+    assert 'SetProcessInformation' in caplog.text
+    assert 'Leave the window visible or run headlessly' in caplog.text
+
+
 def test_the_names_this_patches_are_real_on_windows():
     """What `create=True` gives up, bought back where it can be.
 

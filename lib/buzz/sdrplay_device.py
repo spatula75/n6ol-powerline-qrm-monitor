@@ -35,6 +35,7 @@ import logging
 import math
 import queue
 import threading
+from collections.abc import Callable
 from math import ceil
 from pathlib import Path
 from time import monotonic
@@ -184,8 +185,6 @@ DECIMATION_FACTORS = (1, 2, 4, 8, 16, 32)
 # whole block every time.  A gain sweep throws away most of what it reads anyway.
 _SYNC_QUEUE_BLOCKS = 2
 
-# How long `read_block` waits for the internal stream to produce one.
-#
 # How deep the backlog has to be before it is unusual rather than routine, in seconds.
 #
 # The figure is chosen rather than measured.  The library delivers in bursts, so the
@@ -204,6 +203,8 @@ _UNUSUAL_BACKLOG_SECONDS = 0.100
 # purpose, and two different periods would make that arithmetic rather than reading.
 _LATE_REPORT_INTERVAL_SECONDS = 60.0
 
+# How long `read_block` waits for the internal stream to produce one.
+#
 # A block is `block_samples / iq_sample_rate` seconds, which is 8 ms for the sweep's
 # default at 256 kHz, so five seconds is several hundred times the expected wait.  A
 # read that takes this long means the library has stopped delivering.
@@ -615,6 +616,12 @@ class SdrplayDevice(SdrDevice):
         self._awaiting_gain_change = False
         self._dropped_waiting = 0
         self._settle_blocks = 0
+        # This holds the gain just written, until the library marks the block where
+        # it took effect.  That block is the first moment `gainVals.curr` answers
+        # about this gain rather than about the previous one, so it is where the
+        # table gets checked.  This thread writes it and the library's thread clears
+        # it.
+        self._pending_gain_check: tuple[float, int, int] | None = None
         # Set by the stream callback on any delivery, including one nothing is
         # listening for.  What it says is that the library is running and has applied
         # what it was given, which is when `gainVals.curr` means something.
@@ -624,9 +631,6 @@ class SdrplayDevice(SdrDevice):
         # rewritten once a consumer holds it.
         self._filling: np.ndarray = np.empty(0, dtype=np.int16)
         self._filled = 0
-        # When the last delivery arrived and how much audio it held, so that a late
-        # callback can be told from a large one.  Only the stream callback touches
-        # either.
         # The deepest backlog in the window now open, how much audio has arrived in
         # it, how many deliveries found the backlog past the threshold, and when the
         # window started.  Only the stream callback touches any of them.
@@ -639,7 +643,6 @@ class SdrplayDevice(SdrDevice):
         # _report_the_worst_backlog for why that one is reported differently.
         self._first_window = True
         self._block_values = 0
-        self._lock = threading.Lock()
 
         self._check_band()
         self._params = library.device_params(int(device.dev))
@@ -1065,10 +1068,15 @@ class SdrplayDevice(SdrDevice):
         gain.gRdB = baseband
         gain.LNAstate = lna_state
         if self._initialized:
+            # This is armed before the update rather than after it, so the library
+            # cannot deliver the marked block into a check that is not yet waiting
+            # for it.  See _check_reported_gain for why that block is the one that
+            # can answer.
+            if not self._gain_table_checked:
+                self._pending_gain_check = (gain_db, lna_state, baseband)
             self._library.update(
                 int(self._device.dev), int(self._device.tuner),
                 api.sdrplay_api_ReasonForUpdateT.sdrplay_api_Update_Tuner_Gr)
-        self._check_reported_gain(gain_db, lna_state, baseband)
         return gain_db
 
     def _learn_conversion_gain(self, report_arrived: bool) -> float:
@@ -1101,8 +1109,7 @@ class SdrplayDevice(SdrDevice):
                      learned, self._tuned_hz / 1e6)
         return learned
 
-    def _check_reported_gain(self, wanted_db: float, lna_state: int,
-                             baseband: int) -> None:
+    def _check_reported_gain(self) -> None:
         """Compare the hardware's own figure against the table, and warn once.
 
         `gainVals.curr` is an output parameter, so this is what the receiver says its
@@ -1116,18 +1123,28 @@ class SdrplayDevice(SdrDevice):
         `supported_gains_db`.  A figure half a decibel off a rung is a key that list
         does not contain, and the reading is then dropped rather than used.
 
-        The receiver fills the figure in as it applies the change.  The initialized
-        state says whether there is a current answer; zero remains a valid answer.
+        **This runs from the block the library marked, not from the gain write.**
+        `sdrplay_api_Update` returns before the new gain is in force, which is the
+        whole reason `_awaiting_gain_change` and `grChanged` exist, so `gainVals.curr`
+        at that moment still answers about the previous gain.  Comparing the new
+        prediction against the previous gain then measures the step rather than the
+        table.  A sweep steps by `_COARSE_STEP_DB`, which is 10 dB against a 3 dB
+        threshold, so this program would report a wrong gain table on the second gain
+        of every sweep of a healthy receiver.
+
+        So `_write_gain` records what it wrote and this runs from the marked block,
+        which is the first delivery where the receiver's figure is about the same gain
+        the prediction is about.  It runs on the library's own thread, so it does the
+        least it can: read two fields, compare, and log at most once for the session.
         """
+        pending = self._pending_gain_check
+        if pending is None or self._gain_table_checked:
+            return
+        self._pending_gain_check = None
+        self._gain_table_checked = True
+        wanted_db, lna_state, baseband = pending
         gain = self._params.rxChannelA.contents.tunerParams.gain
         reported = float(gain.gainVals.curr)
-        # Only while the library is running, because only then has it just applied what
-        # was written.  Otherwise the field still holds the answer to an older question,
-        # and comparing the new prediction against it reports a disagreement that is
-        # only the two being about different settings.
-        if not self._initialized or self._gain_table_checked:
-            return
-        self._gain_table_checked = True
         if abs(reported - wanted_db) > _GAIN_DISAGREEMENT_DB:
             logger.warning(
                 'The receiver reports %.1f dB of gain at LNA state %d and %d dB of '
@@ -1242,6 +1259,7 @@ class SdrplayDevice(SdrDevice):
                 return
             if params and params.contents.grChanged:
                 self._awaiting_gain_change = False
+                self._check_reported_gain()
                 self._filled = 0
                 return
             count = int(num_samples)
@@ -1386,6 +1404,11 @@ class SdrplayDevice(SdrDevice):
             # once: every later gain change will do the same, and a sweep moves the
             # gain hundreds of times.
             self._awaiting_gain_change = False
+            # Nothing marked the block, so nothing says `gainVals.curr` has caught
+            # up.  This drops the check rather than making it against a figure that
+            # may still describe the previous gain, and the warning below covers the
+            # receiver instead.
+            self._pending_gain_check = None
             if not self._gain_flag_reported:
                 self._gain_flag_reported = True
                 logger.warning(
@@ -1491,7 +1514,7 @@ def _what_an_api_failure_usually_means(code: int) -> str:
     return 'Check that no other program is using the receiver, then try again.'
 
 
-def _quietly(call: object) -> None:
+def _quietly(call: Callable[[], None]) -> None:
     """Run a cleanup call and swallow whatever it raises.
 
     Callers use this only on paths already unwinding from a failure, so that the
@@ -1507,7 +1530,7 @@ class _ReceiverStillRunning(RuntimeError):
     """An open attempt whose receiver cannot safely be released."""
 
 
-def _bounded(call: object, what: str) -> bool:
+def _bounded(call: Callable[[], None], what: str) -> bool:
     """Run a library call on a thread, and give up on it after a timeout.
 
     The SDRplay API talks to a background service over an interprocess channel, so a

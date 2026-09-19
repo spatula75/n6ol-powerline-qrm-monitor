@@ -295,7 +295,6 @@ class SdrplayConfig(SdrConfig):
     api_path: str | None = None
 
 
-
 @dataclass(frozen=True)
 class Source:
     """One place live audio can come from, and where its settings live.
@@ -358,9 +357,11 @@ def receiver_settings_from(source_name: str,
     source = SOURCES.get(source_name)
     return source.settings_from(values) if source else None
 
+
 @dataclass
 class AudioConfig:
-    # Where live audio comes from, either 'soundcard' or 'rtlsdr'.
+    # Where live audio comes from.  SOURCES holds the names this accepts, and
+    # schema.json states the same list for the setup program.
     source: str = SOUNDCARD
     # Sounddevice name of the audio input recording the RF-to-audio converted signal.
     # The device is always resolved by this name, never by a stored index: names

@@ -945,6 +945,24 @@ that call rather than quietly compiling another variant mid-flight.
   occur, and the one place it mattered (a numba signature) only surfaced it by
   accident. Check what the live pipeline actually produces, and match it. This applies
   to the golden generator too, or the pinned values describe a path nobody runs.
+- **A fake that applies an asynchronous change synchronously cannot catch the bug the
+  asynchrony causes.** The sibling of the rule above, one level up: there the fake's
+  data was the wrong type, here its *timing* is wrong. A fake is written from what the
+  code under test expects, so it tends to answer the instant it is asked, and the
+  hardware it stands for does not.
+
+  `FakeSdrplayApi.update()` filled `gainVals.curr` before it returned. The real library
+  applies a gain change on its own thread and marks the delivery where it did with
+  `grChanged`, which is the reason `_awaiting_gain_change` and `_GAIN_CHANGE_SETTLE_SECONDS`
+  exist a few hundred lines away in the same module. A device that read the figure
+  straight after the update agreed with the fake every time, and would have told every
+  healthy RSP its gain table was wrong on the second gain of every sweep.
+
+  So where the real thing answers later, the fake answers later too, and the test
+  drives the step that makes it answer. The diagnostic is to ask what the hardware does
+  between the call and the answer. Where the answer is "another thread, some blocks
+  later", a fake that returns the answer inline has removed the only interval where the
+  bug can live.
 - When a refactor makes something testable that wasn't before, write the test then.
 - `tests/conftest.py` sets `NUMBA_DISABLE_JIT=1` so `@njit` function bodies are visible
   to coverage. Without it every JIT-compiled function reads as untested no matter how
@@ -980,13 +998,6 @@ that call rather than quietly compiling another variant mid-flight.
   the whole suite passed while an RTL-SDR sat pinned to that floor in ordinary use.
   The figure was two of the receiver's own steps, and two was outside the range that
   receiver could ever reach.
-
-  The test that found it had to say what the number is for: above what a dead channel
-  asks for, so silence is caught, and below what a working receiver asks for, so a real
-  signal is not clamped.  Both ends come from elsewhere in the program -
-  `effective_bits` from the receiver and `floor_margin_db` from the gain chooser - so
-  the test also ties together two policies that meet nowhere else.  See
-  `test_every_receiver_can_reach_its_floor_but_not_sit_on_it`.
 
   The diagnostic is to ask what the constant would have to be wrong by before anything
   went red.  Where the honest answer is "any amount, the tests only check it is
