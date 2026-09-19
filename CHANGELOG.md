@@ -92,6 +92,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   266 ms after the same request, and the SDRplay stopped crossing 100 ms of delivery
   backlog. Process priority, Efficiency mode and timer resolution did not explain the
   difference. Other platforms do not load or call the Windows API.
+- The scope's magnification limit follows the receiver's bit depth instead of being one
+  figure for every source. Everything reaching the display is int16, so a receiver of
+  fewer bits arrives in coarser steps, and the limit is now two of whatever step that
+  receiver delivers. The flat 32 counts was wrong both ways: an RTL-SDR step is 256
+  counts, so its own dither was drawn at full height, which is the failure the limit
+  exists to prevent, and an SDRplay step is 2 counts, so a real band reading sitting
+  6.8 dB above that receiver's noise was squashed to a tenth of the screen. A quiet
+  band on an RSP1B now fills 71% of the scope where it filled 9%.
 - The display stops repainting while its window is minimized, and starts again when the
   window is restored. Each widget reads the newest audio when it repaints, so pausing
   work nobody can see loses no display history.

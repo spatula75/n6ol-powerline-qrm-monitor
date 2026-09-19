@@ -235,12 +235,30 @@ _RANGE_HEADROOM = 1.30
 # hundred milliseconds and the trace visibly breathes.  0.05 at 100 ms frames gives
 # a settling time of a couple of seconds.
 _RANGE_EMA_ALPHA = 0.05
-# Smallest full-scale deflection allowed, in raw int16 counts.  This is the vertical
-# analogue of _MIN_DYNAMIC_RANGE_DB, and exists for the same failure mode: with a
-# truly silent input the percentile collapses toward zero and the auto-range
-# would stretch quantization dither across the entire screen, painting a dead
-# channel as a healthy full-amplitude noise trace.  32 counts is about -60 dBFS.
-_MIN_FULL_SCALE = 32.0
+# How many of the receiver's own steps the smallest full scale is worth.
+#
+# This is the vertical analogue of _MIN_DYNAMIC_RANGE_DB and exists for the same
+# failure mode: with a truly silent input the percentile collapses toward zero and the
+# auto-range would stretch quantization dither across the entire screen, painting a
+# dead channel as a healthy full-amplitude noise trace.  What the floor really caps is
+# magnification, since full scale is the amplitude that reaches the top of the trace.
+#
+# Two steps rather than one, which is one bit of headroom, 6.02 dB.  A dead channel
+# asks for 0.65 of a step, because its dither is uniform over one step and the
+# percentile and headroom above multiply sigma by 3.66 while sigma is only a step over
+# the square root of twelve.  So two steps draw a dead channel at 32% of the height
+# where one step would draw it at 65%, and 32% reads as dead at a glance where 65%
+# does not.  The price is that band noise sitting exactly at the knee draws at 75%
+# rather than filling the screen, and a station with any arc to see is far above the
+# knee, because p99.5 reaches into the pulses rather than the noise between them.
+#
+# This used to be a flat 32 counts for every receiver, which was wrong in both
+# directions.  An RTL-SDR step is 256 counts, so its own dither was drawn at full
+# height, which is the exact failure the constant was written to prevent.  An SDRplay
+# step is 2 counts, so a real band reading of 2.84 counts, sitting 6.8 dB above that
+# receiver's own noise, was squashed to 9% of the screen.
+# See docs-notebook/scope-auto-range-floor.md.
+_FLOOR_STEPS = 2.0
 # Initial guess, used only until the EMA has real data to converge from.
 _INITIAL_FULL_SCALE = 2048.0
 
@@ -408,7 +426,22 @@ def extract_sweeps(samples: np.ndarray, start: int, sweep_samples: int,
 # Auto-ranging
 # ---------------------------------------------------------------------------
 
-def auto_range_full_scale(sweeps: np.ndarray, previous: float) -> float:
+def minimum_full_scale(effective_bits: int) -> float:
+    """The smallest full scale this receiver's bit depth justifies, in int16 counts.
+
+    Everything reaching the scope is int16, whatever the receiver, because
+    `IqToAudio._as_int16` scales each source against FULL_SCALE_COUNTS.  So a receiver
+    of fewer bits arrives in coarser steps rather than in a smaller range, and one
+    step is FULL_SCALE_COUNTS over 2 ** (bits - 1): one count at sixteen bits, two at
+    fifteen, 256 at eight.
+
+    Magnifying past a receiver's own step means drawing its quantization noise at full
+    height.  See _FLOOR_STEPS for how far short of that this stops, and why.
+    """
+    return FULL_SCALE_COUNTS / 2 ** (effective_bits - 1) * _FLOOR_STEPS
+
+
+def auto_range_full_scale(sweeps: np.ndarray, previous: float, floor: float) -> float:
     """Blend this frame's measured deflection into the smoothed full-scale value.
 
     "Full scale" is the sample magnitude that reaches the top (or bottom) rail of
@@ -416,8 +449,13 @@ def auto_range_full_scale(sweeps: np.ndarray, previous: float) -> float:
     there is nothing to measure, so a stalled frame holds the current scale rather
     than collapsing it to the minimum.
 
-    See _RANGE_PERCENTILE, _RANGE_HEADROOM, _RANGE_EMA_ALPHA and _MIN_FULL_SCALE
-    for why each of the four terms is here.
+    `floor` is the smallest full scale to return, which is a cap on magnification
+    rather than on amplitude: anything louder scales normally.  It comes from
+    minimum_full_scale() and so depends on the receiver, where it used to be one
+    constant for all of them.
+
+    See _RANGE_PERCENTILE, _RANGE_HEADROOM, _RANGE_EMA_ALPHA and _FLOOR_STEPS for why
+    each of the four terms is here.
 
     A floored trace cannot be told from a quiet band by looking at it, because the
     deflection the measurement asked for is discarded here.  Measured on an RSP1B, that
@@ -428,7 +466,7 @@ def auto_range_full_scale(sweeps: np.ndarray, previous: float) -> float:
         return previous
     raw = float(np.percentile(np.abs(sweeps), _RANGE_PERCENTILE)) * _RANGE_HEADROOM
     blended = previous + _RANGE_EMA_ALPHA * (raw - previous)
-    return max(blended, _MIN_FULL_SCALE)
+    return max(blended, floor)
 
 
 def full_scale_dbfs(full_scale: float) -> float:
@@ -451,7 +489,7 @@ def full_scale_dbfs(full_scale: float) -> float:
     can see the overload.
 
     The caller supplies a value from auto_range_full_scale(), which is floored at
-    _MIN_FULL_SCALE and so is always strictly positive.
+    minimum_full_scale() and so is always strictly positive.
     """
     return 20.0 * log10(full_scale / FULL_SCALE_COUNTS)
 
@@ -643,6 +681,10 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
 
         self.setFixedSize(width, SCOPE_H)
 
+        # Read once: a pipeline does not change its receiver, and the alternative is
+        # asking a device for its bit depth ten times a second.
+        self._floor = minimum_full_scale(pipeline.effective_bits)
+
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(_UPDATE_MS)
@@ -689,10 +731,11 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
 
         if self._averaging:
             self._average = update_running_average(self._average, sweeps, _AVERAGE_ALPHA)
-            self._average_full_scale = auto_range_full_scale(self._average,
-                                                             self._average_full_scale)
+            self._average_full_scale = auto_range_full_scale(
+                self._average, self._average_full_scale, self._floor)
         else:
-            self._full_scale = auto_range_full_scale(sweeps, self._full_scale)
+            self._full_scale = auto_range_full_scale(sweeps, self._full_scale,
+                                                     self._floor)
             self._phosphor *= _PHOSPHOR_DECAY
             for sweep in sweeps:
                 self._draw(self._phosphor, sweep, self._full_scale,

@@ -125,6 +125,14 @@ HF_CONVERSION_GAIN_DB = 91.4
 # See docs-notebook/sdrplay-gain.md.
 ESTIMATED_CALIBRATION_INTERCEPT_DB = 11.0
 
+# How many bits of the int16 audio an RSP really resolves.
+#
+# See `SdrplayDevice.effective_bits` for where the figure comes from.  It is a module
+# constant for the same reason FLOOR_MARGIN_DB below is: the scope's floor is derived
+# from it, and a test that checks the derivation should read the figure rather than
+# restate it.
+EFFECTIVE_BITS = 15
+
 # How far above the noise-floor knee to put the gain the sweep chooses.
 #
 # See `SdrplayDevice.floor_margin_db` for the measurement and the reasoning.  It is a
@@ -459,6 +467,29 @@ class SdrplayDevice(SdrDevice):
     different LNA table, and two of them embed extra parameter structs this device
     never writes, so admitting one would claim support nobody here can test.
     """
+
+    @classmethod
+    def effective_bits(cls) -> int:
+        """Fifteen, which is fourteen on the converter and one recovered by decimating.
+
+        The library delivers int16 and uses the whole of it, and the converter behind
+        that resolves fourteen.  Oversampling makes up part of the difference: at the
+        256 kHz this program asks for, the converter runs at 2048 kHz and decimates by
+        eight, which is 9 dB and worth 1.5 bits by the ideal rule.  Taking one of them
+        rather than both is the conservative reading, because the ideal rule assumes
+        white quantization noise and a perfect filter.
+
+        The recovered bit follows the rate, since the decimation does: 1024 kHz
+        decimates by two and earns half a bit, where 64 kHz decimates by 32 and earns
+        two and a half, which the int16 container caps at sixteen.  Fifteen is fixed
+        rather than derived because it is conservative at the rate this program
+        defaults to and below, and the whole span is only a bit and a half.  A station
+        running well above 256 kHz is claiming a bit it does not have, and the display
+        would magnify a little further than it should.
+
+        See docs-notebook/scope-auto-range-floor.md.
+        """
+        return EFFECTIVE_BITS
 
     @classmethod
     def floor_margin_db(cls) -> float:

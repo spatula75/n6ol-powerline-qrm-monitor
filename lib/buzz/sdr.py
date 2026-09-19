@@ -257,6 +257,11 @@ class RtlSdrSource:
         return self._device.supported_gains_db
 
     @property
+    def effective_bits(self) -> int:
+        """How many bits of the int16 audio this receiver really resolves."""
+        return self._device.effective_bits()
+
+    @property
     def gain_db(self) -> float:
         """The gain in use."""
         return self._device.gain_db
@@ -603,6 +608,15 @@ class RtlSdrPipeline(RingBufferPipeline):
         hearing, and that loud events are being measured smaller than they are.
         """
         return self._clipped
+
+    @property
+    def effective_bits(self) -> int:
+        """What the receiver resolves, which decides how far the scope magnifies.
+
+        The base class answers sixteen, which is right for a sound card and wrong
+        for every receiver.  See buzz.scope.minimum_full_scale.
+        """
+        return self._source.effective_bits
 
     @property
     def iq_buffer(self) -> IqRingBuffer | None:

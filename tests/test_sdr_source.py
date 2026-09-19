@@ -188,6 +188,20 @@ class TestTheClockDriftSymptom:
         assert s.clock_drift_seconds == 0.0
 
 
+class TestWhatTheSourcePassesThrough:
+    """A source answers for its device rather than making callers reach past it.
+
+    A passthrough that returns the wrong device's answer is invisible, because the
+    figure is a plausible number either way and nothing else in the program reads it
+    twice.  This one was first written onto SweepReader by mistake, where nothing asks
+    it, and the scope silently got a sound card's answer instead.
+    """
+
+    def test_the_bit_depth_comes_from_the_device(self):
+        reader = source(FakeSdrDevice(iq_sample_rate=IQ_RATE))
+        assert reader.effective_bits == FakeSdrDevice.effective_bits() == 12
+
+
 class TestWhatTheDriftWarningSays:
     """One interval short of audio and a clock that has walked away are different
     faults, and the wording has to send an operator to different places.

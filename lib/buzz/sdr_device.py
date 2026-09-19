@@ -86,6 +86,13 @@ _TRANSFER_POOL_BLOCKS = 15
 # that says nothing about sizes.
 _USB_PACKET_BYTES = 512
 
+# How many bits of the int16 audio an RTL-SDR really resolves.
+#
+# See `RtlSdrDevice.effective_bits` for why there are no more than the converter's own.
+# A module constant so that a test can read the figure rather than restate it, matching
+# EFFECTIVE_BITS in buzz.sdrplay_device.
+EFFECTIVE_BITS = 8
+
 
 @dataclass(frozen=True)
 class SampleFormat:
@@ -363,6 +370,29 @@ class SdrDevice(ABC):
             f'{cls.__name__} does not define an estimated calibration offset.')
 
     @classmethod
+    def effective_bits(cls) -> int:
+        """How many bits of the int16 samples this receiver really resolves.
+
+        Everything downstream of `IqToAudio._as_int16` is int16 whatever the receiver,
+        because each source is scaled against FULL_SCALE_COUNTS.  So a receiver of
+        fewer bits arrives in coarser steps rather than in a smaller range, and this
+        says how coarse.  `buzz.scope.minimum_full_scale` turns it into the point past
+        which the display would magnify the receiver's own quantization noise to full
+        height.
+
+        Count the bits the samples carry by the time they arrive, rather than the bits
+        on the converter's datasheet.  Oversampling and decimation recover some, so a
+        receiver that decimates hard delivers more than its converter alone would.
+
+        There is no default, because a receiver's depth is a fact about its hardware
+        and a wrong one makes the display lie in whichever direction it is wrong.  Too
+        few bits claimed and a real signal is clamped; too many and silence is drawn
+        as a healthy trace.
+        """
+        raise NotImplementedError(
+            f'{cls.__name__} does not say how many bits it resolves.')
+
+    @classmethod
     def floor_margin_db(cls) -> float:
         """How far above the knee this receiver can afford to put the floor bound.
 
@@ -489,6 +519,16 @@ class RtlSdrDevice(SdrDevice):
     failure into a message an operator can act on, and it is the only place the
     pyrtlsdr object is created.
     """
+
+    @classmethod
+    def effective_bits(cls) -> int:
+        """Eight, which is what the RTL2832U delivers and all of what it delivers.
+
+        One step is therefore 256 of the counts the rest of the program works in, so
+        this receiver's own dither is a far larger signal than any other source's.
+        Nothing here decimates enough to recover a bit of it.
+        """
+        return EFFECTIVE_BITS
 
     @classmethod
     def floor_margin_db(cls) -> float:

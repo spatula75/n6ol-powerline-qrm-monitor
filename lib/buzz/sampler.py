@@ -200,6 +200,20 @@ class RingBufferPipeline:
         return self._dtype
 
     @property
+    def effective_bits(self) -> int:
+        """How many bits of the int16 samples this source really carries.
+
+        Everything downstream sees int16 whatever the source, so a source of fewer
+        bits arrives in coarser steps rather than in a smaller range.  The scope uses
+        this to decide how far it will magnify before it would be drawing the source's
+        own quantization noise at full height.  See scope.minimum_full_scale.
+
+        Sixteen here, because a sound card delivers int16 and means all of it.  A
+        receiver answers for its own converter.
+        """
+        return 16
+
+    @property
     def iq_buffer(self) -> 'RingBufferPipeline | None':
         """The raw pre-conversion samples this source kept, or None when it keeps none.
 

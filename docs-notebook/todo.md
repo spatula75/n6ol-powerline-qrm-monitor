@@ -108,6 +108,27 @@ nothing on the band was strong enough to settle it.  A signal generator would.  
 figure of 57.5 dB against a nominal 49.6 in `config.py` and `sdr.py` is provisional,
 neither confirmed nor refuted.  See `sdr-gain-calibration.md`.
 
+### The scope height differs between the RTL-SDR and SDRplay
+
+On 2026-09-18, the scope auto-ranged to -60.2 dBFS with the SDRplay and about
+-49 dBFS with the RTL-SDR, although their calibrated signal and noise-floor readings
+were similar.  The RTL-SDR needs substantially more tuner gain to raise the antenna
+signal above its self-noise.  Its audio output may therefore be legitimately higher
+relative to full scale, with a larger level-calibration correction bringing the
+reported input level back down.
+
+Check the data path before changing the display.  Confirm that the scope scales the
+uncalibrated audio amplitude while the meters and logs apply the receiver's level
+offset, then repeat the comparison on the same antenna and frequency.  The intended
+result is a taller SDRplay trace that exposes more detail while preserving raw dBFS
+and clipping information.  The likely change is to let each source set an auto-range
+floor below the fixed -60.2 dBFS limit when its dead-input noise permits it.  Measure
+that dead-input floor on each receiver before choosing the limits; a live antenna does
+not isolate the quantization and processing noise that the limit must hide.  See
+`scope-auto-range-floor.md`, which records the earlier SDRplay measurements and the
+same source-specific design.  The antenna is back on the production monitor tonight,
+so the live comparison waits until the hardware can be moved again.
+
 ## Other receivers
 
 ### Verify the revised gain selection on an RTL-SDR
@@ -187,9 +208,50 @@ awkward.  The shape they want is probably a registry, mapping a source name to t
 section that configures it and the factory that opens it, so the dispatch happens once
 and the error message lists whatever is registered.
 
-This is recorded rather than done because one extra branch is cheaper than an
-abstraction built for a second case that does not exist yet.  Revisit it when the
-SDRplay work makes that second case real, and not before.
+Mostly done as of 2026-09-19, because the SDRplay made the second case real.
+`open_live_source` dispatches through the `_OPENERS` table and names whatever is
+registered in its error, and `BuzzConfig.level_offset_db` asks `receiver_settings`
+rather than comparing the source name.  What is left is the schema, which the note
+above says scales on its own.
+
+
+### The sound card has no device class, and probably should not get one
+
+A receiver goes through `SdrDevice`, with `RtlSdrDevice` and `SdrplayDevice` behind it,
+`RtlSdrSource` reading blocks and `RtlSdrPipeline` buffering them.  A sound card goes
+through none of that: `AudioPipeline` builds its own `sd.InputStream`, and
+`SoundCardLevelStream` builds a second one.
+
+The asymmetry looks like something half finished and is not.  `SdrDevice` asks for
+tuning, gain, overload state and IQ blocks, and a sound card has none of those.  One
+ABC over both would raise NotImplementedError for most of its methods on one of its two
+implementations, which is worse than two shapes that are honestly different.
+
+The abstraction they do share already exists, a level up.  Both paths produce a
+`RingBufferPipeline`, `open_live_source` returns one, and its docstring says that
+nothing after that point knows which it has.  That is the level at which the two are
+alike, which is why `effective_bits` fitted there when the scope needed it rather than
+needing a new contract.
+
+What the asymmetry costs today, both small:
+
+- `effective_bits` defaults to 16 on `RingBufferPipeline`, so a generic buffer answers
+  on the sound card's behalf and `AudioPipeline` states nothing of its own.
+  `IqRingBuffer` inherits the same 16 and would be wrong, since it holds raw unsigned
+  bytes rather than int16 audio.  Nothing asks it, because only the scope asks and the
+  scope holds the audio pipeline.
+- `sd.InputStream` is constructed in two places in `sampler.py`, differing only in
+  blocksize, latency and the callback.
+
+Both are fixable without a device class: `AudioPipeline` can state its own
+`effective_bits`, and a small `_open_input_stream` helper can take the duplication.
+Neither is urgent.
+
+What would change the decision is a third live source that is not an SDR, such as a
+network stream or a file-backed live feed.  At three members "where live audio comes
+from" stops being two shapes and starts being an abstraction, and the question is worth
+asking again then.  Anything that needs to ask a sound card something the pipeline
+cannot answer would do it too.
 
 
 ### SDRplay support is written for Linux and has never run there

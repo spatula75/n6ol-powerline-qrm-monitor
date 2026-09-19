@@ -29,35 +29,78 @@ than the signal.
 
 ## What this says
 
-The floor is right for one of those conditions and wrong for the other, and a single
-constant cannot suit both.  A value picked from either reading alone would be wrong for
-the other by 20 dB.
+The floor caps magnification rather than amplitude.  Full scale is the amplitude that
+reaches the top of the trace, so a small full scale draws a small signal across the
+whole screen.  Anything louder than the floor scales normally and always did.  So the
+question the constant answers is how small a signal the display will still draw at full
+height.
 
-Neither reading measures what the floor is actually for.  Both are a live antenna on a
-quiet band, where the floor guards a **dead** input: no antenna, or a sound card with
-nothing connected.  The number that would set the floor is the deflection with the
-antenna disconnected, and it was never collected.
+A single figure could not answer it for every receiver.  Everything downstream of
+`IqToAudio._as_int16` is int16, because each source is scaled against
+`FULL_SCALE_COUNTS`, so a receiver of fewer bits arrives in coarser steps rather than in
+a smaller range.  One step is `FULL_SCALE_COUNTS / 2 ** (bits - 1)`.
 
-## Why the arithmetic does not settle it
+| Source | Bits | One step | Old floor | New floor | Floor in dBFS |
+|---|---|---|---|---|---|
+| Sound card | 16 | 1 count | 32 | 2 | -84.3 |
+| SDRplay | 15 | 2 counts | 32 | 4 | -78.3 |
+| RTL-SDR | 8 | 256 counts | 32 | 512 | -36.1 |
 
-`IqToAudio._as_int16` scales what a receiver reports on a -1 to +1 range by
-`FULL_SCALE_COUNTS`, so one converter step arrives as 256 counts for an 8-bit RTL-SDR
-and 1 count for a 16-bit sound card or for an SDRplay delivering full-range int16.  That
-suggests a floor per device, from the bit depth.
+The flat 32 counts was wrong in both directions.  An RTL-SDR step is 256 counts, so its
+own dither asked for 166 and was drawn at full height, which is exactly the failure the
+constant was written to prevent.  An SDRplay step is 2 counts, so the 2.84-count reading
+above, which sits 6.8 dB above that receiver's own noise, was squashed to 9%.
 
-It does not work, because the scope does not see a bare converter step.  `upfirdn`
-decimates on the way to audio, and the processing gain pushes the quantization floor
-below one step by an amount that depends on the decimation ratio, which changes with the
-sample rate.  A floor derived from bit depth alone would be too high, by a different
-amount at every rate.
+## Why two steps
 
-## What would settle it
+A dead channel does not ask for one step.  Its dither is uniform over one step, so its
+sigma is a step over the square root of twelve, and the p99.5 percentile with 1.30 of
+headroom multiplies sigma by 3.66.  Measured against the scope's own constants, a dead
+channel asks for **0.65 of a step**, whatever the receiver.
 
-One reading each with a dead input, on an SDRplay, an RTL-SDR and a sound card.  The
-floor then sits a little above the largest of the three, or `SdrDevice` grows a
-`scope_floor_counts()` beside `floor_margin_db()` and each device answers for itself.
+So the floor in steps decides how a dead channel looks, in a way that does not depend on
+which receiver it is:
 
-The DEBUG line that produced the two readings above was removed because it filled the
-log during unrelated work.  Recovering it means reporting the value
-`auto_range_full_scale` computes before the `max`, at DEBUG and rate-limited, since the
-function runs once a frame.
+| Floor | Dead channel draws at | Band noise at the knee draws at |
+|---|---|---|
+| 1 step | 65% | 100% |
+| 2 steps | 32% | 75% |
+
+Two steps, which is one bit and 6.02 dB.  32% reads as dead at a glance where 65% does
+not.  The price is the knee case, and it is small: the knee is the least gain the
+chooser ever targets, `floor_margin_db` puts an SDRplay 10 dB above it, and p99.5 reaches
+into the pulses rather than the noise between them, so a station with any arc to see
+sits far above this.
+
+## Where the numbers live
+
+`SdrDevice.effective_bits` is the hardware fact and `buzz.scope.minimum_full_scale` is
+the display policy, and they meet only in `ScopeWidget`.  A receiver that does not
+declare its depth raises rather than inheriting another's, for the same reason
+`estimated_calibration_offset_db` does.
+
+The SDRplay says fifteen: fourteen on the converter, and one recovered by decimating
+2048 kHz to 256.  That is 9 dB and worth 1.5 bits by the ideal rule, and taking one of
+them is the conservative reading, since the ideal rule assumes white quantization noise
+and a perfect filter.  The recovered bit follows the rate, from half a bit at 1024 kHz
+to two and a half at 64 kHz, capped at sixteen by the container.  Fifteen is fixed
+rather than derived, because it is conservative at 256 kHz and below and the whole span
+is a bit and a half.  A station well above 256 kHz claims a bit it does not have.
+
+The property has to be on the pipeline as well as on the source, because the scope
+holds a pipeline.  It was first written onto `SweepReader`, which never asks, and the
+scope fell through to `RingBufferPipeline`, which answers sixteen.  Every receiver
+silently got a sound card's limit, and `ScopeWidget` carries a coverage pragma, so
+nothing would have found it.  `TestWhatThePipelineSaysAboutItsReceiver` does now.
+
+`TestTheFloorFollowsTheReceiver` is the drift pin.  Nothing else reads both a receiver's
+depth and the scope's policy, so a receiver that changed its answer would move the
+display silently.
+
+## What is still unmeasured
+
+No dead-input reading has been taken on any receiver.  The 0.65-of-a-step figure is
+arithmetic plus a simulation of uniform dither, not an antenna unplugged from a real
+RSP1B with the deflection read off the log.  That reading would confirm the whole chain
+in one number, and taking it needs the DEBUG line that reported the wanted deflection,
+which was removed.

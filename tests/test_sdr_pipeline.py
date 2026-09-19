@@ -36,6 +36,9 @@ class StubSource:
         self.iq_sample_rate = 256_000
         # What the raw IQ buffer sizes its chunks by, when one is being kept.
         self.block_samples = BLOCK
+        # Twelve, which is neither receiver's real answer, so a test that this
+        # reaches the pipeline cannot pass by matching a real device by accident.
+        self.effective_bits = 12
 
     def start(self):
         self.started = True
@@ -236,6 +239,31 @@ def test_the_pipeline_is_a_ring_buffer_like_every_other_source():
     for name in ('get_snapshot', 'read_from', 'wait_for_data', 'total_samples',
                  'capacity_samples', 'clear'):
         assert hasattr(p, name), f'{name} is missing, so a consumer would break on it'
+
+
+class TestWhatThePipelineSaysAboutItsReceiver:
+    """The scope holds a pipeline, not a device, so the pipeline has to answer.
+
+    This was written after the property was put on SweepReader by mistake, where
+    nothing asks.  The scope then fell through to the base class, which answers
+    sixteen, and every receiver silently got a sound card's magnification limit.
+    ScopeWidget carries a coverage pragma, so nothing else would have found it.
+    """
+
+    def test_the_bit_depth_reaches_the_pipeline(self):
+        p, _ = pipeline()
+        assert p.effective_bits == 12, (
+            f'A pipeline over a 12-bit source reported {p.effective_bits}.  Sixteen '
+            'means it fell through to RingBufferPipeline, which is the sound card '
+            'default and is what every receiver silently got before this test.')
+
+    def test_the_floor_follows_from_it(self):
+        """End to end, in the unit the scope works in: a coarser receiver is allowed
+        less magnification, and the arithmetic in between is scope.minimum_full_scale.
+        """
+        from buzz.scope import minimum_full_scale
+        p, _ = pipeline()
+        assert minimum_full_scale(p.effective_bits) == minimum_full_scale(12)
 
 
 class TestTheHealthCountersReachTheLog:

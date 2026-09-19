@@ -47,6 +47,15 @@ class FakeSdrDevice(SdrDevice):
         """The V4's steps, which is what the rest of this fake reports by default."""
         return list(V4_GAINS)
 
+    @classmethod
+    def effective_bits(cls):
+        """Twelve, which no real receiver here answers.
+
+        Deliberately not 8 or 15, so a test that a pipeline passes this through cannot
+        pass by matching whatever a real device would have said.
+        """
+        return 12
+
     def __init__(self, *, gains=None, iq_sample_rate=256_000, tuned_hz=3_638_000,
                  gain_db=40.2, fmt=RTL_SDR_FORMAT, blocks_to_discard_streaming=16,
                  blocks_to_discard_reading=2, gain_changes_while_streaming=False,

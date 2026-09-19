@@ -20,6 +20,17 @@ def _reader(device=None, **kwargs):
     return SweepReader(device or FakeSdrDevice(), **kwargs)
 
 
+class TestWhatTheReaderPassesThrough:
+    """A sweep reads the floor margin off the receiver rather than assuming one.
+
+    GainChooser takes it as a number, so a reader answering for the wrong device would
+    move every gain this program picks, by a plausible amount, silently.
+    """
+
+    def test_the_floor_margin_comes_from_the_device(self):
+        assert _reader().floor_margin_db == FakeSdrDevice.floor_margin_db()
+
+
 class TestTheSynchronousReader:
     """A gain sweep throws away most of what it reads, measures a statistical property
     of noise, and has no deadline.  So it reads on one thread, and the difference is

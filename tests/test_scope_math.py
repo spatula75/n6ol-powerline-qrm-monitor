@@ -3,13 +3,15 @@
 import numpy as np
 import pytest
 
+from buzz.constants import FULL_SCALE_COUNTS
 from buzz.scope import (
     SCOPE_H, accumulate_trace, auto_range_full_scale, build_graticule,
-    build_phosphor_colormap, extract_sweeps, full_scale_dbfs, n_complete_sweeps,
+    build_phosphor_colormap, extract_sweeps, full_scale_dbfs, minimum_full_scale,
+    n_complete_sweeps,
     resample_to_columns, sweep_start_offset, trace_rows, update_running_average,
     _HEADER_H, _TRACE_H, H_DIVISIONS, _V_DIVISIONS, _GRATICULE_LINE, _GRATICULE_AXIS,
     _DIVISIONS_PER_PULSE, _PRETRIGGER_DIVISIONS,
-    _MIN_FULL_SCALE, _RANGE_HEADROOM, _RANGE_PERCENTILE, _RANGE_EMA_ALPHA,
+    _FLOOR_STEPS, _RANGE_HEADROOM, _RANGE_PERCENTILE, _RANGE_EMA_ALPHA,
 )
 from buzz.waterfall import (
     DISPLAY_BINS, _AXIS_H, _PIXELS_PER_BIN, _WATERFALL_H, panel_width)
@@ -116,9 +118,13 @@ class TestSynchronisation:
         assert len(positions) > 1
 
 
+# A sixteen-bit source, which is a sound card, and the finest floor there is.
+FLOOR = minimum_full_scale(16)
+
+
 class TestAutoRangeFullScale:
     def test_empty_input_holds_previous(self):
-        assert auto_range_full_scale(np.empty((0, SWEEP)), 500.0) == 500.0
+        assert auto_range_full_scale(np.empty((0, SWEEP)), 500.0, FLOOR) == 500.0
 
     @staticmethod
     def _quiet(counts):
@@ -129,30 +135,30 @@ class TestAutoRangeFullScale:
         recomputing the EMA here would assert the implementation against itself.
 
         Measured on an RSP1B, the deflection this asks for ranges from 2.84 counts on a
-        quiet band to 31.05 with the same antenna, against a floor of 32.  So both sides
-        of this assertion are reached in ordinary use rather than only in a test.  See
+        quiet band to 31.05 with the same antenna.  Both sides of this assertion are
+        therefore reached in ordinary use rather than only in a test.  See
         docs-notebook/scope-auto-range-floor.md.
         """
-        assert auto_range_full_scale(self._quiet(2.0), 2.0) == _MIN_FULL_SCALE
-        assert auto_range_full_scale(self._quiet(0.5), 0.5) == _MIN_FULL_SCALE
-        assert auto_range_full_scale(self._quiet(4000.0), 4000.0) > _MIN_FULL_SCALE
+        assert auto_range_full_scale(self._quiet(0.5), 0.5, FLOOR) == FLOOR
+        assert auto_range_full_scale(self._quiet(0.1), 0.1, FLOOR) == FLOOR
+        assert auto_range_full_scale(self._quiet(4000.0), 4000.0, FLOOR) > FLOOR
 
     def test_never_below_minimum(self):
         silent = np.zeros((4, SWEEP), dtype=np.float32)
-        assert auto_range_full_scale(silent, _MIN_FULL_SCALE) >= _MIN_FULL_SCALE
+        assert auto_range_full_scale(silent, FLOOR, FLOOR) >= FLOOR
 
     def test_silence_cannot_collapse_the_scale(self):
         """The failure mode the floor exists for: near-silent input must not shrink
         full scale toward zero, which would amplify dither to full deflection."""
         scale = 2048.0
-        dither = np.random.default_rng(0).normal(0, 0.5, size=(4, SWEEP))
+        dither = np.random.default_rng(0).normal(0, 0.2, size=(4, SWEEP))
         for _ in range(500):
-            scale = auto_range_full_scale(dither, scale)
-        assert scale == pytest.approx(_MIN_FULL_SCALE)
+            scale = auto_range_full_scale(dither, scale, FLOOR)
+        assert scale == pytest.approx(FLOOR)
 
     def test_moves_toward_but_not_onto_the_measurement(self):
         loud = np.full((4, SWEEP), 8000.0)
-        moved = auto_range_full_scale(loud, 1000.0)
+        moved = auto_range_full_scale(loud, 1000.0, FLOOR)
         assert moved > 1000.0
         assert moved < 8000.0 * _RANGE_HEADROOM
 
@@ -160,7 +166,7 @@ class TestAutoRangeFullScale:
         loud = np.full((4, SWEEP), 8000.0)
         target = 8000.0 * _RANGE_HEADROOM
         expected = 1000.0 + _RANGE_EMA_ALPHA * (target - 1000.0)
-        assert auto_range_full_scale(loud, 1000.0) == pytest.approx(expected)
+        assert auto_range_full_scale(loud, 1000.0, FLOOR) == pytest.approx(expected)
 
     def test_converges_to_percentile_times_headroom(self):
         rng = np.random.default_rng(1)
@@ -168,7 +174,7 @@ class TestAutoRangeFullScale:
         target = float(np.percentile(np.abs(sweeps), _RANGE_PERCENTILE)) * _RANGE_HEADROOM
         scale = 100.0
         for _ in range(500):
-            scale = auto_range_full_scale(sweeps, scale)
+            scale = auto_range_full_scale(sweeps, scale, FLOOR)
         assert scale == pytest.approx(target, rel=0.01)
 
     def test_reaches_into_the_pulse_tail(self):
@@ -178,8 +184,59 @@ class TestAutoRangeFullScale:
         sweeps = sweeps + np.random.default_rng(2).normal(0, 100.0, sweeps.shape)
         scale = 100.0
         for _ in range(500):
-            scale = auto_range_full_scale(sweeps, scale)
+            scale = auto_range_full_scale(sweeps, scale, FLOOR)
         assert scale > 1000.0
+
+
+class TestTheFloorFollowsTheReceiver:
+    """A drift pin.  The floor is a display policy and the bit depth is a hardware
+    fact, and they meet nowhere except here.
+
+    Each receiver states its own depth and nothing reads both it and the scope, so a
+    receiver that changed its answer would move the display silently.  That is the
+    failure the flat 32 counts was: it suited neither receiver and nothing said so.
+    """
+
+    def test_each_receiver_gets_one_bit_above_its_own_step(self):
+        """Each figure is read from the receiver that owns it rather than restated
+        here, so this cannot agree with a depth that has since changed.
+        """
+        from buzz.sdr_device import EFFECTIVE_BITS as RTL_BITS, RtlSdrDevice
+        from buzz.sdrplay_device import EFFECTIVE_BITS as RSP_BITS, SdrplayDevice
+        for device, declared in ((RtlSdrDevice, RTL_BITS), (SdrplayDevice, RSP_BITS)):
+            bits = device.effective_bits()
+            assert bits == declared, (
+                f'{device.__name__} answers {bits} where its module constant says '
+                f'{declared}, so one of the two was changed without the other.')
+            step = FULL_SCALE_COUNTS / 2 ** (bits - 1)
+            assert minimum_full_scale(bits) == pytest.approx(step * _FLOOR_STEPS), (
+                f'{device.__name__} says {bits} bits, so one step is {step} counts '
+                f'and its floor should be {_FLOOR_STEPS} of those.')
+
+    def test_a_sound_card_pipeline_answers_sixteen(self):
+        """The base class default, and the one source that really is int16 throughout.
+
+        Asserted through the pipeline rather than the constant, because the scope asks
+        a pipeline and a sound card is the one that never had a device to ask.
+        """
+        from buzz.sampler import RingBufferPipeline
+        assert RingBufferPipeline(sample_rate=16000).effective_bits == 16
+
+    def test_a_receiver_that_will_not_say_is_refused(self):
+        """No default, because a wrong depth makes the display lie in whichever
+        direction it is wrong, and inheriting another receiver's is a wrong one.
+        """
+        from buzz.sdr_device import SdrDevice
+        with pytest.raises(NotImplementedError, match='how many bits'):
+            SdrDevice.effective_bits()
+
+    def test_fewer_bits_means_a_coarser_floor(self):
+        """The direction, stated once so nobody has to re-derive it: fewer bits are
+        coarser steps, so less magnification before the receiver's own noise fills the
+        screen.
+        """
+        floors = [minimum_full_scale(bits) for bits in (8, 15, 16)]
+        assert floors == sorted(floors, reverse=True), floors
 
 
 class TestFullScaleDbfs:
@@ -189,9 +246,16 @@ class TestFullScaleDbfs:
     def test_halving_the_scale_drops_six_db(self):
         assert full_scale_dbfs(16384.0) == pytest.approx(-6.02, abs=0.01)
 
-    def test_minimum_scale_is_about_minus_sixty(self):
-        """_MIN_FULL_SCALE's comment claims ~-60 dBFS; hold it to that."""
-        assert full_scale_dbfs(_MIN_FULL_SCALE) == pytest.approx(-60.2, abs=0.1)
+    def test_each_receivers_floor_is_one_bit_above_its_own_step(self):
+        """The floor in the unit an operator reads off the status bar.
+
+        Stated per receiver, because one number for all of them was the defect: a flat
+        32 counts drew an RTL-SDR's own dither at full height and squashed a real
+        SDRplay reading to a tenth of the screen.
+        """
+        assert full_scale_dbfs(minimum_full_scale(16)) == pytest.approx(-84.3, abs=0.1)
+        assert full_scale_dbfs(minimum_full_scale(15)) == pytest.approx(-78.3, abs=0.1)
+        assert full_scale_dbfs(minimum_full_scale(8)) == pytest.approx(-36.1, abs=0.1)
 
     def test_goes_positive_when_chasing_a_clipping_signal(self):
         """Headroom past the rail is reported rather than clamped, so an overdriven
@@ -204,10 +268,12 @@ class TestFullScaleDbfs:
         assert np.all(np.diff(values) > 0)
 
     def test_every_auto_ranged_value_is_representable(self):
-        """auto_range_full_scale is floored at _MIN_FULL_SCALE, so the log can never
-        be handed a zero or negative argument."""
+        """auto_range_full_scale is floored, so the log can never be handed a zero
+        or negative argument, for any receiver."""
         silent = np.zeros((4, SWEEP), dtype=np.float32)
-        assert full_scale_dbfs(auto_range_full_scale(silent, _MIN_FULL_SCALE)) < 0.0
+        for bits in (8, 15, 16):
+            floor = minimum_full_scale(bits)
+            assert full_scale_dbfs(auto_range_full_scale(silent, floor, floor)) < 0.0
 
 
 class TestResampleToColumns:
