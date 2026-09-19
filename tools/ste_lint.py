@@ -134,6 +134,16 @@ SPACING_EXEMPT = ('CHANGELOG.md', 'CLAUDE.md', 'ste-writing.md', '.json')
 # Files that quote the banned words in order to ban them.
 RULE_BOOKS = ('CLAUDE.md', 'ste-writing.md')
 
+# A word a rule book is quoting rather than using: emphasised, backticked, or inside
+# double quotes.  A rule book names every word it bans, so these spans are how it does
+# the naming, and they are what the exemption below is for.
+#
+# The spans are matched a line at a time, because markdown_prose yields lines.  So a
+# quotation wrapped across two lines reads as prose and is reported.  That is a real
+# limitation and a cheap one: rewrap the quotation.  CLAUDE.md had one such line and
+# both rule books are clean.
+QUOTATION = re.compile(r'\*\*[^*\n]+\*\*|\*[^*\n]+\*|`[^`\n]+`|"[^"\n]+"')
+
 # CHANGELOG.md's released sections describe what shipped, and the published release
 # notes were lifted from them verbatim, so ste-writing.md's override 3 leaves their
 # wording alone.  Everything from the first version heading down is therefore out of
@@ -228,14 +238,19 @@ def _distinct(pattern: re.Pattern[str], text: str) -> list[str]:
 def _check_words(path: str, line: int, text: str, strict: bool) -> list[Finding]:
     """Banned words, marketing adjectives, British spellings, and wordy choices.
 
-    A rule book is exempt from all four.  CLAUDE.md and ste-writing.md quote every
-    one of these words in order to ban it, so each rule here fires on the sentence
-    that outlaws it: the line naming the two British spellings this project is
-    converting is itself two British spellings.  Reporting a wall of findings on
-    the one file nobody may edit blind is worse than reporting none.
+    A rule book quotes every one of these words in order to ban it, so each rule
+    here would fire on the sentence that outlaws it: the line naming the two British
+    spellings this project is converting is itself two British spellings.  So a rule
+    book has its quotations removed before the check rather than being skipped.
+
+    Skipping the file outright was the first answer, and it exempted the prose along
+    with the quotations.  Four violations were sitting in CLAUDE.md's own prose when
+    somebody finally looked: two British spellings, one word from the banned list, and
+    a second banned word added by the commit that wrote the rule against it.  The file
+    that states the rules is the one most likely to be read as an example of them.
     """
     if path.endswith(RULE_BOOKS):
-        return []
+        text = QUOTATION.sub(' ', text)
     found = []
     for pattern, rule in ((BANNED, 'banned word'), (MARKETING, 'marketing adjective'),
                           (BRITISH, 'British spelling')):

@@ -498,7 +498,7 @@ left undone or where a test does not guard what it appears to.
 ### PR descriptions and review comments
 
 **Be brief here - the opposite of the above.** A PR body is read by someone deciding
-where to spend their attention, so point at the few things that matter: the centrepiece
+where to spend their attention, so point at the few things that matter: the centerpiece
 of the change, the critical fix, the one decision worth arguing about. Whatever a
 reviewer would regret skimming past.
 
@@ -918,7 +918,7 @@ method:
 2. Read `fn.signatures` off the dispatcher - numba lists exactly what it compiled.
 3. **Check it against production, not the test suite.** The suite compiled three
    signatures; two were test artefacts. Wrap the function and log dtypes while the real
-   analyser runs.
+   analyzer runs.
 4. **Cover every source.** A replayed `.wav` and the live sound card can differ in
    principle, so check both before declaring. Here they agreed - that is a result, not
    an assumption.
@@ -1203,7 +1203,7 @@ Ask how many answers were expected, not only what the answers that came back say
 one level smaller. `SdrplayDevice` treated a reported gain of zero as "the change has
 not been applied yet" and fell back to the figure that had been asked for, because the
 library leaves the field at zero until it fills it in. Zero is a valid gain, so a
-receiver genuinely sitting there reported the wrong number, and nothing could tell the
+receiver sitting there reported the wrong number, and nothing could tell the
 two apart.
 
 Whether an answer arrived and what the answer says are two facts, and one field cannot
@@ -1240,7 +1240,7 @@ why. Its self-lint list is the thing to run over any prose before returning it.
 
 **Verifying a wording-only pass.** A rewrite that touches every docstring and comment
 in a file is exactly the kind of change that is easy to get subtly wrong - a dropped
-number, a fact that quietly changed, a paren that landed in the wrong place and broke
+number, a fact that quietly changed, a paren that went in the wrong place and broke
 the code underneath it. Prove it did not, the same way every time, before committing:
 
 1. **AST-diff with docstrings zeroed.** Parse the file before and after with `ast`,
@@ -1276,9 +1276,11 @@ they are banned outright in files and comments:
 - **These words:** *genuine*, *genuinely*, *load-bearing*, *is real*, *are real*, *land*,
   *lands*, *landed*.
 
-Most of them are doing emphasis rather than work. "A genuine bug" is a bug; "the
-load-bearing line" is the line that matters; "the value lands at 128" is the value being
-128. Say the thing.
+Most of them are doing emphasis rather than work.
+"A genuine bug" is a bug.
+"The load-bearing line" is the line that matters.
+"The value lands at 128" is the value being 128.
+Say the thing.
 
 - **No sentence fragments.** "Two reasons, not one." has no verb and is not a
   sentence. Write "There are two reasons for this: ..." instead, or fold the
