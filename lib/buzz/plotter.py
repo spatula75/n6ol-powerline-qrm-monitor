@@ -2,23 +2,25 @@
 Plot generation for daily noise traces and time-of-day probability summaries.
 
 Plotter.generate_graph_from_csv() renders a daily signal-vs-noise-floor line chart
-from a CSV file. Plotter.generate_summary_graph() renders a bar chart showing the
+from a CSV file.  Plotter.generate_summary_graph() renders a bar chart showing the
 normalized probability of interference at each 15-minute interval of the day,
 aggregated across a configurable date range.
 
-All output is saved as PNG. The _gc_guarded decorator does two things. It forces a
-gc.collect() after each render. That works around a matplotlib memory-leak bug that
-causes handles to accumulate across repeated savefig calls. It also disables the
-cyclic GC for the duration of the render itself, working around a PySide6/shiboken
-crash - see the decorator's docstring for the full story.
+All output is saved as PNG.  The _gc_guarded decorator disables the cyclic GC for the
+duration of a render, working around a PySide6/shiboken crash - see the decorator's
+docstring for the full story.  It re-enables the GC afterwards and forces nothing,
+leaving when to collect to the interpreter.  Each render closes its own figure, which
+is what keeps matplotlib handles from accumulating.
 """
 
 import gc  # noqa: I001
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
+from time import perf_counter
 from typing import ParamSpec, TypeVar
 from zoneinfo import ZoneInfo
 
@@ -35,6 +37,8 @@ from matplotlib.ticker import MultipleLocator
 from buzz.config import BuzzConfig
 from buzz.constants import S9_DBM
 from buzz.csv_store import BUCKET_MINUTES, CsvStore
+
+logger = logging.getLogger(__name__)
 
 # One day's values for a single trace. A plain list as read from the CSV, and a NumPy
 # array once _smooth() has run over it, so anything holding a series has to accept both.
@@ -188,20 +192,51 @@ def _gc_guarded(func: Callable[_P, _R]) -> Callable[_P, _R]:
     # where matplotlib is exercising this code path, since gc.disable() is a
     # single interpreter-wide switch with authority over all of them.
     # ------------------------------------------------------------------------
-    # The gc.collect() afterward is unrelated: a workaround for a separate
-    # matplotlib memory leak (https://github.com/matplotlib/matplotlib/issues/27713)
-    # that causes handles to accumulate across repeated savefig calls. It runs
-    # after re-enabling GC, once the render is past the risky window.
+    # Nothing here forces a collection, and that is deliberate.  A render leaves
+    # cyclic garbage behind, and the interpreter collects it on a schedule tuned by
+    # people who have measured far more of this than anybody here.  Forcing a pass
+    # only moves when it happens, and picking a generation to force chooses which of
+    # its survivors get promoted past the next pass.  The disable above is forced on
+    # this code by the shiboken bug; the collection never was.
+    #
+    # An earlier version forced one, on the grounds that a collection after a render
+    # freed 9000 objects.  That figure says there was cyclic garbage, and says nothing
+    # about whether this code had to free it.  Neither reading of the matplotlib leak
+    # it cited argues for forcing one: handles that are still referenced are not
+    # reclaimed by any collection, and plt.close() in each render is what releases
+    # those, while handles that are unreferenced cycles are reclaimed by the automatic
+    # collector without help.  Allocations pile up untouched while the disable is in
+    # force, so the first threshold crossing after gc.enable() collects anyway.
+    #
+    # What that leaves resting on plt.close() is the invariant that every render
+    # closes its figure.  TestEveryRenderClosesItsFigure holds the three methods to
+    # it, because a fourth that forgot would leak with nothing to catch it.
+    #
+    # The figures logged below are the ones that would show that going wrong.  A
+    # figure count that climbs is a render that failed to close one.  Generation
+    # counts that climb are the automatic collector falling behind.  Both were
+    # measured on a running monitor, where renders slowed from about 300 ms to about
+    # 1250 ms over one minute and stayed slow until a restart, while the same charts
+    # drew from more data afterwards.  That is process state accumulating rather than
+    # the day's CSV growing, and these two figures say which kind.
+    #
+    # The render is timed because it is the part that can stall capture.  A render is
+    # mostly Python and yields every sys.getswitchinterval(), and measured against a
+    # thread sleeping 1 ms in a loop, the longest anybody waited on one was 8.1 ms.
+    # See docs-notebook/receiver-clock-drift.md.
     @wraps(func)
     def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
         was_enabled = gc.isenabled()
         gc.disable()
+        started = perf_counter()
         try:
             result = func(*args, **kwargs)
         finally:
             if was_enabled:
                 gc.enable()
-        gc.collect()
+        logger.debug('%s drew in %.1f ms, leaving %d figures open and generation '
+                     'counts %s.', func.__name__, (perf_counter() - started) * 1e3,
+                     len(plt.get_fignums()), gc.get_count())
         return result
     return wrapper
 

@@ -19,9 +19,9 @@ from harness import LOUD_PULSES, Monitor
 
 pytest.importorskip('PySide6', reason='the display needs Qt')
 
-from PySide6.QtCore import QPoint                                       # noqa: E402
+from PySide6.QtCore import QPoint, QTimer                               # noqa: E402
 from PySide6.QtGui import QColor, QFontMetrics, QImage, QPainter        # noqa: E402
-from PySide6.QtWidgets import QPushButton                               # noqa: E402
+from PySide6.QtWidgets import QPushButton, QWidget                      # noqa: E402
 
 from buzz.config import BuzzConfig                                      # noqa: E402
 from buzz.fonts import FAMILY, display_family, display_font             # noqa: E402
@@ -92,6 +92,83 @@ class TestToolbarIsPainted:
             bar = window._bar
             corner = bar.mapTo(window, QPoint(bar.width() - 10, bar.height() // 2))
             assert image.pixelColor(corner) == QColor(_BAR_BG)
+        finally:
+            window.close()
+
+
+@pytest.mark.integration
+class TestTheDisplayStopsWhileMinimized:
+    """A minimized window still runs its timers, and its widgets would go on reading
+    the ring buffer, doing their arithmetic and painting into a surface that nothing
+    composites, ten times a second, for as long as it stayed down.
+
+    Stopping these timers did not fix the severe Windows slowdown.  Clearing Windows'
+    execution-speed throttling did.  The timers still have no useful work while the
+    window is minimized, so this keeps them quiet and verifies that they resume.  See
+    docs-notebook/minimized-window-costs.md.
+    """
+
+    @staticmethod
+    def _timers_running(window):
+        """Which of the window's repainting widgets currently have a live timer."""
+        return {type(widget).__name__: widget._timer.isActive()
+                for widget in window._repainting_widgets()}
+
+    def test_minimizing_stops_every_repainting_widget(self, qt_app, monitor):
+        window = MainWindow(monitor.pipeline, monitor.analyzer, BuzzConfig(),
+                            recorder=monitor.recorder)
+        try:
+            window.show()
+            qt_app.processEvents()
+            assert all(self._timers_running(window).values()), (
+                f'A shown window should be repainting: {self._timers_running(window)}')
+
+            window.showMinimized()
+            qt_app.processEvents()
+            running = self._timers_running(window)
+            assert not any(running.values()), (
+                f'These went on repainting into a minimized window: '
+                f'{[name for name, live in running.items() if live]}')
+        finally:
+            window.close()
+
+    def test_restoring_starts_them_again(self, qt_app, monitor):
+        """The half that matters more.  Stopping a display that never comes back is a
+        worse fault than the one being fixed, and it would show as a window that
+        restores to a frozen picture.
+        """
+        window = MainWindow(monitor.pipeline, monitor.analyzer, BuzzConfig(),
+                            recorder=monitor.recorder)
+        try:
+            window.show()
+            qt_app.processEvents()
+            window.showMinimized()
+            qt_app.processEvents()
+            window.showNormal()
+            qt_app.processEvents()
+
+            running = self._timers_running(window)
+            assert all(running.values()), (
+                f'These did not repaint again after the window was restored: '
+                f'{[name for name, live in running.items() if not live]}')
+        finally:
+            window.close()
+
+    def test_every_widget_with_a_timer_is_in_the_list(self, qt_app, monitor):
+        """A widget left out of _repainting_widgets is one that never stops, which is
+        the whole fault this guards, and nothing else would notice it.
+        """
+        window = MainWindow(monitor.pipeline, monitor.analyzer, BuzzConfig(),
+                            recorder=monitor.recorder)
+        try:
+            listed = {id(widget) for widget in window._repainting_widgets()}
+            owning_a_timer = {id(child) for child in window.findChildren(QWidget)
+                              if isinstance(getattr(child, '_timer', None), QTimer)}
+            missing = owning_a_timer - listed
+            assert not missing, (
+                'These widgets own a repaint timer and are not in '
+                '_repainting_widgets, so they keep painting into a minimized window: '
+                f'{[type(w).__name__ for w in window.findChildren(QWidget) if id(w) in missing]}')
         finally:
             window.close()
 

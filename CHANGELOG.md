@@ -8,6 +8,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
+- The gain probe reports exact I/Q endpoint counts alongside their percentage and
+  SDRplay hardware overload state. A percentage that rounds to zero no longer hides
+  a small number of endpoint hits.
+- `lib/buzz/sdrplay_api.py`, ctypes declarations for the SDRplay Hardware API, and
+  `tools/generate_sdrplay_api.py`, which writes that module from SDRplay's own C
+  headers.  The headers are vendored under `vendor/sdrplay-api-3.15/` with their BSD
+  3-Clause notice, so the bindings regenerate and verify on a machine with no receiver
+  and no API installed.  A wrong struct field here is memory corruption rather than an
+  exception, which is why the declarations are generated rather than transcribed, and
+  why `tests/test_sdrplay_api.py` pins the size of all 32 structs.  No SDRplay receiver
+  works yet: this is the layer a device shim will call.
 - `lib/buzz/sdr_device.py`, which holds every operation performed against a receiver:
   opening it, configuring it, moving its gain, streaming from it, reading one block,
   and closing it. Nothing above it imports a driver library, so a second kind of
@@ -24,14 +35,130 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   misses the samples between one call and the next, which costs a sweep nothing and
   would ruin the monitor, and in exchange there is no second thread to race. The
   device refuses the unsafe order outright rather than leaving it to a convention.
+- `--log-level` sets how much the monitor says, from ERROR to DEBUG, defaulting to
+  INFO. The diagnostics that explain a puzzling display or a health warning log at
+  DEBUG, because they would be noise on a healthy run. Use it when something is
+  behaving strangely, and include what it prints in a bug report.
+- The SDRplay shim reports how far behind real time the receiver fell, once a minute at
+  DEBUG, beside the drift figure covering the same minute. This is a direct measurement
+  of the receiver where the drift figure only infers one, and pairing the two is what
+  showed that the drift excursions on an RSP1B are not stalls at all.
 
 ### Changed
+- Gain selection aims the noise floor where each receiver can afford to put it. An
+  SDRplay puts the band noise 10 dB above the receiver's own, which is what the setup
+  notes have always told operators to aim for, and its reported floor then reads under
+  half a decibel high instead of three. An RTL-SDR keeps the knee itself, because 8
+  bits spend most of their range on arc headroom and cannot afford the climb. The
+  headroom and overload bounds still take priority over either. The SDRplay's
+  uncalibrated level offset starts at 11 dB minus receiver gain. Each device driver
+  owns both figures.
+- Automatic gain selection no longer writes a level calibration. It sets the gain and
+  leaves `calibrated_offset_db` unset, because each device already estimates the offset
+  from its own gain, so storing that estimate moved the reported level by nothing while
+  making an estimate look like a measurement. The setup program keeps marking it
+  `(estimated)` until a real calibration replaces it.
+- A hardware overload during gain selection now triggers two immediate checks at the
+  same gain. At least two overloaded intervals out of three make that gain and every
+  higher gain unsafe. One isolated report is recorded without imposing a gain limit,
+  and confirmation samples do not receive extra weight in the noise-floor fit.
+- The gain probe describes measured level changes without claiming that the level
+  curve proves whether the receiver applied the gain. Signals can change between rows.
 - The tuner gain picker reads the list of steps without configuring the receiver.
   Opening a configured device to answer a read-only question writes a sample rate, a
   tuning, an AGC setting and a gain, and it logged that the operator's gain had been
   snapped to a step while the operator was part way through choosing that gain.
+- The receiver clock check no longer warns when a buffer inside the receiver library
+  empties. Audio cannot be created, so a figure showing more audio than the interval
+  holds can never be a loss, and warning about one sent operators after a fault that
+  could not be there. Measured on an RSP1B, that library fills a buffer for eight or
+  nine minutes and then empties it, so the old check reported a healthy receiver as
+  faulty several times an hour.
+- The same check now watches the total since its baseline as well as each interval,
+  and warns once when that total walks past 300 ms. A leak of twenty milliseconds a
+  minute never crosses the per-interval limit, would corrupt every measurement the
+  station takes, and nothing in the monitor could see it before.
+- Chart rendering no longer forces a garbage collection, and
+  `buzz.main.freeze_live_heap` takes the long-lived objects out of every later one. A
+  full collection stops every thread for its whole duration, measured at 46.6 ms
+  against a heap of 400,000 objects, and the monitor was forcing one twice a minute
+  after every chart. Deciding when to collect belongs to the interpreter: forcing a
+  pass only moves when it happens, and choosing a generation to force chooses which of
+  its survivors escape the next pass. Each render closes its own figure, which is what
+  keeps matplotlib handles from accumulating, and the tests now hold all four render
+  paths to that.
+- On Windows, the monitor now opts out of the execution-speed throttling applied to a
+  minimized window. Two minimized chart renders fell from 936 and 1049 ms to 253 and
+  266 ms after the same request, and the SDRplay stopped crossing 100 ms of delivery
+  backlog. Process priority, Efficiency mode and timer resolution did not explain the
+  difference. Other platforms do not load or call the Windows API.
+- The scope's magnification limit follows the resolution of the converted audio. Each
+  receiver supplies its delivered bit depth, and the IQ converter adds the noise
+  reduction from its actual filter before the 16-bit output cap is applied. The limit
+  therefore follows sample rate, bandwidth and decimation. At the defaults, an
+  RTL-SDR has a floor near the old 32-count limit while an SDRplay can use the full
+  int16 display range.
+- The display stops repainting while its window is minimized, and starts again when the
+  window is restored. Each widget reads the newest audio when it repaints, so pausing
+  work nobody can see loses no display history.
+- The SDRplay shim fills one block buffer in place rather than allocating an array per
+  delivery and joining them at each block boundary. The callback runs on the library's
+  own thread and needs the GIL, so allocation churn there is the worst place for it.
+
+### Changed
+- The scope's magnification limit is now a figure each receiver states for itself,
+  rather than one multiple of a step shared by all of them. A dead channel no longer
+  fills the display: with the antenna disconnected an RTL-SDR draws at about two
+  thirds of the height and an SDRplay at about two fifths, where both previously drew
+  at full height and could not be told from a working station. A sound card is
+  unchanged, because its level depends on the operator's AF gain and no figure here
+  would suit two stations. See `docs-notebook/scope-auto-range-floor.md` for the
+  measurements.
 
 ### Fixed
+- An IQ recording from a 16-bit receiver keeps all sixteen bits. The raw IQ ring buffer
+  held unsigned bytes whatever the receiver was, so every SDRplay capture written with
+  `record_iq = true` carried the low byte of each sample under an 8-bit `.wav` header
+  that said it was correct. The buffer takes its element type from the device now.
+- A gain sweep no longer lets an arc through on a rung the coarse ladder alone visits.
+  Those rungs get an even number of readings, and a median of an even count averages
+  the two middle values rather than picking one, so half of an arc reached the knee
+  fit. No pass allocation can make every rung odd, so the combination takes the lower
+  of the two middle readings instead.
+- The SDRplay gain-table check compares the receiver's own figure after the change has
+  taken effect rather than when `sdrplay_api_Update` returns. It read a figure that
+  still described the previous gain, so a healthy receiver reported a wrong gain table
+  on the second gain of every sweep.
+- The monitor warns instead of stopping where Windows has no `SetProcessInformation`,
+  which is any release before Windows 8 and some Wine builds. The startup call raised
+  `AttributeError` past the handler, before the config was even read.
+- `tools/sdr_gain_probe.py` explains a receiver that reports no gain settings rather
+  than failing with an `IndexError`.
+- The monitor checks the loaded SDRplay API version before reading structures generated
+  from the 3.15 headers. A different version now produces an actionable error instead
+  of risking an ABI mismatch.
+- SDRplay shutdown stops at the first failed or timed-out API call. It no longer reports
+  an exception as success or releases a device while its uninitialization may still be
+  running on another thread.
+- A reported SDRplay gain of zero is treated as a real value after the first delivery.
+  Zero previously doubled as the sentinel for a report that had not arrived.
+- Config loading excludes dataclass class variables from accepted TOML keys. A file
+  containing the internal `device_source` marker is now warned about and ignored
+  instead of reaching the dataclass constructor and stopping startup.
+- The shared receiver source and pipeline are named `SdrSource` and `SdrPipeline`.
+  Their old RTL-SDR names obscured that the SDRplay uses the same queue and conversion
+  path.
+- The SDRplay shim no longer treats the empty delivery the library sends at open and at
+  every stream start as audio that arrived late, and no longer measures a stream's
+  first delivery against one from the gain probe seconds earlier. Either would have
+  reported a stall on every stream this program starts.
+- The drift warning no longer tells an operator their levels and grid frequency are
+  suspect in the same breath as saying nothing was lost. That clause now appears only
+  where samples actually went missing.
+- The SDRplay driver acknowledges both overload detection and clearance events, as
+  the API requires. The probe reports acknowledgement failures instead of trusting
+  further overload readings. Shutdown events no longer trigger acknowledgements after
+  the API has stopped accepting them, or leave a failure for the next capture.
 - A receiver was left open when configuring it failed. The atexit hook that closes one
   is registered only once configuring has succeeded, so a tuner that stopped answering
   part way through left the device held by a process with no object able to close it,
@@ -105,7 +232,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   configures it, and hands blocks of raw bytes to the thread that converts them. The
   callback copies its block, timestamps it and returns, because the receiver's own
   FIFO holds 3.67 ms at 256 kHz and nothing anywhere reports an overflow of it.
-  `RtlSdrPipeline` fills the same ring buffer a sound card fills, so the analyzer,
+  `SdrPipeline` fills the same ring buffer a sound card fills, so the analyzer,
   the recorder, the display and the collector needed no changes.
 
   The tuner gain is snapped to a step the hardware offers and then remembered, since

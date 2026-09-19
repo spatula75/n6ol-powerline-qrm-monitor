@@ -1,6 +1,5 @@
 """The submenu for one config section: a row per visible field, each opening an edit dialog."""
 
-import dataclasses
 from collections.abc import Callable
 from typing import Any, NamedTuple
 
@@ -9,11 +8,11 @@ from textual.containers import Vertical
 from textual.widgets import Footer, OptionList, Static
 from textual.widgets.option_list import Option
 
-from buzz.config import RtlSdrConfig
+from buzz.config import SOURCES, receiver_settings_from
 from buzz.setup.schema import ConfigValues, SectionValues, field_schema, menu_field_names
 from buzz.setup.screens.base import CANCELLED, ScopeScreen, scope_header
 from buzz.setup.screens.calibration import CalibrationMeterDialog, level_offset_for
-from buzz.setup.screens.field_dialogs import open_field_dialog
+from buzz.setup.screens.field_dialogs import open_field_dialog, receiver_values_for
 from buzz.setup.screens.gain_calibration import GainCalibrationDialog
 
 # Not a field - audio_rf_conversion_db lives in the station section, and it stays
@@ -60,17 +59,27 @@ def _has_no_front_panel(values: ConfigValues) -> bool:
     is what the offset dialog is for.  Offering a meter that adjusts nothing, under a
     hint telling somebody to adjust two controls they do not have, is worse than
     offering nothing.
+
+    Asked of the registry rather than of one spelling, so that a receiver added later
+    hides the meter without anybody remembering to come back here.
     """
-    return values.get('audio', {}).get('source') != 'rtlsdr'
+    return receiver_settings_from(values.get('audio', {}).get('source'), {}) is None
 
 
 # Keyed by section.  Kept here rather than in the schema because the handler for each
 # row is Python, and a schema entry naming a dialog it cannot open would be a second
 # place to keep in step with this file.
+# Which source owns each receiver section.  Every receiver happens to name its
+# section after itself, and reading it out of the registry means nothing here depends
+# on that staying true.
+_SOURCE_BY_SECTION = {source.section: source.name
+                      for source in SOURCES.values() if source.section}
+
+_SWEEP_ROW = (_ActionRow(_SWEEP_ID, 'Auto-calibrate gain...', 'frequency_khz'),)
 _ACTIONS: dict[str, tuple[_ActionRow, ...]] = {
     'audio': (_ActionRow(_CALIBRATE_ID, 'Calibration meter...', None,
                          shown_for=_has_no_front_panel),),
-    'rtlsdr': (_ActionRow(_SWEEP_ID, 'Auto-calibrate gain...', 'frequency_khz'),),
+    **{source.section: _SWEEP_ROW for source in SOURCES.values() if source.section},
 }
 
 
@@ -99,15 +108,15 @@ def row_value(section: str, field: str, spec: dict[str, Any],
     would be accepting.  The marker says where it came from, so a borrowed number and
     a measured one never look alike.
 
-    The estimate is read from `RtlSdrConfig.level_offset_db` rather than worked out
-    here.  Writing `-gain_db` a second time would be a second place to keep in step
-    with the first, and nothing would notice them drifting apart.
+    The estimate is read from `SdrConfig.level_offset_db` rather than worked out
+    here.  Repeating a device's rule would create a second place to keep in step with
+    the first, and nothing would notice them drifting apart.
     """
-    if (section == 'rtlsdr' and field == 'calibrated_offset_db'
-            and section_values.get(field) is None):
-        known = {f.name for f in dataclasses.fields(RtlSdrConfig)}
-        settings = RtlSdrConfig(**{k: v for k, v in section_values.items() if k in known})
-        return f'{settings.level_offset_db:g} (estimated)'
+    if field == 'calibrated_offset_db' and section_values.get(field) is None:
+        settings = receiver_settings_from(_SOURCE_BY_SECTION.get(section, ''),
+                                               section_values)
+        if settings is not None:
+            return f'{settings.level_offset_db:g} (estimated)'
     return display_value(spec, section_values[field])
 
 
@@ -197,8 +206,8 @@ class SectionMenuScreen(ScopeScreen[None]):
                     self.app.values['audio'],
                     level_offset_for(self.app.values['audio'],
                                      self.app.values['station'],
-                                     self.app.values.get('rtlsdr')),
-                    self.app.values.get('rtlsdr')))
+                                     receiver_values_for(self.app)),
+                    receiver_values_for(self.app)))
             return
         schema = self.app.schema
         spec = field_schema(schema, self.section, field)
@@ -206,7 +215,7 @@ class SectionMenuScreen(ScopeScreen[None]):
         new_value = await open_field_dialog(self, spec, current)
         if new_value is not CANCELLED:
             self.app.values[self.section][field] = new_value
-            if self.section == 'rtlsdr' and field == 'gain_db':
+            if self.section in _SOURCE_BY_SECTION and field == 'gain_db':
                 self._carry_the_calibration_to(current, new_value)
             self._refresh_options()
 
@@ -221,7 +230,7 @@ class SectionMenuScreen(ScopeScreen[None]):
         operator never has to see that warning.
 
         An uncalibrated station needs nothing done: calibrated_offset_db is unset,
-        and RtlSdrConfig.level_offset_db already derives the estimate from whatever
+        and SdrConfig.level_offset_db already derives the estimate from whatever
         gain_db currently says, so the menu row re-renders against the new one.
 
         A calibrated station keeps its measurement.  The offset is the negative of the
@@ -232,7 +241,7 @@ class SectionMenuScreen(ScopeScreen[None]):
         wrong by the whole change.  See docs-notebook/sdr-gain-calibration.md for why
         the true gain per step could not be measured.
         """
-        values = self.app.values['rtlsdr']
+        values = self.app.values[self.section]
         if values.get('calibrated_offset_db') is None or old_gain is None:
             return
         values['calibrated_offset_db'] = round(
@@ -243,21 +252,34 @@ class SectionMenuScreen(ScopeScreen[None]):
         values['calibrated_at_gain_db'] = new_gain
 
     async def _calibrate_gain(self) -> None:
-        """Run the sweep and take its answer as the gain, and the offset with it.
+        """Run the sweep and take its answer as the gain, and nothing else.
 
-        The offset starts at the negative of the gain because that is the whole of
-        what is known: the true gain per step cannot be measured without a signal
-        strong enough to reference, and on a narrowband antenna there may be none.
-        See docs-notebook/sdr-gain-calibration.md.  An operator with a second receiver
-        tunes it afterwards from the offset's own dialog.
+        The level calibration is deliberately left alone.  Each device already states
+        a starting offset from its own conversion gain and output scale, and an unset
+        `calibrated_offset_db` is what makes the monitor use it, so writing that same
+        figure here moves the reported level by exactly zero decibels.
+
+        What it would cost is the only thing anybody could tell from that field.  Unset
+        means estimated, and the menu marks it so, the startup log says levels are
+        estimated rather than calibrated, and an operator can see there is still a
+        measurement to make.  Filling it in with an estimate spends all of that to
+        change nothing.
+
+        `calibrated_at_gain_db` stays unset for the same reason.  It arms the stale
+        calibration check, which exists to protect a measurement from a gain that
+        moved underneath it.  An estimate needs no such protection, because it is
+        computed from the gain and follows it exactly.
+
+        An operator with a second receiver measures the offset afterwards from the
+        offset field's own dialog, and that is when these two get written.
         """
+        source = _SOURCE_BY_SECTION.get(self.section, '')
+        values = self.app.values[self.section]
         chosen = await self.app.push_screen_wait(
-            GainCalibrationDialog(self.app.values['rtlsdr']))
+            GainCalibrationDialog(source, values))
         if chosen is CANCELLED or chosen is None:
             return
-        self.app.values['rtlsdr']['gain_db'] = chosen
-        self.app.values['rtlsdr']['calibrated_offset_db'] = -chosen
-        self.app.values['rtlsdr']['calibrated_at_gain_db'] = chosen
+        values['gain_db'] = chosen
         self._refresh_options()
 
     def action_back(self) -> None:

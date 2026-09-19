@@ -12,9 +12,9 @@ there hid a renamed setting reverting to its default.
 
 import logging
 import tomllib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
-from typing import Any, TypeVar
+from typing import Any, ClassVar, TypeVar
 
 from buzz.constants import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 
@@ -54,10 +54,11 @@ def validate_sample_rate(sample_rate: int, source: str, configured_rate: int) ->
 
 # Where the live audio comes from.  These are alternatives rather than additions, so
 # a station picks one.  `soundcard` is a radio feeding a sound card, which is what
-# this program did before anything else existed.  `rtlsdr` is an RTL-SDR receiver,
-# with the settings in the [rtlsdr] section.
+# this program did before anything else existed.  The other two are receivers, each
+# configured in the section named after it.
 SOUNDCARD = 'soundcard'
 RTLSDR = 'rtlsdr'
+SDRPLAY = 'sdrplay'
 
 # Marks a BuzzConfig field that holds runtime state rather than a configured setting.
 #
@@ -74,13 +75,27 @@ def is_runtime(field_info: Any) -> bool:
 
 
 @dataclass
-class RtlSdrConfig:
-    """Settings for an RTL-SDR receiver.
+class SdrConfig:
+    """Settings every receiver needs, whichever kind of receiver it is.
+
+    This holds the IQ chain, which is the same job on any hardware: where to listen,
+    how fast to sample, how much of the band to keep, and how to turn what arrives
+    into a level.  `RtlSdrConfig` and `SdrplayConfig` subclass it and change only the
+    settings whose meaning is not shared.
+
+    Each receiver gets a section of its own rather than sharing one, because the
+    figures differ even where the settings do not.  A gain and a level calibration
+    belong to the hardware they were measured on, and a station that owns both keeps
+    both sets instead of recalibrating whenever it changes over.
 
     The fields are ordered as the setup program shows them, because the menu follows
     the schema and the schema follows this class.  The four an operator sets come
     first, in the order they are set, and the ones nobody should touch come after.
+    Subclassing keeps that order: a subclass that restates a field to change its
+    default leaves the field where the base put it.
     """
+
+    device_source: ClassVar[str]
 
     # Frequency to listen on, in kHz.  The receiver is tuned away from this by
     # tuning_offset_hz and the difference is undone in software, so this is the
@@ -96,17 +111,16 @@ class RtlSdrConfig:
     # Everything below this line stays in Hz, since the hardware and the arithmetic
     # both work there; frequency_hz converts once, at the boundary.
     frequency_khz: float = 3588.0
-    # Tuner gain in dB.  The monitor snaps this to the nearest step the tuner offers,
-    # since the tuner accepts only a fixed set.  Measured on an RTL-SDR Blog V4, the
-    # useful range starts around 20.7 dB, because below that the output is the
-    # converter's own noise rather than anything from the antenna.
+    # Receiver gain in dB.  Each subclass states its own default and its own meaning,
+    # because the two receivers do not even agree on the sign: an RTL-SDR quotes tuner
+    # gain and rises, where an SDRplay quotes gain reduction and this is its negative.
+    # The zero here belongs to no receiver and no subclass leaves it in place.
     #
-    # 22.9 is what the automatic calibration measured on the broadband antenna this was
-    # developed against, so the shipped figure is one the tool arrived at rather than a
-    # guess.
+    # The monitor snaps whatever is set to the nearest step the hardware offers, since
+    # neither receiver takes an arbitrary figure.
     #
-    # Every antenna differs, so run the calibration rather than trusting this.
-    gain_db: float = 22.9
+    # Every antenna differs, so run the calibration rather than trusting a default.
+    gain_db: float = 0.0
     # dB added to the measured audio level to get signal level at the receiver input,
     # the same job station.audio_rf_conversion_db does for a sound card.  It lives here
     # rather than there because the figure depends on gain_db above, so the two belong
@@ -118,12 +132,11 @@ class RtlSdrConfig:
     # across two sections read as one setting stored twice, which is what somebody
     # took it for.
     #
-    # Unset means estimate it as the negative of gain_db, which puts a new station
-    # within a few dB with no equipment at all.  That is a place to start from and not
-    # a substitute for calibrating.  See level_offset_db for how far the estimate
-    # drifts.  SNR, lock, phase and grid frequency do not depend on it either way,
-    # since the offset cancels in a difference.  Only absolute levels and the S-meter
-    # move.
+    # Unset means estimate it from gain_db and the receiver type.  That puts a new
+    # station within a few dB with no equipment at all.  It is a place to start from
+    # and not a substitute for calibrating.  SNR, lock, phase and grid frequency do not
+    # depend on it either way, since the offset cancels in a difference.  Only absolute
+    # levels and the S-meter move.
     calibrated_offset_db: float | None = None
     # The gain calibrated_offset_db was calibrated against, written by the setup
     # program rather than chosen.  Changing gain_db afterwards leaves the offset wrong
@@ -188,31 +201,19 @@ class RtlSdrConfig:
     def level_offset_db(self) -> float:
         """The dB offset to apply, measured if there is one and estimated otherwise.
 
-        The estimate is the negative of the tuner gain.  The reasoning is that the gain
-        is the only part of the chain that changes, so subtracting it leaves a constant
-        belonging to the receiver itself, and assuming that constant is zero gets a new
-        station most of the way there.
+        The device class owns the estimate because it knows the relationship between
+        its gain setting and output scale.  Keeping it there also makes a new receiver
+        state its own answer rather than inherit an assumption from configuration.
 
-        It is an estimate rather than an answer, for two reasons.  Everything else in
-        the path has a gain of its own, and nothing arranges for it to cancel.  And the
-        tuner's own labels are not true dB: measured on an RTL-SDR Blog V4, the full
-        range came to 57.5 dB against a nominal 49.6.
-
-        Measured on this hardware, the same unchanging signal reported through this
-        estimate moves 5.1 dB across the whole gain range, and 3.0 dB over the part
-        anybody would use.  It is good enough to start from and not good enough to
-        publish.
-
-        That measurement covers one RTL-SDR Blog V4 on one bench.  The rest of the
-        chain summing to near zero is a property of that unit
-        rather than of RTL-SDR receivers in general, so another unit could sit
-        several dB away.  The tuner gain dominates on any unit, which is why the
-        estimate beats zero anywhere, but the residual has been measured exactly
-        once.
+        It remains an estimate because units vary and tuner labels need not equal
+        applied gain.  The device method records the evidence behind its starting
+        point.  A measured `calibrated_offset_db` always wins.
         """
         if self.calibrated_offset_db is not None:
             return self.calibrated_offset_db
-        return -self.gain_db
+        from buzz.sdr_device import receiver_class
+        return receiver_class(self.device_source).estimated_calibration_offset_db(
+            self.gain_db)
 
     @property
     def frequency_hz(self) -> int:
@@ -241,8 +242,126 @@ class RtlSdrConfig:
 
 
 @dataclass
+class RtlSdrConfig(SdrConfig):
+    """Settings for an RTL-SDR receiver.
+
+    Everything an RTL-SDR needs beyond the shared IQ chain is the meaning of its gain,
+    so that is the only field restated here.
+    """
+
+    device_source: ClassVar[str] = RTLSDR
+
+    # Tuner gain in dB, which rises with gain.  The monitor snaps this to the nearest
+    # step the tuner offers, since the tuner accepts only a fixed set of 29.  Measured
+    # on an RTL-SDR Blog V4, the useful range starts around 20.7 dB, because below that
+    # the output is the converter's own noise rather than anything from the antenna.
+    #
+    # 22.9 is what the automatic calibration measured on the broadband antenna this was
+    # developed against, so the shipped figure is one the tool arrived at rather than a
+    # guess.
+    gain_db: float = 22.9
+
+
+@dataclass
+class SdrplayConfig(SdrConfig):
+    """Settings for an SDRplay RSP1A or RSP1B.
+
+    This states the gain as gain rather than as the two knobs the hardware takes,
+    because `buzz.sdrplay_device` splits one figure back into a gain reduction and an
+    LNA state.  `api_path` is here because the library it names is not part of this
+    program and an operator may have put it anywhere.
+    """
+
+    device_source: ClassVar[str] = SDRPLAY
+
+    # Receiver gain in dB, the same quantity an RTL-SDR's gain_db names.  The monitor
+    # snaps this to the nearest whole decibel from about -29 to about +71, which is what
+    # the baseband and LNA settings reach between them.
+    #
+    # An RSP is set in gain reduction rather than in gain, and this is stated as gain
+    # anyway, because the two receivers then mean the same thing by the same setting and
+    # the level calibration works out the same way on either.
+    #
+    # 40 is a starting point rather than a measurement, chosen where an RSP1B on a
+    # broadband antenna had the antenna noise comfortably above the converter's own.
+    # Every antenna differs, so run the calibration.
+    gain_db: float = 40.0
+    # Where the SDRplay API library is, for a station that installed it somewhere the
+    # loader does not look.  Unset means search: the plain library name first, so an
+    # installation already on the search path wins, then the directories an installer
+    # uses.  See `buzz.sdrplay_device.SdrplayLibrary.load`.
+    #
+    # Almost nobody needs this, which is why the setup program does not offer it.
+    api_path: str | None = None
+
+
+@dataclass(frozen=True)
+class Source:
+    """One place live audio can come from, and where its settings live.
+
+    `section` is the BuzzConfig attribute holding that source's settings, and it is
+    None for a sound card, whose settings are spread across `[audio]` and `[station]`
+    for historical reasons.  A None here therefore means "not a receiver", which is
+    the question `BuzzConfig.record_iq` and `level_offset_db` both ask.
+
+    `title` is what an error message calls this source when it lists the choices.
+
+    `settings_class` builds one of these sections out of the loose values the setup
+    program carries, so a caller with a dict does not have to know which dataclass
+    goes with which section name.
+    """
+
+    name: str
+    section: str | None
+    title: str
+    settings_class: type[SdrConfig] | None = None
+
+    def settings_from(self, values: dict[str, Any] | None) -> SdrConfig | None:
+        """Build this source's settings from loose values, or None for a sound card.
+
+        Unknown keys are dropped rather than raising, because the setup program carries
+        a section as a plain dict and a config file may hold a setting this version no
+        longer declares.  `_load_section` drops one the same way for the same reason.
+        """
+        if self.settings_class is None:
+            return None
+        known = {f.name for f in fields(self.settings_class)}
+        return self.settings_class(
+            **{k: v for k, v in (values or {}).items() if k in known})
+
+
+# Every source this program can read from.  Dispatching on this rather than comparing
+# the name in each place that cares is what keeps a third source from meaning an edit
+# in four files.  `buzz.main` keys its own table of factories by these same names, and
+# a drift pin fails when the two disagree.
+SOURCES: dict[str, Source] = {
+    SOUNDCARD: Source(SOUNDCARD, None, 'a radio feeding a sound card'),
+    RTLSDR: Source(RTLSDR, 'rtlsdr', 'an RTL-SDR receiver', RtlSdrConfig),
+    SDRPLAY: Source(SDRPLAY, 'sdrplay', 'an SDRplay RSP1A or RSP1B', SdrplayConfig),
+}
+
+
+def source_for(name: str) -> Source | None:
+    """The source with this name, or None when nothing is registered under it."""
+    return SOURCES.get(name)
+
+
+def receiver_settings_from(source_name: str,
+                           values: dict[str, Any] | None) -> SdrConfig | None:
+    """The receiver settings for one source name, or None when it is not a receiver.
+
+    The setup program holds each section as a dict of in-progress values rather than
+    as a dataclass, so this is how a dialog turns what is on screen into the settings
+    a device wants.
+    """
+    source = SOURCES.get(source_name)
+    return source.settings_from(values) if source else None
+
+
+@dataclass
 class AudioConfig:
-    # Where live audio comes from, either 'soundcard' or 'rtlsdr'.
+    # Where live audio comes from.  SOURCES holds the names this accepts, and
+    # schema.json states the same list for the setup program.
     source: str = SOUNDCARD
     # Sounddevice name of the audio input recording the RF-to-audio converted signal.
     # The device is always resolved by this name, never by a stored index: names
@@ -398,6 +517,7 @@ class BuzzConfig:
     # that order and a receiver is configured immediately after the source that
     # selects it.  tests/test_setup_schema.py pins the two together.
     rtlsdr: RtlSdrConfig = field(default_factory=RtlSdrConfig)
+    sdrplay: SdrplayConfig = field(default_factory=SdrplayConfig)
     station: StationConfig = field(default_factory=StationConfig)
     weather: WeatherConfig = field(default_factory=WeatherConfig)
     server: ServerConfig = field(default_factory=ServerConfig)
@@ -434,8 +554,9 @@ class BuzzConfig:
         """
         if self.level_offset_override_db is not None:
             return self.level_offset_override_db
-        if self.audio.source == RTLSDR:
-            return self.rtlsdr.level_offset_db
+        receiver = self.receiver_settings
+        if receiver is not None:
+            return receiver.level_offset_db
         return self.station.audio_rf_conversion_db
 
     @property
@@ -454,7 +575,25 @@ class BuzzConfig:
         card, so reaching this with it on means a config file edited by hand.
         buzz.main says so at startup, where somebody is watching.
         """
-        return self.recording.record_iq and self.audio.source == RTLSDR
+        return self.recording.record_iq and self.receiver_settings is not None
+
+    @property
+    def receiver_settings(self) -> SdrConfig | None:
+        """The settings for the receiver in use, or None when it is a sound card.
+
+        Everything that has to ask "which receiver, if any" asks this rather than
+        comparing `[audio] source` against a spelling of its own.  Before the source
+        registry existed, two properties here and two more places in `buzz.main` each
+        named `rtlsdr` directly, and a second receiver meant finding all four.
+
+        An unknown source reads as a sound card here.  That is safe because
+        `buzz.main.open_live_source` refuses one outright before anything reaches this,
+        and this property cannot raise: it is read while composing a log line.
+        """
+        source = SOURCES.get(self.audio.source)
+        if source is None or source.section is None:
+            return None
+        return getattr(self, source.section)
 
     @classmethod
     def from_toml(cls, path: Path | str = CONFIG_PATH) -> 'BuzzConfig':
@@ -463,6 +602,7 @@ class BuzzConfig:
         return cls(
             audio=_load_section(data, 'audio', AudioConfig),
             rtlsdr=_load_section(data, 'rtlsdr', RtlSdrConfig),
+            sdrplay=_load_section(data, 'sdrplay', SdrplayConfig),
             station=_load_section(data, 'station', StationConfig),
             weather=_load_section(data, 'weather', WeatherConfig),
             server=_load_section(data, 'server', ServerConfig),
@@ -484,7 +624,7 @@ def _load_section(data: dict[str, Any], key: str, cls: type[_T]) -> _T:
     a line had been dropped.  A typo does exactly the same thing, which is the case
     this keeps catching after the renaming stops.
     """
-    known = set(cls.__dataclass_fields__)
+    known = {field.name for field in fields(cls)}
     section = data.get(key, {})
     for unknown in sorted(set(section) - known):
         logger.warning(

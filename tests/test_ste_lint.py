@@ -129,8 +129,14 @@ class TestBannedWords:
         assert 'banned word' in rules(check('a.py', 1, f'This {word} thing', False))
 
     def test_a_rule_book_may_quote_the_words_it_bans(self):
-        """CLAUDE.md lists them in order to ban them, and must not trip on its own list."""
-        assert 'banned word' not in rules(check('CLAUDE.md', 1, 'These words: genuine, lands.', False))
+        """CLAUDE.md lists them in order to ban them, and must not trip on its own list.
+
+        The list is written in emphasis, and that is what marks a word as named rather
+        than used.  One without it is prose and is reported, which is the point of
+        test_a_rule_book_is_checked_where_it_is_not_quoting below.
+        """
+        assert 'banned word' not in rules(
+            check('CLAUDE.md', 1, 'These words: *genuine*, *lands*.', False))
 
     def test_marketing_adjectives(self):
         assert 'marketing adjective' in rules(check('a.py', 1, 'A robust design', False))
@@ -145,6 +151,32 @@ class TestBannedWords:
         text = '*synchronised* and *quantisation*, and *utilize* rather than *use*'
         assert not rules(check('docs/ste-writing.md', 1, text, True))
         assert rules(check('docs/other.md', 1, text, True)) == {'British spelling', 'wordy'}
+
+    def test_a_rule_book_is_checked_where_it_is_not_quoting(self):
+        """The exemption is for the naming, not for the prose around it.
+
+        It used to skip the file outright, and four violations were sitting in
+        CLAUDE.md's own prose when somebody looked: two British spellings and two
+        words off the banned list, one of them added by the very commit that wrote
+        the rule against it.  The file that states the rules is the one most likely
+        to be read as an example of them.
+        """
+        quoted = 'the banned words are *genuinely* and `load-bearing` and "lands"'
+        assert not rules(check('CLAUDE.md', 1, quoted, False))
+        plain = 'this sentence is genuinely load-bearing and it lands at 128'
+        assert rules(check('CLAUDE.md', 1, plain, False)) == {'banned word'}
+
+    def test_a_quotation_that_wraps_reads_as_prose(self):
+        """The known limitation, stated so it is not mistaken for a bug.
+
+        Quotations are matched a line at a time, because markdown_prose yields lines,
+        so a quotation split across two of them is not recognised as one.  The cost is
+        rewrapping the line, which CLAUDE.md needed once.  The alternative was joining
+        markdown into paragraphs, which changes what every other rule sees.
+        """
+        assert rules(check('CLAUDE.md', 1, 'he said "the value', False)) == set()
+        assert rules(check('CLAUDE.md', 1, 'lands at 128" and left', False)) == {
+            'banned word'}
 
     def test_a_rule_book_is_still_checked_for_punctuation(self):
         """The exemption covers vocabulary only.  A rule book is no freer to carry

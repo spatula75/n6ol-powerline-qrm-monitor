@@ -187,8 +187,8 @@ _PHOSPHOR_DECAY = 0.72
 # ratio 21.9 dB - theory and measurement agree.  That is what makes pulse shape
 # visible at low SNR.
 #
-# Kept as an EMA rather than a fixed-N block average so the display keeps tracking a
-# changing signal instead of freezing once its bucket fills.
+# This stays an EMA rather than a fixed-N block average, so the display keeps tracking
+# a changing signal instead of freezing once its bucket fills.
 _AVERAGE_ALPHA = 0.05
 
 # Color ramp for the phosphor, as (intensity, (R, G, B)) stops.  The blue-green
@@ -227,19 +227,35 @@ _GRATICULE_AXIS = 0.19                   # pulse-period rules and the center lin
 _RANGE_PERCENTILE = 99.5
 # Full scale is set above the measured percentile so that routine peaks sit around
 # 3 of the 4 available divisions, leaving the top division for a transient truly
-# louder than anything recent.  Same intent as the waterfall's _COLOR_HEADROOM.
+# louder than anything recent.  The waterfall's _COLOR_HEADROOM exists for the same
+# reason.
 _RANGE_HEADROOM = 1.30
 # EMA weight per frame, matching the waterfall's _COLOR_RANGE_EMA_ALPHA and chosen
 # for the same reason: without it a brief burst re-scales the picture within a few
 # hundred milliseconds and the trace visibly breathes.  0.05 at 100 ms frames gives
 # a settling time of a couple of seconds.
 _RANGE_EMA_ALPHA = 0.05
-# Smallest full-scale deflection allowed, in raw int16 counts.  This is the vertical
-# analogue of _MIN_DYNAMIC_RANGE_DB, and exists for the same failure mode: with a
-# truly silent input the percentile collapses toward zero and the auto-range
-# would stretch quantization dither across the entire screen, painting a dead
-# channel as a healthy full-amplitude noise trace.  32 counts is about -60 dBFS.
-_MIN_FULL_SCALE = 32.0
+# How many effective audio steps the smallest full scale is worth, where the source
+# does not say.
+#
+# The relevant step is the one after IQ filtering and decimation, because that int16
+# audio is what the scope receives.  SdrPipeline combines the receiver's delivered
+# depth with the filter's noise gain to describe that step.
+#
+# **How many steps is the source's business, not this module's.**  A source states it
+# through `scope_floor_steps`, and this is only the answer for one that does not: one
+# step, which is under every window measured so far and therefore clamps nothing.  A
+# sound card keeps it for good, because its dead level moves with the operator's AF
+# gain and no figure here would hold across two stations.
+#
+# A single shared figure was tried first and cannot serve two receivers.  The floor has
+# to sit above what a dead channel produces, or it never binds, and below what the
+# receiver produces on a band, or the display sits pinned.  Those windows are 7.4 dB
+# wide on an RTL-SDR and 15.6 dB on an RSP1B, at levels 30 dB apart, so one multiple
+# has to suit the narrower and spends most of the wider.  At one step it bound on
+# neither, and both receivers drew a dead channel at full height.
+# See SdrDevice.scope_floor_steps and docs-notebook/scope-auto-range-floor.md.
+_FLOOR_STEPS = 1.0
 # Initial guess, used only until the EMA has real data to converge from.
 _INITIAL_FULL_SCALE = 2048.0
 
@@ -407,7 +423,30 @@ def extract_sweeps(samples: np.ndarray, start: int, sweep_samples: int,
 # Auto-ranging
 # ---------------------------------------------------------------------------
 
-def auto_range_full_scale(sweeps: np.ndarray, previous: float) -> float:
+def minimum_full_scale(effective_bits: float, floor_steps: float) -> float:
+    """The smallest full scale the converted audio resolution justifies.
+
+    Everything reaching the scope is int16, whatever the receiver, because
+    `IqToAudio._as_int16` scales each source against FULL_SCALE_COUNTS.  So a receiver
+    of fewer bits arrives in coarser steps rather than in a smaller range.  The IQ
+    filter reduces uncorrelated quantization noise before this point, so the pipeline
+    includes that processing gain in `effective_bits`.
+
+    Magnifying past one effective audio step means drawing conversion noise at full
+    height.  `floor_steps` is how many steps the source can afford to give up, which
+    belongs to the source rather than to this arithmetic: a receiver measured against
+    its own dead channel answers differently from one that has not been.
+
+    Both arguments are required.  A default here would be a receiver's measured figure
+    quietly replaced by a general one, which is how `effective_bits` once reached the
+    scope as a sound card's sixteen while two receivers answered otherwise.  Callers
+    that want the unmeasured answer pass `_FLOOR_STEPS` and say so.  See
+    `SdrDevice.scope_floor_steps` and docs-notebook/scope-auto-range-floor.md.
+    """
+    return FULL_SCALE_COUNTS / 2 ** (effective_bits - 1) * floor_steps
+
+
+def auto_range_full_scale(sweeps: np.ndarray, previous: float, floor: float) -> float:
     """Blend this frame's measured deflection into the smoothed full-scale value.
 
     "Full scale" is the sample magnitude that reaches the top (or bottom) rail of
@@ -415,14 +454,24 @@ def auto_range_full_scale(sweeps: np.ndarray, previous: float) -> float:
     there is nothing to measure, so a stalled frame holds the current scale rather
     than collapsing it to the minimum.
 
-    See _RANGE_PERCENTILE, _RANGE_HEADROOM, _RANGE_EMA_ALPHA and _MIN_FULL_SCALE
-    for why each of the four terms is here.
+    `floor` is the smallest full scale to return, which is a cap on magnification
+    rather than on amplitude: anything louder scales normally.  It comes from
+    minimum_full_scale() and so depends on the receiver, where it used to be one
+    constant for all of them.
+
+    See _RANGE_PERCENTILE, _RANGE_HEADROOM, _RANGE_EMA_ALPHA and _FLOOR_STEPS for why
+    each of the four terms is here.
+
+    A floored trace cannot be told from a quiet band by looking at it, because the
+    deflection the measurement asked for is discarded here.  Measured on an RSP1B, that
+    figure ran from 2.84 counts to 31.05 against a floor of 32, so the floor decides the
+    scale often rather than rarely.  See docs-notebook/scope-auto-range-floor.md.
     """
     if sweeps.size == 0:
         return previous
     raw = float(np.percentile(np.abs(sweeps), _RANGE_PERCENTILE)) * _RANGE_HEADROOM
     blended = previous + _RANGE_EMA_ALPHA * (raw - previous)
-    return max(blended, _MIN_FULL_SCALE)
+    return max(blended, floor)
 
 
 def full_scale_dbfs(full_scale: float) -> float:
@@ -433,18 +482,19 @@ def full_scale_dbfs(full_scale: float) -> float:
     amplitude, not in dB, so a "dB/div" number would not describe anything.  Read
     this as headroom - at -24 dBFS the top of the screen is 24 dB below clipping.
 
-    Deliberately dBFS rather than the dBm the meters and the CSV speak.
-    amplitude_to_dbm() converts a *mean-absolute* amplitude, whereas a p99.5 peak
-    drives this scale (see _RANGE_PERCENTILE).  Pushing a peak through that
+    The unit is dBFS rather than the dBm the meters and the CSV speak, and that is
+    deliberate.  amplitude_to_dbm() converts a *mean-absolute* amplitude, whereas a
+    p99.5 peak drives this scale (see _RANGE_PERCENTILE).  Pushing a peak through that
     conversion would print a number several dB above what the S-meters show for the
     very same signal, and two readouts on one window that appear to disagree about
     level are worse than no readout at all.
 
     This goes positive when the auto-range is chasing a signal that is already
-    clipping, which is information worth showing rather than clamping away.
+    clipping.  The status bar shows that rather than clamping it away, so an operator
+    can see the overload.
 
     The caller supplies a value from auto_range_full_scale(), which is floored at
-    _MIN_FULL_SCALE and so is always strictly positive.
+    minimum_full_scale() and so is always strictly positive.
     """
     return 20.0 * log10(full_scale / FULL_SCALE_COUNTS)
 
@@ -636,6 +686,12 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
 
         self.setFixedSize(width, SCOPE_H)
 
+        # Read once because neither the receiver nor its IQ filter changes while this
+        # pipeline runs.  Recomputing their combined resolution every frame adds no
+        # information.
+        self._floor = minimum_full_scale(pipeline.effective_bits,
+                                         pipeline.scope_floor_steps)
+
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(_UPDATE_MS)
@@ -682,10 +738,11 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
 
         if self._averaging:
             self._average = update_running_average(self._average, sweeps, _AVERAGE_ALPHA)
-            self._average_full_scale = auto_range_full_scale(self._average,
-                                                             self._average_full_scale)
+            self._average_full_scale = auto_range_full_scale(
+                self._average, self._average_full_scale, self._floor)
         else:
-            self._full_scale = auto_range_full_scale(sweeps, self._full_scale)
+            self._full_scale = auto_range_full_scale(sweeps, self._full_scale,
+                                                     self._floor)
             self._phosphor *= _PHOSPHOR_DECAY
             for sweep in sweeps:
                 self._draw(self._phosphor, sweep, self._full_scale,
@@ -756,5 +813,19 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
             painter.drawText(180, 0, 50, _HEADER_H,
                              Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, 'CLIP')
 
+    def start(self) -> None:
+        """Begin repainting, or begin again once the window is no longer minimized.
+
+        Safe to call while already running.  QTimer.start() on a running timer restarts
+        it rather than leaving a second one behind.
+        """
+        self._timer.start(_UPDATE_MS)
+
     def stop(self) -> None:
+        """Stop repainting, on shutdown or while the window is minimized.
+
+        A minimized window still runs its timers, so without this the widget goes on
+        reading the buffer, doing its arithmetic and painting into a surface that
+        nothing composites.  See MainWindow.changeEvent.
+        """
         self._timer.stop()

@@ -7,18 +7,20 @@ physics.  See docs-notebook/sdr-gain-calibration.md for where the rules came fro
 """
 import numpy as np
 import pytest
+from dataclasses import replace
 
+import buzz.gain_sweep as gain_sweep
 from buzz.gain_sweep import (
-    _FLOOR_ERROR_TARGET_DB,
     BandMeasurement,
     GainChooser,
     GainMeasurement,
     GainSweep,
     KneeFit,
     SweepResult,
+    _PassReading,
 )
 from buzz.sdr import CLIPPING_WORTH_NOTICING, IqBlock
-from buzz.sdr_device import RTL_SDR_FORMAT
+from buzz.sdr_device import RTL_SDR_FORMAT, OverloadStatus
 
 # The 29 steps an RTL-SDR Blog V4 reports, which is what the real sweep walks.
 # The receiver rate these captures stand for, which sets the frame length.
@@ -63,7 +65,12 @@ class FakeReceiver:
     The arc is optional and fires on a fraction of blocks, which is what lets a test
     ask the question the whole design turns on: does the answer change when one is
     running?
+
+    The margin is the knee, as an RTL-SDR uses, because most of these tests were
+    written against one and describe what it does.
     """
+
+    floor_margin_db = 0.0
 
     def __init__(self, antenna_at_unity: float, converter: float,
                  seed: int = 0, arc_db: float | None = None) -> None:
@@ -80,6 +87,10 @@ class FakeReceiver:
         self.supported_gains_db = list(V4_GAINS)
         self.iq_sample_rate = 256_000
         self.blocks_to_discard_after_gain_change = 16
+
+    @property
+    def overload_status(self):
+        return None
 
     def set_gain(self, gain_db: float) -> float:
         self._gain = min(self.supported_gains_db, key=lambda c: abs(c - gain_db))
@@ -103,6 +114,20 @@ class FakeReceiver:
         interleaved = np.stack([z.real, z.imag], axis=-1).ravel()
         raw = np.clip(np.round((interleaved + 1) * 127.5), 0, 255).astype(np.uint8)
         return IqBlock(raw=raw, fmt=RTL_SDR_FORMAT, arrived_at=0.0, index=self.reads)
+
+
+class _OverloadReceiver(FakeReceiver):
+    """One gain and a scripted hardware status at each interval boundary."""
+
+    def __init__(self, statuses):
+        super().__init__(1e-9, 1e-8)
+        self.supported_gains_db = [0.0]
+        self.blocks_to_discard_after_gain_change = 0
+        self._statuses = iter(statuses)
+
+    @property
+    def overload_status(self):
+        return next(self._statuses)
 
 
 class TestTheKneeFitRecoversWhatItWasGiven:
@@ -214,7 +239,7 @@ class TestTheChooserWeighsBothBounds:
         result = GainChooser(tuple(_curve(V4_GAINS, antenna, converter)), 32.0).choose()
         assert result.chosen_db is not None
         fit = _fit_of(antenna, converter)
-        distance = {gain: abs(fit.floor_error_db(gain) - _FLOOR_ERROR_TARGET_DB)
+        distance = {gain: abs(fit.floor_error_db(gain) - gain_sweep.floor_error_for(0.0))
                     for gain in V4_GAINS}
         nearest = min(distance, key=lambda gain: distance[gain])
         assert result.chosen_db == nearest, (
@@ -222,6 +247,37 @@ class TestTheChooserWeighsBothBounds:
             f'target where {nearest} dB sits {distance[nearest]:.2f} dB from it')
         lower = [m.gain_db for m in result.measurements if m.gain_db < result.chosen_db]
         assert lower, 'the chosen gain is the lowest offered, so nothing was ruled out'
+
+    def test_a_margin_a_share_and_an_error_are_one_statement(self):
+        """Decibels above the knee, the antenna's share of the reported floor, and how
+        high that floor reads are three spellings of one quantity.
+
+        They are derived from each other rather than written down three times, because
+        three figures for one idea are three figures to keep in step.  A receiver states
+        only the margin.
+        """
+        assert gain_sweep.antenna_share_for(0.0) == pytest.approx(0.5)
+        assert gain_sweep.floor_error_for(0.0) == pytest.approx(3.01, abs=0.01)
+        assert gain_sweep.antenna_share_for(10.0) == pytest.approx(10 / 11)
+        assert gain_sweep.floor_error_for(10.0) == pytest.approx(0.41, abs=0.01)
+
+    def test_a_margin_never_crosses_the_headroom_bound(self):
+        """Asking for a margin can only spend arc room that is going spare.  Headroom
+        stays the hard limit, because clipping cannot be undone where floor error can.
+
+        This is what lets a 14-bit receiver ask for 10 dB without that becoming a way
+        to push any station past its arc reserve.  On this antenna the margin wants
+        29.7 dB and the reserve allows 25.4, and the reserve wins.
+        """
+        curve = tuple(_curve(V4_GAINS, 1e-6, 1e-4))
+        at_the_knee = GainChooser(curve, 32.0).choose()
+        with_margin = GainChooser(curve, 32.0, floor_margin_db=10.0).choose()
+
+        assert with_margin.floor_bound_db > at_the_knee.floor_bound_db, (
+            'asking for a margin did not move the floor bound')
+        assert with_margin.floor_bound_db > with_margin.headroom_bound_db, (
+            'this antenna no longer crosses, so the test proves nothing')
+        assert with_margin.chosen_db == with_margin.headroom_bound_db
 
     def test_a_quiet_antenna_gets_the_best_gain_available_and_is_told_the_cost(self):
         """The mag loop case.  Refusing was the first design: a station whose antenna
@@ -352,34 +408,76 @@ class TestTheSweepAgainstAReceiver:
         receiver = FakeReceiver(1e-6, 1e-4)
         GainSweep(receiver, 32.0, passes=1, seconds_per_step=0.0).run()
         assert receiver.reads >= (receiver.blocks_to_discard_after_gain_change
-                                  * len(V4_GAINS))
+                                  * len(set(receiver.gains_set)))
 
     def test_passes_alternate_direction(self):
-        """A slow drift over the sweep would otherwise read as a slope against gain."""
+        """A slow drift over the sweep would otherwise read as a slope against gain.
+
+        It has to keep alternating across the boundary between the two phases, because
+        a drift does not stop where the coarse passes end.
+        """
         receiver = FakeReceiver(1e-6, 1e-4)
-        GainSweep(receiver, 32.0, passes=3, seconds_per_step=0.0).run()
-        step = len(V4_GAINS)
-        first = receiver.gains_set[:step]
-        second = receiver.gains_set[step:2 * step]
-        third = receiver.gains_set[2 * step:]
+        sweep = GainSweep(receiver, 32.0, passes=3, seconds_per_step=0.0)
+        coarse = GainSweep._coarse_ladder(sorted(V4_GAINS))
+        sweep.run()
+        first = receiver.gains_set[:len(coarse)]
+        second = receiver.gains_set[len(coarse):2 * len(coarse)]
+        third = receiver.gains_set[2 * len(coarse):]
         assert first == sorted(first)
         assert second == sorted(second, reverse=True)
         assert third == sorted(third)
 
-    def test_every_gain_is_measured_once_per_pass(self):
+    def test_the_coarse_phase_walks_the_whole_ladder_at_a_wide_spacing(self):
+        """Wide enough to place the knee and no wider, because everything the coarse
+        phase misses has to be found again by the range it points at.
+        """
+        receiver = FakeReceiver(1e-6, 1e-4)
+        sweep = GainSweep(receiver, 32.0, passes=3, seconds_per_step=0.0)
+        coarse = GainSweep._coarse_ladder(sorted(V4_GAINS))
+        sweep.run()
+        assert receiver.gains_set[:len(coarse)] == coarse
+        assert min(coarse) == min(V4_GAINS)
+        assert max(coarse) == max(V4_GAINS)
+        gaps = [b - a for a, b in zip(coarse, coarse[1:])]
+        assert all(gap >= GainSweep._COARSE_STEP_DB for gap in gaps[:-1])
+
+    def test_the_fine_phase_walks_only_the_range_around_the_coarse_answer(self):
+        """The whole point.  A hundred-rung ladder swept whole is four minutes, and
+        every rung a long way from the answer is a rung nobody needed measured.
+        """
+        receiver = FakeReceiver(1e-6, 1e-4)
+        sweep = GainSweep(receiver, 32.0, passes=3, seconds_per_step=0.0)
+        coarse = GainSweep._coarse_ladder(sorted(V4_GAINS))
+        result = sweep.run()
+        fine = receiver.gains_set[2 * len(coarse):]
+        assert set(fine) <= set(V4_GAINS)
+        assert len(set(fine)) < len(V4_GAINS), 'the fine phase swept the whole ladder'
+        spread = max(fine) - min(fine)
+        assert spread <= 2 * GainSweep._COARSE_STEP_DB
+        assert result.chosen_db in fine or result.chosen_db is None
+
+    def test_every_gain_the_two_phases_touched_reaches_the_fit(self):
+        """The coarse rungs are what give the knee fit a baseline wider than the range
+        the fine phase walks, so dropping them would leave it fitting a curve with no
+        bottom to it.
+        """
         receiver = FakeReceiver(1e-6, 1e-4)
         result = GainSweep(receiver, 32.0, passes=3, seconds_per_step=0.02).run()
-        assert {m.passes for m in result.measurements} == {3}
-        assert len(result.measurements) == len(V4_GAINS)
+        measured = {m.gain_db for m in result.measurements}
+        assert measured == set(receiver.gains_set)
+        assert max(m.passes for m in result.measurements) >= 3
 
     def test_progress_is_reported_for_every_step(self):
+        """The total is the worst case, because the second phase cannot be counted
+        until the first has chosen, so the steps can stop a little short of it.
+        """
         seen = []
         receiver = FakeReceiver(1e-6, 1e-4)
         GainSweep(receiver, 32.0, passes=3, seconds_per_step=0.0).run(
             on_progress=lambda step, total, gain: seen.append((step, total, gain)))
-        assert len(seen) == 3 * len(V4_GAINS)
-        assert [s for s, _, _ in seen] == list(range(3 * len(V4_GAINS)))
-        assert {t for _, t, _ in seen} == {3 * len(V4_GAINS)}
+        assert [s for s, _, _ in seen] == list(range(len(seen)))
+        assert len({t for _, t, _ in seen}) == 1
+        assert len(seen) <= seen[0][1]
 
     def test_cancelling_stops_early_and_still_answers(self):
         """A cancelled sweep returns what it has rather than nothing, because a
@@ -502,7 +600,7 @@ class TestTheAnswerIsAlwaysAGainTheTunerHas:
         """
         result = GainChooser(tuple(_curve(V4_GAINS, 1e-6, 1e-4)), 32.0).choose()
         assert result.chosen_db in V4_GAINS
-        assert result.floor_error_db != pytest.approx(_FLOOR_ERROR_TARGET_DB, abs=0.01), (
+        assert result.floor_error_db != pytest.approx(gain_sweep.floor_error_for(0.0), abs=0.01), (
             'no step on this curve sits on the target.  An exact hit means the '
             'answer is the target itself rather than a gain the tuner has')
 
@@ -520,7 +618,7 @@ class TestTheAnswerIsAlwaysAGainTheTunerHas:
         result = GainChooser(tuple(_curve(V4_GAINS, 1e-10, 1e-10 * ratio)),
                              32.0).choose()
         assert result.chosen_db is not None
-        assert abs(result.floor_error_db - _FLOOR_ERROR_TARGET_DB) <= 2.0, (
+        assert abs(result.floor_error_db - gain_sweep.floor_error_for(0.0)) <= 2.0, (
             f'a converter {ratio} times the antenna chose {result.chosen_db} dB, '
             f'reading {result.floor_error_db:.2f} dB high')
 
@@ -563,8 +661,8 @@ class TestTheAnswerIsAlwaysAGainTheTunerHas:
         # symmetrically looks like a tie and is not one, because (T - 1.0) - T and
         # (T + 1.0) - T come out 1.0 and 1.0000000000000004.  The lower gain then
         # wins on distance and the test passes whichever way the tie-break goes.
-        tied = {lower: _FLOOR_ERROR_TARGET_DB + 1.0,
-                higher: _FLOOR_ERROR_TARGET_DB + 1.0}
+        tied = {lower: gain_sweep.floor_error_for(0.0) + 1.0,
+                higher: gain_sweep.floor_error_for(0.0) + 1.0}
         # Anything else sits far enough away to lose.  The guard in the method under
         # test still reads antenna_share off the real fit, so the top gain has to
         # clear the target for a bound to exist at all.
@@ -597,17 +695,34 @@ class TestOnlyTheReportedGainsAreSwept:
     """
 
     def test_every_requested_gain_is_one_the_receiver_reported(self):
-        receiver = FakeReceiver(1e-6, 1e-4)
-        GainSweep(receiver, 32.0, passes=5, seconds_per_step=0.0).run()
-        assert set(receiver.gains_set) == set(V4_GAINS)
-
-    def test_each_reported_gain_is_visited_once_per_pass_and_no_more(self):
-        """Not more, because extra visits cost the operator time for nothing; not
-        fewer, because a gap in the curve is a gap in the fit.
+        """A subset now, because the fine phase walks only part of the ladder.  What
+        must not happen is a request for a gain the receiver never offered, which the
+        device would snap to something else without saying so.
         """
         receiver = FakeReceiver(1e-6, 1e-4)
         GainSweep(receiver, 32.0, passes=5, seconds_per_step=0.0).run()
-        assert [receiver.gains_set.count(g) for g in V4_GAINS] == [5] * len(V4_GAINS)
+        assert set(receiver.gains_set) <= set(V4_GAINS)
+        assert set(receiver.gains_set)
+
+    def test_no_gain_is_visited_more_often_than_there_are_passes(self):
+        """A rung in both phases is measured by both, and no more than that.  More
+        would cost the operator time for nothing.
+        """
+        receiver = FakeReceiver(1e-6, 1e-4)
+        sweep = GainSweep(receiver, 32.0, passes=5, seconds_per_step=0.0)
+        sweep.run()
+        assert max(receiver.gains_set.count(g) for g in V4_GAINS) <= 5
+
+    def test_the_rungs_near_the_answer_are_the_ones_measured_most(self):
+        """Which is the trade the two phases make: fewer readings far from the answer,
+        and no fewer where the answer is.
+        """
+        receiver = FakeReceiver(1e-6, 1e-4)
+        result = GainSweep(receiver, 32.0, passes=5, seconds_per_step=0.02).run()
+        near = [m.passes for m in result.measurements
+                if result.chosen_db is not None
+                and abs(m.gain_db - result.chosen_db) <= GainSweep._COARSE_STEP_DB]
+        assert near and max(near) >= 3
 
     def test_a_shorter_list_is_swept_in_full_and_nothing_is_invented(self):
         """A different receiver reports a different list, and three steps is still a
@@ -619,16 +734,17 @@ class TestOnlyTheReportedGainsAreSwept:
         assert set(receiver.gains_set) == {0.0, 20.0, 40.0}
         assert [m.gain_db for m in result.measurements] == [0.0, 20.0, 40.0]
 
-    def test_the_step_count_is_what_the_progress_callback_promises(self):
-        """The dialog shows "step N of M" from these, so a total that did not match
-        the work would leave the bar stuck short of the end or run past it.
+    def test_the_step_count_never_runs_past_what_the_callback_promised(self):
+        """The dialog shows "step N of M" from these, so a total smaller than the work
+        would run the bar past its own end.  Smaller work than the total is allowed,
+        because the fine range is not known until the coarse passes have chosen.
         """
         seen = []
         receiver = FakeReceiver(1e-6, 1e-4)
         GainSweep(receiver, 32.0, passes=3, seconds_per_step=0.0).run(
             on_progress=lambda step, total, gain: seen.append((step, total)))
-        assert len(seen) == 3 * len(V4_GAINS)
-        assert {total for _, total in seen} == {3 * len(V4_GAINS)}
+        assert {total for _, total in seen} == {seen[0][1]}
+        assert max(step for step, _ in seen) < seen[0][1]
 
 
 class TestTheReceiverDcOffsetDoesNotReachTheFloor:
@@ -683,22 +799,83 @@ class TestTheReceiverDcOffsetDoesNotReachTheFloor:
         assert abs(np.mean(arc)) < 0.002, 'an arc should not look like a DC offset'
 
 
-class TestThePassCountStaysOdd:
-    """The floor is combined with a median, and numpy's median of an even count
-    averages the two middle values rather than picking one.  That gives up exactly the
-    outlier rejection the passes were added to buy.
+class TestTheFloorMedianSurvivesAnEvenCount:
+    """`np.median` of an even count averages the two middle values, which hands back
+    half of an outlier and gives up the rejection the passes were added to buy.
 
-    Measured against a simulated arc that lifts the band noise for a stretch of the
-    sweep: three, five and seven passes each recovered the arc-free answer 25 times out
-    of 25, and two passes recovered it in none of them.
+    No pass allocation avoids an even count, so the guard has to live in the
+    combination rather than in the numbers.  These say what the guard does and why the
+    pass counts cannot do it instead.
+    """
+
+    def test_an_even_count_takes_a_reading_rather_than_an_average(self):
+        """The case the two-phase split creates: a rung the coarse ladder visits and
+        the fine range does not gets exactly COARSE_PASSES readings.
+        """
+        clean, arcing = -84.0, -70.0
+        assert GainSweep._floor_median([clean, arcing]) == clean
+        assert np.median([clean, arcing]) == (clean + arcing) / 2
+
+    def test_an_odd_count_is_the_ordinary_median(self):
+        """Nothing changes where the count was already odd, which is every rung the
+        fine phase reaches.
+        """
+        for readings in ([-84.0, -83.0, -70.0], [-84.0], [-90.0, -84.0, -83.0,
+                                                          -70.0, -69.0]):
+            assert GainSweep._floor_median(readings) == float(np.median(readings))
+
+    def test_the_result_is_always_one_of_the_readings(self):
+        """This is the property the rejection rests on.  An average of two middle
+        values is a figure the receiver never produced at that gain.
+        """
+        readings = [-84.3, -70.1, -83.9, -69.2]
+        assert GainSweep._floor_median(readings) in readings
+
+    def test_no_pass_allocation_makes_every_rung_odd(self):
+        """This is why the guard exists at all.  A rung gets one of three totals, and
+        two odd numbers add to an even one, so at most two of the three can be odd.
+
+        This sweeps every pair of pass counts a sweep could plausibly use, so the
+        claim rests on the arithmetic rather than on the figures shipped today.
+        """
+        assert not [(coarse, fine) for coarse in range(1, 12) for fine in range(1, 12)
+                    if coarse % 2 and fine % 2 and (coarse + fine) % 2]
+
+    def test_a_contaminated_coarse_rung_does_not_drag_the_fit(self):
+        """End to end, through _combine rather than through the helper: an arc during
+        one of the two coarse passes used to pull that rung's floor halfway toward it.
+        """
+        sweep = GainSweep(FakeReceiver(1e-6, 1e-4), 32.0, passes=5,
+                          seconds_per_step=0.0)
+        clean = _PassReading(-84.0, -40.0, 0, 1000, 0, 1, False)
+        arcing = _PassReading(-60.0, -20.0, 0, 1000, 0, 1, False)
+        result = sweep._combine({0.0: [clean, arcing]}, [0.0])
+        assert result.measurements[0].quiet_dbfs == -84.0
+
+
+class TestThePassCountStaysOdd:
+    """The count is rounded up to odd so that the rungs near the answer, which every
+    phase reaches, get a true median rather than the lower of two middle readings.
+
+    The figure came from measuring against a simulated arc that lifts the band noise
+    for a stretch of the sweep.  Three, five and seven passes each recovered the
+    arc-free answer 25 times out of 25, and two passes recovered it in none of them.
     """
 
     @pytest.mark.parametrize('asked,used', [(1, 1), (2, 3), (3, 3), (4, 5), (5, 5),
                                             (6, 7)])
     def test_an_even_request_is_rounded_up(self, asked, used):
+        """Counted through the two phases rather than as passes times gains, because
+        the coarse and the fine phase walk different ladders.
+        """
         receiver = FakeReceiver(1e-6, 1e-4)
-        GainSweep(receiver, 32.0, passes=asked, seconds_per_step=0.0).run()
-        assert len(receiver.gains_set) == used * len(V4_GAINS)
+        sweep = GainSweep(receiver, 32.0, passes=asked, seconds_per_step=0.0)
+        assert sweep.passes == used
+        coarse = GainSweep._coarse_ladder(sorted(V4_GAINS))
+        sweep.run()
+        fine_passes = max(1, used - GainSweep.COARSE_PASSES)
+        walked = len(receiver.gains_set) - GainSweep.COARSE_PASSES * len(coarse)
+        assert walked % fine_passes == 0
 
     def test_the_shipped_default_is_already_odd(self):
         assert GainSweep.DEFAULT_PASSES % 2 == 1
@@ -799,6 +976,11 @@ class TestTheAnswerSaysWhichBoundDecidedIt:
 
     def test_it_says_which_one_decided(self):
         assert 'the floor is what set this' in self._reason()
+
+    def test_it_says_when_both_bounds_meet_at_the_answer(self):
+        result = GainChooser(tuple(_curve(V4_GAINS, 1e-6, 1e-4)), 37.0).choose()
+        assert result.floor_bound_db == result.headroom_bound_db == 19.7
+        assert 'floor and headroom bounds meet' in result.reason
 
     def test_it_names_the_setting_that_moves_the_other_one(self):
         assert 'arc_headroom_db' in self._reason()
@@ -904,6 +1086,78 @@ class TestClippingIsEvidenceOnlyAboveTheShareTheMonitorUses:
         """
         assert not _measurement(40.2, -50.0, clipped=0,
                                 raw_values=0).clipping_worth_noticing
+
+
+class TestHardwareOverloadNeedsConfirmation:
+    """One report earns two checks; repeated reports impose a hard gain bound."""
+
+    _CLEAR = OverloadStatus(False, 0)
+
+    @staticmethod
+    def _measure(statuses):
+        receiver = _OverloadReceiver(statuses)
+        sweep = GainSweep(receiver, 32.0, passes=1, seconds_per_step=0.001)
+        readings = {0.0: []}
+        sweep._measure_one(0.0, readings)
+        result = sweep._combine(readings, [0.0])
+        return receiver, result.measurements[0]
+
+    def test_a_clear_interval_needs_no_immediate_retry(self):
+        receiver, measurement = self._measure([self._CLEAR, self._CLEAR])
+
+        assert receiver.reads == 1
+        assert measurement.overload_checks == 1
+        assert measurement.overload_observations == 0
+        assert not measurement.hardware_overload_confirmed
+
+    def test_a_receiver_without_reports_keeps_the_existing_sweep(self):
+        receiver, measurement = self._measure([None, None])
+
+        assert receiver.reads == 1
+        assert measurement.overload_checks == 0
+        assert measurement.overload_observations == 0
+        assert not measurement.hardware_overload_confirmed
+
+    def test_one_transient_report_is_recorded_without_disqualifying_the_gain(self):
+        detected_and_cleared = OverloadStatus(False, 1)
+        receiver, measurement = self._measure([
+            self._CLEAR, detected_and_cleared,
+            detected_and_cleared, detected_and_cleared,
+            detected_and_cleared, detected_and_cleared,
+        ])
+
+        assert receiver.reads == 3
+        assert measurement.overload_checks == 3
+        assert measurement.overload_observations == 1
+        assert not measurement.hardware_overload_confirmed
+        assert measurement.raw_values == 2048 * 2, (
+            'confirmation samples must not receive extra weight in the floor fit')
+
+    def test_two_overloaded_intervals_confirm_the_gain_is_unsafe(self):
+        first = OverloadStatus(False, 1)
+        second = OverloadStatus(False, 2)
+        _, measurement = self._measure([
+            self._CLEAR, first,
+            first, second,
+            second, second,
+        ])
+
+        assert measurement.overload_observations == 2
+        assert measurement.hardware_overload_confirmed
+
+    def test_a_confirmed_overload_lowers_the_headroom_bound(self):
+        curve = tuple(_curve(V4_GAINS, 1e-8, 1e-8))
+        clean = GainChooser(curve, 32.0).choose()
+        assert clean.headroom_bound_db is not None
+        overloaded_gain = clean.headroom_bound_db
+        overloaded = tuple(
+            replace(m, confirmed_overloads=1) if m.gain_db == overloaded_gain else m
+            for m in curve)
+
+        result = GainChooser(overloaded, 32.0).choose()
+
+        assert result.headroom_bound_db is not None
+        assert result.headroom_bound_db < overloaded_gain
 
 
 class _ThreeGainReceiver(FakeReceiver):

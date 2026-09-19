@@ -13,12 +13,18 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
+from buzz.config import RtlSdrConfig
 from buzz.sdr_device import (
     RTL_SDR_FORMAT, DeviceProfile, IqBlock, RtlSdrDevice, SampleFormat,
 )
 
 WHY = RtlSdrDevice._why_the_receiver_would_not_open
 SETTINGS = dict(tuned_hz=3_638_000, gain_db=22.9, iq_sample_rate=256_000)
+
+
+def test_an_rtlsdr_estimates_calibration_by_undoing_its_nominal_gain():
+    assert RtlSdrDevice.estimated_calibration_offset_db(22.9) == -22.9
+    assert RtlSdrDevice.floor_margin_db() == 0.0
 
 # A 14-bit converter's format, which is what an SDRplay would present.  It sits in the
 # tests rather than in the module because no device here produces it yet, and its job
@@ -314,7 +320,7 @@ class TestStreaming:
         exists to avoid, and the second call used to overwrite the reference to the
         first, leaving a thread nothing could cancel or join.
 
-        While the thread was built in RtlSdrSource.__init__, threading.Thread refused
+        While the thread was built in SdrSource.__init__, threading.Thread refused
         this on its own: a second start() raises.  Moving the thread onto the device
         took that refusal away, so the device states it.
         """
@@ -546,7 +552,7 @@ class TestOpening:
         """
         handle = FakeHandle()
         self._with_rtlsdr_module(monkeypatch, lambda index: handle)
-        assert RtlSdrDevice.supported_gains(0) == handle.valid_gains_db
+        assert RtlSdrDevice.supported_gains(RtlSdrConfig()) == handle.valid_gains_db
         assert handle.agc_mode is None, 'reading a list turned the AGC off'
         assert handle.sample_rate == 0.0, 'reading a list set the sample rate'
         assert handle.center_freq == 0, 'reading a list retuned the receiver'
@@ -556,7 +562,7 @@ class TestOpening:
         """Held open, it would stop the monitor and the sweep from opening it."""
         handle = FakeHandle()
         self._with_rtlsdr_module(monkeypatch, lambda index: handle)
-        RtlSdrDevice.supported_gains(0)
+        RtlSdrDevice.supported_gains(RtlSdrConfig())
         assert handle.closed is True
 
     def test_reading_the_gain_steps_releases_it_even_when_the_read_fails(self, monkeypatch):
@@ -566,7 +572,7 @@ class TestOpening:
         try:
             self._with_rtlsdr_module(monkeypatch, lambda index: handle)
             with pytest.raises(OSError, match='the tuner stopped'):
-                RtlSdrDevice.supported_gains(0)
+                RtlSdrDevice.supported_gains(RtlSdrConfig())
             assert handle.closed is True
         finally:
             del type(handle).valid_gains_db
@@ -578,7 +584,7 @@ class TestOpening:
 
         self._with_rtlsdr_module(monkeypatch, refuse)
         with pytest.raises(RuntimeError, match='could not be opened'):
-            RtlSdrDevice.supported_gains(0)
+            RtlSdrDevice.supported_gains(RtlSdrConfig())
 
     def test_a_missing_library_names_what_to_install(self, monkeypatch):
         import builtins

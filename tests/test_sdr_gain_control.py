@@ -10,7 +10,7 @@ rather than one, and it has to read in the mode that makes a gain change safe at
 """
 import pytest
 from buzz.gain_sweep import GainSweep
-from buzz.sdr import DEFAULT_SWEEP_BLOCK_SAMPLES, RtlSdrSource, SweepReader
+from buzz.sdr import DEFAULT_SWEEP_BLOCK_SAMPLES, SdrSource, SweepReader
 from tests.fake_sdr import V4_GAINS, FakeSdrDevice
 
 BLOCK = 64
@@ -18,6 +18,17 @@ BLOCK = 64
 
 def _reader(device=None, **kwargs):
     return SweepReader(device or FakeSdrDevice(), **kwargs)
+
+
+class TestWhatTheReaderPassesThrough:
+    """A sweep reads the floor margin off the receiver rather than assuming one.
+
+    GainChooser takes it as a number, so a reader answering for the wrong device would
+    move every gain this program picks, by a plausible amount, silently.
+    """
+
+    def test_the_floor_margin_comes_from_the_device(self):
+        assert _reader().floor_margin_db == FakeSdrDevice.floor_margin_db()
 
 
 class TestTheSynchronousReader:
@@ -106,7 +117,7 @@ class TestGainCannotMoveWhileStreaming:
         reach this is through the device, and the device says no.
         """
         device = FakeSdrDevice()
-        RtlSdrSource(device).start()
+        SdrSource(device).start()
         with pytest.raises(RuntimeError, match='streaming'):
             device.set_gain_db(22.9)
 
@@ -114,7 +125,7 @@ class TestGainCannotMoveWhileStreaming:
         """It had one, nothing called it, and it could only ever have been the unsafe
         path.  Its absence is what makes the refusal above unreachable by accident.
         """
-        assert not hasattr(RtlSdrSource(FakeSdrDevice()), 'set_gain')
+        assert not hasattr(SdrSource(FakeSdrDevice()), 'set_gain')
 
 
 class TestTheSweepStillDrainsWhateverItReads:
@@ -123,7 +134,7 @@ class TestTheSweepStillDrainsWhateverItReads:
 
     The class this replaces tested a streaming source's queue.  That path is gone: a
     sweep moves the gain between measurements, a streaming RTL-SDR refuses that, and
-    RtlSdrSource no longer offers set_gain or drain at all.  What still has to hold is
+    SdrSource no longer offers set_gain or drain at all.  What still has to hold is
     the wiring, since a drain nobody calls helps nobody.
     """
 
@@ -139,6 +150,8 @@ class TestTheSweepStillDrainsWhateverItReads:
             def set_gain(self, gain_db):
                 drained.append('set')
                 return gain_db
+
+            floor_margin_db = 0.0
 
             def drain(self):
                 drained.append('drain')

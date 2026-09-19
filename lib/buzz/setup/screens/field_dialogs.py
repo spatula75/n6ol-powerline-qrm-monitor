@@ -16,6 +16,8 @@ from textual.containers import Horizontal, Vertical
 from textual.widgets import Button, Input, OptionList, RadioButton, RadioSet, Static
 from textual.widgets.option_list import Option
 
+from buzz.config import SOURCES
+from buzz.setup.schema import SectionValues
 from buzz.setup.screens.base import CANCELLED, ScopeModalScreen
 from buzz.setup.screens.calibration import (
     OffsetCalibrationDialog,
@@ -332,6 +334,19 @@ class EnumFieldDialog(ScopeModalScreen[Any]):
         self.dismiss(CANCELLED)
 
 
+def receiver_values_for(app) -> SectionValues | None:
+    """The in-progress settings of whichever receiver `[audio] source` names.
+
+    None when the source is a sound card, which is what `level_offset_for` reads as
+    "use the station's own figure".  Asked of the registry rather than of one spelling,
+    so that a receiver added later needs no edit here.
+    """
+    source = SOURCES.get(app.values['audio'].get('source', ''))
+    if source is None or source.section is None:
+        return None
+    return app.values.get(source.section)
+
+
 async def open_field_dialog(screen, spec: dict[str, Any], current: Any) -> Any:
     """Open the right dialog for `spec` and return the new value, or CANCELLED."""
     kind = _kind(spec)
@@ -356,21 +371,27 @@ async def open_field_dialog(screen, spec: dict[str, Any], current: Any) -> Any:
         # level_offset_for rather than from the schema.  Opening at nothing would
         # be opening at a TypeError.
         audio_values = screen.app.values['audio']
-        rtlsdr_values = screen.app.values.get('rtlsdr')
+        receiver_values = receiver_values_for(screen.app)
         estimate = level_offset_for(audio_values, screen.app.values['station'],
-                                    rtlsdr_values)
+                                    receiver_values)
         fallback = estimate if spec.get('default') is None else spec['default']
         return await screen.app.push_screen_wait(
             OffsetCalibrationDialog(spec, estimate if current is None else current,
-                                    audio_values, rtlsdr_values, default_db=fallback))
+                                    audio_values, receiver_values,
+                                    default_db=fallback))
     if kind == 'gain-picker':
         # The steps live on the receiver, so this one opens hardware to build its
         # list.  A receiver that will not answer hands back UNAVAILABLE rather than
         # CANCELLED, and the plain number box takes over: somebody has to be able to
         # set a gain before the device is working, and refusing would lock out the
         # station that most needs to type one.
+        # The section being edited, rather than the one the source names.  The two
+        # agree today, because the schema hides a receiver's section unless the source
+        # selects it, and asking the section is the question that cannot go wrong: the
+        # gain on screen belongs to the receiver whose list is wanted.
         chosen = await screen.app.push_screen_wait(
-            GainPickerDialog(spec, current, screen.app.values.get('rtlsdr')))
+            GainPickerDialog(spec, current, screen.section,
+                             screen.app.values.get(screen.section)))
         if chosen is not UNAVAILABLE:
             return chosen
     if kind == 'timezone-picker':

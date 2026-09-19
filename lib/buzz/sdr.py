@@ -2,8 +2,8 @@
 
 The hardware itself is `buzz.sdr_device`, which owns every operation performed against
 a device.  This module is what sits between that and the rest of the program:
-`RtlSdrSource` queues the blocks a streaming device delivers, `SweepReader` reads one
-at a time for a gain sweep, `RtlSdrPipeline` converts and fills the shared ring buffer,
+`SdrSource` queues the blocks a streaming device delivers, `SweepReader` reads one
+at a time for a gain sweep, `SdrPipeline` converts and fills the shared ring buffer,
 `IqRingBuffer` keeps the raw bytes when an IQ recording wants a lead-in, and
 `SdrLevelStream` answers the setup program's meters.
 
@@ -15,7 +15,7 @@ Why the draining thread is the one with a deadline
 --------------------------------------------------
 A device copies each block on the driver's own thread and does nothing else there, for
 the reasons `buzz.sdr_device` gives.  The work falls to whichever thread drains it,
-which is `RtlSdrPipeline`'s feeder, and that thread has to average less than a block's
+which is `SdrPipeline`'s feeder, and that thread has to average less than a block's
 own duration.  That is 64 ms at the default settings against roughly 2 ms of work.
 
 Run longer than it and librtlsdr's pool of USB transfers drains.  The pool is what
@@ -35,14 +35,14 @@ which is to convert, count and append.
 What cannot be counted, and what can
 ------------------------------------
 A loss inside the receiver cannot be counted at all, which is why
-`RtlSdrSource.clock_drift_seconds` exists: elapsed time minus the audio that arrived
+`SdrSource.clock_drift_seconds` exists: elapsed time minus the audio that arrived
 for it is the only evidence available.  Read it as a symptom rather than a
 measurement, since the receiver's crystal and the system clock separate slowly even
 when nothing is wrong.
 
 Blocks this program refused because its own queue was full are a different thing and
 stay apart on purpose.  The device counts those, because a refusal happens on the
-driver's thread where logging can raise and can block on I/O, and `RtlSdrSource`
+driver's thread where logging can raise and can block on I/O, and `SdrSource`
 reports them from the thread that fell behind.
 """
 
@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from buzz.sampler import LevelStream, RingBufferPipeline
-from buzz.sdr_device import VALUES_PER_FRAME, IqBlock, SdrDevice
+from buzz.sdr_device import VALUES_PER_FRAME, DeviceProfile, IqBlock, OverloadStatus, SampleFormat, SdrDevice
 
 if TYPE_CHECKING:
     from buzz.iq import IqToAudio
@@ -98,7 +98,7 @@ _DISCARD_LOG_EVERY = 100
 # next read times out, which is within 0.5 s.  The capture thread returns from
 # read_bytes_async once cancel_read_async has taken effect.  Five seconds is several
 # times either, so a thread still running afterwards is stuck rather than slow, and
-# RtlSdrSource.close treats it that way.
+# SdrSource.close treats it that way.
 _THREAD_JOIN_TIMEOUT_SECONDS = 5.0
 
 # How long a draining thread waits for a block before it rechecks its stop flag.
@@ -134,13 +134,62 @@ _HEALTH_INTERVAL_SECONDS = 60.0
 # How far the receiver clock may run from the system clock, in parts per million,
 # before the difference means lost samples rather than two crystals disagreeing.
 #
+# Only a positive movement is checked against it, because only a positive movement can
+# be a loss: the interval then holds more time than audio.  A negative one is a buffer
+# in the receiver library emptying, which loses nothing.  See _warn_about_drift.
+#
 # The figure is chosen rather than measured.  RTL-SDR crystals are specified in the
 # tens of parts per million, so 500 leaves room for a poor one and still catches a
-# loss, which runs to thousands.  See RtlSdrSource.clock_drift_seconds.
+# loss, which runs to thousands.  See SdrSource.clock_drift_seconds.
+#
+# Raising this figure is almost never the answer to a wide spread, and twice on one
+# evening it looked like it was.  An RSP1B ran to 12.2 ms of standard deviation, which
+# turned out to be a garbage collection the plotter forced twice a minute, and it
+# settled to 4.4 ms once that was narrowed.  What remained was a buffer in the receiver
+# library filling and emptying, which crosses this limit about every eight minutes and
+# is not a fault at all.  See _warn_about_drift and
+# docs-notebook/receiver-clock-drift.md.
 _DRIFT_PPM_LIMIT = 500
 
+# How far the receiver clock may stand from its baseline before that is a fault rather
+# than a buffer cycling, in seconds.
+#
+# The figure is chosen, from a measurement.  On an RSP1B at 3530 kHz the library's
+# buffer filled for eight or nine minutes to between +48 and +64 ms and then emptied in
+# one interval, three times across two runs, always returning to within 20 ms of zero.
+# 300 ms is about five times the largest excursion seen, so a cycle cannot reach it
+# while a rate error or a steady loss will.  See
+# docs-notebook/receiver-clock-drift.md.
+_CUMULATIVE_DRIFT_LIMIT_SECONDS = 0.300
 
-class RtlSdrSource:
+
+def _what_a_loss_means() -> str:
+    """What one interval short of audio is, and what to do about it.
+
+    Split out so the wording can be read and tested without a receiver.
+    """
+    return ('Less audio arrived than that interval holds, so samples were lost.  '
+            'Levels and grid frequency from this period are suspect.  Check what else '
+            'on this machine is taking the CPU.')
+
+
+def _what_a_sustained_drift_means(total: float) -> str:
+    """What a clock that has walked away from where it started is, by sign.
+
+    The sign says which fault it is.  A positive total means audio keeps going missing,
+    and a negative one means the receiver produces more audio than the configured rate
+    accounts for.
+    """
+    if total > 0:
+        return ('Less audio has arrived than the run accounts for, so samples are '
+                'going missing steadily rather than once.  Check what else on this '
+                'machine is taking the CPU.')
+    return ('More audio has arrived than the run accounts for, so the receiver runs '
+            'faster than the rate it was configured at.  Check that rate against what '
+            'the receiver reports.')
+
+
+class SdrSource:
     """Pulls raw IQ off a receiver and queues it for somebody else to convert.
 
     Call start(), then read() until it returns None, then close().  The caller injects
@@ -208,6 +257,21 @@ class RtlSdrSource:
         return self._device.supported_gains_db
 
     @property
+    def effective_bits(self) -> float:
+        """How many bits of the int16 audio this receiver really resolves."""
+        return self._device.effective_bits()
+
+    @property
+    def scope_floor_steps(self) -> float:
+        """How many of its own steps this receiver can afford to give up."""
+        return self._device.scope_floor_steps()
+
+    @property
+    def profile(self) -> DeviceProfile:
+        """Facts about this configured device that its consumers need."""
+        return self._device.profile
+
+    @property
     def gain_db(self) -> float:
         """The gain in use."""
         return self._device.gain_db
@@ -236,14 +300,31 @@ class RtlSdrSource:
     def clock_drift_seconds(self) -> float:
         """Elapsed time minus the audio the device delivered for it.
 
-        The only available evidence that samples went missing, since nothing reports a
-        drop.  A positive figure means less audio arrived than the wall clock says it
-        should have.
+        The only available evidence that a driver dropped samples, since nothing
+        reports that.  A drop on this side of the callback is counted instead, by
+        _emit and _report_any_discards.
+
+        The two signs are not symmetric, because audio cannot be created.  So a
+        negative figure can only be audio that already existed arriving late, and is
+        never a loss.  A positive one is ambiguous: audio is either missing or being
+        held, and one reading cannot say which.
+
+        | Reading                             | What it is                    |
+        |-------------------------------------|-------------------------------|
+        | Negative                            | A buffer draining.            |
+        | Positive, small, and recovering     | A buffer filling.             |
+        | Positive, and the total keeps going | A loss nothing else reports.  |
+
+        Only the third is a fault, which is why _warn_about_drift watches the total
+        since its baseline rather than one interval.  Measured on an RSP1B, the
+        receiver library fills a buffer for eight or nine minutes at about 130 ppm and
+        then empties it in one interval, so the first two rows both happen every eight
+        minutes on a receiver with nothing wrong with it.  See
+        docs-notebook/receiver-clock-drift.md.
 
         Read it as a symptom rather than a measurement.  The receiver's crystal and the
         system clock differ by some parts per million that nobody here has measured, so
-        the two separate slowly even when nothing is wrong.  Milliseconds over a few
-        seconds mean lost samples.  Microseconds mean clocks.
+        the two separate slowly even when nothing is wrong.
         """
         if self._first_arrival is None or self._last_arrival is None:
             return 0.0
@@ -377,6 +458,27 @@ class SweepReader:
         return self._device.gain_db
 
     @property
+    def overload_status(self) -> OverloadStatus | None:
+        """Hardware overload reports, or None when the receiver provides none."""
+        return self._device.overload_status
+
+    @property
+    def reported_gain_db(self) -> float | None:
+        """What the receiver says its gain is, or None where it says nothing.
+
+        Distinct from `gain_db`, which falls back to the figure that was written when
+        the hardware has none to offer.  Nothing in the sweep reads this: it is here so
+        that `tools/sdr_gain_probe` can show the fallback and the hardware side by side,
+        which is how a gain that never reaches the receiver is told from one that does.
+        """
+        return getattr(self._device, 'reported_gain_db', None)
+
+    @property
+    def floor_margin_db(self) -> float:
+        """How far above the knee this receiver puts the floor bound, in dB."""
+        return self._device.floor_margin_db()
+
+    @property
     def blocks_to_discard_after_gain_change(self) -> int:
         """Blocks to read and throw away after moving the gain.
 
@@ -424,13 +526,22 @@ class IqRingBuffer(RingBufferPipeline):
 
     The audio ring buffer gives an event recording its run-up for free, because the
     audio is already sitting there when the lock happens.  Raw IQ has no such buffer:
-    RtlSdrPipeline converts each block and keeps only the audio, and the bytes go out
+    SdrPipeline converts each block and keeps only the audio, and the bytes go out
     of scope immediately after.  This holds them for the same duration instead.
 
-    It stores the bytes the device delivered rather than the complex samples they
-    convert to.  That is eight times smaller, and it is also exactly what a recording
-    writes, since the format on disk is the device's own: unsigned bytes, I then Q.
-    Converting to complex and back would cost the work twice and gain nothing.
+    It stores the samples the device delivered rather than the complex values they
+    convert to.  `as_complex` gives complex128, which is 16 bytes a sample against the
+    device's 2 or 4, so this is four to eight times smaller depending on the converter.
+    It is also exactly what a recording writes, since the format on disk is the
+    device's own, I then Q.  Converting to complex and back would cost the work twice
+    and gain nothing.
+
+    The element type comes from the device rather than from a constant here, because
+    the two receivers do not agree on it.  An RTL-SDR delivers unsigned bytes and an
+    SDRplay delivers signed 16-bit values, so a buffer fixed at the narrower one keeps
+    the low byte of each SDRplay sample and throws the rest away.  `IqEventRecorder`
+    sizes its `.wav` frames from what this reports, so the file would carry that
+    wreckage under a header saying it was correct.
 
     This appends one whole device block at a time rather than in CHUNK_SIZE pieces.
     That slicing exists so get_snapshot returns a full window to the analyzer, and
@@ -438,35 +549,36 @@ class IqRingBuffer(RingBufferPipeline):
     read_from.
 
     The pipeline builds this only when [recording] record_iq is on, because it is not
-    small: 4.7 MB at the default 256 kHz, and 44 MB at the 2.4 MHz the hardware will
-    accept.
+    small.  An 8-bit receiver at the default 256 kHz wants 4.7 MB, and 44 MB at the
+    2.4 MHz the hardware will accept.  A 16-bit receiver wants twice each figure.
     """
 
-    def __init__(self, iq_sample_rate: int, block_samples: int) -> None:
+    def __init__(self, iq_sample_rate: int, block_samples: int,
+                 sample_format: SampleFormat) -> None:
         super().__init__(sample_rate=iq_sample_rate, chunk_size=block_samples,
-                         dtype=np.uint8)
+                         dtype=sample_format.dtype)
 
     def add(self, block: IqBlock) -> None:
-        """Keep one block's raw bytes, shaped one complex sample per row.
+        """Keep one block's raw samples, shaped one complex sample per row.
 
-        Public where every other pipeline here fills itself from inside a subclass,
-        because this one is filled by RtlSdrPipeline, which is a buffer in its own
-        right for the audio.  The push crosses an object boundary, so it gets a name.
+        This is public where every other pipeline here fills itself from inside a
+        subclass, because SdrPipeline fills this one, and SdrPipeline is a buffer in
+        its own right for the audio.  The push crosses an object boundary, so it gets a name.
 
-        The reshape is what keeps the buffer's arithmetic honest.  `raw` is interleaved
-        bytes, so its length counts two per complex sample, while the capacity this
-        buffer was sized to counts one - appending it flat would leave total_samples
-        and capacity_samples in different units, and every duration derived from them
-        wrong by a factor of two.  A row per complex sample also happens to be the
-        frame layout a stereo recording writes, I then Q.
+        The reshape is what keeps the buffer's arithmetic honest.  `raw` is
+        interleaved, so its length counts two values per complex sample, while the
+        capacity this buffer was sized to counts one - appending it flat would leave
+        total_samples and capacity_samples in different units, and every duration
+        derived from them wrong by a factor of two.  A row per complex sample also
+        happens to be the frame layout a stereo recording writes, I then Q.
         """
         self._append(block.raw.reshape(-1, 2))
 
 
-class RtlSdrPipeline(RingBufferPipeline):
+class SdrPipeline(RingBufferPipeline):
     """Feeds the shared ring buffer from a receiver, converting on the way.
 
-    The last of four pieces.  SdrDevice holds the hardware, RtlSdrSource holds the
+    The last of four pieces.  SdrDevice holds the hardware, SdrSource holds the
     queue between the driver's thread and this one, IqToAudio holds the arithmetic,
     and this owns the thread that carries blocks from the queue to the buffer.
     Everything downstream reads this exactly as it reads the sound card, and cannot
@@ -479,14 +591,15 @@ class RtlSdrPipeline(RingBufferPipeline):
     convert, count and append.  See the module docstring.
     """
 
-    def __init__(self, source: RtlSdrSource, converter: 'IqToAudio', *,
+    def __init__(self, source: SdrSource, converter: 'IqToAudio', *,
                  clock: Callable[[], float] = monotonic, keep_iq: bool = False) -> None:
         super().__init__(converter.audio_sample_rate)
         self._source = source
         self._converter = converter
         # Off unless an IQ recording is going to want it.  See IqRingBuffer for what
         # it costs, which is why nothing pays for it by default.
-        self._iq_buffer = (IqRingBuffer(source.iq_sample_rate, source.block_samples)
+        self._iq_buffer = (IqRingBuffer(source.iq_sample_rate, source.block_samples,
+                                        source.profile.sample_format)
                            if keep_iq else None)
         self._clipped = 0
         self._leftover = np.empty(0, dtype=np.int16)
@@ -499,7 +612,14 @@ class RtlSdrPipeline(RingBufferPipeline):
         self._health_checked_at = clock()
         self._clipped_reported = 0
         self._saturated_reported = 0
-        self._drift_reported = 0.0
+        # None until the first report, which takes the baseline rather than assuming
+        # the stream started at zero drift.  See _warn_about_drift.
+        self._drift_reported: float | None = None
+        # Where the clock stood when the baseline was taken, and whether it has been
+        # reported as having walked away from it.  The second stops one fault being
+        # repeated every minute for as long as it lasts.
+        self._drift_baseline = 0.0
+        self._drift_walked_away = False
 
     @property
     def clipped_samples(self) -> int:
@@ -511,12 +631,32 @@ class RtlSdrPipeline(RingBufferPipeline):
         return self._clipped
 
     @property
+    def effective_bits(self) -> float:
+        """What the converted audio resolves, which limits scope magnification.
+
+        The receiver supplies the delivered bit depth.  The converter adds resolution
+        when its filter reduces uncorrelated sample noise, up to the int16 output.
+        See buzz.scope.minimum_full_scale.
+        """
+        return min(16.0, self._source.effective_bits + self._converter.processing_gain_bits)
+
+    @property
+    def scope_floor_steps(self) -> float:
+        """The receiver's own answer, passed through unchanged.
+
+        The filter moves the size of a step, which `effective_bits` already carries.
+        How many steps the floor is worth is a fact about the receiver's noise rather
+        than about the conversion, so this adds nothing to it.
+        """
+        return self._source.scope_floor_steps
+
+    @property
     def iq_buffer(self) -> IqRingBuffer | None:
         """The raw IQ history, or None when nothing asked for one to be kept."""
         return self._iq_buffer
 
     @property
-    def source(self) -> RtlSdrSource:
+    def source(self) -> SdrSource:
         """The capture this is draining, for anything that wants its counters."""
         return self._source
 
@@ -625,8 +765,8 @@ class RtlSdrPipeline(RingBufferPipeline):
             'The receiver clipped %d raw value(s) in the last %.0f seconds, and the '
             'conversion clipped %d output sample(s).  Loud events are measured smaller '
             'than they are.  Run the gain calibration again on a quiet band, which '
-            'measures what [rtlsdr] gain_db should be rather than guessing a step.',
-            clipped, elapsed, saturated)
+            'measures what [%s] gain_db should be rather than guessing a step.',
+            clipped, elapsed, saturated, self._source.profile.settings_section)
 
     def _warn_about_drift(self, elapsed: float) -> None:
         """Report a receiver clock that has run away from the system clock.
@@ -636,17 +776,97 @@ class RtlSdrPipeline(RingBufferPipeline):
         so "any movement" would report every minute of a healthy run.  What is
         measured here is the change since the last report rather than the total, so a
         steady offset settles instead of accumulating into a warning.
+
+        The first interval sets the baseline instead of being measured against zero,
+        because a receiver's own startup falls entirely inside it.
+
+        The two directions are different faults and the message says which.  Less
+        audio than the interval means samples went missing, and a machine with nothing
+        left to give is the usual cause.  More audio than the interval cannot be a
+        loss, because the blocks arrived.  Only the first case spoils a measurement,
+        so only the first case says so.
+
+        This reports every interval at DEBUG and not only the ones over the limit,
+        because one interval says almost nothing.  What a run of them shows is a
+        cumulative figure that climbs for seven or eight minutes and then discharges in
+        one interval, which is what warns.
+
+        Measured on an RSP1B at 3530 kHz on 2026-09-18, over three cycles in two runs:
+        the cumulative climbed to +48.1, +63.5 and +48.7 ms, and discharged -52.3, -56.4
+        and -59.4 ms.  Every one returned to within 20 ms of zero, so nothing was lost
+        or gained.  The third was predicted before it happened, which is the reason to
+        believe the first two.
+
+        `SdrplayDevice._note_the_backlog` measures the receiver side directly, and
+        it rules out a stall.  Over the nine paired minutes the worst wait between
+        deliveries held between 71.6 and 87.6 ms while this figure swung from -56.4 to
+        +22.3, and the minute that warned was 74.4 ms, which is the middle of that
+        band.  The two are uncorrelated at r = -0.416.
+
+        So a negative figure here is a buffer in the library emptying rather than a
+        fault, and the per-interval movement measures buffer depth as well as audio
+        going missing.  The cumulative figure separates them, because a buffer cycle
+        returns to zero and a rate error does not.  See
+        docs-notebook/receiver-clock-drift.md, which holds both tables and says what
+        would be needed to warn on the cumulative instead.
         """
         drift = self._source.clock_drift_seconds
+        if self._drift_reported is None:
+            # The first interval is the baseline rather than a measurement.  A receiver
+            # fills its pipeline as it starts and delivers that first stretch faster
+            # than real time, so the drift accumulated by the end of the first interval
+            # describes the startup and not the run.  Measured on an SDRplay RSP1B, it
+            # came to 37 ms, which is twenty times what a crystal explains and entirely
+            # gone by the next interval.
+            #
+            # What this gives up is a loss during the first interval, which goes
+            # unreported.  A rate that is wrong still shows up, because it keeps
+            # moving and this only absorbs what had already happened.
+            self._drift_reported = drift
+            self._drift_baseline = drift
+            logger.debug('Receiver clock baseline is %+.0f ms after the first %.0f '
+                         'seconds.', drift * 1e3, elapsed)
+            return
         moved = drift - self._drift_reported
         self._drift_reported = drift
-        if abs(moved) <= elapsed * _DRIFT_PPM_LIMIT / 1e6:
-            return
-        logger.warning(
-            'The receiver and system clocks moved %+.0f ms apart over the last %.0f '
-            'seconds, which is more than a crystal explains.  Samples were probably '
-            'lost, so levels and grid frequency from this period are suspect.  Check '
-            'what else on this machine is taking the CPU.', moved * 1e3, elapsed)
+        total = drift - self._drift_baseline
+        logger.debug('Receiver clock moved %+.1f ms over the last %.0f seconds, and '
+                     'stands %+.1f ms from its baseline.', moved * 1e3, elapsed,
+                     total * 1e3)
+        lost = moved > elapsed * _DRIFT_PPM_LIMIT / 1e6
+        if lost:
+            logger.warning(
+                'The receiver and system clocks moved %+.0f ms apart over the last '
+                '%.0f seconds, which is more than a crystal explains.  %s',
+                moved * 1e3, elapsed, _what_a_loss_means())
+        self._warn_if_the_clock_has_walked_away(total, already_warned=lost)
+
+    def _warn_if_the_clock_has_walked_away(self, total: float,
+                                           already_warned: bool) -> None:
+        """Report a clock that has left its baseline and stayed away.
+
+        This is the check the per-interval one cannot do.  A buffer that fills and
+        empties moves a single interval by tens of milliseconds and comes back, where a
+        rate error or a steady loss keeps going.  Only a total since the baseline tells
+        those apart, and a leak too slow to cross the per-interval limit reaches this
+        one eventually.
+
+        Said once per excursion rather than once a minute for as long as it lasts.  A
+        fault that persists is still the same fault, and repeating it every minute
+        teaches an operator to filter the log.
+
+        `already_warned` says the interval check has spoken about this same minute.  A
+        loss large enough to trip both is one event, and describing it twice buries the
+        part the operator has to act on.  The flag still moves, so the next excursion
+        after a recovery is reported.
+        """
+        outside = abs(total) > _CUMULATIVE_DRIFT_LIMIT_SECONDS
+        if outside and not self._drift_walked_away and not already_warned:
+            logger.warning(
+                'The receiver clock stands %+.0f ms from where it started, which is '
+                'more than a buffer cycle explains.  %s',
+                total * 1e3, _what_a_sustained_drift_means(total))
+        self._drift_walked_away = outside
 
     def _append_in_chunks(self, audio: np.ndarray) -> None:
         """Hand the audio over in pieces of exactly CHUNK_SIZE, holding any remainder.
@@ -672,7 +892,7 @@ class RtlSdrPipeline(RingBufferPipeline):
 class SdrLevelStream(LevelStream):
     """A live level in dBm, fed by a receiver, for the setup program's meter.
 
-    This owns a thread rather than reaching through RtlSdrPipeline, because a meter
+    This owns a thread rather than reaching through SdrPipeline, because a meter
     wants the newest reading rather than a history.  The ring buffer would only add
     its own latency to a number somebody is watching while they turn a knob.
 
@@ -682,7 +902,7 @@ class SdrLevelStream(LevelStream):
     would report.
     """
 
-    def __init__(self, source: RtlSdrSource, converter: 'IqToAudio',
+    def __init__(self, source: SdrSource, converter: 'IqToAudio',
                  offset_db: float) -> None:
         # One IQ block converts to one audio block, so they last the same time and
         # either one gives the smoothing its time constant.

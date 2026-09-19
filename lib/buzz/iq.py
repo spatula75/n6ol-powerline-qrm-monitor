@@ -159,6 +159,16 @@ class IqToAudio:
         self._sample_index = 0
         self._saturated = 0
 
+    @property
+    def processing_gain_bits(self) -> float:
+        """Bits of noise resolution added by the IQ filter before int16 output.
+
+        The root sum square of the taps is the gain applied to uncorrelated sample
+        noise.  Expressing its reduction in bits lets the pipeline combine the
+        receiver's delivered resolution with the converter that the scope sees.
+        """
+        return -float(np.log2(np.sqrt(np.sum(np.abs(self._taps) ** 2))))
+
     @staticmethod
     def _validate(iq_sample_rate: int, decimation: int, bandwidth_hz: int,
                   sideband: str) -> None:
@@ -395,7 +405,7 @@ class IqToAudio:
         hearing.  A clipped arc measures smaller than it truly is, so the events it
         spoils are the loud ones that matter most.  Nothing about the audio looks
         wrong afterwards, so a caller that never reads this learns nothing from the
-        failure.  RtlSdrPipeline._warn_about_clipping is the one that does.
+        failure.  SdrPipeline._warn_about_clipping is the one that does.
         """
         return self._saturated
 
@@ -477,7 +487,7 @@ class IqToAudio:
         place.
 
         The backlog is built locally and stored only once the filtering has returned.
-        RtlSdrPipeline._feed catches every exception and goes on to the next block.  A
+        SdrPipeline._feed catches every exception and goes on to the next block.  A
         fault that repeats would otherwise add 16384 samples per block to a backlog
         nothing ever drops, which is 256 KB a block for as long as the receiver runs.
         Storing afterwards costs nothing and bounds the failure at one block.

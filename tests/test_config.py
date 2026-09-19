@@ -71,6 +71,14 @@ class TestLoadSection:
         assert cfg.callsign == 'W1AW'
         assert cfg.timezone == 'America/Los_Angeles'
 
+    def test_a_class_variable_is_not_accepted_as_a_toml_setting(self, caplog):
+        """ClassVar entries appear in __dataclass_fields__ but not in __init__."""
+        data = {'rtlsdr': {'device_source': 'sdrplay'}}
+        with caplog.at_level('WARNING'):
+            cfg = _load_section(data, 'rtlsdr', RtlSdrConfig)
+        assert cfg.device_source == RTLSDR
+        assert '[rtlsdr] device_source' in caplog.text
+
 
 class TestBuzzConfigDefaults:
     def test_default_instance_has_all_subsections(self):
@@ -161,7 +169,7 @@ class TestExampleConfigMatchesTheDataclasses:
         A field marked config.RUNTIME is not a setting and is deliberately absent from
         the sample config, so counting it here would report the design as drift.
         """
-        return {f.name: set(getattr(BuzzConfig(), f.name).__dataclass_fields__)
+        return {f.name: {inner.name for inner in fields(getattr(BuzzConfig(), f.name))}
                 for f in fields(BuzzConfig()) if not is_runtime(f)}
 
     def test_every_section_is_documented(self):

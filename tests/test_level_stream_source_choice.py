@@ -33,7 +33,7 @@ class TestTheMeterOpensTheConfiguredSource:
     def test_a_receiver_station_gets_a_receiver_stream(self):
         """The bug this file exists for: no sound card is opened at all."""
         with patch.object(RtlSdrDevice, 'open') as open_device, \
-             patch('buzz.sdr.RtlSdrSource') as source, \
+             patch('buzz.sdr.SdrSource') as source, \
              patch('buzz.sdr.SdrLevelStream') as stream, \
              patch('buzz.iq.IqToAudio') as converter, \
              patch('buzz.setup.screens.calibration.sd.query_devices') as query:
@@ -49,7 +49,7 @@ class TestTheMeterOpensTheConfiguredSource:
         second.
         """
         with patch.object(RtlSdrDevice, 'open'), \
-             patch('buzz.sdr.RtlSdrSource') as source, \
+             patch('buzz.sdr.SdrSource') as source, \
              patch('buzz.sdr.SdrLevelStream'), \
              patch('buzz.iq.IqToAudio'):
             _open_level_stream(AUDIO_RTLSDR, -40.2, RTLSDR_VALUES)
@@ -65,7 +65,7 @@ class TestTheMeterOpensTheConfiguredSource:
             _open_level_stream(AUDIO_SOUNDCARD, -12.5)
         assert card.call_args[0][0].station.audio_rf_conversion_db == -12.5
 
-        with patch.object(RtlSdrDevice, 'open'), patch('buzz.sdr.RtlSdrSource'), \
+        with patch.object(RtlSdrDevice, 'open'), patch('buzz.sdr.SdrSource'), \
              patch('buzz.sdr.SdrLevelStream') as sdr, patch('buzz.iq.IqToAudio'):
             _open_level_stream(AUDIO_RTLSDR, -12.5, RTLSDR_VALUES)
         assert sdr.call_args[0][2] == -12.5
@@ -76,7 +76,7 @@ class TestTheMeterOpensTheConfiguredSource:
         an operator who only wanted to look at a meter.
         """
         with patch.object(RtlSdrDevice, 'open') as open_device, \
-             patch('buzz.sdr.RtlSdrSource'), patch('buzz.sdr.SdrLevelStream'), \
+             patch('buzz.sdr.SdrSource'), patch('buzz.sdr.SdrLevelStream'), \
              patch('buzz.iq.IqToAudio'):
             _open_level_stream(AUDIO_RTLSDR, -40.2, None)
         assert open_device.call_args.args[0] == 0
@@ -167,7 +167,7 @@ class TestTheMeterLabelsTheReadingWithTheRightOffset:
         from buzz.setup.screens.calibration import level_offset_for
         values = dict(RTLSDR_VALUES, calibrated_offset_db=None, gain_db=40.2)
         offset = level_offset_for(AUDIO_RTLSDR, self.STATION, values)
-        with patch.object(RtlSdrDevice, 'open'), patch('buzz.sdr.RtlSdrSource'), \
+        with patch.object(RtlSdrDevice, 'open'), patch('buzz.sdr.SdrSource'), \
              patch('buzz.sdr.SdrLevelStream') as stream, patch('buzz.iq.IqToAudio'):
             _open_level_stream(AUDIO_RTLSDR, offset, values)
         assert stream.call_args[0][2] == -40.2

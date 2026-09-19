@@ -75,8 +75,11 @@ with `$?` false. Windows PowerShell 5.1 has no `&&` or `||`, so chaining needs
     python -m buzz.setup                           # guided setup: device, calibration, timezone, a live S-meter
 
 `main.py` flags: `--headless`, `--top`, `--enable-recording`, `--playback FILE`,
-`--mute`, `--playback-gain DB|auto`, `--render FILE.mp4`. Playback replays a recorded
+`--mute`, `--playback-gain DB|auto`, `--render FILE.mp4`, `--log-level LEVEL`. Playback replays a recorded
 `.wav` through the whole pipeline and suppresses CSV, plots, uploads, and recording.
+`--log-level DEBUG` turns on the diagnostics that explain a puzzling display or a
+health warning; they are off by default because they would be noise on a healthy run,
+and several of them are the only way to read a fault rather than guess at it.
 `--render` needs ffmpeg, implies `--playback-gain auto`, and with `--headless` paints
 offscreen and implies `--mute`.
 
@@ -355,6 +358,15 @@ In that order:
 5. **Unit suite with coverage** - `pytest --cov`. Must pass, and coverage must stay at
    or above the 97% gate. Running plain `pytest` without `--cov` hides a coverage
    failure that CI then catches; that has broken the build before.
+
+   **Do not edit a measured file while the suite is running, and do not start the
+   suite until the editing is done.** Coverage is recorded against line numbers, so a
+   run that overlaps an edit reports lines that no longer exist and misses lines that
+   now do. It does not fail; it produces a plausible number. One such run reported
+   96.86% with 212 lines uncovered where a clean run of the same tree gave 99.20% with
+   54, and the only way to tell them apart was to know an edit had happened. The
+   weaker version of this rule - do not read a coverage report across an edit - is not
+   enough, because a background run is still measuring long after the command returns.
 6. **Integration tier**, when the change touches audio, analysis, playback, recording,
    or the display - `pytest -m integration --no-cov`. CI runs it on every PR, so
    catching a failure locally is cheaper than catching it on GitHub.
@@ -486,7 +498,7 @@ left undone or where a test does not guard what it appears to.
 ### PR descriptions and review comments
 
 **Be brief here - the opposite of the above.** A PR body is read by someone deciding
-where to spend their attention, so point at the few things that matter: the centrepiece
+where to spend their attention, so point at the few things that matter: the centerpiece
 of the change, the critical fix, the one decision worth arguing about. Whatever a
 reviewer would regret skimming past.
 
@@ -677,6 +689,31 @@ Practical consequences:
   answer is that the new path does not need it, say why in a comment. Review found
   all four of these after a green suite, which is the same lesson as the counters
   themselves: a check nobody runs and a counter nobody reads fail the same way.
+- **A name taken from the first implementation becomes a lie when the second
+  arrives.** `RtlSdrSource` and `RtlSdrPipeline` took any `SdrDevice` and had been
+  device-independent from the moment that contract existed, but they kept the name of
+  the receiver they were written for.  A reader then has to know the history to know
+  the name is wrong, and the next receiver's author has to decide whether a class
+  named for somebody else's hardware is theirs to use.
+
+  Same trigger as the rule above, and a different failure: adding the second
+  implementation is the moment to reread the names the first one left behind.  Ask of
+  each whether it describes what the thing does or what it happened to be built
+  against.  They renamed to `SdrSource` and `SdrPipeline`.
+
+- **Generated bindings need a runtime check that the installed library matches.**
+  `lib/buzz/sdrplay_api.py` is generated from vendored headers because a wrong struct
+  field is memory corruption rather than an exception.  That reasoning has a second
+  half nobody wrote down: generating from one version's headers pins the bindings to
+  that version, and an operator with a different one installed gets exactly the
+  corruption the generator existed to prevent.  `SdrplayDevice.open` compares
+  `library.api_version()` against `api.API_VERSION` and refuses rather than
+  proceeding.
+
+  Reach for this wherever a layout is described in one place and supplied by another:
+  generated bindings, a struct read from a file, a wire format.  The generator cannot
+  know what will be installed, so the check belongs at the point of use.
+
 - **Push, don't poll.** Components publish state changes to their listeners rather than
   reaching into another component to read its state - a lock is an event, not a level,
   and a poller misses any event that begins and ends between two polls. Publish from the
@@ -716,7 +753,7 @@ Practical consequences:
 
   Where the values are known ahead of time, the schema's `enum` already does this and
   `audio.source` and `[weather] source` both use it. Where they come from hardware,
-  the picker has to query it, and `RtlSdrSource.supported_gains_db` is what it would
+  the picker has to query it, and `SdrSource.supported_gains_db` is what it would
   ask.
 - **CSV is an append-only contract.** New columns go where they won't disturb parsing of
   existing rows, and readers must tolerate their absence in older files.
@@ -881,7 +918,7 @@ method:
 2. Read `fn.signatures` off the dispatcher - numba lists exactly what it compiled.
 3. **Check it against production, not the test suite.** The suite compiled three
    signatures; two were test artefacts. Wrap the function and log dtypes while the real
-   analyser runs.
+   analyzer runs.
 4. **Cover every source.** A replayed `.wav` and the live sound card can differ in
    principle, so check both before declaring. Here they agreed - that is a result, not
    an assumption.
@@ -908,6 +945,24 @@ that call rather than quietly compiling another variant mid-flight.
   occur, and the one place it mattered (a numba signature) only surfaced it by
   accident. Check what the live pipeline actually produces, and match it. This applies
   to the golden generator too, or the pinned values describe a path nobody runs.
+- **A fake that applies an asynchronous change synchronously cannot catch the bug the
+  asynchrony causes.** The sibling of the rule above, one level up: there the fake's
+  data was the wrong type, here its *timing* is wrong. A fake is written from what the
+  code under test expects, so it tends to answer the instant it is asked, and the
+  hardware it stands for does not.
+
+  `FakeSdrplayApi.update()` filled `gainVals.curr` before it returned. The real library
+  applies a gain change on its own thread and marks the delivery where it did with
+  `grChanged`, which is the reason `_awaiting_gain_change` and `_GAIN_CHANGE_SETTLE_SECONDS`
+  exist a few hundred lines away in the same module. A device that read the figure
+  straight after the update agreed with the fake every time, and would have told every
+  healthy RSP its gain table was wrong on the second gain of every sweep.
+
+  So where the real thing answers later, the fake answers later too, and the test
+  drives the step that makes it answer. The diagnostic is to ask what the hardware does
+  between the call and the answer. Where the answer is "another thread, some blocks
+  later", a fake that returns the answer inline has removed the only interval where the
+  bug can live.
 - When a refactor makes something testable that wasn't before, write the test then.
 - `tests/conftest.py` sets `NUMBA_DISABLE_JIT=1` so `@njit` function bodies are visible
   to coverage. Without it every JIT-compiled function reads as untested no matter how
@@ -936,6 +991,48 @@ that call rather than quietly compiling another variant mid-flight.
   cross-check agrees with itself. It measures the source `.wav` now. Ask which of the two
   figures the buggy code could not have influenced; if the answer is neither, the test is
   decorative.
+- **A tuned constant needs a test for what it is for, not only for what it equals.**
+  A value can be computed exactly right and still be the wrong value, and a test that
+  checks the arithmetic cannot tell.  `minimum_full_scale` computed precisely what its
+  comment said, a drift pin confirmed each receiver's floor matched its bit depth, and
+  the whole suite passed while an RTL-SDR sat pinned to that floor in ordinary use.
+  The figure was two of the receiver's own steps, and two was outside the range that
+  receiver could ever reach.
+
+  The test that found it had to say what the number is for: below what a working
+  receiver asks for, so a real signal is not clamped.  Its figures come from hardware
+  rather than from the program, which is what stops it restating the constant it
+  checks.  See `test_the_floor_stays_under_what_each_receiver_asks_for_in_use`.
+
+  **That test was then deleted and replaced by an equality check, one commit after
+  the commit that added it warned against exactly that.** The replacement asserted
+  `minimum_full_scale(...) == 30.3`, which is the arithmetic again, and the property
+  went unguarded for a second time.  A test of this kind is easy to mistake for a
+  duplicate of the arithmetic test beside it, because both name the same constant and
+  only one of them can fail for the reason that matters.  Say in the docstring that it
+  is the property rather than the value, and say what the numbers in it came from, so
+  the next reader has something to lose by deleting it.
+
+  **A policy figure that has to suit two devices at once usually belongs on the
+  device.** The same test also claimed the floor sat above what a dead channel
+  produces, so that silence is caught, and for a while neither receiver managed it.
+  The reason was not that the property was unreachable.  It was that `_FLOOR_STEPS`
+  was one number in `buzz.scope` serving two receivers whose windows are 7.4 dB and
+  15.6 dB wide at levels 30 dB apart, so the figure had to suit the narrower one and
+  spent most of the wider one.  Moving it to `SdrDevice.scope_floor_steps`, beside
+  `effective_bits` and `floor_margin_db` which answer the neighboring questions, made
+  both halves hold for both receivers.
+
+  The tell is a constant in a shared module whose comment has to reason about two
+  pieces of hardware to justify one value.  That comment is the device's answer,
+  written in the wrong place.  Check before concluding a property cannot hold: a
+  property that only fails because one number is shared is a placement problem.
+
+  The diagnostic is to ask what the constant would have to be wrong by before anything
+  went red.  Where the honest answer is "any amount, the tests only check it is
+  self-consistent", the property is untested however many tests name the constant.
+  This applies to every tuned figure: a threshold, a limit, a margin, a timeout.
+
 - **A test must be able to fail.** No test exists to raise the coverage number; every
   one exists to catch a specific way the code could be wrong, and if nothing the test
   does could turn red for a real bug, it is not testing anything. The two failure
@@ -966,6 +1063,14 @@ that call rather than quietly compiling another variant mid-flight.
   the first version of that test built the tie from the midpoint of two fitted
   values, passed here where `lstsq` happened to return two bit-identical distances,
   and failed in CI on a different numpy.
+
+  **A substring assertion passes on a prefix of the wrong answer.** `assert
+  'Crossings past 30 ms: 1' in caplog.text` held while the count was 12, because the
+  expected text is a prefix of the actual one. That survived a deliberate break, and
+  the break looked like the wrong line rather than a bad assertion. Anchor the end:
+  match the punctuation that follows the number, or compare the extracted value
+  instead of searching for it. This bites hardest on counts, which is where one digit
+  becoming two is exactly the failure being guarded against.
 - **Deleting a safeguard means guarding the reason it became unnecessary.** The frame
   padding in `ffmpeg_command()` was removed because the time-pinned FFT window makes the
   bin count 128 at every rate. True, but only because `validate_sample_rate` refuses
@@ -1094,6 +1199,25 @@ Swallowing an exception to protect the caller is right, and it converts a failur
 into a missing entry rather than a visible one. So the count is part of the result.
 Ask how many answers were expected, not only what the answers that came back say.
 
+**A value inside the valid range cannot also mean "no value".** The same confusion,
+one level smaller. `SdrplayDevice` treated a reported gain of zero as "the change has
+not been applied yet" and fell back to the figure that had been asked for, because the
+library leaves the field at zero until it fills it in. Zero is a valid gain, so a
+receiver sitting there reported the wrong number, and nothing could tell the
+two apart.
+
+Whether an answer arrived and what the answer says are two facts, and one field cannot
+carry both. Here the delivery wait already knew the first, so the fix was to pass it
+rather than to infer it from the value. Where nothing else knows, `None` beside the
+value says it and no in-band figure does.
+
+The tell is a comment explaining what a particular value means *instead of* itself.
+`buzz.dsp.SILENCE_DBFS` is the same rule obeyed rather than an exception to it, and
+its own comment states the test: -128 dBFS sits "well below the ~-90 dBFS minimum for
+a 1-LSB 16-bit signal, so it is unambiguously a sentinel and is never confused with a
+real reading". A sentinel outside the valid range displaces nothing. One inside it
+takes a reading away from you.
+
 ## Comments and documentation
 
 Match the voice already in the codebase: concise, factual, plain. Avoid AI-assistant tics:
@@ -1116,7 +1240,7 @@ why. Its self-lint list is the thing to run over any prose before returning it.
 
 **Verifying a wording-only pass.** A rewrite that touches every docstring and comment
 in a file is exactly the kind of change that is easy to get subtly wrong - a dropped
-number, a fact that quietly changed, a paren that landed in the wrong place and broke
+number, a fact that quietly changed, a paren that went in the wrong place and broke
 the code underneath it. Prove it did not, the same way every time, before committing:
 
 1. **AST-diff with docstrings zeroed.** Parse the file before and after with `ast`,
@@ -1152,9 +1276,11 @@ they are banned outright in files and comments:
 - **These words:** *genuine*, *genuinely*, *load-bearing*, *is real*, *are real*, *land*,
   *lands*, *landed*.
 
-Most of them are doing emphasis rather than work. "A genuine bug" is a bug; "the
-load-bearing line" is the line that matters; "the value lands at 128" is the value being
-128. Say the thing.
+Most of them are doing emphasis rather than work.
+"A genuine bug" is a bug.
+"The load-bearing line" is the line that matters.
+"The value lands at 128" is the value being 128.
+Say the thing.
 
 - **No sentence fragments.** "Two reasons, not one." has no verb and is not a
   sentence. Write "There are two reasons for this: ..." instead, or fold the

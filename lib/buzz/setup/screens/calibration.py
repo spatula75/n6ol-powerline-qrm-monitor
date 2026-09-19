@@ -26,7 +26,7 @@ from textual.containers import Vertical
 from textual.css.query import NoMatches
 from textual.widgets import Button, Static
 
-from buzz.config import AudioConfig, BuzzConfig, RtlSdrConfig, StationConfig
+from buzz.config import AudioConfig, BuzzConfig, StationConfig, receiver_settings_from
 from buzz.dsp import SILENCE_DBFS
 from buzz.sampler import LevelStream, SoundCardLevelStream
 from buzz.setup.schema import SectionValues
@@ -42,9 +42,9 @@ _METER_BLOCKSIZE = 320
 _SDR_METER_BLOCK_SAMPLES = 2048
 # How far Up and Down move the offset, and how far PageUp and PageDown move it.
 #
-# A tenth, because the tuner's gain steps are given to a tenth and the offset starts
-# at the negative of one.  At half a dB the offset can never reach the figure that
-# matches a gain of 40.2, which is the exact case an operator calibrating a receiver
+# A tenth, because an RTL-SDR's gain steps are given to a tenth and its estimated
+# offset follows them.  At half a dB the offset can never reach the figure that
+# matches a gain of 40.2, which is the exact case an operator calibrating that receiver
 # is in: the arithmetic they are correcting is in tenths and the control was not.
 #
 # A tenth is slow across a wide correction, so a whole dB has its own pair of keys
@@ -54,26 +54,27 @@ _COARSE_STEP_DB = 1.0
 
 
 def level_offset_for(audio_values: SectionValues, station_values: SectionValues,
-                     rtlsdr_values: SectionValues | None) -> float:
+                     receiver_values: SectionValues | None) -> float:
     """The offset the meter should apply, from whichever section owns it.
 
     A receiver keeps its own, because [station] audio_rf_conversion_db describes a
     radio feeding a sound card and means nothing to an SDR: the tuner gain is the
     conversion, and the two numbers are unrelated.  A receiver that has never been
-    calibrated has no stored offset at all, and RtlSdrConfig.level_offset_db falls
-    back to the negative of the tuner gain, which is the estimate the menu shows.
+    calibrated has no stored offset at all, and SdrConfig.level_offset_db asks its
+    device for the estimate the menu shows.
 
     Reading the station's figure for both is how the meter came to show -32.0 dB, the
     sound-card default, against a receiver whose own setting said -40.2.  The reading
     was right and the label on it was somebody else's.
     """
-    if audio_values.get('source') != 'rtlsdr':
+    settings = receiver_settings_from(audio_values.get('source'), receiver_values)
+    if settings is None:
         return station_values['audio_rf_conversion_db']
-    return RtlSdrConfig(**(rtlsdr_values or {})).level_offset_db
+    return settings.level_offset_db
 
 
 def _open_level_stream(audio_values: SectionValues, offset_db: float,
-                       rtlsdr_values: SectionValues | None = None) -> LevelStream:
+                       receiver_values: SectionValues | None = None) -> LevelStream:
     """Open a level stream on whichever source the config selects.
 
     Both kinds produce the same reading through the same arithmetic, which is the
@@ -84,37 +85,33 @@ def _open_level_stream(audio_values: SectionValues, offset_db: float,
     not open, or has no driver bound to it - which every caller turns into an
     on-screen message rather than letting it crash the dialog.
     """
-    if audio_values.get('source') == 'rtlsdr':
-        return _open_sdr_level_stream(rtlsdr_values or {}, offset_db)
+    source = audio_values.get('source', '')
+    if receiver_settings_from(source, receiver_values) is not None:
+        return _open_sdr_level_stream(source, receiver_values or {}, offset_db)
     config = BuzzConfig(audio=AudioConfig(**audio_values),
                         station=StationConfig(audio_rf_conversion_db=offset_db))
     device = sd.query_devices(config.audio.input_device_name, 'input')
     return SoundCardLevelStream(config, device['index'], _METER_BLOCKSIZE)
 
 
-def _open_sdr_level_stream(rtlsdr_values: SectionValues, offset_db: float) -> LevelStream:
-    """Open the receiver and a converter for it, and meter what comes out.
+def _open_sdr_level_stream(source_name: str, receiver_values: SectionValues,
+                           offset_db: float) -> LevelStream:
+    """Open whichever receiver the config names, and meter what comes out of it.
 
     The imports sit inside the function for the reason open_live_source gives: a
-    station using a sound card should never load pyrtlsdr, which resolves a symbol as
-    it imports and so fails at import rather than at first call.
+    station should never load a driver for hardware it does not own.
 
     A small block is used rather than the pipeline's, because a meter has no deadline
     to beat and a smaller block makes the transfer pool shallow, so the reading starts
     moving promptly instead of after most of a second.
     """
     from buzz.iq import IqToAudio
-    from buzz.sdr import RtlSdrSource, SdrLevelStream
-    from buzz.sdr_device import RtlSdrDevice
+    from buzz.sdr import SdrLevelStream, SdrSource
+    from buzz.sdr_device import open_receiver
 
-    settings = RtlSdrConfig(**rtlsdr_values)
-    source = RtlSdrSource(
-        RtlSdrDevice.open(
-            settings.device_index,
-            tuned_hz=settings.frequency_hz + settings.tuning_offset_hz,
-            gain_db=settings.gain_db,
-            iq_sample_rate=settings.iq_sample_rate),
-        block_samples=_SDR_METER_BLOCK_SAMPLES)
+    settings = receiver_settings_from(source_name, receiver_values)
+    source = SdrSource(open_receiver(source_name, settings),
+                          block_samples=_SDR_METER_BLOCK_SAMPLES)
     converter = IqToAudio(source.iq_sample_rate, settings.decimation,
                           settings.bandwidth_hz, settings.tuning_offset_hz,
                           settings.sideband)
@@ -124,7 +121,7 @@ def _open_sdr_level_stream(rtlsdr_values: SectionValues, offset_db: float) -> Le
 async def close_without_blocking_the_ui(stream: LevelStream) -> None:
     """Close a level stream without stopping the event loop while it happens.
 
-    Closing a receiver is slow and can be very slow.  RtlSdrSource.close cancels the
+    Closing a receiver is slow and can be very slow.  SdrSource.close cancels the
     async read and then joins the capture thread with a five second timeout, and
     SdrLevelStream adds a second join of its own for the thread that drains it.  Run
     straight from a worker, all of that happens on the Textual event loop, so leaving
@@ -220,11 +217,11 @@ class CalibrationMeterDialog(ScopeModalScreen[None]):
     BINDINGS = [('escape', 'close', 'Close')]
 
     def __init__(self, audio_values: SectionValues, offset_db: float,
-                 rtlsdr_values: SectionValues | None = None) -> None:
+                 receiver_values: SectionValues | None = None) -> None:
         super().__init__()
         self._audio_values = audio_values
         self._offset_db = offset_db
-        self._rtlsdr_values = rtlsdr_values
+        self._receiver_values = receiver_values
 
     def compose(self):
         yield Vertical(
@@ -245,7 +242,7 @@ class CalibrationMeterDialog(ScopeModalScreen[None]):
     async def _run_meter(self) -> None:
         try:
             stream = _open_level_stream(self._audio_values, self._offset_db,
-                                        self._rtlsdr_values)
+                                        self._receiver_values)
         except Exception as exc:
             self._show(f'Could not open the input device: {exc}')
             return
@@ -332,12 +329,12 @@ class OffsetCalibrationDialog(ScopeModalScreen[Any]):
     ]
 
     def __init__(self, spec: dict[str, Any], current: float, audio_values: SectionValues,
-                 rtlsdr_values: SectionValues | None = None,
+                 receiver_values: SectionValues | None = None,
                  default_db: float | None = None) -> None:
         super().__init__()
         self._spec = spec
         self._audio_values = audio_values
-        self._rtlsdr_values = rtlsdr_values
+        self._receiver_values = receiver_values
         self._offset = float(current)
         # What Space resets to.  Passed in rather than read from the schema, because
         # the receiver's own field defaults to null: unset there means "estimate it
@@ -367,7 +364,7 @@ class OffsetCalibrationDialog(ScopeModalScreen[Any]):
     async def _run_meter(self) -> None:
         try:
             self._stream = _open_level_stream(self._audio_values, self._offset,
-                                              self._rtlsdr_values)
+                                              self._receiver_values)
         except Exception as exc:
             self._show(f'Could not open the input device: {exc}')
             return

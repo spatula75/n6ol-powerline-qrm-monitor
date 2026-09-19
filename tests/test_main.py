@@ -18,14 +18,14 @@ from buzz import sdr as sdr_module
 from buzz import wavmeta
 from buzz.analyzer import ContinuousAnalyzer
 from buzz.collector import Collector
-from buzz.config import BuzzConfig
+from buzz.config import RTLSDR, SDRPLAY, SOURCES, BuzzConfig
 from buzz.csv_store import CsvStore
 from buzz.ffmpeg import find_ffmpeg
 from buzz.loudness import resolve_gain
 from buzz.main import (
     _start_collector, _start_playback, _wait_until_interrupted, build_recording,
-    check_playback_source, configure_logging, make_weather_client, open_live_source,
-    open_playback_pipeline,
+    check_playback_source, configure_logging, keep_execution_speed_while_hidden,
+    make_weather_client, open_live_source, open_playback_pipeline,
 )
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher
@@ -67,6 +67,32 @@ class TestConfigureLogging:
     def test_buzz_logger_does_not_propagate(self):
         configure_logging()
         assert logging.getLogger('buzz').propagate is False
+
+
+class TestTheLogLevelCanBeRaised:
+    """A diagnostic nobody can switch on is a diagnostic that does not exist.
+
+    The scope says at DEBUG when its auto-range floor is what decides the scale, which
+    is the difference between a flat trace and a band that is truly quiet.  Before
+    --log-level the `buzz` tree was pinned to INFO and reaching that line meant editing
+    the program.
+    """
+
+    def test_it_defaults_to_info(self):
+        configure_logging()
+        assert logging.getLogger('buzz').level == logging.INFO
+
+    def test_debug_lets_the_diagnostics_through(self):
+        configure_logging('DEBUG')
+        assert logging.getLogger('buzz').level == logging.DEBUG
+        assert logging.getLogger('buzz.scope').isEnabledFor(logging.DEBUG)
+
+    def test_raising_it_leaves_the_root_logger_silent(self):
+        """Third-party libraries log without configuring themselves, and DEBUG on the
+        root would bury this program's own output under whatever they have to say.
+        """
+        configure_logging('DEBUG')
+        assert logging.getLogger().level == logging.CRITICAL
 
 
 class TestModuleConstants:
@@ -193,6 +219,7 @@ class TestPlaybackWritesNothing:
         with patch('sys.argv', ['buzz', '--headless', *argv]), \
              patch('buzz.main.CONFIG_PATH', tmp_path / 'no-such-config.toml'), \
              patch_in(main_module, configure_logging), \
+             patch_in(main_module, keep_execution_speed_while_hidden) as qos, \
              patch_in(main_module, check_playback_source), \
              patch_in(main_module, open_playback_pipeline) as playback, \
              patch_in(main_module, AudioSampler) as sampler, \
@@ -201,6 +228,7 @@ class TestPlaybackWritesNothing:
              patch_in(main_module, _start_collector) as collector, \
              patch_in(main_module, _wait_until_interrupted):
             main_module.main()
+        qos.assert_called_once_with()
         return playback, sampler, recorder, collector
 
     def test_playback_builds_no_recorder(self, tmp_path):
@@ -749,11 +777,11 @@ class TestCheckPlaybackSource:
 class TestTheAudioSourceHasToBeOneThisProgramKnows:
     """_load_section copies whatever the TOML holds, with no check against the schema.
 
-    The schema names the two values and the setup program enforces them, but [rtlsdr]
-    has no setup screen yet, so that section reaches the file by hand and a neighboring
-    typo in [audio] source reaches it the same way.  A branch that fell through to the
-    sound card would then open the device named in input_device_name and log a day of
-    whatever that input hears, which looks exactly like a quiet band.
+    The schema names the values and the setup program enforces them, but a receiver
+    section reaches the file by hand and a neighboring typo in [audio] source reaches
+    it the same way.  A branch that fell through to the sound card would then open the
+    device named in input_device_name and log a day of whatever that input hears, which
+    looks exactly like a quiet band.
     """
 
     @pytest.mark.parametrize('typo', ['sdr', 'RTL-SDR', 'rtl_sdr', 'RTLSDR', ''])
@@ -764,7 +792,10 @@ class TestTheAudioSourceHasToBeOneThisProgramKnows:
         with pytest.raises(RuntimeError, match='must be'):
             open_live_source(config)
 
-    def test_the_message_names_both_values_that_work(self):
+    def test_the_message_names_every_value_that_works(self):
+        """Listed from the table rather than written out, so a fourth source appears
+        in the message without anybody remembering to add it.
+        """
         config = BuzzConfig()
         config.audio.source = 'rtl-sdr'
 
@@ -772,10 +803,24 @@ class TestTheAudioSourceHasToBeOneThisProgramKnows:
             open_live_source(config)
 
         message = str(caught.value)
-        assert 'soundcard' in message and 'rtlsdr' in message, (
-            'The message refuses the value without saying what would be accepted.  '
-            'Whoever hit this is editing the file by hand and cannot see the schema.  '
-            f'It said: {message!r}')
+        for name in SOURCES:
+            assert repr(name) in message, (
+                'The message refuses the value without saying what would be accepted.  '
+                'Whoever hit this is editing the file by hand and cannot see the '
+                f'schema.  It said: {message!r}')
+
+    def test_the_openers_and_the_source_table_name_the_same_sources(self):
+        """A drift pin.  buzz.config says where each source's settings live and
+        buzz.main says how to open one, and nothing else makes the two agree.
+
+        A source registered in one and not the other fails at the worst moment: a
+        config the schema accepts, a setup program that offers the choice, and a
+        RuntimeError saying the value has no meaning.
+        """
+        assert set(main_module._OPENERS) == set(SOURCES), (
+            'buzz.main._OPENERS and buzz.config.SOURCES disagree about which sources '
+            'exist.  A source needs an entry in both: one says how to open it, the '
+            'other says which config section holds its settings.')
 
     def test_a_sound_card_source_still_opens_the_sound_card(self):
         """The guard has to let the ordinary case through, or it would read as working
@@ -784,6 +829,72 @@ class TestTheAudioSourceHasToBeOneThisProgramKnows:
         config = BuzzConfig()
         with patch.object(main_module, 'AudioSampler') as sampler:
             assert open_live_source(config) is sampler.return_value.pipeline
+
+
+class TestTheStartupLineSaysWhatGainIsInUse:
+    """The monitor writes the gain before the device is initialized and lets the
+    library apply it.  A gain sweep and tools/sdr_gain_probe both write it through an
+    update on a running stream instead, so neither exercises the startup path, and a
+    receiver sitting at a gain nobody asked for would look exactly like a band that is
+    quieter than expected.
+    """
+
+    def test_a_receiver_that_reports_its_gain_has_both_figures_shown(self):
+        device = MagicMock()
+        device.reported_gain_db = 3.4
+        assert main_module._gain_in_use(device, 3.0) == (
+            '3.0 dB gain, which the receiver reports as 3.4 dB')
+
+    def test_a_receiver_that_reports_nothing_shows_the_one_figure(self):
+        """An RTL-SDR V4 answers 0.0 at every setting, and a line reading "reports as
+        0.0 dB" would look like a fault rather than like silence.
+        """
+        device = MagicMock()
+        device.reported_gain_db = None
+        assert main_module._gain_in_use(device, 22.9) == '22.9 dB gain'
+
+    def test_a_device_with_no_such_property_shows_the_one_figure(self):
+        assert main_module._gain_in_use(object(), 22.9) == '22.9 dB gain'
+
+
+class TestEachReceiverOpensThroughItsOwnSection:
+    """Each receiver reads the section named after it, and a station that owns both
+    keeps two sets of figures.  Reading the wrong section would tune the right hardware
+    to the other receiver's frequency at the other receiver's gain.
+    """
+
+    def test_an_rtlsdr_source_reads_the_rtlsdr_section(self):
+        config = BuzzConfig()
+        config.audio.source = RTLSDR
+        config.rtlsdr.frequency_khz = 7050.0
+        with patch('buzz.sdr_device.RtlSdrDevice.open') as opened, \
+                patch.object(main_module, '_pipeline_for') as built:
+            open_live_source(config)
+        assert opened.call_args.kwargs['tuned_hz'] == config.rtlsdr.frequency_hz + 50_000
+        assert built.call_args.args[1] is config.rtlsdr
+
+    def test_an_sdrplay_source_reads_the_sdrplay_section(self):
+        config = BuzzConfig()
+        config.audio.source = SDRPLAY
+        config.sdrplay.frequency_khz = 14_200.0
+        config.sdrplay.api_path = '/opt/sdrplay/libsdrplay_api.so'
+        with patch('buzz.sdrplay_device.SdrplayDevice.open') as opened, \
+                patch.object(main_module, '_pipeline_for') as built:
+            open_live_source(config)
+        assert opened.call_args.kwargs['tuned_hz'] == config.sdrplay.frequency_hz + 50_000
+        assert opened.call_args.kwargs['gain_db'] == config.sdrplay.gain_db
+        assert opened.call_args.kwargs['api_path'] == '/opt/sdrplay/libsdrplay_api.so'
+        assert built.call_args.args[1] is config.sdrplay
+
+    def test_a_sound_card_warns_that_iq_recording_names_both_receivers(self, caplog):
+        """A sound card has no IQ, and whoever turned the setting on needs to know
+        which sources do, not only the one that existed first.
+        """
+        config = BuzzConfig()
+        config.recording.record_iq = True
+        with caplog.at_level(logging.WARNING), patch.object(main_module, 'AudioSampler'):
+            open_live_source(config)
+        assert RTLSDR in caplog.text and SDRPLAY in caplog.text
 
 
 class TestAReceiverThatWillNotOpenPrintsItsReason:
@@ -805,6 +916,7 @@ class TestAReceiverThatWillNotOpenPrintsItsReason:
         """
         args = ['buzz', '--headless']
         with patch.object(main_module, 'open_live_source', side_effect=failure), \
+                patch.object(main_module, 'keep_execution_speed_while_hidden'), \
                 patch.object(sys, 'argv', args):
             with pytest.raises(SystemExit) as exited:
                 main_module.main()
@@ -840,8 +952,8 @@ class TestAReceiverThatWillNotOpenPrintsItsReason:
 class TestOpeningAReceiverAsTheLiveSource:
     """The wiring between the three pieces the SDR path is built from.
 
-    RtlSdrSource holds the hardware, IqToAudio holds the arithmetic, and
-    RtlSdrPipeline joins them to the ring buffer.  open_live_source is the only place
+    SdrSource holds the hardware, IqToAudio holds the arithmetic, and
+    SdrPipeline joins them to the ring buffer.  open_live_source is the only place
     that knows how they fit together, and what it settles afterwards decides what every
     later measurement means: the audio rate everything downstream counts seconds by,
     and the dB offset every level is reported against.

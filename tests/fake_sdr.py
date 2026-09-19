@@ -30,6 +30,32 @@ V4_GAINS = [0.0, 0.9, 1.4, 2.7, 3.7, 7.7, 8.7, 12.5, 14.4, 15.7, 16.6, 19.7, 20.
 class FakeSdrDevice(SdrDevice):
     """An SdrDevice that answers from memory and records what it was told."""
 
+    @classmethod
+    def open_from(cls, settings):
+        """Build one from a config section, so this satisfies the contract.
+
+        A test builds this directly with the answers it wants, because the point of a
+        fake is to skip opening anything.  This exists so that the abstract method is
+        implemented and so that a caller holding a config section can still use it.
+        """
+        return cls(iq_sample_rate=settings.iq_sample_rate,
+                   tuned_hz=settings.frequency_hz + settings.tuning_offset_hz,
+                   gain_db=settings.gain_db)
+
+    @classmethod
+    def supported_gains(cls, settings):
+        """The V4's steps, which is what the rest of this fake reports by default."""
+        return list(V4_GAINS)
+
+    @classmethod
+    def effective_bits(cls):
+        """Twelve, which no real receiver here answers.
+
+        Deliberately not 8 or 15, so a test that a pipeline passes this through cannot
+        pass by matching whatever a real device would have said.
+        """
+        return 12
+
     def __init__(self, *, gains=None, iq_sample_rate=256_000, tuned_hz=3_638_000,
                  gain_db=40.2, fmt=RTL_SDR_FORMAT, blocks_to_discard_streaming=16,
                  blocks_to_discard_reading=2, gain_changes_while_streaming=False,
@@ -40,6 +66,7 @@ class FakeSdrDevice(SdrDevice):
         self._gain_db = self._nearest(gain_db)
         self._profile = DeviceProfile(
             name='fake',
+            settings_section='rtlsdr',
             sample_format=fmt,
             blocks_to_discard_streaming=blocks_to_discard_streaming,
             blocks_to_discard_reading=blocks_to_discard_reading,

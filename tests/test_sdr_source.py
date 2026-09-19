@@ -1,4 +1,4 @@
-"""Tests for RtlSdrSource, the queue between a receiver and whoever converts its IQ.
+"""Tests for SdrSource, the queue between a receiver and whoever converts its IQ.
 
 What this class does shrank when `buzz.sdr_device` took over the hardware.  Gain
 snapping, configuring, the pyrtlsdr boundary, the C callback and the bounded close all
@@ -12,7 +12,8 @@ test that can hang.
 import queue
 
 import pytest
-from buzz.sdr import _DISCARD_LOG_EVERY, DEFAULT_BLOCK_SAMPLES, RtlSdrSource
+from buzz.sdr import (_what_a_loss_means, _what_a_sustained_drift_means,
+                      _DISCARD_LOG_EVERY, DEFAULT_BLOCK_SAMPLES, SdrSource)
 from tests.fake_sdr import V4_GAINS, FakeSdrDevice
 
 BLOCK = 64
@@ -22,7 +23,7 @@ IQ_RATE = 256_000
 def source(device=None, **overrides):
     settings = dict(block_samples=BLOCK, buffer_blocks=3)
     settings.update(overrides)
-    return RtlSdrSource(device or FakeSdrDevice(iq_sample_rate=IQ_RATE), **settings)
+    return SdrSource(device or FakeSdrDevice(iq_sample_rate=IQ_RATE), **settings)
 
 
 class TestTheSinkItGivesTheDevice:
@@ -187,6 +188,73 @@ class TestTheClockDriftSymptom:
         assert s.clock_drift_seconds == 0.0
 
 
+class TestWhatTheSourcePassesThrough:
+    """A source answers for its device rather than making callers reach past it.
+
+    A passthrough that returns the wrong device's answer is invisible, because the
+    figure is a plausible number either way and nothing else in the program reads it
+    twice.  This one was first written onto SweepReader by mistake, where nothing asks
+    it, and the scope silently got a sound card's answer instead.
+    """
+
+    def test_the_bit_depth_comes_from_the_device(self):
+        reader = source(FakeSdrDevice(iq_sample_rate=IQ_RATE))
+        assert reader.effective_bits == FakeSdrDevice.effective_bits() == 12
+
+    def test_the_floor_multiple_comes_from_the_device_as_well(self):
+        """The other half of what the scope asks a source, and it travels the same
+        way for the same reason.  A receiver measured against its own dead channel
+        answers more than the default, and the scope has to see that answer.
+        """
+        reader = source(FakeSdrDevice(iq_sample_rate=IQ_RATE))
+        assert reader.scope_floor_steps == FakeSdrDevice.scope_floor_steps() == 1.0
+
+
+class TestWhatTheDriftWarningSays:
+    """One interval short of audio and a clock that has walked away are different
+    faults, and the wording has to send an operator to different places.
+
+    It said "samples were probably lost, check what else is taking the CPU" for both
+    signs once, which is wrong for a negative figure and sent somebody hunting a busy
+    machine that had eleven idle cores.  It then said a stall held the receiver up,
+    which a direct measurement of the callback ruled out: over nine paired minutes on
+    an RSP1B the worst backlog stayed between 71.6 and 87.6 ms while the drift swung
+    from -56.4 to +22.3 ms.  See docs-notebook/receiver-clock-drift.md.
+    """
+
+    def test_a_loss_names_the_measurements_it_spoils(self):
+        message = _what_a_loss_means()
+        assert 'samples were lost' in message
+        assert 'suspect' in message, (
+            'Audio that went missing does spoil the minute it went missing from, and '
+            'an operator needs to know which rows to distrust.')
+        assert 'CPU' in message
+
+    def test_a_sustained_positive_drift_is_a_steady_loss(self):
+        """Audio can only go missing in the direction that leaves the interval holding
+        more time than audio, so a positive total is samples disappearing.
+        """
+        message = _what_a_sustained_drift_means(0.4)
+        assert 'going missing' in message
+        assert 'CPU' in message
+
+    def test_a_sustained_negative_drift_is_a_rate_that_is_wrong(self):
+        """A negative total cannot be a loss, so the receiver is producing more audio
+        than the rate it was configured at accounts for.  That is the one fault the
+        per-interval check cannot see, because a buffer cycling looks the same for one
+        minute at a time.
+        """
+        message = _what_a_sustained_drift_means(-0.4)
+        assert 'faster than the rate' in message
+        assert 'CPU' not in message, (
+            'A machine that is too busy cannot make a receiver produce extra audio, so '
+            'sending an operator to look at load would waste their time.')
+
+    def test_the_two_directions_do_not_share_wording(self):
+        assert _what_a_sustained_drift_means(0.4) != _what_a_sustained_drift_means(-0.4)
+
+
+
 class TestWhatItDelegates:
     """The device answers for the hardware, so these exist to stop the source growing
     its own copy of an answer that can drift from the device's.
@@ -208,7 +276,7 @@ class TestWhatItDelegates:
         assert source(block_samples=2048).block_samples == 2048
 
     def test_the_default_block_size_is_the_modules(self):
-        assert RtlSdrSource(FakeSdrDevice()).block_samples == DEFAULT_BLOCK_SAMPLES
+        assert SdrSource(FakeSdrDevice()).block_samples == DEFAULT_BLOCK_SAMPLES
 
 
 class TestClosing:
@@ -248,7 +316,7 @@ class TestTheLevelMeterStream:
         from buzz.iq import IqToAudio
         from buzz.sdr import SdrLevelStream
         device = device or FakeSdrDevice(iq_sample_rate=IQ_RATE)
-        source = RtlSdrSource(device, block_samples=BLOCK, buffer_blocks=2)
+        source = SdrSource(device, block_samples=BLOCK, buffer_blocks=2)
         converter = IqToAudio(IQ_RATE, 16, 6_400, 50_000)
         return SdrLevelStream(source, converter, -40.2), device
 

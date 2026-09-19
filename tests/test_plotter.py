@@ -111,16 +111,137 @@ class TestGcGuarded:
 
         assert func() == 42
 
-    def test_collect_runs_after_call(self):
+    def test_no_collection_is_forced(self):
+        """When to collect is the interpreter's decision, not this decorator's.
+
+        Forcing a pass only moves when it happens, and choosing a generation to force
+        chooses which of its survivors are promoted past the next pass.  An earlier
+        version forced one on the grounds that it freed 9000 objects after a render.
+        That figure says there was cyclic garbage, not that this code had to free it.
+
+        The disable is not optional and is not what this guards: the shiboken crash
+        needs it.  See the decorator's own comment.
+        """
         calls = []
 
         @_gc_guarded
         def func():
-            assert calls == []   # not yet called during the guarded call
+            return 42
 
-        with patch('buzz.plotter.gc.collect', side_effect=lambda: calls.append(1)):
-            func()
-        assert calls == [1]
+        with patch('buzz.plotter.gc.collect', side_effect=lambda *_: calls.append(1) or 0):
+            assert func() == 42
+        assert calls == [], (
+            'The guard called gc.collect() itself.  Deciding when to collect is the '
+            "interpreter's job, and forcing one here promotes whatever survives it "
+            'past the pass that would have caught it.')
+
+
+class TestARenderWithNothingToPlot:
+    def test_an_empty_csv_writes_no_chart_and_leaves_no_figure(self, tmp_path):
+        """A day with no rows yet is the ordinary state at midnight, not a fault.
+
+        Writing a chart from it would put an empty picture on the web page, and the
+        page has no way to say that the emptiness is the file's rather than the band's.
+        Leaving the previous chart in place is the honest answer, and Collector reports
+        a chart that has stopped being written.
+        """
+        import matplotlib.pyplot as plt
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'empty.csv'
+        csv_path.write_text(
+            'ISO datetime,120pps SNR,120pps signal dB,Noise floor dB,T,H,S,W,G,B' + chr(10),
+            encoding='utf-8')
+        output = tmp_path / 'should_not_exist.png'
+
+        plotter.generate_graph_from_csv(csv_path, output)
+
+        assert not output.exists(), (
+            f'A CSV with a header and no rows produced {output.name}.  An empty chart '
+            'on the web page cannot be told apart from a quiet band.')
+        assert plt.get_fignums() == [], (
+            'The early return left a figure open, so pyplot holds it forever and every '
+            'later render adds another.')
+
+
+class TestEveryRenderClosesItsFigure:
+    """What the guard leans on, now that it forces no collection.
+
+    A handle that is still referenced is not reclaimed by any collection, so
+    plt.close() in each render is the only thing that releases one.  A fourth chart
+    method that forgot the call would leak with nothing else to catch it, and the leak
+    shows as renders that slow down over hours and come right after a restart.
+
+    Measured on a running monitor, renders went from about 300 ms to about 1250 ms
+    within a minute and stayed there until a restart, while the charts afterwards drew
+    from more data and were faster.  That is the shape this guards against.
+    """
+
+    @staticmethod
+    def _open_figures():
+        import matplotlib.pyplot as plt
+        return plt.get_fignums()
+
+    def test_a_daily_chart_closes_its_figure(self, tmp_path):
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv(csv_path, n_rows=20)
+        plotter.generate_graph_from_csv(csv_path, tmp_path / 'out.png')
+        assert self._open_figures() == [], (
+            'generate_graph_from_csv left a figure open, so pyplot holds it for the '
+            'life of the process and every later render carries it.')
+
+    def test_a_smoothed_chart_closes_its_figure(self, tmp_path):
+        """The same method again with smoothing, because the collector calls it twice
+        a minute and the second call takes a different path through the series code.
+        """
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv(csv_path, n_rows=20)
+        plotter.generate_graph_from_csv(csv_path, tmp_path / 'smooth.png', smooth=6)
+        assert self._open_figures() == [], (
+            'generate_graph_from_csv left a figure open when smoothing.')
+
+    def test_a_frequency_chart_closes_its_figure(self, tmp_path):
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv(csv_path, n_rows=20)
+        plotter.generate_frequency_graph(csv_path, tmp_path / 'freq.png',
+                                         datetime(2024, 1, 1, 12, tzinfo=_TZ))
+        assert self._open_figures() == [], (
+            'generate_frequency_graph left a figure open.')
+
+    def test_a_summary_chart_closes_its_figure(self, tmp_path):
+        """The no-data path of this one was already covered.  The path that actually
+        draws was not, which is the one the collector runs on the hour.
+        """
+        plotter, store = _make_plotter(tmp_path)
+        store.read_range_scores = MagicMock(return_value={
+            datetime(2024, 1, 1, hour, minute, tzinfo=_TZ): 0.5
+            for hour in range(24) for minute in (0, 15, 30, 45)})
+        plotter.generate_summary_graph(tmp_path / 'summary.png',
+                                       datetime(2024, 1, 1, tzinfo=_TZ))
+        assert self._open_figures() == [], (
+            'generate_summary_graph left a figure open on the path that draws.')
+
+
+class TestFreezingTheStartupHeap:
+    """main.freeze_live_heap takes the long-lived objects out of every later pass.
+
+    A collection costs what it walks, and this program's imports, ring buffer and
+    display live until it exits, so walking them finds nothing every time.
+    """
+
+    def test_freezing_moves_objects_beyond_the_collector(self):
+        from buzz.main import freeze_live_heap
+        already_frozen = gc.get_freeze_count()
+        try:
+            freeze_live_heap()
+            assert gc.get_freeze_count() > already_frozen, (
+                'gc.get_freeze_count() did not move, so nothing was frozen and every '
+                'later collection still walks the whole heap.')
+        finally:
+            if already_frozen == 0:
+                gc.unfreeze()
 
 
 class TestSmooth:

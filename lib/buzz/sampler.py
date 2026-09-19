@@ -97,10 +97,10 @@ class RingBufferPipeline:
         # meaning the same thing whatever the audio arrives at.
         #
         # chunk_size and dtype exist for a buffer holding something other than the
-        # monitor's audio.  The raw IQ buffer holds unsigned bytes and is appended one
-        # whole device block at a time, because nothing reads it by chunk count the way
-        # the analyzer reads audio.  Both default to what every audio buffer has always
-        # used, so no existing caller changes.
+        # monitor's audio.  The raw IQ buffer holds whatever its receiver delivers and
+        # is appended one whole device block at a time, because nothing reads it by
+        # chunk count the way the analyzer reads audio.  Both default to what every
+        # audio buffer has always used, so no existing caller changes.
         self._chunk_size = self.CHUNK_SIZE if chunk_size is None else chunk_size
         # Normalized, so that itemsize and str are available to anything asking
         # what this buffer holds.  A recorder sizes its .wav frames from it.
@@ -198,6 +198,32 @@ class RingBufferPipeline:
     def dtype(self) -> np.dtype:
         """What one sample of this buffer is, which decides a recording's frame size."""
         return self._dtype
+
+    @property
+    def effective_bits(self) -> int:
+        """How many bits of the int16 samples this source really carries.
+
+        Everything downstream sees int16 whatever the source, so a source of fewer
+        bits arrives in coarser steps rather than in a smaller range.  The scope uses
+        this to decide how far it will magnify before it would be drawing the source's
+        own quantization noise at full height.  See scope.minimum_full_scale.
+
+        Sixteen here, because a sound card delivers int16 and means all of it.  A
+        receiver answers for its own converter.
+        """
+        return 16
+
+    @property
+    def scope_floor_steps(self) -> float:
+        """How many of this source's own steps the scope refuses to magnify past.
+
+        This answers one, which never clamps a signal that is really present and is
+        therefore the answer to give where nobody has measured.  A sound card is that
+        case for good: its dead level depends on the operator's AF gain, so no figure
+        stated here would hold across two stations.  A receiver measured against its
+        own dead channel answers larger.  See scope.minimum_full_scale.
+        """
+        return 1.0
 
     @property
     def iq_buffer(self) -> 'RingBufferPipeline | None':
@@ -482,7 +508,7 @@ class LevelStream:
         None means nothing arrived in time, which is what an unplugged receiver or a
         sound card that went away looks like from here.  Returning it rather than
         waiting forever is the difference between a meter that says so and a dialog
-        that freezes on a number that stopped being true.  `RtlSdrSource.read`
+        that freezes on a number that stopped being true.  `SdrSource.read`
         returns None on the same grounds.
         """
         if not self._event.wait(self.READ_TIMEOUT_SECONDS if timeout is None else timeout):

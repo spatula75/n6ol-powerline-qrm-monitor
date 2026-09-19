@@ -1,4 +1,4 @@
-"""Tests for buzz.sdr.RtlSdrPipeline, the thread joining capture to the ring buffer.
+"""Tests for buzz.sdr.SdrPipeline, the thread joining capture to the ring buffer.
 
 No receiver and no threads: the feeder's body is driven by calling _consume directly,
 which is where all the behavior lives.  The thread itself only decides when to call
@@ -15,15 +15,16 @@ import pytest
 from buzz import sdr as sdr_module
 from buzz.iq import IqToAudio
 from buzz.sampler import buffer_chunks
-from buzz.sdr import IqBlock, RtlSdrPipeline
-from buzz.sdr_device import RTL_SDR_FORMAT
+from buzz.sdr import IqBlock, SdrPipeline
+from buzz.sdr_device import RTL_SDR_FORMAT, DeviceProfile
+from buzz.sdrplay_device import SDRPLAY_FORMAT
 
 IQ_RATE, DECIMATION, BANDWIDTH, OFFSET = 256_000, 16, 4_000, 50_000
 BLOCK = 16_384
 
 
 class StubSource:
-    """Stands in for RtlSdrSource.  The pipeline reads from it, closes it, and asks it
+    """Stands in for SdrSource.  The pipeline reads from it, closes it, and asks it
     about the receiver clock.
     """
 
@@ -36,6 +37,12 @@ class StubSource:
         self.iq_sample_rate = 256_000
         # What the raw IQ buffer sizes its chunks by, when one is being kept.
         self.block_samples = BLOCK
+        # Twelve, which is neither receiver's real answer, so a test that this
+        # reaches the pipeline cannot pass by matching a real device by accident.
+        self.effective_bits = 12
+        # Two and a bit, which is neither receiver's real answer, for the same reason.
+        self.scope_floor_steps = 2.25
+        self.profile = DeviceProfile('stub', 'rtlsdr', RTL_SDR_FORMAT, 0, 0, False)
 
     def start(self):
         self.started = True
@@ -66,7 +73,7 @@ class FakeClock:
 
 def pipeline(clock=None, keep_iq=False):
     converter = IqToAudio(IQ_RATE, DECIMATION, BANDWIDTH, OFFSET)
-    return (RtlSdrPipeline(StubSource(), converter, clock=clock or FakeClock(),
+    return (SdrPipeline(StubSource(), converter, clock=clock or FakeClock(),
                            keep_iq=keep_iq),
             converter)
 
@@ -238,6 +245,41 @@ def test_the_pipeline_is_a_ring_buffer_like_every_other_source():
         assert hasattr(p, name), f'{name} is missing, so a consumer would break on it'
 
 
+class TestWhatThePipelineSaysAboutItsReceiver:
+    """The scope holds a pipeline, not a device, so the pipeline has to answer.
+
+    This was written after the property was put on SweepReader by mistake, where
+    nothing asks.  The scope then fell through to the base class, which answers
+    sixteen, and every receiver silently got a sound card's magnification limit.
+    ScopeWidget carries a coverage pragma, so nothing else would have found it.
+    """
+
+    def test_the_bit_depth_reaches_the_pipeline(self):
+        p, converter = pipeline()
+        expected = min(16.0, 12 + converter.processing_gain_bits)
+        assert p.effective_bits == pytest.approx(expected)
+
+    def test_the_multiple_the_floor_is_worth_reaches_the_pipeline_too(self):
+        """The step size and how many steps are two different facts, and the second
+        one belongs to the receiver rather than to the conversion.
+
+        The filter changes the size of a step, which effective_bits already carries.
+        Adding the filter to this as well would count it twice.
+        """
+        p, _ = pipeline()
+        assert p.scope_floor_steps == 2.25
+
+    def test_the_floor_follows_from_it(self):
+        """End to end, in the unit the scope works in: a coarser receiver is allowed
+        less magnification, and the arithmetic in between is scope.minimum_full_scale.
+        """
+        from buzz.scope import _FLOOR_STEPS, minimum_full_scale
+        p, converter = pipeline()
+        expected_bits = min(16.0, 12 + converter.processing_gain_bits)
+        assert minimum_full_scale(p.effective_bits, _FLOOR_STEPS) == pytest.approx(
+            minimum_full_scale(expected_bits, _FLOOR_STEPS))
+
+
 class TestTheHealthCountersReachTheLog:
     """Four counters recorded a quiet failure and nothing read any of them.
 
@@ -339,17 +381,92 @@ class TestTheHealthCountersReachTheLog:
 
     def test_a_receiver_clock_running_away_is_reported(self, caplog):
         """The only evidence that samples went missing, since nothing else can count
-        them.  See RtlSdrSource.clock_drift_seconds.
+        them.  See SdrSource.clock_drift_seconds.
+
+        The drift appears after the first interval, because the first one is the
+        baseline and anything already there when it ends is taken as the starting
+        point rather than as a minute's worth of movement.
         """
         clock = FakeClock()
         p, _ = pipeline(clock)
-        p.source.clock_drift_seconds = 0.5      # 500 ms of audio missing
 
         with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
-            self.consume_for(p, clock, 120.0)
+            self.consume_for(p, clock, 60.0)
+            p.source.clock_drift_seconds = 0.5      # 500 ms of audio missing
+            self.consume_for(p, clock, 60.0)
 
         assert len(caplog.messages) == 1, f'expected one warning, got {caplog.messages}'
         assert 'clocks moved' in caplog.messages[0] and '+500 ms' in caplog.messages[0]
+
+    def test_the_first_interval_is_a_baseline_rather_than_a_measurement(self, caplog):
+        """A receiver fills its pipeline as it starts and delivers that first stretch
+        faster than real time, so the drift standing at the end of the first interval
+        describes the startup rather than the run.
+
+        Measured on an SDRplay RSP1B, that came to 37 ms against a 30 ms limit, so it
+        warned once at exactly one minute on every single run and never again.  The
+        message told the operator their levels were suspect when nothing was wrong.
+        """
+        clock = FakeClock()
+        p, _ = pipeline(clock)
+        p.source.clock_drift_seconds = -0.037   # a startup burst, and nothing after it
+
+        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+            self.consume_for(p, clock, 60.0)
+            self.consume_for(p, clock, 60.0)
+
+        assert not caplog.messages, caplog.messages
+
+    def test_a_leak_too_slow_for_one_interval_is_still_caught(self, caplog):
+        """The fault the per-interval check cannot see, and the reason the total exists.
+
+        Twenty milliseconds a minute is under the per-interval limit forever, so that
+        check never speaks, while the clock walks away at 333 ppm and every measurement
+        goes quietly wrong.  Only the total since the baseline finds it.
+        """
+        clock = FakeClock()
+        p, _ = pipeline(clock)
+        per_interval = 0.020
+        assert per_interval < 60.0 * sdr_module._DRIFT_PPM_LIMIT / 1e6, (
+            'This has to stay under the per-interval limit, or it proves nothing about '
+            'the total.')
+
+        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+            for interval in range(1, 25):
+                p.source.clock_drift_seconds = per_interval * interval
+                self.consume_for(p, clock, 60.0)
+
+        assert len(caplog.messages) == 1, (
+            f'A leak of 20 ms a minute should be reported once, when the total passes '
+            f'{sdr_module._CUMULATIVE_DRIFT_LIMIT_SECONDS * 1e3:.0f} ms, and not once '
+            f'per minute afterwards: {caplog.messages}')
+        assert 'from where it started' in caplog.messages[0], caplog.messages
+        assert 'going missing' in caplog.messages[0], (
+            'A positive total is audio disappearing, so the message has to send the '
+            f'operator after load rather than after a sample rate: {caplog.messages}')
+
+    def test_a_buffer_cycling_is_never_reported(self, caplog):
+        """Measured on an RSP1B, the receiver library fills a buffer for eight or nine
+        minutes to between +48 and +64 ms and then empties it in one interval.  Three
+        cycles across two runs all returned to within 20 ms of zero.
+
+        Nothing is lost while that happens, so nothing should be said.  The old check
+        warned on every discharge, which is once every eight minutes for the life of
+        the station.  See docs-notebook/receiver-clock-drift.md.
+        """
+        clock = FakeClock()
+        p, _ = pipeline(clock)
+        cycle = [0.020, 0.042, 0.031, 0.041, 0.043, 0.045, 0.041, 0.064, 0.007]
+
+        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+            for _ in range(3):
+                for total in cycle:
+                    p.source.clock_drift_seconds = total
+                    self.consume_for(p, clock, 60.0)
+
+        assert caplog.messages == [], (
+            'A buffer that fills and empties loses nothing, and the discharge is the '
+            f'largest single movement there is: {caplog.messages}')
 
     def test_two_crystals_disagreeing_is_not_reported(self, caplog):
         """This counter needs a limit where the others do not, because it is never
@@ -368,6 +485,32 @@ class TestTheHealthCountersReachTheLog:
             f'A drift of 20 ppm was reported as lost samples: {caplog.messages}.  '
             f'_DRIFT_PPM_LIMIT is {sdr_module._DRIFT_PPM_LIMIT} ppm, so anything under '
             'that has to pass as two clocks disagreeing.')
+
+    def test_every_interval_is_reported_at_debug_even_when_it_does_not_warn(self, caplog):
+        """Telling a slightly wrong rate from a stall needs the intervals that stayed
+        quiet.  A stall conserves blocks, so it reads positive in the interval that
+        loses them and negative in the interval that gets them back, as a pair.  A rate
+        that is a little wrong reads the same small figure every interval instead, and
+        crosses the limit only when jitter carries it over.  The warning cannot show
+        either shape, because it speaks only when the limit is crossed.
+        """
+        clock = FakeClock()
+        p, _ = pipeline(clock)
+        # 20 ppm per interval, far under the 500 ppm limit, so nothing warns.
+        with caplog.at_level(logging.DEBUG, logger='buzz.sdr'):
+            for interval in range(1, 4):
+                p.source.clock_drift_seconds = -60.0 * 20e-6 * interval
+                self.consume_for(p, clock, 60.0)
+
+        moved = [m for m in caplog.messages if 'Receiver clock moved' in m]
+        assert len(moved) == 2, (
+            'The first interval is the baseline and the two after it are movements, so '
+            f'two lines were expected at DEBUG.  Got {moved} out of {caplog.messages}.')
+        assert all('-1.2 ms' in line for line in moved), (
+            f'Each interval moved 20 ppm of 60 s, which is -1.2 ms.  Got {moved}.')
+        assert not [m for m in caplog.messages if 'more than a crystal' in m], (
+            f'20 ppm is under the {sdr_module._DRIFT_PPM_LIMIT} ppm limit, so the '
+            f'DEBUG line must not come with a warning: {caplog.messages}.')
 
     def test_output_saturation_is_reported_even_without_raw_clipping(self, caplog):
         """The two counts have separate causes, so one can move without the other.  A
@@ -438,6 +581,36 @@ class TestKeepingRawIq:
         assert span.samples.shape == (BLOCK, 2)
         assert np.array_equal(span.samples[:, 0], one.raw[0::2])   # I
         assert np.array_equal(span.samples[:, 1], one.raw[1::2])   # Q
+
+    def test_a_sixteen_bit_receiver_keeps_all_sixteen_bits(self):
+        """The buffer took unsigned bytes whatever the receiver was, so an SDRplay's
+        signed 16-bit samples were stored in a type that cannot hold them.
+
+        This picks values that keeping the low byte changes, every one of them:
+        -32768 becomes 0, 20000 becomes 32, and -5 becomes 251.  IqEventRecorder
+        reads its frame width off this buffer, so the .wav header would have called
+        those bytes correct.
+        """
+        source = StubSource()
+        source.profile = DeviceProfile('stub', 'sdrplay', SDRPLAY_FORMAT, 0, 0, True)
+        sdr = SdrPipeline(source, IqToAudio(IQ_RATE, DECIMATION, BANDWIDTH, OFFSET),
+                          clock=FakeClock(), keep_iq=True)
+        raw = np.array([-32768, 20000, -5, 7, 32767, -1], dtype=np.int16)
+        sdr._consume(IqBlock(raw=raw, fmt=SDRPLAY_FORMAT, arrived_at=0.0, index=1))
+        span = sdr.iq_buffer.read_from(0)
+        assert sdr.iq_buffer.dtype == np.dtype(np.int16)
+        assert np.array_equal(span.samples.reshape(-1), raw)
+
+    def test_the_element_type_is_the_one_the_receiver_delivers(self):
+        """A drift pin between the buffer and the device profile that fills it.  The
+        two state the same fact and nothing else makes them agree.
+        """
+        for fmt in (RTL_SDR_FORMAT, SDRPLAY_FORMAT):
+            source = StubSource()
+            source.profile = DeviceProfile('stub', 'rtlsdr', fmt, 0, 0, False)
+            sdr = SdrPipeline(source, IqToAudio(IQ_RATE, DECIMATION, BANDWIDTH, OFFSET),
+                              clock=FakeClock(), keep_iq=True)
+            assert sdr.iq_buffer.dtype == fmt.dtype
 
     def test_it_holds_the_same_span_of_time_the_audio_buffer_does(self):
         """The lead-in an IQ recording gets has to match the one its audio gets, or the

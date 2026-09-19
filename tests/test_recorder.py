@@ -26,6 +26,9 @@ from buzz.recorder import (
     build_recording,
 )
 from buzz.sampler import RingBufferPipeline
+from buzz.sdr import IqRingBuffer
+from buzz.sdr_device import IqBlock
+from buzz.sdrplay_device import SDRPLAY_FORMAT
 
 CHUNK = RingBufferPipeline.CHUNK_SIZE
 
@@ -1940,7 +1943,7 @@ class TestKeepingSomeDiskFree:
 
 
 class PipelineThatKeptIq(RingBufferPipeline):
-    """An audio pipeline that also held the raw IQ, the way RtlSdrPipeline does."""
+    """An audio pipeline that also held the raw IQ, the way SdrPipeline does."""
 
     def __init__(self, iq: RingBufferPipeline) -> None:
         super().__init__()
@@ -1959,6 +1962,44 @@ class TestRecordingRawIq:
     """
 
     IQ_RATE = 4 * SAMPLE_RATE      # a whole number of IQ samples per audio sample
+
+    def test_it_reads_the_section_of_the_receiver_in_use(self, tmp_path):
+        """An IQ file carries the frequency, gain and rate it was captured at, and
+        nothing in the file says which section those came from.
+
+        Reading [rtlsdr] on an SDRplay station would label every capture with another
+        receiver's figures, all of them plausible and none of them true.  The rate is
+        the worst of them, because durations and the lead-in are counted by it.
+        """
+        iq = RingBufferPipeline(sample_rate=self.IQ_RATE, chunk_size=self.IQ_RATE,
+                                dtype=np.int16)
+        config = _make_config(tmp_path)
+        config.audio.source = 'sdrplay'
+        config.sdrplay.iq_sample_rate = self.IQ_RATE
+        config.sdrplay.frequency_khz = 7050.0
+        config.sdrplay.gain_db = -55.0
+        config.rtlsdr.iq_sample_rate = 999      # what it must not pick up
+
+        recorder = IqEventRecorder(iq, config, charged_wait_seconds=0.0)
+        settings = recorder._metadata_settings('test')
+
+        assert settings['sample_rate'] == self.IQ_RATE
+        assert settings['listening_frequency_hz'] == 7_050_000
+        assert settings['gain_db'] == -55.0
+        assert recorder.RATE_SETTING == '[sdrplay] iq_sample_rate'
+
+    def test_a_sound_card_cannot_produce_one(self, tmp_path):
+        """BuzzConfig.record_iq already answers no, so reaching here means a caller
+        built the recorder without asking.  Failing by name beats labelling a capture
+        with a receiver that was never open.
+        """
+        iq = RingBufferPipeline(sample_rate=self.IQ_RATE, chunk_size=self.IQ_RATE,
+                                dtype=np.int16)
+        config = _make_config(tmp_path)
+        config.audio.source = 'soundcard'
+
+        with pytest.raises(ValueError, match='needs a receiver'):
+            IqEventRecorder(iq, config, charged_wait_seconds=0.0)
 
     def _trigger(self, tmp_path, **recording):
         iq = RingBufferPipeline(sample_rate=self.IQ_RATE, chunk_size=self.IQ_RATE,
@@ -2029,6 +2070,37 @@ class TestRecordingRawIq:
             written = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.uint8)
         assert np.array_equal(written, known), (
             'the file should be the bytes that went in, unaltered at both ends')
+
+    def test_a_sixteen_bit_receiver_writes_a_sixteen_bit_file(self, tmp_path):
+        """The frame width follows the buffer, so a buffer fixed at unsigned bytes
+        wrote the low byte of each SDRplay sample under a header calling it correct.
+
+        This drives the whole path rather than any one part of it, from the buffer
+        SdrPipeline fills through to the header the recorder writes, because those two
+        are what have to agree.  The values are chosen so that keeping the low byte
+        changes every one of them.
+        """
+        iq = IqRingBuffer(self.IQ_RATE, self.IQ_RATE, SDRPLAY_FORMAT)
+        audio = PipelineThatKeptIq(iq)
+        config = _make_config(tmp_path)
+        config.audio.source = 'sdrplay'
+        config.sdrplay.iq_sample_rate = self.IQ_RATE
+        analyzer = FakeAnalyzer()
+        trigger = build_recording(audio, analyzer, config)
+
+        known = np.tile(np.array([-32768, 20000, -5, 7, 32767, -1], dtype=np.int16),
+                        self.IQ_RATE // 3)
+        iq.add(IqBlock(raw=known, fmt=SDRPLAY_FORMAT, arrived_at=0.0, index=1))
+        _feed(audio, 1)
+        analyzer.lock()
+        trigger.tick()
+        trigger.disarm()
+
+        with wave.open(str(self._iq_file(tmp_path)), 'rb') as wav:
+            assert wav.getsampwidth() == 2, 'two bytes per sample, as the device sends'
+            written = np.frombuffer(wav.readframes(wav.getnframes()), dtype=np.int16)
+        assert np.array_equal(written, known), (
+            'the file should be the samples that went in, at their full width')
 
     def test_the_metadata_says_where_in_the_spectrum_this_is(self, tmp_path):
         """DC in the file is where the hardware sat, not the frequency the monitor

@@ -45,6 +45,8 @@ from typing import Protocol, Self
 
 import numpy as np
 
+from buzz.config import RTLSDR, SDRPLAY, SdrConfig
+
 logger = logging.getLogger(__name__)
 
 # Values per complex sample, one for I and one for Q.  A property of IQ rather than of
@@ -83,6 +85,32 @@ _TRANSFER_POOL_BLOCKS = 15
 # what it can, pyrtlsdr sees a short read, closes the device, and raises a libusb error
 # that says nothing about sizes.
 _USB_PACKET_BYTES = 512
+
+# How many bits of the int16 audio an RTL-SDR really resolves.
+#
+# See `RtlSdrDevice.effective_bits` for why there are no more than the converter's own.
+# A module constant so that a test can read the figure rather than restate it, matching
+# EFFECTIVE_BITS in buzz.sdrplay_device.
+EFFECTIVE_BITS = 8
+
+# What this receiver's scope asked for with its antenna off, and on a live band, in
+# units of one effective audio step.
+#
+# The values came from measuring rather than from theory, on 2026-09-19 at 22.9 dB of
+# gain.  `RtlSdrDevice.scope_floor_steps` says what they mean and
+# docs-notebook/scope-auto-range-floor.md says how they were taken.
+SCOPE_DEAD_STEPS = 1.14
+SCOPE_BAND_STEPS = 2.68
+
+# How many of its own steps this receiver's scope floor is worth: the midpoint of
+# those two in decibels, which leaves equal margin against drawing silence at full
+# height and against pinning a live signal.
+#
+# Derived rather than written down, because the midpoint of two measured figures is
+# arithmetic and a third figure beside them is a chance for one to move without the
+# others.  The notebook and these two disagreed by 0.1 dB within a day of being
+# written, from rounding alone.
+SCOPE_FLOOR_STEPS = (SCOPE_DEAD_STEPS * SCOPE_BAND_STEPS) ** 0.5
 
 
 @dataclass(frozen=True)
@@ -130,6 +158,22 @@ RTL_SDR_FORMAT = SampleFormat(
 
 
 @dataclass(frozen=True)
+class OverloadStatus:
+    """One snapshot of a receiver's hardware overload reports.
+
+    `active` retains the last reported state within a stream.  A new stream starts clear.
+    `detections` counts detection events over the device's lifetime, so two snapshots
+    also reveal an overload that started and cleared between reads.
+
+    These reports describe hardware overload, not the fraction of delivered I/Q values
+    at an endpoint.  A receiver without this indication returns None instead.
+    """
+
+    active: bool
+    detections: int
+
+
+@dataclass(frozen=True)
 class DeviceProfile:
     """What a device is, as the code above it needs to know.
 
@@ -155,6 +199,7 @@ class DeviceProfile:
     """
 
     name: str
+    settings_section: str
     sample_format: SampleFormat
     blocks_to_discard_streaming: int
     blocks_to_discard_reading: int
@@ -189,11 +234,11 @@ class IqBlock:
 
     @property
     def clipped_samples(self) -> int:
-        """How many raw values in this block sat at the converter's rail.
+        """How many delivered I/Q values equal the sample format's endpoints.
 
-        Counts I and Q separately, so one sample with both at the rail counts twice.
-        The figure is a symptom rather than a measurement, and what it means is that
-        the receiver gain is set too high for what the antenna is hearing.
+        This counts I and Q separately, so one sample with both at the rail counts twice.
+        Endpoint hits can indicate clipping.  Their absence does not exclude overload
+        before filtering or decimation, because those operations change sample values.
 
         A clipped arc reads smaller than it truly is, so the events it spoils are the
         loud ones that matter most, and nothing else about the audio looks wrong.
@@ -247,6 +292,11 @@ class SdrDevice(ABC):
     stream says so in its profile, and a gain sweep over such a device has to use
     `read_block`.
     """
+
+    @property
+    def overload_status(self) -> OverloadStatus | None:
+        """Hardware overload reports, or None when this device provides none."""
+        return None
 
     @property
     @abstractmethod
@@ -328,6 +378,101 @@ class SdrDevice(ABC):
     def close(self) -> bool:
         """Release the device, and say whether it actually closed."""
 
+    @classmethod
+    def estimated_calibration_offset_db(cls, gain_db: float) -> float:
+        """A starting level offset at `gain_db`, before measured calibration.
+
+        Each receiver must state this relationship because API output full scale and
+        fixed conversion gain belong to the device.  Raising here makes a new receiver
+        fail visibly instead of inheriting another receiver's estimate.
+        """
+        raise NotImplementedError(
+            f'{cls.__name__} does not define an estimated calibration offset.')
+
+    @classmethod
+    def effective_bits(cls) -> int:
+        """How many bits of the int16 samples this receiver really resolves.
+
+        Everything downstream of `IqToAudio._as_int16` is int16 whatever the receiver,
+        because each source is scaled against FULL_SCALE_COUNTS.  So a receiver of
+        fewer bits arrives in coarser steps rather than in a smaller range, and this
+        says how coarse.  `buzz.scope.minimum_full_scale` turns it into the point past
+        which the display would magnify the receiver's own quantization noise to full
+        height.
+
+        Count the bits the samples carry by the time they arrive, rather than the bits
+        on the converter's datasheet.  Oversampling and decimation recover some, so a
+        receiver that decimates hard delivers more than its converter alone would.
+
+        There is no default, because a receiver's depth is a fact about its hardware
+        and a wrong one makes the display lie in whichever direction it is wrong.  Too
+        few bits claimed and a real signal is clamped; too many and silence is drawn
+        as a healthy trace.
+        """
+        raise NotImplementedError(
+            f'{cls.__name__} does not say how many bits it resolves.')
+
+    @classmethod
+    def scope_floor_steps(cls) -> float:
+        """How many of this receiver's own steps the scope refuses to magnify past.
+
+        The floor stops the display drawing a converter's own noise at full height,
+        and how much room there is to place it belongs to the receiver.  Between the
+        level a receiver produces with no antenna and the level it produces on a band
+        there is a window, and the floor has to sit inside it: under the window it
+        never binds, and over it the display sits pinned and follows nothing.
+
+        This answers one by default, which is the bottom of every window and so
+        clamps nothing.  That is the honest answer where nobody has measured, and it
+        accepts that a dead channel is drawn at full height.  A receiver whose two
+        levels have been measured overrides this with the midpoint between them.
+
+        The figure is measured rather than derived, because the window depends on a
+        receiver's own front-end noise at the gain it runs at, and nothing in this
+        program predicts that.  See docs-notebook/scope-auto-range-floor.md.
+        """
+        return 1.0
+
+    @classmethod
+    def floor_margin_db(cls) -> float:
+        """How far above the knee this receiver can afford to put the floor bound.
+
+        The knee is where the antenna and the converter contribute equally, and a
+        reported floor taken there reads 3.01 dB high.  Climbing above it buys accuracy
+        and spends arc headroom, so what a receiver can afford is decided by how much
+        dynamic range it has left once the arc reserve is taken out.
+
+        Zero by default, meaning the knee itself, because that is the compromise a
+        receiver makes when it cannot afford to climb.  A receiver with range to spare
+        overrides this.
+        """
+        return 0.0
+
+    @classmethod
+    @abstractmethod
+    def open_from(cls, settings: 'SdrConfig') -> 'SdrDevice':
+        """Open the receiver these settings describe, ready to read.
+
+        Every caller that opens a receiver has a config section in its hand rather
+        than the four loose arguments `open` takes, and each device reads a slightly
+        different set out of it.  So the device does that reading, and a caller states
+        which receiver it wants instead of how to build one.
+
+        This is what lets the monitor, the gain sweep and the level meter all open
+        whichever receiver the config names, where each of them named one class before.
+        """
+
+    @classmethod
+    @abstractmethod
+    def supported_gains(cls, settings: 'SdrConfig') -> list[float]:
+        """Every gain this kind of receiver offers, without leaving one configured.
+
+        Separate from `supported_gains_db` on an open device, because a gain picker
+        wants the list and nothing else.  Going through `open_from` for it writes a
+        sample rate, a tuning and a gain, and says the operator's gain was snapped to
+        a step while the operator is part way through choosing that gain.
+        """
+
     def validate_sync_block(self, block_samples: int) -> None:
         """Raise if this device cannot serve a synchronous read of that size.
 
@@ -339,6 +484,42 @@ class SdrDevice(ABC):
         checks it as well, and a size refused only there surfaces from inside a running
         sweep rather than when the reader was built.
         """
+
+
+def receiver_class(source: str) -> type[SdrDevice]:
+    """The device class that serves one `[audio] source`, imported on demand.
+
+    The import is deferred so that a station never loads a driver for hardware it does
+    not own.  pyrtlsdr resolves a symbol as it imports, and `buzz.sdrplay_device` loads
+    a shared library only an SDRplay station installs, so either would fail at import
+    on a machine that has no business touching it.
+
+    This raises rather than returning None, because every caller has already decided it
+    wants a receiver and has nothing sensible to do with a missing one.
+    """
+    if source == RTLSDR:
+        return RtlSdrDevice
+    if source == SDRPLAY:
+        from buzz.sdrplay_device import SdrplayDevice
+        return SdrplayDevice
+    raise ValueError(
+        f'{source!r} names no receiver this program can open.  A receiver source is '
+        f'{RTLSDR!r} or {SDRPLAY!r}.  Correct [audio] source in the config file.')
+
+
+def open_receiver(source: str, settings: 'SdrConfig') -> SdrDevice:
+    """Open whichever receiver `source` names, configured by `settings`.
+
+    The one place that turns a source name into open hardware.  The monitor, the gain
+    sweep, the level meter and the gain picker all come through here, where each of
+    them named `RtlSdrDevice` directly before a second receiver existed.
+    """
+    return receiver_class(source).open_from(settings)
+
+
+def supported_gains(source: str, settings: 'SdrConfig') -> list[float]:
+    """Every gain the receiver `source` names offers, leaving it as it was found."""
+    return receiver_class(source).supported_gains(settings)
 
 
 class RtlSdrHandle(Protocol):
@@ -381,6 +562,54 @@ class RtlSdrDevice(SdrDevice):
     """
 
     @classmethod
+    def effective_bits(cls) -> int:
+        """Eight, which is what the RTL2832U delivers and all of what it delivers.
+
+        One step is therefore 256 of the counts the rest of the program works in, so
+        this receiver's own dither is a far larger signal than any other source's.
+        Nothing here decimates enough to recover a bit of it.
+        """
+        return EFFECTIVE_BITS
+
+    @classmethod
+    def scope_floor_steps(cls) -> float:
+        """The midpoint of the narrowest window either receiver here has.
+
+        The figures came from measuring on 2026-09-19 at 22.9 dB of gain.  With the
+        antenna off this receiver asked the scope for 1.14 of its own steps, and on a
+        live band it asked for 2.68.  That is 7.4 dB of window, which is little,
+        because an RTL-SDR runs at the knee where the antenna only matches the
+        converter.  See floor_margin_db.
+
+        The midpoint in decibels is the square root of 1.14 times 2.68, which leaves
+        3.7 dB to either fault.  A dead channel is then drawn at about two thirds of
+        the height rather than filling the screen, which is the most this window buys.
+        """
+        return SCOPE_FLOOR_STEPS
+
+    @classmethod
+    def floor_margin_db(cls) -> float:
+        """The knee itself, because eight bits cannot afford to climb above it.
+
+        An RTL-SDR has about 48 dB of converter range and the arc reserve takes 32 of
+        it, so roughly 16 dB is left for the antenna to rise above the converter's own
+        noise.  Asking for a margin the headroom bound would refuse anyway costs a
+        station the gain it does have: the chooser takes the lower of the two bounds,
+        so a quiet antenna would be pushed up to its headroom bound and left with no
+        reserve beyond the measured one.
+
+        That is the compromise eight bits force.  A reported floor 3 dB high is the
+        price, and it is the cheaper of the two, because clipping cannot be undone
+        where a known floor error can be reasoned about.
+        """
+        return 0.0
+
+    @classmethod
+    def estimated_calibration_offset_db(cls, gain_db: float) -> float:
+        """Undo nominal tuner gain, the estimate measured near zero on one V4."""
+        return -gain_db
+
+    @classmethod
     def open(cls, index: int = 0, *, tuned_hz: int, gain_db: float,
              iq_sample_rate: int) -> Self:
         """Open the receiver at `index`, configure it, and return it ready to read.
@@ -418,8 +647,17 @@ class RtlSdrDevice(SdrDevice):
             raise
 
     @classmethod
-    def supported_gains(cls, index: int = 0) -> list[float]:
-        """The gain steps the tuner at `index` offers, leaving it as it was found.
+    def open_from(cls, settings: 'SdrConfig') -> Self:
+        """Open the receiver these settings describe.  See `SdrDevice.open_from`."""
+        return cls.open(
+            settings.device_index,
+            tuned_hz=settings.frequency_hz + settings.tuning_offset_hz,
+            gain_db=settings.gain_db,
+            iq_sample_rate=settings.iq_sample_rate)
+
+    @classmethod
+    def supported_gains(cls, settings: 'SdrConfig') -> list[float]:
+        """The gain steps this tuner offers, leaving it as it was found.
 
         Opening and configuring are one step in `open`, because a half-built device is
         no use to anything that wants to read.  This is the exception, and it exists
@@ -429,9 +667,10 @@ class RtlSdrDevice(SdrDevice):
         way through choosing that very gain.
 
         The list is a property of the tuner rather than of how it was set up, so
-        nothing has to be configured for the answer to be right.
+        nothing has to be configured for the answer to be right.  Only `device_index`
+        is read out of `settings`, because nothing else changes the answer.
         """
-        handle = cls._open_handle(index)
+        handle = cls._open_handle(settings.device_index)
         try:
             return list(handle.valid_gains_db)
         finally:
@@ -485,6 +724,7 @@ class RtlSdrDevice(SdrDevice):
         self._iq_sample_rate, self._gain_db = self._configure(gain_db, iq_sample_rate)
         self._profile = DeviceProfile(
             name='RTL-SDR',
+            settings_section='rtlsdr',
             sample_format=RTL_SDR_FORMAT,
             # Up to _TRANSFER_POOL_BLOCKS buffers are filled or in flight when the gain
             # moves, plus the one being written at that moment, so discarding this many
