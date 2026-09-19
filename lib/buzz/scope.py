@@ -243,14 +243,23 @@ _RANGE_EMA_ALPHA = 0.05
 # dead channel as a healthy full-amplitude noise trace.  What the floor really caps is
 # magnification, since full scale is the amplitude that reaches the top of the trace.
 #
-# Two steps rather than one, which is one bit of headroom, 6.02 dB.  A dead channel
-# asks for 0.65 of a step, because its dither is uniform over one step and the
-# percentile and headroom above multiply sigma by 3.66 while sigma is only a step over
-# the square root of twelve.  So two steps draw a dead channel at 32% of the height
-# where one step would draw it at 65%, and 32% reads as dead at a glance where 65%
-# does not.  The price is that band noise sitting exactly at the knee draws at 75%
-# rather than filling the screen, and a station with any arc to see is far above the
-# knee, because p99.5 reaches into the pulses rather than the noise between them.
+# One step, and the two receivers between them leave little choice.  A floor has to
+# sit above what a dead channel asks for and below what a working one asks for, or it
+# either fails to catch silence or clamps a signal that is really there.
+#
+# A dead channel asks for 0.65 of a step, because its dither is uniform over one step,
+# so sigma is a step over the square root of twelve, and the percentile and headroom
+# above multiply sigma by 3.66.  A working receiver asks for more, by however far its
+# `floor_margin_db` puts it above the knee.
+#
+# An RTL-SDR runs at the knee, because eight bits cannot afford to climb, so its window
+# is 0.65 to 1.49 steps.  An SDRplay runs ten decibels above the knee and its window is
+# 0.65 to 3.51.  The overlap is 0.65 to 1.49, whose geometric center is 0.98.
+#
+# Two steps was tried first, on the argument that it draws a dead channel at 32% of the
+# height where one step draws it at 65%, and that 32% reads as dead at a glance.  That
+# argument ignored where each receiver runs.  Two steps is outside the RTL-SDR's window,
+# and on real hardware it pinned that receiver at its floor in ordinary use.
 #
 # This used to be a flat 32 counts for every receiver, which was wrong in both
 # directions.  An RTL-SDR step is 256 counts, so its own dither was drawn at full
@@ -258,7 +267,7 @@ _RANGE_EMA_ALPHA = 0.05
 # step is 2 counts, so a real band reading of 2.84 counts, sitting 6.8 dB above that
 # receiver's own noise, was squashed to 9% of the screen.
 # See docs-notebook/scope-auto-range-floor.md.
-_FLOOR_STEPS = 2.0
+_FLOOR_STEPS = 1.0
 # Initial guess, used only until the EMA has real data to converge from.
 _INITIAL_FULL_SCALE = 2048.0
 
@@ -436,7 +445,8 @@ def minimum_full_scale(effective_bits: int) -> float:
     fifteen, 256 at eight.
 
     Magnifying past a receiver's own step means drawing its quantization noise at full
-    height.  See _FLOOR_STEPS for how far short of that this stops, and why.
+    height.  See _FLOOR_STEPS for why the limit is one step, and for the window each
+    receiver leaves.
     """
     return FULL_SCALE_COUNTS / 2 ** (effective_bits - 1) * _FLOOR_STEPS
 

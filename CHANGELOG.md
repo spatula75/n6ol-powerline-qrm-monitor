@@ -94,7 +94,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   difference. Other platforms do not load or call the Windows API.
 - The scope's magnification limit follows the receiver's bit depth instead of being one
   figure for every source. Everything reaching the display is int16, so a receiver of
-  fewer bits arrives in coarser steps, and the limit is now two of whatever step that
+  fewer bits arrives in coarser steps, and the limit is now one step of whatever that
   receiver delivers. The flat 32 counts was wrong both ways: an RTL-SDR step is 256
   counts, so its own dither was drawn at full height, which is the failure the limit
   exists to prevent, and an SDRplay step is 2 counts, so a real band reading sitting

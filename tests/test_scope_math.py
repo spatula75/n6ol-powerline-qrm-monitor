@@ -213,6 +213,53 @@ class TestTheFloorFollowsTheReceiver:
                 f'{device.__name__} says {bits} bits, so one step is {step} counts '
                 f'and its floor should be {_FLOOR_STEPS} of those.')
 
+    def test_every_receiver_can_reach_its_floor_but_not_sit_on_it(self):
+        """The property the arithmetic above cannot express, and the one that was
+        wrong.
+
+        A floor has to sit above what a dead channel asks for, or it never catches
+        silence, and below what a working receiver asks for, or it clamps a signal that
+        is really there.  Where a receiver works is its own business: `floor_margin_db`
+        says how far above the knee its gain is chosen to sit, and an RTL-SDR sits at
+        the knee itself because eight bits cannot afford to climb.
+
+        That leaves the RTL-SDR the narrower window, 0.65 to 1.49 steps against an
+        SDRplay's 0.65 to 3.51, and a floor of two steps fell outside it.  On real
+        hardware that receiver then sat pinned at its floor in ordinary use, and every
+        other test here passed.
+
+        The two factors are simulated rather than quoted, so this states the property
+        rather than restating numbers taken from the code it is checking.
+        """
+        rng = np.random.default_rng(0)
+        # A dead channel is dither uniform over one step; a working one is band noise,
+        # which is gaussian.  Both go through the scope's own percentile and headroom.
+        dead = float(np.percentile(np.abs(rng.uniform(-0.5, 0.5, 200_000)),
+                                   _RANGE_PERCENTILE)) * _RANGE_HEADROOM
+        live = float(np.percentile(np.abs(rng.standard_normal(200_000)),
+                                   _RANGE_PERCENTILE)) * _RANGE_HEADROOM
+
+        from buzz.sdr_device import RtlSdrDevice
+        from buzz.sdrplay_device import SdrplayDevice
+        for device in (RtlSdrDevice, SdrplayDevice):
+            step = FULL_SCALE_COUNTS / 2 ** (device.effective_bits() - 1)
+            floor = minimum_full_scale(device.effective_bits())
+            # At the knee the antenna matches the converter, and the margin lifts the
+            # antenna above it.  Sigma of dither over one step is the step over
+            # sqrt(12).
+            sigma = step / 12 ** 0.5
+            running = live * sigma * (1 + 10 ** (device.floor_margin_db() / 10)) ** 0.5
+
+            assert floor > dead * step, (
+                f'{device.__name__} draws its own dither at {dead * step:.1f} counts '
+                f'and the floor is {floor:.1f}, so a dead channel would fill the '
+                'screen.  That is the failure the floor exists to prevent.')
+            assert floor < running, (
+                f'{device.__name__} is meant to run at {device.floor_margin_db():.0f} '
+                f'dB above the knee, which asks for {running:.1f} counts, and the '
+                f'floor is {floor:.1f}.  The display would clamp that receiver in '
+                'ordinary use, which is what a flat two steps did.')
+
     def test_a_sound_card_pipeline_answers_sixteen(self):
         """The base class default, and the one source that really is int16 throughout.
 
@@ -246,16 +293,16 @@ class TestFullScaleDbfs:
     def test_halving_the_scale_drops_six_db(self):
         assert full_scale_dbfs(16384.0) == pytest.approx(-6.02, abs=0.01)
 
-    def test_each_receivers_floor_is_one_bit_above_its_own_step(self):
+    def test_each_receivers_floor_is_its_own_step(self):
         """The floor in the unit an operator reads off the status bar.
 
         Stated per receiver, because one number for all of them was the defect: a flat
         32 counts drew an RTL-SDR's own dither at full height and squashed a real
         SDRplay reading to a tenth of the screen.
         """
-        assert full_scale_dbfs(minimum_full_scale(16)) == pytest.approx(-84.3, abs=0.1)
-        assert full_scale_dbfs(minimum_full_scale(15)) == pytest.approx(-78.3, abs=0.1)
-        assert full_scale_dbfs(minimum_full_scale(8)) == pytest.approx(-36.1, abs=0.1)
+        assert full_scale_dbfs(minimum_full_scale(16)) == pytest.approx(-90.3, abs=0.1)
+        assert full_scale_dbfs(minimum_full_scale(15)) == pytest.approx(-84.3, abs=0.1)
+        assert full_scale_dbfs(minimum_full_scale(8)) == pytest.approx(-42.1, abs=0.1)
 
     def test_goes_positive_when_chasing_a_clipping_signal(self):
         """Headroom past the rail is reported rather than clamped, so an overdriven

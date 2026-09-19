@@ -51,26 +51,40 @@ own dither asked for 166 and was drawn at full height, which is exactly the fail
 constant was written to prevent.  An SDRplay step is 2 counts, so the 2.84-count reading
 above, which sits 6.8 dB above that receiver's own noise, was squashed to 9%.
 
-## Why two steps
+## Why one step
+
+A floor has to sit above what a dead channel asks for, or it never catches silence, and
+below what a working receiver asks for, or it clamps a signal that is really there.
 
 A dead channel does not ask for one step.  Its dither is uniform over one step, so its
 sigma is a step over the square root of twelve, and the p99.5 percentile with 1.30 of
 headroom multiplies sigma by 3.66.  Measured against the scope's own constants, a dead
 channel asks for **0.65 of a step**, whatever the receiver.
 
-So the floor in steps decides how a dead channel looks, in a way that does not depend on
-which receiver it is:
+Where a receiver works is its own business, and `floor_margin_db` is where it says so.
+An RTL-SDR runs at the knee, because eight bits cannot afford to climb above it, and an
+SDRplay runs ten decibels above it.  That gives each a window:
 
-| Floor | Dead channel draws at | Band noise at the knee draws at |
-|---|---|---|
-| 1 step | 65% | 100% |
-| 2 steps | 32% | 75% |
+| Device | Runs at | Dead asks | Running asks | Window, in steps |
+|---|---|---|---|---|
+| RTL-SDR | the knee | 165.6 counts | 382.7 counts | 0.65 to 1.49 |
+| SDRplay | knee + 10 dB | 1.3 counts | 7.0 counts | 0.65 to 3.51 |
 
-Two steps, which is one bit and 6.02 dB.  32% reads as dead at a glance where 65% does
-not.  The price is the knee case, and it is small: the knee is the least gain the
-chooser ever targets, `floor_margin_db` puts an SDRplay 10 dB above it, and p99.5 reaches
-into the pulses rather than the noise between them, so a station with any arc to see
-sits far above this.
+The overlap is 0.65 to 1.49 steps, whose geometric center is 0.98.  One step is
+therefore close to the only value that suits both receivers, rather than a choice
+between reasonable options.
+
+Two steps was tried first, and it is instructive that it looked right.  The argument was
+that two steps draw a dead channel at 32% of the height where one draws it at 65%, and
+that 32% reads as dead at a glance.  That is true and it is beside the point, because it
+never asked where each receiver runs.  Two steps is outside the RTL-SDR's window, and on
+real hardware that receiver sat pinned at its floor in ordinary use, reading -36.1 dBFS
+and never moving.
+
+Every other test passed while it did.  The arithmetic was right and the property was
+wrong, which is what `test_every_receiver_can_reach_its_floor_but_not_sit_on_it` now
+states: the floor is above the dither and below the working point, for each receiver, on
+that receiver's own declared margin.
 
 ## Where the numbers live
 
