@@ -227,7 +227,8 @@ _GRATICULE_AXIS = 0.19                   # pulse-period rules and the center lin
 _RANGE_PERCENTILE = 99.5
 # Full scale is set above the measured percentile so that routine peaks sit around
 # 3 of the 4 available divisions, leaving the top division for a transient truly
-# louder than anything recent.  Same intent as the waterfall's _COLOR_HEADROOM.
+# louder than anything recent.  The waterfall's _COLOR_HEADROOM exists for the same
+# reason.
 _RANGE_HEADROOM = 1.30
 # EMA weight per frame, matching the waterfall's _COLOR_RANGE_EMA_ALPHA and chosen
 # for the same reason: without it a brief burst re-scales the picture within a few
@@ -417,6 +418,11 @@ def auto_range_full_scale(sweeps: np.ndarray, previous: float) -> float:
 
     See _RANGE_PERCENTILE, _RANGE_HEADROOM, _RANGE_EMA_ALPHA and _MIN_FULL_SCALE
     for why each of the four terms is here.
+
+    A floored trace cannot be told from a quiet band by looking at it, because the
+    deflection the measurement asked for is discarded here.  Measured on an RSP1B, that
+    figure ran from 2.84 counts to 31.05 against a floor of 32, so the floor decides the
+    scale often rather than rarely.  See docs-notebook/scope-auto-range-floor.md.
     """
     if sweeps.size == 0:
         return previous
@@ -433,15 +439,16 @@ def full_scale_dbfs(full_scale: float) -> float:
     amplitude, not in dB, so a "dB/div" number would not describe anything.  Read
     this as headroom - at -24 dBFS the top of the screen is 24 dB below clipping.
 
-    Deliberately dBFS rather than the dBm the meters and the CSV speak.
-    amplitude_to_dbm() converts a *mean-absolute* amplitude, whereas a p99.5 peak
-    drives this scale (see _RANGE_PERCENTILE).  Pushing a peak through that
+    The unit is dBFS rather than the dBm the meters and the CSV speak, and that is
+    deliberate.  amplitude_to_dbm() converts a *mean-absolute* amplitude, whereas a
+    p99.5 peak drives this scale (see _RANGE_PERCENTILE).  Pushing a peak through that
     conversion would print a number several dB above what the S-meters show for the
     very same signal, and two readouts on one window that appear to disagree about
     level are worse than no readout at all.
 
     This goes positive when the auto-range is chasing a signal that is already
-    clipping, which is information worth showing rather than clamping away.
+    clipping.  The status bar shows that rather than clamping it away, so an operator
+    can see the overload.
 
     The caller supplies a value from auto_range_full_scale(), which is floored at
     _MIN_FULL_SCALE and so is always strictly positive.

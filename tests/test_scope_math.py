@@ -1,4 +1,5 @@
 """Tests for pure-numpy functions in scope.py (no Qt required)."""
+
 import numpy as np
 import pytest
 
@@ -118,6 +119,23 @@ class TestSynchronisation:
 class TestAutoRangeFullScale:
     def test_empty_input_holds_previous(self):
         assert auto_range_full_scale(np.empty((0, SWEEP)), 500.0) == 500.0
+
+    @staticmethod
+    def _quiet(counts):
+        return np.full((4, SWEEP), counts, dtype=np.float32)
+
+    def test_the_floor_governs_below_it_and_not_above_it(self):
+        """Stated as the invariant rather than by restating the blend, because
+        recomputing the EMA here would assert the implementation against itself.
+
+        Measured on an RSP1B, the deflection this asks for ranges from 2.84 counts on a
+        quiet band to 31.05 with the same antenna, against a floor of 32.  So both sides
+        of this assertion are reached in ordinary use rather than only in a test.  See
+        docs-notebook/scope-auto-range-floor.md.
+        """
+        assert auto_range_full_scale(self._quiet(2.0), 2.0) == _MIN_FULL_SCALE
+        assert auto_range_full_scale(self._quiet(0.5), 0.5) == _MIN_FULL_SCALE
+        assert auto_range_full_scale(self._quiet(4000.0), 4000.0) > _MIN_FULL_SCALE
 
     def test_never_below_minimum(self):
         silent = np.zeros((4, SWEEP), dtype=np.float32)
