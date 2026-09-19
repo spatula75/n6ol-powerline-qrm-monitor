@@ -850,7 +850,7 @@ class TestTheStartupLineSaysWhatGainIsInUse:
         0.0 dB" would look like a fault rather than like silence.
         """
         device = MagicMock()
-        device.reported_gain_db = 0.0
+        device.reported_gain_db = None
         assert main_module._gain_in_use(device, 22.9) == '22.9 dB gain'
 
     def test_a_device_with_no_such_property_shows_the_one_figure(self):
@@ -952,8 +952,8 @@ class TestAReceiverThatWillNotOpenPrintsItsReason:
 class TestOpeningAReceiverAsTheLiveSource:
     """The wiring between the three pieces the SDR path is built from.
 
-    RtlSdrSource holds the hardware, IqToAudio holds the arithmetic, and
-    RtlSdrPipeline joins them to the ring buffer.  open_live_source is the only place
+    SdrSource holds the hardware, IqToAudio holds the arithmetic, and
+    SdrPipeline joins them to the ring buffer.  open_live_source is the only place
     that knows how they fit together, and what it settles afterwards decides what every
     later measurement means: the audio rate everything downstream counts seconds by,
     and the dB offset every level is reported against.

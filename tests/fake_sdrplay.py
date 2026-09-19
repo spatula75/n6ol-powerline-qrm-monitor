@@ -14,9 +14,9 @@ import threading
 from buzz import sdrplay_api as api
 
 # What the fake reports its gain as, so a test can tell a hardware figure from the one
-# the gain table predicts.  Zero means "not filled in yet", which the device reads as a
-# change that has not taken effect, so a fake reporting zero must mean it deliberately.
-NO_REPORTED_GAIN = 0.0
+# the gain table predicts.  None selects the calculated answer, leaving zero available
+# as a real reported gain.
+NO_REPORTED_GAIN = None
 
 # LNA gain reduction by state, the same row the device carries.  Restated rather than
 # imported, so that a test of the device's table against the hardware is not checking
@@ -35,8 +35,9 @@ class FakeSdrplayApi:
 
     def __init__(self, *, hw_ver: int = api.SDRPLAY_RSP1B_ID,
                  serial: str = '2405203460', devices: int = 1,
-                 reported_gain_db: float = NO_REPORTED_GAIN,
-                 conversion_gain_db: float | None = None,
+                 reported_gain_db: float | None = NO_REPORTED_GAIN,
+                 conversion_gain_db: float | None = 91.4,
+                 deliver_initial: bool = True,
                  api_version: float = api.API_VERSION) -> None:
         self.calls: list[str] = []
         self.callbacks: api.sdrplay_api_CallbackFnsT | None = None
@@ -57,6 +58,7 @@ class FakeSdrplayApi:
         # recovers exactly this.  `reported_gain_db` forces one figure instead, which is
         # how a test makes the hardware and the table disagree on purpose.
         self._conversion_gain_db = conversion_gain_db
+        self._deliver_initial = deliver_initial
 
         # The library owns this memory and hands back a pointer into it, so the fake
         # has to hold the parts alive for as long as the device holds the whole.
@@ -127,7 +129,8 @@ class FakeSdrplayApi:
         # With no samples, so that a device already holding a sink does not receive one
         # block of this fake announcing itself.  A real library would deliver samples
         # here and the device would treat them as the stream, which they would be.
-        self.deliver([], [])
+        if self._deliver_initial:
+            self.deliver([], [])
 
     def uninit(self, handle: int) -> None:
         self._record('uninit')
@@ -185,7 +188,7 @@ class FakeSdrplayApi:
 
     def _fill_gain_values(self) -> None:
         """Write gainVals.curr, as the library does when it applies a gain."""
-        if self._reported_gain_db:
+        if self._reported_gain_db is not NO_REPORTED_GAIN:
             self.gain.gainVals.curr = self._reported_gain_db
         elif self._conversion_gain_db is not None:
             reduction = HF_LNA_GAIN_REDUCTION_DB[self.gain.LNAstate] + self.gain.gRdB

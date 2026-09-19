@@ -32,6 +32,7 @@ reading that flag rather than by counting, which is what an RTL-SDR has to do.
 import atexit
 import ctypes
 import logging
+import math
 import queue
 import threading
 from math import ceil
@@ -566,6 +567,12 @@ class SdrplayDevice(SdrDevice):
         library = SdrplayLibrary.load(api_path)
         library.open()
         try:
+            installed_version = library.api_version()
+            if not math.isclose(installed_version, api.API_VERSION, abs_tol=0.005):
+                raise RuntimeError(
+                    f'This program was built for SDRplay API {api.API_VERSION:.2f}, but '
+                    f'the installed library reports {installed_version:.2f}.  Install '
+                    'the matching SDRplay Hardware API before opening the receiver.')
             device = cls._select(library, index)
         except BaseException:
             # Nothing owns the API session yet, so it has to be given back here.  A
@@ -576,6 +583,8 @@ class SdrplayDevice(SdrDevice):
         try:
             return cls(library, device, tuned_hz=tuned_hz, gain_db=gain_db,
                        iq_sample_rate=iq_sample_rate)
+        except _ReceiverStillRunning:
+            raise
         except BaseException:
             _quietly(lambda: library.release(device))
             _quietly(library.close)
@@ -595,6 +604,7 @@ class SdrplayDevice(SdrDevice):
         self._closed = False
         self._released = False
         self._initialized = False
+        self._shutdown_stuck = False
         self._sink: BlockSink | None = None
         self._sync_sink: _SyncBlocks | None = None
         self._gain_table_checked = False
@@ -642,12 +652,16 @@ class SdrplayDevice(SdrDevice):
         # else happens.  A library left running here spends the gap until the first
         # read filling its own buffers, and hands the backlog over in a burst as soon
         # as a consumer attaches.  That burst carries more audio than the wall clock
-        # between its blocks accounts for, which `RtlSdrSource.clock_drift_seconds`
+        # between its blocks accounts for, which `SdrSource.clock_drift_seconds`
         # reads as the receiver clock running away from the system one.
         self._begin(_INITIAL_BLOCK_SAMPLES)
-        self._delivered.wait(timeout=_GAIN_REPORT_WAIT_SECONDS)
-        self._conversion_gain_db = self._learn_conversion_gain()
-        self._end()
+        gain_report_arrived = self._delivered.wait(timeout=_GAIN_REPORT_WAIT_SECONDS)
+        self._conversion_gain_db = self._learn_conversion_gain(gain_report_arrived)
+        if not self._end():
+            raise _ReceiverStillRunning(
+                'The receiver started but did not stop while it was learning its gain.  '
+                'It remains held until this process exits.  Restart the program before '
+                'trying to open it again.')
         # Written again, now that the ladder means what it says.  The first write put
         # the receiver wherever the fallback pointed, which is the right rung only when
         # the fallback happened to be right for this band.
@@ -655,6 +669,7 @@ class SdrplayDevice(SdrDevice):
             gain_db, self.supported_gains_db))
         self._profile = DeviceProfile(
             name=f'SDRplay {"RSP1B" if device.hwVer == api.SDRPLAY_RSP1B_ID else "RSP1A"}',
+            settings_section='sdrplay',
             sample_format=SDRPLAY_FORMAT,
             blocks_to_discard_streaming=_BLOCKS_TO_DISCARD_AFTER_GAIN_CHANGE,
             blocks_to_discard_reading=_BLOCKS_TO_DISCARD_AFTER_GAIN_CHANGE,
@@ -716,11 +731,8 @@ class SdrplayDevice(SdrDevice):
     def reported_gain_db(self) -> float:
         """What the receiver says its gain is now, straight out of the struct.
 
-        `gain_db` prefers this and falls back to the figure that was asked for when it
-        reads zero, because a zero means the change has not been applied yet.  This one
-        does not fall back, so a caller can tell the two apart.  `tools/sdr_gain_probe`
-        is that caller: a column of zeros there says the library is not filling the
-        field in, and a column that never moves says the gain is not arriving.
+        Zero is a valid gain.  The initial delivery wait decides whether the device
+        supplied this field; the value itself cannot carry that second meaning.
         """
         return float(self._params.rxChannelA.contents.tunerParams.gain.gainVals.curr)
 
@@ -866,10 +878,12 @@ class SdrplayDevice(SdrDevice):
         atexit.unregister(self.close)
         self._sink = None
         self._sync_sink = None
-        released = self._end()
-        released = _bounded(lambda: self._library.release(self._device),
-                            'releasing the receiver') and released
-        released = _bounded(self._library.close, 'closing the API session') and released
+        if not self._end():
+            return False
+        if not _bounded(lambda: self._library.release(self._device),
+                        'releasing the receiver'):
+            return False
+        released = _bounded(self._library.close, 'closing the API session')
         self._released = released
         return released
 
@@ -1057,7 +1071,7 @@ class SdrplayDevice(SdrDevice):
         self._check_reported_gain(gain_db, lna_state, baseband)
         return gain_db
 
-    def _learn_conversion_gain(self) -> float:
+    def _learn_conversion_gain(self, report_arrived: bool) -> float:
         """The gain this receiver has before any reduction, asked of the receiver.
 
         `gainVals.curr` is what the library says the gain is now, and the reduction
@@ -1074,7 +1088,7 @@ class SdrplayDevice(SdrDevice):
         recalibrate anyway.
         """
         reported = self.reported_gain_db
-        if not reported:
+        if not report_arrived:
             logger.info(
                 'The receiver did not report its own gain within %.1f seconds, so '
                 'levels use the conversion gain measured on one RSP1B at 3530 kHz.  '
@@ -1102,8 +1116,8 @@ class SdrplayDevice(SdrDevice):
         `supported_gains_db`.  A figure half a decibel off a rung is a key that list
         does not contain, and the reading is then dropped rather than used.
 
-        The receiver fills the figure in as it applies the change, so a zero means the
-        change has not taken effect yet and there is nothing to compare.
+        The receiver fills the figure in as it applies the change.  The initialized
+        state says whether there is a current answer; zero remains a valid answer.
         """
         gain = self._params.rxChannelA.contents.tunerParams.gain
         reported = float(gain.gainVals.curr)
@@ -1111,7 +1125,7 @@ class SdrplayDevice(SdrDevice):
         # was written.  Otherwise the field still holds the answer to an older question,
         # and comparing the new prediction against it reports a disagreement that is
         # only the two being about different settings.
-        if not self._initialized or not reported or self._gain_table_checked:
+        if not self._initialized or self._gain_table_checked:
             return
         self._gain_table_checked = True
         if abs(reported - wanted_db) > _GAIN_DISAGREEMENT_DB:
@@ -1177,14 +1191,20 @@ class SdrplayDevice(SdrDevice):
         """Stop the library delivering, and say whether its uninit returned."""
         if not self._initialized:
             return True
+        if self._shutdown_stuck:
+            return False
         # An RSP1B trace with API 3.15 showed clearance during Uninit, when Update
         # rejected the acknowledgement.  See docs-notebook/sdrplay-gain.md.
         # Stop accepting events first so teardown cannot spoil the next capture.
         with self._overload_lock:
             self._accept_overload_events = False
-        self._initialized = False
-        return _bounded(lambda: self._library.uninit(int(self._device.dev)),
-                        'stopping the receiver')
+        stopped = _bounded(lambda: self._library.uninit(int(self._device.dev)),
+                           'stopping the receiver')
+        if stopped:
+            self._initialized = False
+        else:
+            self._shutdown_stuck = True
+        return stopped
 
     def _on_stream(self, xi: object, xq: object, params: object, num_samples: int,
                    _reset: int, _context: object) -> None:
@@ -1247,7 +1267,7 @@ class SdrplayDevice(SdrDevice):
         so every inter-burst period read as lateness.  Measured on an RSP1B, the
         delivery before each long gap held 0.6 ms of audio and the gap read 73 ms.
 
-        This is the direct measurement, and `RtlSdrSource.clock_drift_seconds` is the
+        This is the direct measurement, and `SdrSource.clock_drift_seconds` is the
         indirect one.  The drift figure is the same quantity taken from the stream
         start rather than from the window start, so this one shows the burst depth and
         that one shows where the depth has got to over the whole run.
@@ -1293,7 +1313,7 @@ class SdrplayDevice(SdrDevice):
         stream is itself a long backlog and the figure is not comparable with the ones
         after it.  Measured on an RSP1B, two runs gave 265.9 ms and 218.3 ms in that
         window, where every window after them sat between 71.6 and 87.6 ms.
-        `RtlSdrPipeline`'s drift check treats its own first interval as a baseline for
+        `SdrPipeline`'s drift check treats its own first interval as a baseline for
         the same reason.
         """
         period = (f'first {_LATE_REPORT_INTERVAL_SECONDS:g} seconds of this stream'
@@ -1483,6 +1503,10 @@ def _quietly(call: object) -> None:
         logger.debug('A cleanup call failed during shutdown.', exc_info=True)
 
 
+class _ReceiverStillRunning(RuntimeError):
+    """An open attempt whose receiver cannot safely be released."""
+
+
 def _bounded(call: object, what: str) -> bool:
     """Run a library call on a thread, and give up on it after a timeout.
 
@@ -1492,18 +1516,23 @@ def _bounded(call: object, what: str) -> bool:
     ends, which is where a blocked call left it anyway.
     """
     finished = threading.Event()
+    succeeded = False
 
     def run() -> None:
+        nonlocal succeeded
         try:
             call()
-        except Exception:
-            logger.debug('%s failed.', what, exc_info=True)
+            succeeded = True
+        except Exception as exc:
+            logger.warning(
+                'The receiver failed while %s: %s.  It remains held until this '
+                'process exits.', what, exc)
         finally:
             finished.set()
 
     threading.Thread(target=run, daemon=True, name='sdrplay-close').start()
     if finished.wait(timeout=_DEVICE_CLOSE_TIMEOUT_SECONDS):
-        return True
+        return succeeded
     logger.warning(
         'The receiver did not finish %s within %.0f seconds and was left to the '
         'operating system.  The API waits on a background service, so waiting longer '

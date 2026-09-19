@@ -92,14 +92,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   266 ms after the same request, and the SDRplay stopped crossing 100 ms of delivery
   backlog. Process priority, Efficiency mode and timer resolution did not explain the
   difference. Other platforms do not load or call the Windows API.
-- The scope's magnification limit follows the receiver's bit depth instead of being one
-  figure for every source. Everything reaching the display is int16, so a receiver of
-  fewer bits arrives in coarser steps, and the limit is now one step of whatever that
-  receiver delivers. The flat 32 counts was wrong both ways: an RTL-SDR step is 256
-  counts, so its own dither was drawn at full height, which is the failure the limit
-  exists to prevent, and an SDRplay step is 2 counts, so a real band reading sitting
-  6.8 dB above that receiver's noise was squashed to a tenth of the screen. A quiet
-  band on an RSP1B now fills 71% of the scope where it filled 9%.
+- The scope's magnification limit follows the resolution of the converted audio. Each
+  receiver supplies its delivered bit depth, and the IQ converter adds the noise
+  reduction from its actual filter before the 16-bit output cap is applied. The limit
+  therefore follows sample rate, bandwidth and decimation. At the defaults, an
+  RTL-SDR has a floor near the old 32-count limit while an SDRplay can use the full
+  int16 display range.
 - The display stops repainting while its window is minimized, and starts again when the
   window is restored. Each widget reads the newest audio when it repaints, so pausing
   work nobody can see loses no display history.
@@ -108,6 +106,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   own thread and needs the GIL, so allocation churn there is the worst place for it.
 
 ### Fixed
+- The monitor checks the loaded SDRplay API version before reading structures generated
+  from the 3.15 headers. A different version now produces an actionable error instead
+  of risking an ABI mismatch.
+- SDRplay shutdown stops at the first failed or timed-out API call. It no longer reports
+  an exception as success or releases a device while its uninitialization may still be
+  running on another thread.
+- A reported SDRplay gain of zero is treated as a real value after the first delivery.
+  Zero previously doubled as the sentinel for a report that had not arrived.
+- Config loading excludes dataclass class variables from accepted TOML keys. A file
+  containing the internal `device_source` marker is now warned about and ignored
+  instead of reaching the dataclass constructor and stopping startup.
+- The shared receiver source and pipeline are named `SdrSource` and `SdrPipeline`.
+  Their old RTL-SDR names obscured that the SDRplay uses the same queue and conversion
+  path.
 - The SDRplay shim no longer treats the empty delivery the library sends at open and at
   every stream start as audio that arrived late, and no longer measures a stream's
   first delivery against one from the gain probe seconds earlier. Either would have
@@ -192,7 +204,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   configures it, and hands blocks of raw bytes to the thread that converts them. The
   callback copies its block, timestamps it and returns, because the receiver's own
   FIFO holds 3.67 ms at 256 kHz and nothing anywhere reports an overflow of it.
-  `RtlSdrPipeline` fills the same ring buffer a sound card fills, so the analyzer,
+  `SdrPipeline` fills the same ring buffer a sound card fills, so the analyzer,
   the recorder, the display and the collector needed no changes.
 
   The tuner gain is snapped to a step the hardware offers and then remembered, since

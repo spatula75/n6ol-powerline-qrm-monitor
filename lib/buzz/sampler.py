@@ -496,7 +496,7 @@ class LevelStream:
         None means nothing arrived in time, which is what an unplugged receiver or a
         sound card that went away looks like from here.  Returning it rather than
         waiting forever is the difference between a meter that says so and a dialog
-        that freezes on a number that stopped being true.  `RtlSdrSource.read`
+        that freezes on a number that stopped being true.  `SdrSource.read`
         returns None on the same grounds.
         """
         if not self._event.wait(self.READ_TIMEOUT_SECONDS if timeout is None else timeout):

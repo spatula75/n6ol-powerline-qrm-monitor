@@ -1,4 +1,4 @@
-"""Tests for buzz.sdr.RtlSdrPipeline, the thread joining capture to the ring buffer.
+"""Tests for buzz.sdr.SdrPipeline, the thread joining capture to the ring buffer.
 
 No receiver and no threads: the feeder's body is driven by calling _consume directly,
 which is where all the behavior lives.  The thread itself only decides when to call
@@ -15,15 +15,15 @@ import pytest
 from buzz import sdr as sdr_module
 from buzz.iq import IqToAudio
 from buzz.sampler import buffer_chunks
-from buzz.sdr import IqBlock, RtlSdrPipeline
-from buzz.sdr_device import RTL_SDR_FORMAT
+from buzz.sdr import IqBlock, SdrPipeline
+from buzz.sdr_device import RTL_SDR_FORMAT, DeviceProfile
 
 IQ_RATE, DECIMATION, BANDWIDTH, OFFSET = 256_000, 16, 4_000, 50_000
 BLOCK = 16_384
 
 
 class StubSource:
-    """Stands in for RtlSdrSource.  The pipeline reads from it, closes it, and asks it
+    """Stands in for SdrSource.  The pipeline reads from it, closes it, and asks it
     about the receiver clock.
     """
 
@@ -39,6 +39,7 @@ class StubSource:
         # Twelve, which is neither receiver's real answer, so a test that this
         # reaches the pipeline cannot pass by matching a real device by accident.
         self.effective_bits = 12
+        self.profile = DeviceProfile('stub', 'rtlsdr', RTL_SDR_FORMAT, 0, 0, False)
 
     def start(self):
         self.started = True
@@ -69,7 +70,7 @@ class FakeClock:
 
 def pipeline(clock=None, keep_iq=False):
     converter = IqToAudio(IQ_RATE, DECIMATION, BANDWIDTH, OFFSET)
-    return (RtlSdrPipeline(StubSource(), converter, clock=clock or FakeClock(),
+    return (SdrPipeline(StubSource(), converter, clock=clock or FakeClock(),
                            keep_iq=keep_iq),
             converter)
 
@@ -251,19 +252,19 @@ class TestWhatThePipelineSaysAboutItsReceiver:
     """
 
     def test_the_bit_depth_reaches_the_pipeline(self):
-        p, _ = pipeline()
-        assert p.effective_bits == 12, (
-            f'A pipeline over a 12-bit source reported {p.effective_bits}.  Sixteen '
-            'means it fell through to RingBufferPipeline, which is the sound card '
-            'default and is what every receiver silently got before this test.')
+        p, converter = pipeline()
+        expected = min(16.0, 12 + converter.processing_gain_bits)
+        assert p.effective_bits == pytest.approx(expected)
 
     def test_the_floor_follows_from_it(self):
         """End to end, in the unit the scope works in: a coarser receiver is allowed
         less magnification, and the arithmetic in between is scope.minimum_full_scale.
         """
         from buzz.scope import minimum_full_scale
-        p, _ = pipeline()
-        assert minimum_full_scale(p.effective_bits) == minimum_full_scale(12)
+        p, converter = pipeline()
+        expected_bits = min(16.0, 12 + converter.processing_gain_bits)
+        assert minimum_full_scale(p.effective_bits) == pytest.approx(
+            minimum_full_scale(expected_bits))
 
 
 class TestTheHealthCountersReachTheLog:
@@ -367,7 +368,7 @@ class TestTheHealthCountersReachTheLog:
 
     def test_a_receiver_clock_running_away_is_reported(self, caplog):
         """The only evidence that samples went missing, since nothing else can count
-        them.  See RtlSdrSource.clock_drift_seconds.
+        them.  See SdrSource.clock_drift_seconds.
 
         The drift appears after the first interval, because the first one is the
         baseline and anything already there when it ends is taken as the starting

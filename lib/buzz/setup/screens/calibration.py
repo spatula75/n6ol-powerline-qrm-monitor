@@ -106,11 +106,11 @@ def _open_sdr_level_stream(source_name: str, receiver_values: SectionValues,
     moving promptly instead of after most of a second.
     """
     from buzz.iq import IqToAudio
-    from buzz.sdr import RtlSdrSource, SdrLevelStream
+    from buzz.sdr import SdrLevelStream, SdrSource
     from buzz.sdr_device import open_receiver
 
     settings = receiver_settings_from(source_name, receiver_values)
-    source = RtlSdrSource(open_receiver(source_name, settings),
+    source = SdrSource(open_receiver(source_name, settings),
                           block_samples=_SDR_METER_BLOCK_SAMPLES)
     converter = IqToAudio(source.iq_sample_rate, settings.decimation,
                           settings.bandwidth_hz, settings.tuning_offset_hz,
@@ -121,7 +121,7 @@ def _open_sdr_level_stream(source_name: str, receiver_values: SectionValues,
 async def close_without_blocking_the_ui(stream: LevelStream) -> None:
     """Close a level stream without stopping the event loop while it happens.
 
-    Closing a receiver is slow and can be very slow.  RtlSdrSource.close cancels the
+    Closing a receiver is slow and can be very slow.  SdrSource.close cancels the
     async read and then joins the capture thread with a five second timeout, and
     SdrLevelStream adds a second join of its own for the thread that drains it.  Run
     straight from a worker, all of that happens on the Textual event loop, so leaving

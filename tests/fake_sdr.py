@@ -66,6 +66,7 @@ class FakeSdrDevice(SdrDevice):
         self._gain_db = self._nearest(gain_db)
         self._profile = DeviceProfile(
             name='fake',
+            settings_section='rtlsdr',
             sample_format=fmt,
             blocks_to_discard_streaming=blocks_to_discard_streaming,
             blocks_to_discard_reading=blocks_to_discard_reading,

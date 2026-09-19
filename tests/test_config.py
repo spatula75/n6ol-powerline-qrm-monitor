@@ -71,6 +71,14 @@ class TestLoadSection:
         assert cfg.callsign == 'W1AW'
         assert cfg.timezone == 'America/Los_Angeles'
 
+    def test_a_class_variable_is_not_accepted_as_a_toml_setting(self, caplog):
+        """ClassVar entries appear in __dataclass_fields__ but not in __init__."""
+        data = {'rtlsdr': {'device_source': 'sdrplay'}}
+        with caplog.at_level('WARNING'):
+            cfg = _load_section(data, 'rtlsdr', RtlSdrConfig)
+        assert cfg.device_source == RTLSDR
+        assert '[rtlsdr] device_source' in caplog.text
+
 
 class TestBuzzConfigDefaults:
     def test_default_instance_has_all_subsections(self):

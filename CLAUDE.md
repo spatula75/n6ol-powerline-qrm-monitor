@@ -728,7 +728,7 @@ Practical consequences:
 
   Where the values are known ahead of time, the schema's `enum` already does this and
   `audio.source` and `[weather] source` both use it. Where they come from hardware,
-  the picker has to query it, and `RtlSdrSource.supported_gains_db` is what it would
+  the picker has to query it, and `SdrSource.supported_gains_db` is what it would
   ask.
 - **CSV is an append-only contract.** New columns go where they won't disturb parsing of
   existing rows, and readers must tolerate their absence in older files.

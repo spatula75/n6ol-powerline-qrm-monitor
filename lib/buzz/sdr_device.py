@@ -180,6 +180,7 @@ class DeviceProfile:
     """
 
     name: str
+    settings_section: str
     sample_format: SampleFormat
     blocks_to_discard_streaming: int
     blocks_to_discard_reading: int
@@ -667,6 +668,7 @@ class RtlSdrDevice(SdrDevice):
         self._iq_sample_rate, self._gain_db = self._configure(gain_db, iq_sample_rate)
         self._profile = DeviceProfile(
             name='RTL-SDR',
+            settings_section='rtlsdr',
             sample_format=RTL_SDR_FORMAT,
             # Up to _TRANSFER_POOL_BLOCKS buffers are filled or in flight when the gain
             # moves, plus the one being written at that moment, so discarding this many

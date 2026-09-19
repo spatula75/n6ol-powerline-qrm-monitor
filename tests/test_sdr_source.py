@@ -1,4 +1,4 @@
-"""Tests for RtlSdrSource, the queue between a receiver and whoever converts its IQ.
+"""Tests for SdrSource, the queue between a receiver and whoever converts its IQ.
 
 What this class does shrank when `buzz.sdr_device` took over the hardware.  Gain
 snapping, configuring, the pyrtlsdr boundary, the C callback and the bounded close all
@@ -13,7 +13,7 @@ import queue
 
 import pytest
 from buzz.sdr import (_what_a_loss_means, _what_a_sustained_drift_means,
-                      _DISCARD_LOG_EVERY, DEFAULT_BLOCK_SAMPLES, RtlSdrSource)
+                      _DISCARD_LOG_EVERY, DEFAULT_BLOCK_SAMPLES, SdrSource)
 from tests.fake_sdr import V4_GAINS, FakeSdrDevice
 
 BLOCK = 64
@@ -23,7 +23,7 @@ IQ_RATE = 256_000
 def source(device=None, **overrides):
     settings = dict(block_samples=BLOCK, buffer_blocks=3)
     settings.update(overrides)
-    return RtlSdrSource(device or FakeSdrDevice(iq_sample_rate=IQ_RATE), **settings)
+    return SdrSource(device or FakeSdrDevice(iq_sample_rate=IQ_RATE), **settings)
 
 
 class TestTheSinkItGivesTheDevice:
@@ -268,7 +268,7 @@ class TestWhatItDelegates:
         assert source(block_samples=2048).block_samples == 2048
 
     def test_the_default_block_size_is_the_modules(self):
-        assert RtlSdrSource(FakeSdrDevice()).block_samples == DEFAULT_BLOCK_SAMPLES
+        assert SdrSource(FakeSdrDevice()).block_samples == DEFAULT_BLOCK_SAMPLES
 
 
 class TestClosing:
@@ -308,7 +308,7 @@ class TestTheLevelMeterStream:
         from buzz.iq import IqToAudio
         from buzz.sdr import SdrLevelStream
         device = device or FakeSdrDevice(iq_sample_rate=IQ_RATE)
-        source = RtlSdrSource(device, block_samples=BLOCK, buffer_blocks=2)
+        source = SdrSource(device, block_samples=BLOCK, buffer_blocks=2)
         converter = IqToAudio(IQ_RATE, 16, 6_400, 50_000)
         return SdrLevelStream(source, converter, -40.2), device
 

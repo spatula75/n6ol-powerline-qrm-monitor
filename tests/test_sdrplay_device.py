@@ -227,7 +227,7 @@ class TestTheConversionGainComesFromTheReceiver:
         """The receiver here has 10 dB less conversion gain than the one the fallback
         came from, so every rung of its ladder sits 10 dB lower.
         """
-        silent = FakeSdrplayApi()
+        silent = FakeSdrplayApi(deliver_initial=False)
         device, _ = make_device(silent)
         assert device.supported_gains_db[0] == 71.0    # the fallback, so far
 
@@ -254,7 +254,7 @@ class TestTheConversionGainComesFromTheReceiver:
 
     def test_a_library_that_reports_nothing_keeps_the_measured_fallback(self, caplog):
         """The one case where nobody can do better, so it says so and carries on."""
-        library = FakeSdrplayApi()
+        library = FakeSdrplayApi(deliver_initial=False)
         with caplog.at_level(logging.INFO):
             device, _ = make_device(library)
         assert device._conversion_gain_db == HF_CONVERSION_GAIN_DB
@@ -332,14 +332,14 @@ class TestWhatTheReceiverSaysItsGainIs:
             device.set_gain_db(40.0)
         assert not [r for r in caplog.records if 'gain table' in r.message]
 
-    def test_a_zero_reading_is_read_as_not_yet_applied(self):
-        """The receiver fills the figure in as it applies the change, so a zero means
-        the change has not taken effect and there is nothing to compare against.
-        """
+    def test_a_zero_reading_is_a_real_reported_gain(self, caplog):
+        """Zero is on the gain ladder and cannot also mean that no report arrived."""
         device, library = make_device()
         library.set_reported_gain_db(0.0)
         device.start_stream(CollectingSink(), 4)
-        assert device.set_gain_db(-25.0) == -25.0
+        with caplog.at_level(logging.WARNING):
+            assert device.set_gain_db(-25.0) == -25.0
+        assert 'receiver reports 0.0 dB' in caplog.text
 
 
 class TestStreaming:
@@ -1034,8 +1034,47 @@ class TestClosing:
         at shutdown would hang the monitor instead of the one call.
         """
         device, library = make_device()
+        device.start_stream(CollectingSink(), 4)
         library.fail_on['uninit'] = RuntimeError('the service stopped answering')
-        assert device.close() is True     # the failure is swallowed, not raised
+        assert device.close() is False
+        assert library.calls[-1] == 'uninit'
+
+    def test_a_release_failure_does_not_close_the_session_under_the_device(self):
+        """A failed release may still leave the service using the API session."""
+        device, library = make_device()
+        library.fail_on['release'] = RuntimeError('still in use')
+        assert device.close() is False
+        assert library.calls[-1] == 'release'
+
+
+class TestOpeningThroughTheLibrary:
+    def test_the_runtime_api_must_match_the_generated_bindings(self):
+        """A different ABI can give the generated structs a different layout."""
+        library = FakeSdrplayApi(api_version=3.14)
+        with patch.object(SdrplayLibrary, 'load', return_value=library):
+            with pytest.raises(RuntimeError, match='built for SDRplay API 3.15.*reports 3.14'):
+                SdrplayDevice.open(tuned_hz=TUNED_HZ, gain_db=40.0,
+                                   iq_sample_rate=IQ_SAMPLE_RATE)
+        assert library.calls == ['open', 'api_version', 'close']
+
+    def test_the_version_is_checked_before_any_device_struct_is_read(self):
+        library = FakeSdrplayApi()
+        with patch.object(SdrplayLibrary, 'load', return_value=library):
+            device = SdrplayDevice.open(tuned_hz=TUNED_HZ, gain_db=40.0,
+                                        iq_sample_rate=IQ_SAMPLE_RATE)
+        assert library.calls.index('api_version') < library.calls.index('devices')
+        device.close()
+
+    def test_a_failed_initial_stop_does_not_release_a_running_receiver(self):
+        """Release and close are unsafe while Uninit has failed."""
+        library = FakeSdrplayApi()
+        library.fail_on['uninit'] = RuntimeError('still running')
+        with patch.object(SdrplayLibrary, 'load', return_value=library):
+            with pytest.raises(RuntimeError, match='remains held until this process exits'):
+                SdrplayDevice.open(tuned_hz=TUNED_HZ, gain_db=40.0,
+                                   iq_sample_rate=IQ_SAMPLE_RATE)
+        assert 'release' not in library.calls
+        assert 'close' not in library.calls
 
 
 class TestOpening:

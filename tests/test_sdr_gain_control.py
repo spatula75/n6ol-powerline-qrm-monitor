@@ -10,7 +10,7 @@ rather than one, and it has to read in the mode that makes a gain change safe at
 """
 import pytest
 from buzz.gain_sweep import GainSweep
-from buzz.sdr import DEFAULT_SWEEP_BLOCK_SAMPLES, RtlSdrSource, SweepReader
+from buzz.sdr import DEFAULT_SWEEP_BLOCK_SAMPLES, SdrSource, SweepReader
 from tests.fake_sdr import V4_GAINS, FakeSdrDevice
 
 BLOCK = 64
@@ -117,7 +117,7 @@ class TestGainCannotMoveWhileStreaming:
         reach this is through the device, and the device says no.
         """
         device = FakeSdrDevice()
-        RtlSdrSource(device).start()
+        SdrSource(device).start()
         with pytest.raises(RuntimeError, match='streaming'):
             device.set_gain_db(22.9)
 
@@ -125,7 +125,7 @@ class TestGainCannotMoveWhileStreaming:
         """It had one, nothing called it, and it could only ever have been the unsafe
         path.  Its absence is what makes the refusal above unreachable by accident.
         """
-        assert not hasattr(RtlSdrSource(FakeSdrDevice()), 'set_gain')
+        assert not hasattr(SdrSource(FakeSdrDevice()), 'set_gain')
 
 
 class TestTheSweepStillDrainsWhateverItReads:
@@ -134,7 +134,7 @@ class TestTheSweepStillDrainsWhateverItReads:
 
     The class this replaces tested a streaming source's queue.  That path is gone: a
     sweep moves the gain between measurements, a streaming RTL-SDR refuses that, and
-    RtlSdrSource no longer offers set_gain or drain at all.  What still has to hold is
+    SdrSource no longer offers set_gain or drain at all.  What still has to hold is
     the wiring, since a drain nobody calls helps nobody.
     """
 

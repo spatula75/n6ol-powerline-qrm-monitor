@@ -108,27 +108,6 @@ nothing on the band was strong enough to settle it.  A signal generator would.  
 figure of 57.5 dB against a nominal 49.6 in `config.py` and `sdr.py` is provisional,
 neither confirmed nor refuted.  See `sdr-gain-calibration.md`.
 
-### The scope height differs between the RTL-SDR and SDRplay
-
-On 2026-09-18, the scope auto-ranged to -60.2 dBFS with the SDRplay and about
--49 dBFS with the RTL-SDR, although their calibrated signal and noise-floor readings
-were similar.  The RTL-SDR needs substantially more tuner gain to raise the antenna
-signal above its self-noise.  Its audio output may therefore be legitimately higher
-relative to full scale, with a larger level-calibration correction bringing the
-reported input level back down.
-
-Check the data path before changing the display.  Confirm that the scope scales the
-uncalibrated audio amplitude while the meters and logs apply the receiver's level
-offset, then repeat the comparison on the same antenna and frequency.  The intended
-result is a taller SDRplay trace that exposes more detail while preserving raw dBFS
-and clipping information.  The likely change is to let each source set an auto-range
-floor below the fixed -60.2 dBFS limit when its dead-input noise permits it.  Measure
-that dead-input floor on each receiver before choosing the limits; a live antenna does
-not isolate the quantization and processing noise that the limit must hide.  See
-`scope-auto-range-floor.md`, which records the earlier SDRplay measurements and the
-same source-specific design.  The antenna is back on the production monitor tonight,
-so the live comparison waits until the hardware can be moved again.
-
 ## Other receivers
 
 ### Verify the revised gain selection on an RTL-SDR
@@ -218,7 +197,7 @@ above says scales on its own.
 ### The sound card has no device class, and probably should not get one
 
 A receiver goes through `SdrDevice`, with `RtlSdrDevice` and `SdrplayDevice` behind it,
-`RtlSdrSource` reading blocks and `RtlSdrPipeline` buffering them.  A sound card goes
+`SdrSource` reading blocks and `SdrPipeline` buffering them.  A sound card goes
 through none of that: `AudioPipeline` builds its own `sd.InputStream`, and
 `SoundCardLevelStream` builds a second one.
 
@@ -419,7 +398,7 @@ that matters.
 
 ### Tuner gain should be a picker, not a text box
 
-The tuner accepts 29 fixed steps and `RtlSdrSource.set_gain` snaps anything else to
+The tuner accepts 29 fixed steps and `SdrSource.set_gain` snaps anything else to
 the nearest, so a typed 41.0 becomes 40.2 and the operator is never told.  CLAUDE.md's
 rule is that a setting with a known set of acceptable values gets a picker.
 
@@ -540,8 +519,8 @@ nine files:
 
 | uses | file | targets |
 | --- | --- | --- |
-| 25 | `test_gain_calibration_dialog.py` | `open_device`, `open_sweep`, `RtlSdrSource`, `SweepReader`, `close_device` |
-| 23 | `test_level_stream_source_choice.py` | `open_device`, `RtlSdrSource`, `SdrLevelStream`, `IqToAudio`, `SoundCardLevelStream` |
+| 25 | `test_gain_calibration_dialog.py` | `open_device`, `open_sweep`, `SdrSource`, `SweepReader`, `close_device` |
+| 23 | `test_level_stream_source_choice.py` | `open_device`, `SdrSource`, `SdrLevelStream`, `IqToAudio`, `SoundCardLevelStream` |
 | 15 | `test_release_render_check.py` | `run`, `render_variant`, `count_black_segments` |
 | 14 | `test_batch_render_recordings.py` | `render`, `default_recordings_directory`, `BuzzConfig` |
 | 9 | `test_gain_picker.py` | `open_device` |

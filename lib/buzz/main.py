@@ -412,9 +412,9 @@ def _pipeline_for(config: BuzzConfig, settings: SdrConfig,
     two functions above.
     """
     from buzz.iq import IqToAudio
-    from buzz.sdr import RtlSdrPipeline, RtlSdrSource
+    from buzz.sdr import SdrPipeline, SdrSource
 
-    source = RtlSdrSource(device)
+    source = SdrSource(device)
     converter = IqToAudio(
         source.iq_sample_rate, settings.decimation, settings.bandwidth_hz,
         settings.tuning_offset_hz, settings.sideband)
@@ -450,7 +450,7 @@ def _pipeline_for(config: BuzzConfig, settings: SdrConfig,
     if config.record_iq:
         logger.info('Keeping the last several seconds of raw IQ, so that an IQ '
                     'recording gets the same run-up its audio does.')
-    return RtlSdrPipeline(source, converter, keep_iq=config.record_iq)
+    return SdrPipeline(source, converter, keep_iq=config.record_iq)
 
 
 # Which function opens each source.  `buzz.config.SOURCES` names the same sources and
@@ -480,7 +480,7 @@ def _gain_in_use(device: 'SdrDevice', asked_db: float) -> str:
     An RTL-SDR reports nothing, so it gets the plain figure rather than a blank.
     """
     reported = getattr(device, 'reported_gain_db', None)
-    if not reported:
+    if reported is None:
         return f'{asked_db:.1f} dB gain'
     return f'{asked_db:.1f} dB gain, which the receiver reports as {reported:.1f} dB'
 
@@ -761,8 +761,8 @@ def main() -> None:  # pragma: no cover
                            'the monitor never sends live audio to an output device.')
         if args.audio_rf_conversion_db is not None:
             logger.warning('--audio-rf-conversion-db is ignored outside playback.  '
-                           'Live audio is calibrated in the config, by [rtlsdr] '
-                           'calibrated_offset_db for a receiver and [station] '
+                           'Live audio is calibrated in the config, by the active '
+                           'receiver section\'s calibrated_offset_db or [station] '
                            'audio_rf_conversion_db for a sound card.  Change it '
                            'there rather than per run.')
         # open_live_source fails with a message written for whoever is standing at the

@@ -43,9 +43,9 @@ with the `ENTER` key and go back with the `ESC` key.  Use arrow keys to navigate
 
 ### Audio source
 
-First and foremost, choose where the monitor will get its audio feed.  This can either be sound capture device 
-reading from a radio, or an inexpensive RTL-SDR device.  It has to be one or the other (reading from multiple
-devices is not supported).  Depending on the option you select, menu availability will differ.
+First and foremost, choose where the monitor will get its audio feed.  This can be a sound capture device
+reading from a radio, an RTL-SDR, or an SDRplay receiver.  The monitor reads one source at a time.  Depending
+on the option you select, menu availability will differ.
 
 ### Radio + Sound Card Source
 If you intend to use your radio with your sound card, connect your radio to your sound device that you plan
@@ -69,6 +69,12 @@ communicate with them.
 Do NOT replace any DLLs within librtlsdr or pyrtlsdr with those from the RTL-SDR.com site.  This is not necessary with
 librtlsdr, and will actually break functionality.
 
+### SDRplay Source
+
+Install SDRplay Hardware API 3.15 and verify that the receiver works before starting the monitor.  Close
+SDRconnect before opening the receiver because only one program can hold it at a time.  The supported models
+are the SDRplay RSP1A and RSP1B.
+
 ### Sound Card Audio Configuration / Calibration
 If you're using an SDR receiver, skip to the next section.
 
@@ -89,16 +95,16 @@ To get the pulse rate setting, double your local electrical utility's alternatin
 North and Central America, for example, that means 120.  For Europe and Asia, this is usually 100.  Chances are if 
 you're using this tool, you're already very familiar with the frequency you need.
 
-### RTL-SDR Configuration / Calibration
+### SDR Receiver Configuration / Calibration
 
 From the `Audio input` menu, first set the pulse rate, double your local electrical utility's alternating
 current frequency.
 
-Next, from the `RTL-SDR receiver` menu, choose a `Listening frequency` for your receiver.
+Next, from the selected receiver's menu, choose a `Listening frequency` for your receiver.
 This should be a frequency at or near where your antenna is naturally resonant, and ideally a relatively
 quiet segment of the band.
 
-Note that the pass band for the RTL-SDR as configured by the monitor is 256 kHz, with a 50 kHz offset, so strong 
+Note that the receiver pass band is 256 kHz by default, with a 50 kHz offset, so strong
 signals in a nearby shortwave band can introduce clipping.  In order to ensure that the entire pass band sits above
 some lower limit, you may set your desired frequency no lower than 78 kHz above that lower limit.  This only
 applies if you are trying to avoid a strong out-of-band signal.  (78 kHz because the pass band is split into two
@@ -107,7 +113,7 @@ interactions with DC exactly at the center frequency.)  Similarly, if you're avo
 set your frequency no higher than 178 kHz *below* it. 
 
 Calibration is somewhat more complex with SDR devices.  See the [Calibration tutorial](calibration.md) for a
-detailed explanation, but you can start by selecting `Auto-calibrate gain` from the RTL-SDR receiver menu.
+detailed explanation, but you can start by selecting `Auto-calibrate gain` from the selected receiver's menu.
 Do this with your antenna connected, preferably without any active arc noise, but reasonable results are also
 possible with active noise.  Auto-calibration will attempt to find the optimal `Tuner gain` and `Level calibration`
 settings for your device and antenna.

@@ -783,7 +783,7 @@ class TestTheFilterLengthSatisfiesBothConstraintsAtOnce:
 
 
 class TestAFailedConversionDoesNotGrowTheBacklogForever:
-    """RtlSdrPipeline._feed catches every exception and goes on to the next block.
+    """SdrPipeline._feed catches every exception and goes on to the next block.
 
     A fault that repeats every block would therefore retry forever, and if the backlog
     grew before the filtering rather than after it, each retry would add another

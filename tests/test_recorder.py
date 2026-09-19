@@ -1940,7 +1940,7 @@ class TestKeepingSomeDiskFree:
 
 
 class PipelineThatKeptIq(RingBufferPipeline):
-    """An audio pipeline that also held the raw IQ, the way RtlSdrPipeline does."""
+    """An audio pipeline that also held the raw IQ, the way SdrPipeline does."""
 
     def __init__(self, iq: RingBufferPipeline) -> None:
         super().__init__()

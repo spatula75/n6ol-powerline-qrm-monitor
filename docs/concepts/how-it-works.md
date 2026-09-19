@@ -7,13 +7,13 @@ flowchart TB
     subgraph SOURCE["Audio source - one active at a time"]
         direction LR
         MIC["Sound card input<br/>(the radio)"]
-        SDR["RTL-SDR receiver<br/>(raw IQ)"]
+        SDR["SDR receiver<br/>(raw IQ)"]
         WAVFILE["Recorded .wav file<br/>(--playback)"]
     end
 
     MIC --> RB[("Ring Buffer<br/>9.6 s of audio")]
     SDR --> DEVICE["SdrDevice<br/>opens, configures, sets gain,<br/>streams or reads one block"]
-    DEVICE -->|one IqBlock per callback| CAPTURE["RtlSdrSource<br/>queue, refusal count,<br/>clock drift"]
+    DEVICE -->|one IqBlock per callback| CAPTURE["SdrSource<br/>queue, refusal count,<br/>clock drift"]
     CAPTURE -->|drained by the feeder thread| IQ["IQ to audio<br/>mix, filter, decimate,<br/>take the real part"]
     IQ --> RB
     WAVFILE --> RB

@@ -426,7 +426,7 @@ class TestOpeningTheRealReceiver:
         assert source is reader_class.return_value
 
     def test_it_reads_synchronously_rather_than_streaming(self):
-        """The whole reason the sweep has a reader of its own.  RtlSdrSource streams
+        """The whole reason the sweep has a reader of its own.  SdrSource streams
         on a capture thread, and changing gain against that is two threads on one
         device, which wedged the receiver and hung the program.
         """
@@ -434,7 +434,7 @@ class TestOpeningTheRealReceiver:
 
         with patch.object(RtlSdrDevice, 'open'), \
              patch_in(sdr_module, SweepReader), \
-             patch('buzz.sdr.RtlSdrSource') as streaming:
+             patch('buzz.sdr.SdrSource') as streaming:
             open_sweep('rtlsdr', dict(RTLSDR_VALUES))
         streaming.assert_not_called()
 

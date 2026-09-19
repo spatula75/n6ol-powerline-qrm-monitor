@@ -2,8 +2,8 @@
 
 The hardware itself is `buzz.sdr_device`, which owns every operation performed against
 a device.  This module is what sits between that and the rest of the program:
-`RtlSdrSource` queues the blocks a streaming device delivers, `SweepReader` reads one
-at a time for a gain sweep, `RtlSdrPipeline` converts and fills the shared ring buffer,
+`SdrSource` queues the blocks a streaming device delivers, `SweepReader` reads one
+at a time for a gain sweep, `SdrPipeline` converts and fills the shared ring buffer,
 `IqRingBuffer` keeps the raw bytes when an IQ recording wants a lead-in, and
 `SdrLevelStream` answers the setup program's meters.
 
@@ -15,7 +15,7 @@ Why the draining thread is the one with a deadline
 --------------------------------------------------
 A device copies each block on the driver's own thread and does nothing else there, for
 the reasons `buzz.sdr_device` gives.  The work falls to whichever thread drains it,
-which is `RtlSdrPipeline`'s feeder, and that thread has to average less than a block's
+which is `SdrPipeline`'s feeder, and that thread has to average less than a block's
 own duration.  That is 64 ms at the default settings against roughly 2 ms of work.
 
 Run longer than it and librtlsdr's pool of USB transfers drains.  The pool is what
@@ -35,14 +35,14 @@ which is to convert, count and append.
 What cannot be counted, and what can
 ------------------------------------
 A loss inside the receiver cannot be counted at all, which is why
-`RtlSdrSource.clock_drift_seconds` exists: elapsed time minus the audio that arrived
+`SdrSource.clock_drift_seconds` exists: elapsed time minus the audio that arrived
 for it is the only evidence available.  Read it as a symptom rather than a
 measurement, since the receiver's crystal and the system clock separate slowly even
 when nothing is wrong.
 
 Blocks this program refused because its own queue was full are a different thing and
 stay apart on purpose.  The device counts those, because a refusal happens on the
-driver's thread where logging can raise and can block on I/O, and `RtlSdrSource`
+driver's thread where logging can raise and can block on I/O, and `SdrSource`
 reports them from the thread that fell behind.
 """
 
@@ -56,7 +56,7 @@ from typing import TYPE_CHECKING
 import numpy as np
 
 from buzz.sampler import LevelStream, RingBufferPipeline
-from buzz.sdr_device import VALUES_PER_FRAME, IqBlock, OverloadStatus, SdrDevice
+from buzz.sdr_device import VALUES_PER_FRAME, DeviceProfile, IqBlock, OverloadStatus, SdrDevice
 
 if TYPE_CHECKING:
     from buzz.iq import IqToAudio
@@ -98,7 +98,7 @@ _DISCARD_LOG_EVERY = 100
 # next read times out, which is within 0.5 s.  The capture thread returns from
 # read_bytes_async once cancel_read_async has taken effect.  Five seconds is several
 # times either, so a thread still running afterwards is stuck rather than slow, and
-# RtlSdrSource.close treats it that way.
+# SdrSource.close treats it that way.
 _THREAD_JOIN_TIMEOUT_SECONDS = 5.0
 
 # How long a draining thread waits for a block before it rechecks its stop flag.
@@ -140,7 +140,7 @@ _HEALTH_INTERVAL_SECONDS = 60.0
 #
 # The figure is chosen rather than measured.  RTL-SDR crystals are specified in the
 # tens of parts per million, so 500 leaves room for a poor one and still catches a
-# loss, which runs to thousands.  See RtlSdrSource.clock_drift_seconds.
+# loss, which runs to thousands.  See SdrSource.clock_drift_seconds.
 #
 # Raising this figure is almost never the answer to a wide spread, and twice on one
 # evening it looked like it was.  An RSP1B ran to 12.2 ms of standard deviation, which
@@ -189,7 +189,7 @@ def _what_a_sustained_drift_means(total: float) -> str:
             'the receiver reports.')
 
 
-class RtlSdrSource:
+class SdrSource:
     """Pulls raw IQ off a receiver and queues it for somebody else to convert.
 
     Call start(), then read() until it returns None, then close().  The caller injects
@@ -257,9 +257,14 @@ class RtlSdrSource:
         return self._device.supported_gains_db
 
     @property
-    def effective_bits(self) -> int:
+    def effective_bits(self) -> float:
         """How many bits of the int16 audio this receiver really resolves."""
         return self._device.effective_bits()
+
+    @property
+    def profile(self) -> DeviceProfile:
+        """Facts about this configured device that its consumers need."""
+        return self._device.profile
 
     @property
     def gain_db(self) -> float:
@@ -516,7 +521,7 @@ class IqRingBuffer(RingBufferPipeline):
 
     The audio ring buffer gives an event recording its run-up for free, because the
     audio is already sitting there when the lock happens.  Raw IQ has no such buffer:
-    RtlSdrPipeline converts each block and keeps only the audio, and the bytes go out
+    SdrPipeline converts each block and keeps only the audio, and the bytes go out
     of scope immediately after.  This holds them for the same duration instead.
 
     It stores the bytes the device delivered rather than the complex samples they
@@ -542,7 +547,7 @@ class IqRingBuffer(RingBufferPipeline):
         """Keep one block's raw bytes, shaped one complex sample per row.
 
         Public where every other pipeline here fills itself from inside a subclass,
-        because this one is filled by RtlSdrPipeline, which is a buffer in its own
+        because this one is filled by SdrPipeline, which is a buffer in its own
         right for the audio.  The push crosses an object boundary, so it gets a name.
 
         The reshape is what keeps the buffer's arithmetic honest.  `raw` is interleaved
@@ -555,10 +560,10 @@ class IqRingBuffer(RingBufferPipeline):
         self._append(block.raw.reshape(-1, 2))
 
 
-class RtlSdrPipeline(RingBufferPipeline):
+class SdrPipeline(RingBufferPipeline):
     """Feeds the shared ring buffer from a receiver, converting on the way.
 
-    The last of four pieces.  SdrDevice holds the hardware, RtlSdrSource holds the
+    The last of four pieces.  SdrDevice holds the hardware, SdrSource holds the
     queue between the driver's thread and this one, IqToAudio holds the arithmetic,
     and this owns the thread that carries blocks from the queue to the buffer.
     Everything downstream reads this exactly as it reads the sound card, and cannot
@@ -571,7 +576,7 @@ class RtlSdrPipeline(RingBufferPipeline):
     convert, count and append.  See the module docstring.
     """
 
-    def __init__(self, source: RtlSdrSource, converter: 'IqToAudio', *,
+    def __init__(self, source: SdrSource, converter: 'IqToAudio', *,
                  clock: Callable[[], float] = monotonic, keep_iq: bool = False) -> None:
         super().__init__(converter.audio_sample_rate)
         self._source = source
@@ -610,13 +615,14 @@ class RtlSdrPipeline(RingBufferPipeline):
         return self._clipped
 
     @property
-    def effective_bits(self) -> int:
-        """What the receiver resolves, which decides how far the scope magnifies.
+    def effective_bits(self) -> float:
+        """What the converted audio resolves, which limits scope magnification.
 
-        The base class answers sixteen, which is right for a sound card and wrong
-        for every receiver.  See buzz.scope.minimum_full_scale.
+        The receiver supplies the delivered bit depth.  The converter adds resolution
+        when its filter reduces uncorrelated sample noise, up to the int16 output.
+        See buzz.scope.minimum_full_scale.
         """
-        return self._source.effective_bits
+        return min(16.0, self._source.effective_bits + self._converter.processing_gain_bits)
 
     @property
     def iq_buffer(self) -> IqRingBuffer | None:
@@ -624,7 +630,7 @@ class RtlSdrPipeline(RingBufferPipeline):
         return self._iq_buffer
 
     @property
-    def source(self) -> RtlSdrSource:
+    def source(self) -> SdrSource:
         """The capture this is draining, for anything that wants its counters."""
         return self._source
 
@@ -733,8 +739,8 @@ class RtlSdrPipeline(RingBufferPipeline):
             'The receiver clipped %d raw value(s) in the last %.0f seconds, and the '
             'conversion clipped %d output sample(s).  Loud events are measured smaller '
             'than they are.  Run the gain calibration again on a quiet band, which '
-            'measures what [rtlsdr] gain_db should be rather than guessing a step.',
-            clipped, elapsed, saturated)
+            'measures what [%s] gain_db should be rather than guessing a step.',
+            clipped, elapsed, saturated, self._source.profile.settings_section)
 
     def _warn_about_drift(self, elapsed: float) -> None:
         """Report a receiver clock that has run away from the system clock.
@@ -860,7 +866,7 @@ class RtlSdrPipeline(RingBufferPipeline):
 class SdrLevelStream(LevelStream):
     """A live level in dBm, fed by a receiver, for the setup program's meter.
 
-    This owns a thread rather than reaching through RtlSdrPipeline, because a meter
+    This owns a thread rather than reaching through SdrPipeline, because a meter
     wants the newest reading rather than a history.  The ring buffer would only add
     its own latency to a number somebody is watching while they turn a knob.
 
@@ -870,7 +876,7 @@ class SdrLevelStream(LevelStream):
     would report.
     """
 
-    def __init__(self, source: RtlSdrSource, converter: 'IqToAudio',
+    def __init__(self, source: SdrSource, converter: 'IqToAudio',
                  offset_db: float) -> None:
         # One IQ block converts to one audio block, so they last the same time and
         # either one gives the smoothing its time constant.

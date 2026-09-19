@@ -41,7 +41,7 @@ def open_sweep(source: str,
                values: SectionValues) -> tuple['SweepReader', GainSweep]:
     """Open whichever receiver `source` names and build a sweep over it.
 
-    A SweepReader rather than the RtlSdrSource the monitor uses.  It reads
+    A SweepReader rather than the SdrSource the monitor uses.  It reads
     synchronously on one thread, so changing gain cannot race a capture thread that
     is driving libusb's event loop, which is what left a receiver wedged and the
     program hung.  See its own docstring.  An SDRplay has no synchronous read at all,

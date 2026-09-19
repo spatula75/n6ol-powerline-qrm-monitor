@@ -423,7 +423,7 @@
         "audio_rf_conversion_db": {
           "type": "number",
           "title": "Audio-to-RF offset (dB)",
-          "description": "The offset that converts audio amplitude to RF level at the receiver input. This one is for a sound card. A receiver uses [rtlsdr] audio_rf_conversion_db instead and ignores this.",
+          "description": "The offset that converts audio amplitude to RF level at the receiver input. This one is for a sound card. A receiver uses calibrated_offset_db in its own section instead and ignores this.",
           "default": -32.0,
           "x-widget": "calibration",
           "x-visible-when": {
@@ -801,7 +801,7 @@
           "x-notes": [
             "The monitor keeps the last several seconds of raw IQ at all times when this is on, so that an IQ recording gets the same run-up its audio does. That is 4.7 MB at the default sample rate and 44 MB at the highest the hardware takes.",
             "Nothing in this program reads an IQ recording back. Playing one is a job for other software.",
-            "An RTL-SDR receiver only. A sound card has no IQ to record, so the monitor ignores this and says so at startup when [audio] source is soundcard."
+            "An SDR receiver only. A sound card has no IQ to record, so the monitor ignores this and says so at startup when [audio] source is soundcard."
           ],
           "x-visible-when": {
             "section": "audio",

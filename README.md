@@ -70,9 +70,9 @@ of a neighbor.
 ## Requirements
 
 - Python 3.12 or later
-- A radio receiver with an audio output connected to a sound card line input *OR* a librtlsdr-compatible
-    USB SDR receiver capable of receiving in the band in which you are encountering RF noise
-    (tested with the RTL-SDR.com v4; v3 is not currently supported because of its lack of HF up-conversion).
+- A radio receiver with an audio output connected to a sound card line input, a librtlsdr-compatible
+    USB receiver, or an SDRplay RSP1A or RSP1B. The RTL-SDR.com v4 is supported; the v3 lacks
+    the HF up-conversion this monitor needs.
 - An SSH-accessible web server for publishing output (optional but expected)
 - A [CumulusMX](https://cumulusmx.com/) weather station or Open-Meteo API access for weather data (optional)
 - ffmpeg installed on your system, if using playback with auto-gain, or when rendering to video
@@ -82,8 +82,10 @@ no code changes. The core DSP and collection code is cross-platform, and CI runs
 Linux. FreeBSD should also work, but install `numba` from the ports collection
 (`devel/py-numba`) rather than pip, because pip ships no FreeBSD binary wheels for it.  An SDR receiver needs
 `pyrtlsdr[lib]`, which `requirements.txt` installs for you; if you install the package itself instead, ask for
-it with `pip install .[rtlsdr]`.  A sound-card station never loads it and can leave it out.  As of now, I've
-only tested with the RTL-SDR.com v4 receiver, though the v4-lite should work as well.
+it with `pip install .[rtlsdr]`.  An SDRplay station also needs the SDRplay Hardware API 3.15 from
+SDRplay.  A sound-card station does not load either receiver library and can leave them out.  The
+RTL-SDR.com v4 and SDRplay RSP1B have been tested; the RTL-SDR.com v4-lite and SDRplay RSP1A
+use the same supported paths but have not been tested on this project.
 
 ---
 

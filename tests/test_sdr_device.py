@@ -320,7 +320,7 @@ class TestStreaming:
         exists to avoid, and the second call used to overwrite the reference to the
         first, leaving a thread nothing could cancel or join.
 
-        While the thread was built in RtlSdrSource.__init__, threading.Thread refused
+        While the thread was built in SdrSource.__init__, threading.Thread refused
         this on its own: a second start() raises.  Moving the thread onto the device
         took that refusal away, so the device states it.
         """

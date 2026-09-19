@@ -236,7 +236,8 @@ class TestOpeningADevice:
         device = SdrplayDevice.open(tuned_hz=7_050_000, gain_db=-40.0,
                                     iq_sample_rate=256_000)
         assert device.profile.name == 'SDRplay RSP1B'
-        assert library.calls[:5] == ['open', 'lock', 'devices', 'select', 'unlock']
+        assert library.calls[:6] == [
+            'open', 'api_version', 'lock', 'devices', 'select', 'unlock']
 
     def test_a_session_is_given_back_when_no_receiver_is_found(self, monkeypatch):
         """A session left open keeps the service holding a receiver, so the next run
@@ -294,7 +295,7 @@ class TestTheCleanupHelpers:
         def raises() -> None:
             raise RuntimeError('no')
 
-        assert _bounded(raises, 'failing') is True
+        assert _bounded(raises, 'failing') is False
 
     def test_a_call_that_never_returns_is_given_up_on(self, monkeypatch):
         """The API waits on a background service, so a call can hang.  Waiting forever

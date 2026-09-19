@@ -623,7 +623,7 @@ def _load_section(data: dict[str, Any], key: str, cls: type[_T]) -> _T:
     a line had been dropped.  A typo does exactly the same thing, which is the case
     this keeps catching after the renaming stops.
     """
-    known = set(cls.__dataclass_fields__)
+    known = {field.name for field in fields(cls)}
     section = data.get(key, {})
     for unknown in sorted(set(section) - known):
         logger.warning(

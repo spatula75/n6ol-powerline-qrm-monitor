@@ -235,45 +235,17 @@ _RANGE_HEADROOM = 1.30
 # hundred milliseconds and the trace visibly breathes.  0.05 at 100 ms frames gives
 # a settling time of a couple of seconds.
 _RANGE_EMA_ALPHA = 0.05
-# How many of the receiver's own steps the smallest full scale is worth.
+# How many effective audio steps the smallest full scale is worth.
 #
-# The floor is where confidence runs out.  A receiver working below one of its own
-# steps is not measuring, it is rounding, and a display that magnifies past that is
-# drawing detail the converter never had.  So the limit belongs to the receiver rather
-# than to the display.  That is why this is a multiple of the step rather than a fixed
-# number of counts: an RTL-SDR's noise floor is far above an SDRplay's or a sound
-# card's, and a single figure flattered one of them and starved another.
+# The floor caps magnification when a quiet input would otherwise stretch converter
+# noise across the display.  The relevant step is the one after IQ filtering and
+# decimation, because that int16 audio is what the scope receives.  SdrPipeline
+# combines the receiver's delivered depth with the filter's noise gain to describe
+# that step.  One step keeps the policy separate from both facts.
 #
-# This is the vertical analogue of _MIN_DYNAMIC_RANGE_DB and the dead channel is the
-# extreme case of the same thing: with a truly silent input the percentile collapses
-# toward zero and the auto-range would stretch quantization dither across the entire
-# screen, painting a dead channel as a healthy full-amplitude noise trace.  What the
-# floor really caps is magnification, since full scale is the amplitude that reaches
-# the top of the trace.
-#
-# One step, and the two receivers between them leave little choice.  A floor has to
-# sit above what a dead channel asks for and below what a working one asks for, or it
-# either fails to catch silence or clamps a signal that is really there.
-#
-# A dead channel asks for 0.65 of a step, because its dither is uniform over one step,
-# so sigma is a step over the square root of twelve, and the percentile and headroom
-# above multiply sigma by 3.66.  A working receiver asks for more, by however far its
-# `floor_margin_db` puts it above the knee.
-#
-# An RTL-SDR runs at the knee, because eight bits cannot afford to climb, so its window
-# is 0.65 to 1.49 steps.  An SDRplay runs ten decibels above the knee and its window is
-# 0.65 to 3.51.  The overlap is 0.65 to 1.49, whose geometric center is 0.98.
-#
-# Two steps was tried first, on the argument that it draws a dead channel at 32% of the
-# height where one step draws it at 65%, and that 32% reads as dead at a glance.  That
-# argument ignored where each receiver runs.  Two steps is outside the RTL-SDR's window,
-# and on real hardware it pinned that receiver at its floor in ordinary use.
-#
-# This used to be a flat 32 counts for every receiver, which was wrong in both
-# directions.  An RTL-SDR step is 256 counts, so its own dither was drawn at full
-# height, which is the exact failure the constant was written to prevent.  An SDRplay
-# step is 2 counts, so a real band reading of 2.84 counts, sitting 6.8 dB above that
-# receiver's own noise, was squashed to 9% of the screen.
+# At the default filter settings this gives an RTL-SDR a floor near 30 counts, close to
+# the original fixed 32.  An SDRplay reaches the 16-bit output cap and gets a floor of
+# one count, which exposes quiet detail that the fixed value hid.
 # See docs-notebook/scope-auto-range-floor.md.
 _FLOOR_STEPS = 1.0
 # Initial guess, used only until the EMA has real data to converge from.
@@ -443,18 +415,17 @@ def extract_sweeps(samples: np.ndarray, start: int, sweep_samples: int,
 # Auto-ranging
 # ---------------------------------------------------------------------------
 
-def minimum_full_scale(effective_bits: int) -> float:
-    """The smallest full scale this receiver's bit depth justifies, in int16 counts.
+def minimum_full_scale(effective_bits: float) -> float:
+    """The smallest full scale the converted audio resolution justifies.
 
     Everything reaching the scope is int16, whatever the receiver, because
     `IqToAudio._as_int16` scales each source against FULL_SCALE_COUNTS.  So a receiver
-    of fewer bits arrives in coarser steps rather than in a smaller range, and one
-    step is FULL_SCALE_COUNTS over 2 ** (bits - 1): one count at sixteen bits, two at
-    fifteen, 256 at eight.
+    of fewer bits arrives in coarser steps rather than in a smaller range.  The IQ
+    filter reduces uncorrelated quantization noise before this point, so the pipeline
+    includes that processing gain in `effective_bits`.
 
-    Magnifying past a receiver's own step means drawing its quantization noise at full
-    height.  See _FLOOR_STEPS for why the limit is one step, and for the window each
-    receiver leaves.
+    Magnifying past one effective audio step means drawing conversion noise at full
+    height.  See _FLOOR_STEPS and docs-notebook/scope-auto-range-floor.md.
     """
     return FULL_SCALE_COUNTS / 2 ** (effective_bits - 1) * _FLOOR_STEPS
 
@@ -699,8 +670,9 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
 
         self.setFixedSize(width, SCOPE_H)
 
-        # Read once: a pipeline does not change its receiver, and the alternative is
-        # asking a device for its bit depth ten times a second.
+        # Read once because neither the receiver nor its IQ filter changes while this
+        # pipeline runs.  Recomputing their combined resolution every frame adds no
+        # information.
         self._floor = minimum_full_scale(pipeline.effective_bits)
 
         self._timer = QTimer(self)
