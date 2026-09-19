@@ -187,8 +187,8 @@ _PHOSPHOR_DECAY = 0.72
 # ratio 21.9 dB - theory and measurement agree.  That is what makes pulse shape
 # visible at low SNR.
 #
-# Kept as an EMA rather than a fixed-N block average so the display keeps tracking a
-# changing signal instead of freezing once its bucket fills.
+# This stays an EMA rather than a fixed-N block average, so the display keeps tracking
+# a changing signal instead of freezing once its bucket fills.
 _AVERAGE_ALPHA = 0.05
 
 # Color ramp for the phosphor, as (intensity, (R, G, B)) stops.  The blue-green
@@ -237,11 +237,19 @@ _RANGE_HEADROOM = 1.30
 _RANGE_EMA_ALPHA = 0.05
 # How many of the receiver's own steps the smallest full scale is worth.
 #
-# This is the vertical analogue of _MIN_DYNAMIC_RANGE_DB and exists for the same
-# failure mode: with a truly silent input the percentile collapses toward zero and the
-# auto-range would stretch quantization dither across the entire screen, painting a
-# dead channel as a healthy full-amplitude noise trace.  What the floor really caps is
-# magnification, since full scale is the amplitude that reaches the top of the trace.
+# The floor is where confidence runs out.  A receiver working below one of its own
+# steps is not measuring, it is rounding, and a display that magnifies past that is
+# drawing detail the converter never had.  So the limit belongs to the receiver rather
+# than to the display.  That is why this is a multiple of the step rather than a fixed
+# number of counts: an RTL-SDR's noise floor is far above an SDRplay's or a sound
+# card's, and a single figure flattered one of them and starved another.
+#
+# This is the vertical analogue of _MIN_DYNAMIC_RANGE_DB and the dead channel is the
+# extreme case of the same thing: with a truly silent input the percentile collapses
+# toward zero and the auto-range would stretch quantization dither across the entire
+# screen, painting a dead channel as a healthy full-amplitude noise trace.  What the
+# floor really caps is magnification, since full scale is the amplitude that reaches
+# the top of the trace.
 #
 # One step, and the two receivers between them leave little choice.  A floor has to
 # sit above what a dead channel asks for and below what a working one asks for, or it
