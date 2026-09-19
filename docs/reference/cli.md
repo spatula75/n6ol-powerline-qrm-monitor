@@ -23,3 +23,6 @@ To run the main program, use `python -m buzz.main` followed by optional argument
 `--audio-rf-conversion-db <dB value>` - useful when playing back a .wav file the monitor did not generate, if you know the signal strength the receiver reported when it was recorded.  This number represents the offset between the full-scale audio amplitude and the dBm value reported by the receiver.  It is used to make the S meters on the display accurate.  For .wav files produced by the monitor, this value is carried in metadata and applied automatically.
 
 `--render <filename>` - render the playback to a video file, in real time. Can be used with `--headless`.
+
+`--log-level <LEVEL>` change the log level to a supported Python `LEVEL`.  Supported levels: ERROR, WARNING, INFO, 
+DEBUG.  The default level is INFO.  Use DEBUG when troubleshooting unexpected behavior or when creating a bug report.

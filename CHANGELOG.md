@@ -35,6 +35,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   misses the samples between one call and the next, which costs a sweep nothing and
   would ruin the monitor, and in exchange there is no second thread to race. The
   device refuses the unsafe order outright rather than leaving it to a convention.
+- `--log-level` sets how much the monitor says, from ERROR to DEBUG, defaulting to
+  INFO. The diagnostics that explain a puzzling display or a health warning log at
+  DEBUG, because they would be noise on a healthy run. Use it when something is
+  behaving strangely, and include what it prints in a bug report.
+- The SDRplay shim reports how far behind real time the receiver fell, once a minute at
+  DEBUG, beside the drift figure covering the same minute. This is a direct measurement
+  of the receiver where the drift figure only infers one, and pairing the two is what
+  showed that the drift excursions on an RSP1B are not stalls at all.
 
 ### Changed
 - Gain selection aims the noise floor where each receiver can afford to put it. An
@@ -60,8 +68,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Opening a configured device to answer a read-only question writes a sample rate, a
   tuning, an AGC setting and a gain, and it logged that the operator's gain had been
   snapped to a step while the operator was part way through choosing that gain.
+- The receiver clock check no longer warns when a buffer inside the receiver library
+  empties. Audio cannot be created, so a figure showing more audio than the interval
+  holds can never be a loss, and warning about one sent operators after a fault that
+  could not be there. Measured on an RSP1B, that library fills a buffer for eight or
+  nine minutes and then empties it, so the old check reported a healthy receiver as
+  faulty several times an hour.
+- The same check now watches the total since its baseline as well as each interval,
+  and warns once when that total walks past 300 ms. A leak of twenty milliseconds a
+  minute never crosses the per-interval limit, would corrupt every measurement the
+  station takes, and nothing in the monitor could see it before.
+- Chart rendering collects generation 0 rather than the whole heap, and
+  `buzz.main.freeze_live_heap` takes the long-lived objects out of every later
+  collection. A full collection stops every thread for its whole duration, measured at
+  46.6 ms against a heap of 400,000 objects, and the monitor was forcing one twice a
+  minute after every chart. The forced collections went from 160 ms a minute to about
+  6 ms, and they free the same objects.
+- The SDRplay shim fills one block buffer in place rather than allocating an array per
+  delivery and joining them at each block boundary. The callback runs on the library's
+  own thread and needs the GIL, so allocation churn there is the worst place for it.
 
 ### Fixed
+- The SDRplay shim no longer treats the empty delivery the library sends at open and at
+  every stream start as audio that arrived late, and no longer measures a stream's
+  first delivery against one from the gain probe seconds earlier. Either would have
+  reported a stall on every stream this program starts.
+- The drift warning no longer tells an operator their levels and grid frequency are
+  suspect in the same breath as saying nothing was lost. That clause now appears only
+  where samples actually went missing.
 - The SDRplay driver acknowledges both overload detection and clearance events, as
   the API requires. The probe reports acknowledgement failures instead of trusting
   further overload readings. Shutdown events no longer trigger acknowledgements after

@@ -14,11 +14,13 @@ crash - see the decorator's docstring for the full story.
 """
 
 import gc  # noqa: I001
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from functools import wraps
 from pathlib import Path
+from time import perf_counter
 from typing import ParamSpec, TypeVar
 from zoneinfo import ZoneInfo
 
@@ -35,6 +37,8 @@ from matplotlib.ticker import MultipleLocator
 from buzz.config import BuzzConfig
 from buzz.constants import S9_DBM
 from buzz.csv_store import BUCKET_MINUTES, CsvStore
+
+logger = logging.getLogger(__name__)
 
 # One day's values for a single trace. A plain list as read from the CSV, and a NumPy
 # array once _smooth() has run over it, so anything holding a series has to accept both.
@@ -188,20 +192,64 @@ def _gc_guarded(func: Callable[_P, _R]) -> Callable[_P, _R]:
     # where matplotlib is exercising this code path, since gc.disable() is a
     # single interpreter-wide switch with authority over all of them.
     # ------------------------------------------------------------------------
-    # The gc.collect() afterward is unrelated: a workaround for a separate
+    # The collection afterward is unrelated: a workaround for a separate
     # matplotlib memory leak (https://github.com/matplotlib/matplotlib/issues/27713)
     # that causes handles to accumulate across repeated savefig calls. It runs
     # after re-enabling GC, once the render is past the risky window.
+    #
+    # It collects generation 0 rather than the whole heap, and the disable above is
+    # what makes that sufficient: with collection off for the whole render, nothing is
+    # promoted out of generation 0, so every object the render made is still there.
+    # These two lines are therefore coupled, and dropping the disable would quietly
+    # leave this pass missing the garbage it exists to free.
+    # TestTheGuardCollectsWhatAFullPassWould pins the two together.
+    #
+    # The cost is the heap walk rather than the freeing, which is why this matters at
+    # all.  Measured on a running monitor, a full pass took 73 to 86 ms twice a minute
+    # while freeing about 8500 objects a render had just made; on the development
+    # machine the same render gave 5707 objects in 19.6 ms full against the same 5707
+    # in 2.0 ms for generation 0.  See docs-notebook/receiver-clock-drift.md.
+    #
+    # Those are wall-clock figures for the call, which bound the stall rather than
+    # measure it.  Marking and sweeping are C and do not release the GIL, but the
+    # finalizers and weakref callbacks a collection runs are Python, and the eval loop
+    # can switch threads there, so some of the 86 ms may have been yielded.  What the
+    # receiver actually lost would have to be measured at the callback, as the largest
+    # gap between two of them.
+    #
+    # Narrowing this cut the drift spread that buzz.sdr reports, from 12.2 ms to 4.4 ms
+    # of standard deviation, and did not stop the warnings: one came an hour later at
+    # -46.0 ms.  So this was part of what stalled the receiver and was not all of it.
+    # Removing a heap walk that frees nothing stands on its own either way.
     @wraps(func)
     def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
         was_enabled = gc.isenabled()
         gc.disable()
+        drawing_started = perf_counter()
         try:
             result = func(*args, **kwargs)
         finally:
             if was_enabled:
                 gc.enable()
-        gc.collect()
+        drawing_seconds = perf_counter() - drawing_started
+        started = perf_counter()
+        unreachable = gc.collect(0)
+        # Both figures are the measurement that chose generation 0 over a full pass,
+        # and they answer different questions.  The count says whether this collection
+        # still finds the render's garbage, which is the thing a narrower pass could get
+        # wrong.  The duration says what it costs, which is what the narrowing was for.
+        # The render is timed as well as the collection, because the two are
+        # different suspects for the same symptom and only one of them was ever
+        # measured.  A render is mostly Python, which yields to another thread every
+        # sys.getswitchinterval(), but a single C call inside it has no bytecode
+        # boundary to yield at and holds the GIL for as long as it runs.  The receiver
+        # callback is a ctypes callback and has to acquire the GIL to run at all, so a
+        # long C call here delays it.  Measured on an RSP1B, the longest gap between
+        # deliveries grew from 73 ms to 121 ms on the hour, which is when the collector
+        # draws the extra summary charts.
+        logger.debug('%s drew in %.1f ms, and the collection after it freed %d objects '
+                     'in %.1f ms.', func.__name__, drawing_seconds * 1e3, unreachable,
+                     (perf_counter() - started) * 1e3)
         return result
     return wrapper
 

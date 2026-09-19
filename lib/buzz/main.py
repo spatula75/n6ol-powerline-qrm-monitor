@@ -25,6 +25,7 @@ and the pipeline in that same order.
 
 import argparse
 import faulthandler
+import gc
 import logging
 import logging.config
 import os
@@ -84,11 +85,17 @@ logger = logging.getLogger(f'{ROOT_PACKAGE}.main')
 _T = TypeVar('_T')
 
 
-def configure_logging() -> None:
+def configure_logging(level: str = 'INFO') -> None:
     """Attach a console handler to the `buzz` logger tree; leave root silent.
 
     Root stays at CRITICAL with no handler of its own, so a third-party library that
     logs without configuring itself does not add noise to this program's output.
+
+    `level` sets what the `buzz` tree lets through, and `--log-level` is how an
+    operator reaches it.  A diagnostic that explains a puzzling display or a health
+    warning logs at DEBUG, because it would be noise on a healthy run.  The flag exists
+    so that somebody can turn those on, because a message nobody can reach is a message
+    that does not exist.
     """
     logging_config = {
         'version': 1,
@@ -107,7 +114,7 @@ def configure_logging() -> None:
         },
         'loggers': {
             ROOT_PACKAGE: {
-                'level': 'INFO',
+                'level': level,
                 'handlers': ['console'],
                 'propagate': False,
             },
@@ -118,6 +125,43 @@ def configure_logging() -> None:
         },
     }
     logging.config.dictConfig(logging_config)
+
+
+def freeze_live_heap() -> None:
+    """Move everything alive now into the permanent generation, which gc never walks.
+
+    A collection costs what it walks rather than what it frees, and almost everything
+    this program holds is alive until it exits: the imports, the ring buffer, the
+    analyzer and the display.  Looking at those finds nothing, every time.
+
+    A full collection is stop-the-world for its whole duration, so freezing removes a
+    stall rather than only some arithmetic.  Measured on this machine against a heap of
+    400,000 objects in cycles, a generation 2 pass took 46.6 ms and stalled another
+    thread for 50.2 ms.
+    After freezing, the same pass took 0.1 ms and stalled nobody.  The receiver
+    callback is a ctypes callback and has to acquire the GIL, so a stall of that size
+    is a stall in capture.
+
+    The freeze itself is free.  It splices generation lists rather than walking them,
+    and measured at 800,000 objects it took under 0.01 ms and stalled nothing, which is
+    why it can be called again once the display exists.
+
+    Called twice, because the two calls catch different things.  The first runs before
+    any thread starts and catches the imports, the config and the pipeline.  The second
+    runs once the Qt window is up, because a window built after the first call would
+    otherwise be walked by every automatic pass for the life of the program.
+
+    The collection first matters.  Freezing moves every tracked object, garbage
+    included, so freezing without collecting would hold that garbage until the process
+    exits.  What this still gives up is a cycle created among frozen objects after the
+    freeze, which is never reclaimed.  A program that holds them until it exits loses
+    nothing by that.
+
+    See docs-notebook/receiver-clock-drift.md, and buzz.plotter's _gc_guarded, which
+    narrows the other half of the same cost.
+    """
+    gc.collect()
+    gc.freeze()
 
 
 def make_weather_client(config: BuzzConfig) -> WeatherClient:
@@ -617,6 +661,10 @@ def main() -> None:  # pragma: no cover
     in, since several of the choices below depend on ones made earlier in the run.
     """
     parser = argparse.ArgumentParser(description='N6OL Powerline QRM Monitor')
+    parser.add_argument('--log-level', default='INFO',
+                        choices=('DEBUG', 'INFO', 'WARNING', 'ERROR'),
+                        help='How much this program says.  DEBUG adds the '
+                             'diagnostics that explain a display or a health warning.')
     parser.add_argument('--headless', action='store_true',
                         help='Run without GUI waterfall display')
     parser.add_argument('--top', action='store_true',
@@ -673,7 +721,7 @@ def main() -> None:  # pragma: no cover
         # disk, so muting only ever decided whether the operator heard it being made.
         args.mute = True
 
-    configure_logging()
+    configure_logging(args.log_level)
 
     config = BuzzConfig.from_toml() if CONFIG_PATH.exists() else BuzzConfig()
 
@@ -700,6 +748,7 @@ def main() -> None:  # pragma: no cover
                                           gain_db=gain_db,
                                           rf_conversion_db=args.audio_rf_conversion_db)
         analyzer = ContinuousAnalyzer(pipeline, config)
+        freeze_live_heap()
         analyzer.start()
     else:
         # `is not None` rather than `!= 0.0`: the default is None so that "the
@@ -730,6 +779,9 @@ def main() -> None:  # pragma: no cover
         # starts armed, and the toolbar has to be able to arm it mid-run either way.
         config.recording.enabled = config.recording.enabled or args.enable_recording
         recorder = build_recording(pipeline, analyzer, config)
+        # Last thing before any thread exists, so everything built above is frozen
+        # and nothing below has to compete for the GIL while it happens.
+        freeze_live_heap()
         # A sound-card pipeline is already running by the time its constructor
         # returns.  An SDR one is not, because opening the device and starting the
         # capture are separate steps, so this starts whichever needs it.
@@ -766,6 +818,11 @@ def main() -> None:  # pragma: no cover
                         playback=pipeline if args.playback else None,
                         show_controls=not args.render)
     window.show()
+
+    # The window and its widgets were built after the freeze above, so nothing has yet
+    # taken them out of the collector's reach.  They live as long as the program does,
+    # and an automatic pass that walks them stalls capture for as long as it runs.
+    freeze_live_heap()
 
     recording_display = _start_render(args, config, window, pipeline, app) \
         if args.render else None

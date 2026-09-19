@@ -94,3 +94,7 @@ for installation, initial configuration, and a walkthrough of the main display. 
 [documentation site](https://spatula75.github.io/n6ol-powerline-qrm-monitor/) also
 covers calibration, event recording, replaying and rendering recordings, publishing to
 a web server, the command line reference, and how the analyzer works internally.
+
+Should you encounter unusual warnings or behaviors, try running with `--log-level DEBUG`
+to enable additional diagnostic messages.  Please also do this if you are submitting a
+bug report, and include the additional debug messages.

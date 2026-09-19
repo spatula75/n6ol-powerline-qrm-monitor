@@ -69,6 +69,32 @@ class TestConfigureLogging:
         assert logging.getLogger('buzz').propagate is False
 
 
+class TestTheLogLevelCanBeRaised:
+    """A diagnostic nobody can switch on is a diagnostic that does not exist.
+
+    The scope says at DEBUG when its auto-range floor is what decides the scale, which
+    is the difference between a flat trace and a band that is truly quiet.  Before
+    --log-level the `buzz` tree was pinned to INFO and reaching that line meant editing
+    the program.
+    """
+
+    def test_it_defaults_to_info(self):
+        configure_logging()
+        assert logging.getLogger('buzz').level == logging.INFO
+
+    def test_debug_lets_the_diagnostics_through(self):
+        configure_logging('DEBUG')
+        assert logging.getLogger('buzz').level == logging.DEBUG
+        assert logging.getLogger('buzz.scope').isEnabledFor(logging.DEBUG)
+
+    def test_raising_it_leaves_the_root_logger_silent(self):
+        """Third-party libraries log without configuring themselves, and DEBUG on the
+        root would bury this program's own output under whatever they have to say.
+        """
+        configure_logging('DEBUG')
+        assert logging.getLogger().level == logging.CRITICAL
+
+
 class TestModuleConstants:
     def test_root_package_is_buzz(self):
         assert main_module.ROOT_PACKAGE == 'buzz'

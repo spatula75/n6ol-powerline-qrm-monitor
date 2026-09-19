@@ -118,9 +118,133 @@ class TestGcGuarded:
         def func():
             assert calls == []   # not yet called during the guarded call
 
-        with patch('buzz.plotter.gc.collect', side_effect=lambda: calls.append(1)):
+        with patch('buzz.plotter.gc.collect', side_effect=lambda *_: calls.append(1) or 0):
             func()
         assert calls == [1]
+
+
+class TestARenderWithNothingToPlot:
+    def test_an_empty_csv_writes_no_chart_and_leaves_no_figure(self, tmp_path):
+        """A day with no rows yet is the ordinary state at midnight, not a fault.
+
+        Writing a chart from it would put an empty picture on the web page, and the
+        page has no way to say that the emptiness is the file's rather than the band's.
+        Leaving the previous chart in place is the honest answer, and Collector reports
+        a chart that has stopped being written.
+        """
+        import matplotlib.pyplot as plt
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'empty.csv'
+        csv_path.write_text(
+            'ISO datetime,120pps SNR,120pps signal dB,Noise floor dB,T,H,S,W,G,B' + chr(10),
+            encoding='utf-8')
+        output = tmp_path / 'should_not_exist.png'
+
+        plotter.generate_graph_from_csv(csv_path, output)
+
+        assert not output.exists(), (
+            f'A CSV with a header and no rows produced {output.name}.  An empty chart '
+            'on the web page cannot be told apart from a quiet band.')
+        assert plt.get_fignums() == [], (
+            'The early return left a figure open, so pyplot holds it forever and every '
+            'later render adds another.')
+
+
+class TestTheGuardCollectsWhatAFullPassWould:
+    """The guard collects generation 0 rather than the whole heap.
+
+    That is only sufficient because gc.disable() runs for the whole render.  With
+    collection off, nothing is promoted out of generation 0, so every object the render
+    made is still sitting there when the guard collects.  Drop the disable and automatic
+    passes resume mid-render, survivors move up a generation, and this pass starts
+    missing the garbage it exists to free.  Nothing else couples the two lines.
+
+    Measured on the development machine over five renders each: a full pass freed 5707
+    objects in 19.6 ms, and a generation 0 pass freed the same 5707 in 2.0 ms.  On a
+    running monitor the full pass took 73 to 86 ms twice a minute, holding the GIL away
+    from the receiver callback.  See docs-notebook/receiver-clock-drift.md.
+    """
+
+    @staticmethod
+    def _garbage_after_an_unguarded_render(tmp_path):
+        """Render with no guard at all, and return what one render leaves behind.
+
+        This calls __wrapped__ rather than the public method, because the public one is
+        decorated and would collect its own garbage before this could count it.  The
+        figure is the reference the test measures the guard against, and the guard has
+        no way to influence it.
+        """
+        tmp_path.mkdir(parents=True, exist_ok=True)
+        render = Plotter.generate_graph_from_csv.__wrapped__
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv(csv_path, n_rows=200)
+        # A first render warms the font cache and matplotlib's own module state, so the
+        # measured one counts a render's garbage and not an import's.
+        render(plotter, csv_path, tmp_path / 'warm.png')
+        gc.collect()
+
+        was_enabled = gc.isenabled()
+        gc.disable()
+        try:
+            render(plotter, csv_path, tmp_path / 'measured.png')
+        finally:
+            if was_enabled:
+                gc.enable()
+        return gc.collect()
+
+    def test_the_guard_leaves_almost_nothing_for_a_later_pass(self, tmp_path):
+        """This drives the real decorated method, so it fails if either half moves.
+
+        The reference comes from an undecorated render, which is the one figure the
+        guard cannot influence.  Running the guarded method should then leave a later
+        full pass with almost none of that to find.  Narrow the collection too far, or
+        remove the disable so that objects are promoted mid-render, and the leftovers
+        climb back toward the reference.
+        """
+        reference = self._garbage_after_an_unguarded_render(tmp_path / 'reference')
+        assert reference > 0, (
+            'An undecorated render left no cyclic garbage, so the assertion below '
+            'would hold whatever the guard did.  Either matplotlib stopped leaking, '
+            'in which case the collection in _gc_guarded can go, or this test stopped '
+            'rendering anything.')
+
+        measured = tmp_path / 'guarded'
+        measured.mkdir(parents=True, exist_ok=True)
+        plotter, _ = _make_plotter(measured)
+        csv_path = measured / 'data.csv'
+        _write_csv(csv_path, n_rows=200)
+        plotter.generate_graph_from_csv(csv_path, measured / 'warm.png')
+        gc.collect()
+        plotter.generate_graph_from_csv(csv_path, measured / 'out.png')
+        left_behind = gc.collect()
+
+        assert left_behind < reference * 0.25, (
+            f'A full pass after the guard still found {left_behind} objects, against '
+            f'{reference} that one render makes.  The guard collects generation 0, '
+            'which works only while gc.disable() keeps a render from promoting its '
+            'garbage out of that generation.  A figure this high means the two have '
+            'come apart.')
+
+
+class TestFreezingTheStartupHeap:
+    """main.freeze_live_heap takes the long-lived objects out of every later pass.
+
+    A collection costs what it walks, and this program's imports, ring buffer and
+    display live until it exits, so walking them finds nothing every time.
+    """
+
+    def test_freezing_moves_objects_beyond_the_collector(self):
+        from buzz.main import freeze_live_heap
+        already_frozen = gc.get_freeze_count()
+        try:
+            freeze_live_heap()
+            assert gc.get_freeze_count() > already_frozen, (
+                'gc.get_freeze_count() did not move, so nothing was frozen and every '
+                'later collection still walks the whole heap.')
+        finally:
+            if already_frozen == 0:
+                gc.unfreeze()
 
 
 class TestSmooth:
