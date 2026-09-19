@@ -948,6 +948,26 @@ that call rather than quietly compiling another variant mid-flight.
   cross-check agrees with itself. It measures the source `.wav` now. Ask which of the two
   figures the buggy code could not have influenced; if the answer is neither, the test is
   decorative.
+- **A tuned constant needs a test for what it is for, not only for what it equals.**
+  A value can be computed exactly right and still be the wrong value, and a test that
+  checks the arithmetic cannot tell.  `minimum_full_scale` computed precisely what its
+  comment said, a drift pin confirmed each receiver's floor matched its bit depth, and
+  the whole suite passed while an RTL-SDR sat pinned to that floor in ordinary use.
+  The figure was two of the receiver's own steps, and two was outside the range that
+  receiver could ever reach.
+
+  The test that found it had to say what the number is for: above what a dead channel
+  asks for, so silence is caught, and below what a working receiver asks for, so a real
+  signal is not clamped.  Both ends come from elsewhere in the program -
+  `effective_bits` from the receiver and `floor_margin_db` from the gain chooser - so
+  the test also ties together two policies that meet nowhere else.  See
+  `test_every_receiver_can_reach_its_floor_but_not_sit_on_it`.
+
+  The diagnostic is to ask what the constant would have to be wrong by before anything
+  went red.  Where the honest answer is "any amount, the tests only check it is
+  self-consistent", the property is untested however many tests name the constant.
+  This applies to every tuned figure: a threshold, a limit, a margin, a timeout.
+
 - **A test must be able to fail.** No test exists to raise the coverage number; every
   one exists to catch a specific way the code could be wrong, and if nothing the test
   does could turn red for a real bug, it is not testing anything. The two failure

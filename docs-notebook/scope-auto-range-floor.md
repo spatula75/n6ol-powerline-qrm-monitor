@@ -86,6 +86,27 @@ wrong, which is what `test_every_receiver_can_reach_its_floor_but_not_sit_on_it`
 states: the floor is above the dither and below the working point, for each receiver, on
 that receiver's own declared margin.
 
+## The working point is where the gain was chosen, not where the band is
+
+"Running asks" above is a calibration-time figure.  A gain is chosen once, against the
+band as it was that day, and the band then moves.  A quieter night puts the same gain
+lower against the receiver's own noise, so a receiver calibrated last week can sit below
+its knee tonight with nothing wrong.
+
+An RTL-SDR feels that most, because eight bits leave little room between the calibrated
+working point and the converter's own dither.  Measured on 2026-09-19 with a gain of
+22.9 dB chosen a week earlier, on a night quiet in both atmospheric and local noise, the
+display sat at its floor of -42.1 dBFS.  That is the floor working rather than failing:
+there was nothing above the converter to draw.
+
+The way to tell the two apart is whether the trace lifts off the floor when something
+arrives.  A display pinned through obvious QRM is over-clamped.  A display pinned on a
+quiet band and free when an arc starts is correct.
+
+It also means the gain bound that won at calibration decides how often this happens.
+`GainSweep` says which in its reply, and a station whose headroom bound won is sitting
+below its knee by design, and will meet its floor sooner.
+
 ## Where the numbers live
 
 `SdrDevice.effective_bits` is the hardware fact and `buzz.scope.minimum_full_scale` is
