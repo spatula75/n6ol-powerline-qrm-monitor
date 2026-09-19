@@ -689,6 +689,31 @@ Practical consequences:
   answer is that the new path does not need it, say why in a comment. Review found
   all four of these after a green suite, which is the same lesson as the counters
   themselves: a check nobody runs and a counter nobody reads fail the same way.
+- **A name taken from the first implementation becomes a lie when the second
+  arrives.** `RtlSdrSource` and `RtlSdrPipeline` took any `SdrDevice` and had been
+  device-independent from the moment that contract existed, but they kept the name of
+  the receiver they were written for.  A reader then has to know the history to know
+  the name is wrong, and the next receiver's author has to decide whether a class
+  named for somebody else's hardware is theirs to use.
+
+  Same trigger as the rule above, and a different failure: adding the second
+  implementation is the moment to reread the names the first one left behind.  Ask of
+  each whether it describes what the thing does or what it happened to be built
+  against.  They renamed to `SdrSource` and `SdrPipeline`.
+
+- **Generated bindings need a runtime check that the installed library matches.**
+  `lib/buzz/sdrplay_api.py` is generated from vendored headers because a wrong struct
+  field is memory corruption rather than an exception.  That reasoning has a second
+  half nobody wrote down: generating from one version's headers pins the bindings to
+  that version, and an operator with a different one installed gets exactly the
+  corruption the generator existed to prevent.  `SdrplayDevice.open` compares
+  `library.api_version()` against `api.API_VERSION` and refuses rather than
+  proceeding.
+
+  Reach for this wherever a layout is described in one place and supplied by another:
+  generated bindings, a struct read from a file, a wire format.  The generator cannot
+  know what will be installed, so the check belongs at the point of use.
+
 - **Push, don't poll.** Components publish state changes to their listeners rather than
   reaching into another component to read its state - a lock is an event, not a level,
   and a poller misses any event that begins and ends between two polls. Publish from the
@@ -1133,6 +1158,25 @@ counts the answers against the number of listeners now.
 Swallowing an exception to protect the caller is right, and it converts a failure
 into a missing entry rather than a visible one. So the count is part of the result.
 Ask how many answers were expected, not only what the answers that came back say.
+
+**A value inside the valid range cannot also mean "no value".** The same confusion,
+one level smaller. `SdrplayDevice` treated a reported gain of zero as "the change has
+not been applied yet" and fell back to the figure that had been asked for, because the
+library leaves the field at zero until it fills it in. Zero is a valid gain, so a
+receiver genuinely sitting there reported the wrong number, and nothing could tell the
+two apart.
+
+Whether an answer arrived and what the answer says are two facts, and one field cannot
+carry both. Here the delivery wait already knew the first, so the fix was to pass it
+rather than to infer it from the value. Where nothing else knows, `None` beside the
+value says it and no in-band figure does.
+
+The tell is a comment explaining what a particular value means *instead of* itself.
+`buzz.dsp.SILENCE_DBFS` is the same rule obeyed rather than an exception to it, and
+its own comment states the test: -128 dBFS sits "well below the ~-90 dBFS minimum for
+a 1-LSB 16-bit signal, so it is unambiguously a sentinel and is never confused with a
+real reading". A sentinel outside the valid range displaces nothing. One inside it
+takes a reading away from you.
 
 ## Comments and documentation
 
