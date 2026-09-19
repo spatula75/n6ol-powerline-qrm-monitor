@@ -75,8 +75,11 @@ with `$?` false. Windows PowerShell 5.1 has no `&&` or `||`, so chaining needs
     python -m buzz.setup                           # guided setup: device, calibration, timezone, a live S-meter
 
 `main.py` flags: `--headless`, `--top`, `--enable-recording`, `--playback FILE`,
-`--mute`, `--playback-gain DB|auto`, `--render FILE.mp4`. Playback replays a recorded
+`--mute`, `--playback-gain DB|auto`, `--render FILE.mp4`, `--log-level LEVEL`. Playback replays a recorded
 `.wav` through the whole pipeline and suppresses CSV, plots, uploads, and recording.
+`--log-level DEBUG` turns on the diagnostics that explain a puzzling display or a
+health warning; they are off by default because they would be noise on a healthy run,
+and several of them are the only way to read a fault rather than guess at it.
 `--render` needs ffmpeg, implies `--playback-gain auto`, and with `--headless` paints
 offscreen and implies `--mute`.
 
@@ -355,6 +358,15 @@ In that order:
 5. **Unit suite with coverage** - `pytest --cov`. Must pass, and coverage must stay at
    or above the 97% gate. Running plain `pytest` without `--cov` hides a coverage
    failure that CI then catches; that has broken the build before.
+
+   **Do not edit a measured file while the suite is running, and do not start the
+   suite until the editing is done.** Coverage is recorded against line numbers, so a
+   run that overlaps an edit reports lines that no longer exist and misses lines that
+   now do. It does not fail; it produces a plausible number. One such run reported
+   96.86% with 212 lines uncovered where a clean run of the same tree gave 99.20% with
+   54, and the only way to tell them apart was to know an edit had happened. The
+   weaker version of this rule - do not read a coverage report across an edit - is not
+   enough, because a background run is still measuring long after the command returns.
 6. **Integration tier**, when the change touches audio, analysis, playback, recording,
    or the display - `pytest -m integration --no-cov`. CI runs it on every PR, so
    catching a failure locally is cheaper than catching it on GitHub.
@@ -966,6 +978,14 @@ that call rather than quietly compiling another variant mid-flight.
   the first version of that test built the tie from the midpoint of two fitted
   values, passed here where `lstsq` happened to return two bit-identical distances,
   and failed in CI on a different numpy.
+
+  **A substring assertion passes on a prefix of the wrong answer.** `assert
+  'Crossings past 30 ms: 1' in caplog.text` held while the count was 12, because the
+  expected text is a prefix of the actual one. That survived a deliberate break, and
+  the break looked like the wrong line rather than a bad assertion. Anchor the end:
+  match the punctuation that follows the number, or compare the extracted value
+  instead of searching for it. This bites hardest on counts, which is where one digit
+  becoming two is exactly the failure being guarded against.
 - **Deleting a safeguard means guarding the reason it became unnecessary.** The frame
   padding in `ffmpeg_command()` was removed because the time-pinned FFT window makes the
   bin count 128 at every rate. True, but only because `validate_sample_rate` refuses
