@@ -14,6 +14,7 @@ import logging
 import threading
 import time
 from pathlib import Path
+from unittest.mock import patch
 
 import numpy as np
 import pytest
@@ -391,6 +392,36 @@ class TestStreaming:
         assert sink.blocks[0].fmt is SDRPLAY_FORMAT
         assert sink.blocks[0].as_complex()[0] == pytest.approx(0.5 - 0.5j)
 
+    def test_a_block_already_handed_over_is_never_written_again(self):
+        """The one hazard in filling a buffer in place rather than allocating one per
+        delivery.  A consumer queues the block, converts it later and may write it to
+        an IQ recording, so it outlives the callback by a long way.
+
+        Reusing the buffer would rewrite a capture somebody already holds, and nothing
+        downstream could tell: the samples would simply be the wrong ones.
+        """
+        device, library = make_device()
+        sink = CollectingSink()
+        device.start_stream(sink, 2)
+        library.deliver([1, 1], [1, 1])
+        first = sink.blocks[0].raw
+        kept = first.tolist()
+        for value in range(2, 8):
+            library.deliver([value, value], [value, value])
+        assert first.tolist() == kept, 'a delivered block was overwritten in place'
+        assert len({id(block.raw) for block in sink.blocks}) == len(sink.blocks)
+
+    def test_a_block_nobody_saw_is_filled_again_rather_than_replaced(self):
+        """Where the saving comes from.  A gain sweep drops these by the hundred while
+        it waits out a gain change, and a buffer nobody was handed can be refilled.
+        """
+        device, library = make_device()
+        device.start_stream(CollectingSink(), 2)
+        device.set_gain_db(31.0)
+        buffer_before = device._filling
+        library.deliver([9, 9], [9, 9])          # dropped, still awaiting the change
+        assert device._filling is buffer_before
+
     def test_a_refused_block_is_counted_rather_than_raised(self):
         """This runs on the library's own thread, where an exception has nowhere to
         go, so a full sink is a counter rather than a failure.
@@ -417,6 +448,165 @@ class TestStreaming:
         """close() calls it unconditionally, so it has to be answerable at any time."""
         device, _ = make_device()
         assert device.stop_stream() is True
+
+
+class TestTheBacklogReport:
+    """Every drift excursion was inferred from arrival timestamps a minute apart until
+    this measured the receiver side directly.
+
+    The backlog is the time open since the window started, less the audio that arrived
+    in it.  It grows while the library holds audio and falls to nothing when the library
+    hands it over, so its peak over a window is the deepest the library ever got behind
+    real time.
+
+    Reported once a window rather than per delivery.  The library delivers in bursts, so
+    an ordinary run is behind by most of a burst period most of the time, hundreds of
+    times a second.
+
+    These drive a 100 ms window rather than the minute production uses, so the
+    sequences stay short enough to read.
+    """
+
+    WINDOW = 0.1
+    AUDIO = 0.004          # 256 frames at 64 kHz
+
+    @pytest.fixture(autouse=True)
+    def _short_window(self, monkeypatch):
+        monkeypatch.setattr('buzz.sdrplay_device._LATE_REPORT_INTERVAL_SECONDS',
+                            self.WINDOW)
+
+    @staticmethod
+    def _deliver_at(device, library, moment, samples=256):
+        """Deliver `samples` frames with the clock reading `moment`."""
+        with patch('buzz.sdrplay_device.monotonic', return_value=moment):
+            library.deliver(list(range(samples)), list(range(samples)))
+
+    @staticmethod
+    def _streaming():
+        """A device at 64 kHz, where 256 frames is exactly 4 ms of audio.
+
+        The round figure is so the assertions below read as the arithmetic they are
+        rather than as numbers copied out of a previous run.
+        """
+        device, library = make_device(iq_sample_rate=64_000)
+        device.start_stream(CollectingSink(), 256)
+        return device, library
+
+    def _deliver_on_time_until(self, device, library, first, last):
+        """Deliver every AUDIO seconds from `first`, stopping once past `last`."""
+        moment = first
+        while moment <= last:
+            self._deliver_at(device, library, moment)
+            moment += self.AUDIO
+
+    def test_nothing_is_said_before_the_window_is_up(self, caplog):
+        """Reporting per delivery filled the log on real hardware, because the library
+        delivers in bursts and is behind for most of every burst period.
+        """
+        device, library = self._streaming()
+        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+            self._deliver_at(device, library, 100.0)
+            self._deliver_at(device, library, 100.050)
+            self._deliver_at(device, library, 100.070)
+        assert 'fell at worst' not in caplog.text, caplog.text
+
+    def test_a_receiver_that_keeps_pace_never_falls_behind(self, caplog):
+        """Audio arriving as fast as the clock runs leaves no backlog at all.
+
+        This is the reading that matters when a drift figure for the same minute says
+        the receiver fell behind, because the two cannot both be right.
+        """
+        device, library = self._streaming()
+        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+            self._deliver_on_time_until(device, library, 100.0, 100.110)
+        assert 'fell at worst 0.0 ms behind' in caplog.text, (
+            f'Every delivery carried exactly the audio the interval used, so the '
+            f'backlog never opened: {caplog.text}')
+        assert 'Crossings past 100 ms: 0.' in caplog.text, (
+            'The trailing period matters.  Without it this assertion is a prefix '
+            f'of any larger count and passes while the count is wrong: {caplog.text}')
+
+    def test_a_pause_opens_a_backlog_the_size_of_the_pause(self, caplog):
+        """The whole measurement.  A library that stops delivering for 50 ms is 50 ms
+        behind by the end of it, whatever it chooses to send afterwards.
+        """
+        device, library = self._streaming()
+        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+            self._deliver_at(device, library, 100.0)             # opens the window
+            self._deliver_at(device, library, 100.054)           # 54 ms on, 8 ms audio
+            self._deliver_on_time_until(device, library, 100.058, 100.110)
+        assert 'fell at worst 50.0 ms behind' in caplog.text, (
+            '54 ms passed and only the first 4 ms delivery had arrived when this '
+            f'one did, so the receiver was 50 ms behind: {caplog.text}')
+
+    def test_delivery_size_does_not_change_the_answer(self, caplog):
+        """The fault in the version this replaced.  That one compared a gap against the
+        audio in the delivery *before* it, so a library which pauses and then hands over
+        what it accumulated had every inter-burst period counted as lateness.
+
+        Here the same 54 ms pause is followed by one large delivery rather than several
+        small ones.  The backlog at its peak is the same 46 ms, and it closes.
+        """
+        device, library = self._streaming()
+        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+            self._deliver_at(device, library, 100.0)
+            # One delivery carrying 54 ms of audio, which is the pause paid back.
+            self._deliver_at(device, library, 100.054, samples=3456)
+            self._deliver_on_time_until(device, library, 100.058, 100.110)
+        assert 'fell at worst 50.0 ms behind' in caplog.text, (
+            'Only the first 4 ms delivery had arrived 54 ms in, so the peak backlog '
+            f'is 50 ms however the payback is shaped: {caplog.text}')
+
+    def test_a_deep_backlog_is_counted_as_unusual(self, monkeypatch, caplog):
+        """The count separates a library delivering in bursts from something wrong.
+
+        Measured on an RSP1B, the backlog peaked between 71.6 and 87.6 ms every minute
+        for ten minutes with nothing wrong, so a threshold below that describes the
+        library.  The threshold is moved down here rather than the pause being made
+        longer, because a pause past 100 ms would close the 100 ms window.
+        """
+        monkeypatch.setattr('buzz.sdrplay_device._UNUSUAL_BACKLOG_SECONDS', 0.030)
+        device, library = self._streaming()
+        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+            self._deliver_at(device, library, 100.0)
+            self._deliver_at(device, library, 100.054)
+            self._deliver_on_time_until(device, library, 100.058, 100.110)
+        assert 'Crossings past 30 ms: 1.' in caplog.text, (
+            'The backlog went past 30 ms once and stayed there, so this counts one '
+            f'excursion rather than one per delivery: {caplog.text}')
+
+    def test_the_first_window_of_a_stream_says_that_it_is_the_first(self, caplog):
+        """Starting a stream is itself a long backlog, so that window is not comparable
+        with the ones after it.
+
+        Measured on an RSP1B, two runs reported 265.9 ms and 218.3 ms in their first
+        window where every window after sat between 71.6 and 87.6 ms.  Both of the large
+        figures were read as faults before the wording said which window they came from.
+        """
+        device, library = self._streaming()
+        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+            self._deliver_on_time_until(device, library, 100.0, 100.110)
+            first = caplog.text
+            caplog.clear()
+            self._deliver_on_time_until(device, library, 100.114, 100.230)
+
+        assert 'first 0.1 seconds of this stream' in first, (
+            f'The opening window has to name itself, or its figure reads as steady '
+            f'state: {first}')
+        assert 'last 0.1 seconds' in caplog.text, (
+            f'Only the opening window is the opening one: {caplog.text}')
+
+    def test_an_empty_delivery_moves_neither_term(self, caplog):
+        """The library calls with no samples at open and at every stream start.  It
+        carries no audio and must not be read as a delivery that arrived empty.
+        """
+        device, library = self._streaming()
+        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+            self._deliver_at(device, library, 100.0, samples=0)
+            self._deliver_on_time_until(device, library, 100.200, 100.310)
+        assert 'fell at worst 0.0 ms behind' in caplog.text, (
+            'The empty delivery at 100.0 must not open a window, or the 200 ms before '
+            f'the first real delivery reads as a backlog: {caplog.text}')
 
 
 class TestWhatTheDeviceReports:

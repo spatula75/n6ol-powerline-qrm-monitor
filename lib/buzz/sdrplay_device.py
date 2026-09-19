@@ -177,6 +177,24 @@ _SYNC_QUEUE_BLOCKS = 2
 
 # How long `read_block` waits for the internal stream to produce one.
 #
+# How deep the backlog has to be before it is unusual rather than routine, in seconds.
+#
+# The figure is chosen rather than measured.  The library delivers in bursts, so the
+# backlog reaches one burst period as a matter of course: measured on an RSP1B at 3530
+# kHz it peaked between 71.6 and 87.6 ms every minute for ten minutes.  100 ms is
+# clear of that and still catches the tens of milliseconds a drift excursion runs to.
+#
+# A first version of this counted every gap past 10 ms instead, which came to 953 a
+# minute and described the library's delivery cadence rather than anything wrong.
+_UNUSUAL_BACKLOG_SECONDS = 0.100
+
+# How often to summarize the waits, in seconds.
+#
+# A minute matches _HEALTH_INTERVAL_SECONDS in buzz.sdr, so a summary sits in the log
+# beside the drift figure covering the same minute.  Comparing the two is the whole
+# purpose, and two different periods would make that arithmetic rather than reading.
+_LATE_REPORT_INTERVAL_SECONDS = 60.0
+
 # A block is `block_samples / iq_sample_rate` seconds, which is 8 ms for the sweep's
 # default at 256 kHz, so five seconds is several hundred times the expected wait.  A
 # read that takes this long means the library has stopped delivering.
@@ -560,10 +578,25 @@ class SdrplayDevice(SdrDevice):
         # listening for.  What it says is that the library is running and has applied
         # what it was given, which is when `gainVals.curr` means something.
         self._delivered = threading.Event()
-        # Partly filled block, as arrays in arrival order, with their total length.
-        # Only the stream callback touches either.
-        self._pending: list[np.ndarray] = []
-        self._pending_values = 0
+        # The block being filled, and how many values of it are written.  Only the
+        # stream callback touches either, and the buffer is replaced rather than
+        # rewritten once a consumer holds it.
+        self._filling: np.ndarray = np.empty(0, dtype=np.int16)
+        self._filled = 0
+        # When the last delivery arrived and how much audio it held, so that a late
+        # callback can be told from a large one.  Only the stream callback touches
+        # either.
+        # The deepest backlog in the window now open, how much audio has arrived in
+        # it, how many deliveries found the backlog past the threshold, and when the
+        # window started.  Only the stream callback touches any of them.
+        self._worst_backlog = 0.0
+        self._audio_this_window = 0.0
+        self._unusual_count = 0
+        self._past_threshold = False
+        self._window_opened_at: float | None = None
+        # Whether the window now open is the first of a stream.  See
+        # _report_the_worst_backlog for why that one is reported differently.
+        self._first_window = True
         self._block_values = 0
         self._lock = threading.Lock()
 
@@ -1067,8 +1100,17 @@ class SdrplayDevice(SdrDevice):
         than an exception here.
         """
         self._block_values = block_samples * VALUES_PER_FRAME
-        self._pending = []
-        self._pending_values = 0
+        self._filling = np.empty(self._block_values, dtype=np.int16)
+        self._filled = 0
+        # Forget the deliveries the gain probe at open produced.  Measuring the first
+        # delivery of a stream against one from seconds earlier would report the time
+        # between them as a stall, on every stream this device ever starts.
+        self._worst_backlog = 0.0
+        self._audio_this_window = 0.0
+        self._unusual_count = 0
+        self._past_threshold = False
+        self._window_opened_at = None
+        self._first_window = True
         # How many blocks make up the settling ceiling, at this block size and rate.
         # This follows the block size rather than being fixed, so a different block
         # size does not silently change how long the device waits.
@@ -1124,56 +1166,171 @@ class SdrplayDevice(SdrDevice):
 
         A delivery marked `grChanged` is the one where a gain change took effect, so
         everything up to and including it predates the new gain and goes in the bin.
+
+        **This allocates once per block, not once per delivery.**  The samples go
+        straight into a buffer sized for one block, so a delivery costs two strided
+        copies and nothing else.  This method used to build an array per delivery and
+        concatenate the lot at every block boundary.
+
+        The churn matters more on this thread than it would on another.  The callback
+        runs on the library's own thread and needs the GIL, so anything else that holds
+        the GIL delays the next delivery.  A long enough delay makes the library hand
+        over a backlog in one burst, which `buzz.sdr` reports as the receiver clock
+        running away from the system clock.  `buzz.plotter` already disables collection
+        around its own work for the same reason.
         """
         try:
             self._delivered.set()
+            self._note_the_backlog(int(num_samples))
             if self._sink is None and self._sync_sink is None:
                 # Delivered before any consumer attached, which happens between the
                 # open and the first read, because the library is initialized at open
                 # so that it can report its own gain.  A refusal means a consumer had
                 # no room, so this is not one.
-                self._pending = []
-                self._pending_values = 0
+                self._filled = 0
                 return
-            count = int(num_samples)
-            if count <= 0:
-                return
-            interleaved = np.empty(count * VALUES_PER_FRAME, dtype=np.int16)
-            interleaved[0::VALUES_PER_FRAME] = np.ctypeslib.as_array(
-                xi, shape=(count,))
-            interleaved[1::VALUES_PER_FRAME] = np.ctypeslib.as_array(
-                xq, shape=(count,))
             if params and params.contents.grChanged:
                 self._awaiting_gain_change = False
-                self._pending = []
-                self._pending_values = 0
+                self._filled = 0
                 return
-            self._pending.append(interleaved)
-            self._pending_values += interleaved.size
-            while self._pending_values >= self._block_values > 0:
-                self._emit(self._take(self._block_values))
+            count = int(num_samples)
+            if count <= 0 or self._block_values <= 0:
+                return
+            self._fill_from(np.ctypeslib.as_array(xi, shape=(count,)),
+                            np.ctypeslib.as_array(xq, shape=(count,)), count)
         except Exception:  # pragma: no cover -- the last resort in a C callback
             self._blocks_refused += 1
 
-    def _take(self, values: int) -> np.ndarray:
-        """Pull exactly `values` from the front of the pending arrays."""
-        gathered = np.concatenate(self._pending)
-        self._pending = [gathered[values:]] if gathered.size > values else []
-        self._pending_values = gathered.size - values
-        return gathered[:values]
+    def _note_the_backlog(self, count: int) -> None:
+        """Track how far behind real time the receiver has fallen in this window.
 
-    def _emit(self, raw: np.ndarray) -> None:
-        """Offer one assembled block, or count it as refused.
+        The backlog is the time open since the window started, less the audio that has
+        arrived in it.  It grows while the library holds audio and falls to nothing
+        when the library hands it over, so its peak over a window is the deepest the
+        library ever got behind.
+
+        The arithmetic does not care how deliveries are sized, which an earlier version
+        did and was wrong for it.  That one took the interval between two callbacks and
+        subtracted the audio the delivery *before* it held.  A library that pauses and
+        then hands over what it accumulated delivers the large block *after* the gap,
+        so every inter-burst period read as lateness.  Measured on an RSP1B, the
+        delivery before each long gap held 0.6 ms of audio and the gap read 73 ms.
+
+        This is the direct measurement, and `RtlSdrSource.clock_drift_seconds` is the
+        indirect one.  The drift figure is the same quantity taken from the stream
+        start rather than from the window start, so this one shows the burst depth and
+        that one shows where the depth has got to over the whole run.
+        """
+        if count <= 0:
+            # The library calls with an empty delivery at open and at every stream
+            # start.  It carries no audio, so it moves neither term of the backlog.
+            return
+        now = monotonic()
+        if self._window_opened_at is None:
+            self._window_opened_at = now
+        # Measured before this delivery is counted, because the backlog peaks in the
+        # moment before audio arrives.  Counting the delivery first would let one large
+        # delivery hide the gap that preceded it, which is the whole shape this exists
+        # to catch.
+        backlog = (now - self._window_opened_at) - self._audio_this_window
+        self._audio_this_window += count / self._iq_sample_rate
+        if backlog > self._worst_backlog:
+            self._worst_backlog = backlog
+        # Counted on the way past rather than while past.  A backlog closes only when
+        # the library delivers more audio than the time it takes, so deliveries that
+        # merely keep pace leave it open, and counting those would report one excursion
+        # as dozens.
+        was_past, self._past_threshold = (self._past_threshold,
+                                          backlog >= _UNUSUAL_BACKLOG_SECONDS)
+        if self._past_threshold and not was_past:
+            self._unusual_count += 1
+        elapsed = now - self._window_opened_at
+        if elapsed >= _LATE_REPORT_INTERVAL_SECONDS:
+            self._report_the_worst_backlog(now)
+
+    def _report_the_worst_backlog(self, now: float) -> None:
+        """Say how deep the backlog got in this window, and start the next one.
+
+        Reported at DEBUG rather than as a warning, because a backlog loses no samples.
+        The library holds them and hands them over.
+
+        A window with nothing over the threshold still reports, because the absence is
+        the useful reading when the drift figure for the same minute says the receiver
+        fell behind.
+
+        The first window of a stream says that it is the first, because starting a
+        stream is itself a long backlog and the figure is not comparable with the ones
+        after it.  Measured on an RSP1B, two runs gave 265.9 ms and 218.3 ms in that
+        window, where every window after them sat between 71.6 and 87.6 ms.
+        `RtlSdrPipeline`'s drift check treats its own first interval as a baseline for
+        the same reason.
+        """
+        period = (f'first {_LATE_REPORT_INTERVAL_SECONDS:g} seconds of this stream'
+                  if self._first_window
+                  else f'last {_LATE_REPORT_INTERVAL_SECONDS:g} seconds')
+        self._first_window = False
+        logger.debug(
+            'In the %s the receiver fell at worst %.1f ms behind real time.  '
+            'Crossings past %.0f ms: %d.',
+            period, self._worst_backlog * 1e3, _UNUSUAL_BACKLOG_SECONDS * 1e3,
+            self._unusual_count)
+        self._worst_backlog = 0.0
+        self._audio_this_window = 0.0
+        self._unusual_count = 0
+        self._window_opened_at = now
+
+    def _fill_from(self, xi: np.ndarray, xq: np.ndarray, count: int) -> None:
+        """Interleave one delivery into the block buffer, emitting each block it fills.
+
+        A delivery is whatever size the library chose and has no relation to the block
+        size anybody asked for, so one can finish a block, fill several, or not finish
+        any.  The loop handles all three by taking as many frames as the buffer has
+        room for and going round again.
+
+        The offsets stay frame-aligned, because every delivery contributes whole frames
+        and a block is a whole number of them.  The `[start::2]` slices therefore always
+        put I on an even index and Q on the odd one after it.
+        """
+        taken = 0
+        while taken < count:
+            room = (self._block_values - self._filled) // VALUES_PER_FRAME
+            frames = min(count - taken, room)
+            start = self._filled
+            end = start + frames * VALUES_PER_FRAME
+            self._filling[start:end:VALUES_PER_FRAME] = xi[taken:taken + frames]
+            self._filling[start + 1:end:VALUES_PER_FRAME] = xq[taken:taken + frames]
+            self._filled = end
+            taken += frames
+            if self._filled >= self._block_values:
+                self._finish_block()
+
+    def _finish_block(self) -> None:
+        """Hand the full buffer on, and start the next one.
+
+        This allocates a fresh buffer only where the old one went somewhere.  A block
+        dropped while a gain change is in flight reached nobody, so this fills the same
+        buffer again.  That matters because a gain sweep drops blocks by the hundred.
+        """
+        self._filled = 0
+        if self._emit(self._filling):
+            self._filling = np.empty(self._block_values, dtype=np.int16)
+
+    def _emit(self, raw: np.ndarray) -> bool:
+        """Offer one assembled block, and say whether anybody else now holds it.
 
         The index counts blocks the receiver produced rather than blocks that survived,
         so a gap tells a consumer that something was dropped, whether a sink had no
         room or a gain change made the samples stale.
+
+        False means the buffer was dropped before anybody saw it and may be filled
+        again.  A refusal still counts as handed on, because a sink that declined a
+        block does not promise that it kept no reference to the buffer.
         """
         self._produced += 1
         if self._awaiting_gain_change:
             self._dropped_waiting += 1
             if self._dropped_waiting < self._settle_blocks:
-                return
+                return False
             # The ceiling, rather than the marked block, is what cleared this.  Say so
             # once: every later gain change will do the same, and a sweep moves the
             # gain hundreds of times.
@@ -1186,12 +1343,13 @@ class SdrplayDevice(SdrDevice):
                     'Measurements stay correct.  The first block after a change may '
                     'predate it, which matters to a gain sweep and to nothing else.',
                     self._dropped_waiting)
-            return
+            return False
         block = IqBlock(raw=raw, fmt=SDRPLAY_FORMAT, arrived_at=monotonic(),
                         index=self._produced)
         sink = self._sink or self._sync_sink
         if sink is None or not sink.offer(block):
             self._blocks_refused += 1
+        return True
 
     def _on_event(self, event_id: int, tuner: int, params: object,
                   _context: object) -> None:
