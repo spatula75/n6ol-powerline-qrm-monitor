@@ -201,6 +201,14 @@ class TestWhatTheSourcePassesThrough:
         reader = source(FakeSdrDevice(iq_sample_rate=IQ_RATE))
         assert reader.effective_bits == FakeSdrDevice.effective_bits() == 12
 
+    def test_the_floor_multiple_comes_from_the_device_as_well(self):
+        """The other half of what the scope asks a source, and it travels the same
+        way for the same reason.  A receiver measured against its own dead channel
+        answers more than the default, and the scope has to see that answer.
+        """
+        reader = source(FakeSdrDevice(iq_sample_rate=IQ_RATE))
+        assert reader.scope_floor_steps == FakeSdrDevice.scope_floor_steps() == 1.0
+
 
 class TestWhatTheDriftWarningSays:
     """One interval short of audio and a clock that has walked away are different

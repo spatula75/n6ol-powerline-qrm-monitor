@@ -35,6 +35,85 @@ floor near 30 counts.  A 15-bit SDRplay result reaches the 16-bit container limi
 floor of one count.  The exact RTL-SDR value follows the configured filter instead of
 being copied from one measurement.
 
+## What the floor does not do
+
+The fixed 32 counts this replaced was doing two jobs at once, and only one of them
+survived.  It capped magnification, and it kept a dead channel from being drawn at
+full height.  The receiver-specific floor does the first and cannot do the second.
+
+On 2026-09-19 both receivers were measured with the antenna disconnected, at the
+gains and settings they run at.  A receiver with no antenna is not quiet: it delivers
+its own front-end noise multiplied by the configured gain.
+
+| Receiver | No antenna | On a live band | Separation | Floor |
+|---|---|---|---|---|
+| RTL-SDR, gain 22.9 | -59.7 dBFS (1.14 steps) | -52.2 dBFS (2.68 steps) | 7.5 dB | 1.0 step |
+| RSP1B, gain 14 | -88.0 dBFS (1.30 steps) | -72.4 dBFS (7.86 steps) | 15.6 dB | 1.0 step |
+
+Both dead levels sit above their floors, so the floor binds on neither and the
+auto-ranger draws both at 76.9 percent of the deflection.  That figure is the same
+whatever the input, because the ranger is scale-invariant: the percentile times
+`_RANGE_HEADROOM` is 1 over 1.30.  Without a binding floor the scope paints every
+input at 77 percent, so the floor is the only absolute reference the trace has.
+
+The old fixed 32 counts did not catch a dead RTL-SDR either.  That receiver asks for
+33.9 counts with no antenna, which is above 32, so the guard had already stopped
+working for it when the receiver was added.  It was a sound card guard throughout.
+
+## Why one multiple could not serve both, and what replaced it
+
+A shared `_FLOOR_STEPS` has to sit inside both windows at once.  Those windows are
+7.4 dB wide on the RTL-SDR and 15.6 dB on the RSP1B, and they sit about 30 dB apart,
+so the narrower one sets the figure and the wider one keeps almost nothing.  At one
+step the floor was under both windows and bound on neither.  Two steps was the most
+the RTL-SDR could take and still left that receiver 2.5 dB from being pinned, while
+the RSP1B had 12 dB going spare.
+
+The multiple moved to the receiver on 2026-09-19, as `SdrDevice.scope_floor_steps`,
+beside `effective_bits` and `floor_margin_db`.  Each receiver takes the midpoint of
+its own window in decibels, which is as far from both faults as that window allows:
+
+| Receiver | Window | Steps | Floor | Dead channel fills | Margin to live |
+|---|---|---|---|---|---|
+| RTL-SDR | 1.14 to 2.68 steps | 1.75 | -55.8 dBFS | 64% | 3.6 dB |
+| RSP1B | 1.30 to 7.86 steps | 3.20 | -80.2 dBFS | 41% | 7.8 dB |
+
+A source that has not been measured keeps one step, which is under every window seen
+so far and so clamps nothing.  A sound card keeps it permanently, because its dead
+level moves with the operator's AF gain and no figure stated in this program would
+hold across two stations.
+
+Both halves of the property are testable again, per receiver, in
+`tests/test_scope_math.py`.  The floor must clear what the receiver produces with no
+antenna, and stay under what it produces on a band.  Moving either figure outside its
+window turns one of the two red.
+
+## A correction to the model above
+
+The reasoning that chose one step predicted a dead channel would ask for 0.65 of a
+step, from dither spread uniformly over one step.  Measurement gives 1.14 and 1.30
+steps instead.
+
+The prediction mixed two noise models in one derivation.  Uniform dither over one step
+gives 0.65, and its multiplier on sigma is 2.24.  The same text quotes 3.66, which is
+the gaussian multiplier, and gaussian noise at that sigma asks for 1.05 steps.  The
+upper bounds in the same derivation, 1.49 steps for an RTL-SDR and 3.51 for an RSP,
+were both computed from 1.05 rather than from 0.65.  Front-end noise is gaussian
+rather than uniform, so 1.05 was the right figure to use at both ends, and the
+measurements agree with it.
+
+One step was chosen as the geometric center of 0.65 to 1.49.  Against the measured
+figures each receiver's usable range is higher and they differ, which is what moved
+the multiple onto the receiver.  One step remains the default for a source with no
+measurement, because erring low never clamps a signal that is really present, and
+that failure pinned an RTL-SDR at -36.1 dBFS once already.
+
+Note that -36.1 dBFS belongs to the earlier model, where `effective_bits` was the
+receiver's raw eight bits and a step was 256 counts.  The filter's processing gain
+makes a step about 3.1 bits finer, so the same multiple of a step is a different
+level now, and two steps no longer reaches a live RTL-SDR.  A figure quoted in steps
+is only meaningful beside the model that defined the step.
+
 ## Evidence and limits
 
 A numerical check on 2026-09-19 drove one raw RTL-SDR least-significant bit through the
@@ -46,9 +125,12 @@ display and explains why the old fixed value of 32 looked reasonable on the RTL-
 The calculation assumes that quantization error is uncorrelated across input samples.
 Strong tones and deterministic converter artifacts can violate that assumption.  The
 scope floor is a display safeguard rather than a measurement calibration, so deriving
-it from the filter is preferable to pinning it to one receiver trace.  A live check must
-still confirm that quiet input does not fill the display and that real signals lift the
-trace off the floor.
+it from the filter is preferable to pinning it to one receiver trace.
+
+The live check this asked for has since been done, and it answered no to the first
+half.  Quiet input does fill the display, on both receivers.  Real signals do lift the
+trace off the floor, which is the half that matters and the half the floor can
+deliver.  See the two sections above.
 
 ## Live SDRplay check
 

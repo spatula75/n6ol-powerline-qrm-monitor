@@ -40,6 +40,8 @@ class StubSource:
         # Twelve, which is neither receiver's real answer, so a test that this
         # reaches the pipeline cannot pass by matching a real device by accident.
         self.effective_bits = 12
+        # Two and a bit, which is neither receiver's real answer, for the same reason.
+        self.scope_floor_steps = 2.25
         self.profile = DeviceProfile('stub', 'rtlsdr', RTL_SDR_FORMAT, 0, 0, False)
 
     def start(self):
@@ -256,6 +258,16 @@ class TestWhatThePipelineSaysAboutItsReceiver:
         p, converter = pipeline()
         expected = min(16.0, 12 + converter.processing_gain_bits)
         assert p.effective_bits == pytest.approx(expected)
+
+    def test_the_multiple_the_floor_is_worth_reaches_the_pipeline_too(self):
+        """The step size and how many steps are two different facts, and the second
+        one belongs to the receiver rather than to the conversion.
+
+        The filter changes the size of a step, which effective_bits already carries.
+        Adding the filter to this as well would count it twice.
+        """
+        p, _ = pipeline()
+        assert p.scope_floor_steps == 2.25
 
     def test_the_floor_follows_from_it(self):
         """End to end, in the unit the scope works in: a coarser receiver is allowed

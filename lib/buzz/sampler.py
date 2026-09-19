@@ -214,6 +214,18 @@ class RingBufferPipeline:
         return 16
 
     @property
+    def scope_floor_steps(self) -> float:
+        """How many of this source's own steps the scope refuses to magnify past.
+
+        This answers one, which never clamps a signal that is really present and is
+        therefore the answer to give where nobody has measured.  A sound card is that
+        case for good: its dead level depends on the operator's AF gain, so no figure
+        stated here would hold across two stations.  A receiver measured against its
+        own dead channel answers larger.  See scope.minimum_full_scale.
+        """
+        return 1.0
+
+    @property
     def iq_buffer(self) -> 'RingBufferPipeline | None':
         """The raw pre-conversion samples this source kept, or None when it keeps none.
 

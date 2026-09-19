@@ -999,6 +999,35 @@ that call rather than quietly compiling another variant mid-flight.
   The figure was two of the receiver's own steps, and two was outside the range that
   receiver could ever reach.
 
+  The test that found it had to say what the number is for: below what a working
+  receiver asks for, so a real signal is not clamped.  Its figures come from hardware
+  rather than from the program, which is what stops it restating the constant it
+  checks.  See `test_the_floor_stays_under_what_each_receiver_asks_for_in_use`.
+
+  **That test was then deleted and replaced by an equality check, one commit after
+  the commit that added it warned against exactly that.** The replacement asserted
+  `minimum_full_scale(...) == 30.3`, which is the arithmetic again, and the property
+  went unguarded for a second time.  A test of this kind is easy to mistake for a
+  duplicate of the arithmetic test beside it, because both name the same constant and
+  only one of them can fail for the reason that matters.  Say in the docstring that it
+  is the property rather than the value, and say what the numbers in it came from, so
+  the next reader has something to lose by deleting it.
+
+  **A policy figure that has to suit two devices at once usually belongs on the
+  device.** The same test also claimed the floor sat above what a dead channel
+  produces, so that silence is caught, and for a while neither receiver managed it.
+  The reason was not that the property was unreachable.  It was that `_FLOOR_STEPS`
+  was one number in `buzz.scope` serving two receivers whose windows are 7.4 dB and
+  15.6 dB wide at levels 30 dB apart, so the figure had to suit the narrower one and
+  spent most of the wider one.  Moving it to `SdrDevice.scope_floor_steps`, beside
+  `effective_bits` and `floor_margin_db` which answer the neighboring questions, made
+  both halves hold for both receivers.
+
+  The tell is a constant in a shared module whose comment has to reason about two
+  pieces of hardware to justify one value.  That comment is the device's answer,
+  written in the wrong place.  Check before concluding a property cannot hold: a
+  property that only fails because one number is shared is a placement problem.
+
   The diagnostic is to ask what the constant would have to be wrong by before anything
   went red.  Where the honest answer is "any amount, the tests only check it is
   self-consistent", the property is untested however many tests name the constant.

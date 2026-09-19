@@ -135,6 +135,13 @@ ESTIMATED_CALIBRATION_INTERCEPT_DB = 11.0
 # restate it.
 EFFECTIVE_BITS = 15
 
+# How many of its own steps this receiver's scope floor is worth.
+#
+# The value came from measuring rather than from theory.  `SdrplayDevice.scope_floor_steps`
+# gives the two readings and the window they define, and
+# docs-notebook/scope-auto-range-floor.md says how they were taken.
+SCOPE_FLOOR_STEPS = 3.2
+
 # How far above the noise-floor knee to put the gain the sweep chooses.
 #
 # See `SdrplayDevice.floor_margin_db` for the measurement and the reasoning.  It is a
@@ -492,6 +499,24 @@ class SdrplayDevice(SdrDevice):
         See docs-notebook/scope-auto-range-floor.md.
         """
         return EFFECTIVE_BITS
+
+    @classmethod
+    def scope_floor_steps(cls) -> float:
+        """The midpoint of a window nearly twice the RTL-SDR's, in decibels.
+
+        The figures came from measuring on 2026-09-19 at 14 dB of gain.  With the
+        antenna off this receiver asked the scope for 1.30 of its own steps, and on a
+        live band it asked for 7.86.  That is 15.6 dB of window, because an RSP runs
+        ten decibels above the knee where an RTL-SDR runs at it.  See
+        floor_margin_db.
+
+        The midpoint in decibels is the square root of 1.30 times 7.86, which leaves
+        7.8 dB to either fault and draws a dead channel at about two fifths of the
+        height.  A figure shared with the RTL-SDR would have to suit that receiver's
+        narrower window and would spend most of this one, which is why the multiple
+        belongs to the receiver rather than to buzz.scope.
+        """
+        return SCOPE_FLOOR_STEPS
 
     @classmethod
     def floor_margin_db(cls) -> float:

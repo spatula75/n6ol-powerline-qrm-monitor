@@ -595,6 +595,25 @@ down from 46 counted on 2026-09-12.  `CLAUDE.md` bans the construct and the ratc
 a branch of its own, because folding them into an unrelated change buries whatever
 that change was for.
 
+### Prose findings outside the ratchet's reach
+
+A full `ste_lint --fragments` pass over the 47 Python files this branch touches
+reported 84 findings on 2026-09-19.  One was inside a hunk the branch wrote and the
+rest predate it, so `--changed` stays clean and the ratchet in "Before every commit"
+never reaches them.
+
+By kind: 47 one-space-after-a-period, 21 participle openers naming no subject, 8
+semicolons in strict text, 4 over the strict sentence cap, 3 outright fragments, and
+one British spelling.  By file, `plotter.py` has 16, `main.py` 13 and `config.py` 11.
+
+The participle openers and the fragments are the ones worth a person's time, because
+no tool settles them and the spacing findings are mechanical.  Clearing this belongs
+on a branch of its own, for the reason the "worth" entry above gives: folded into a
+feature the diff buries whatever the feature was.
+
+Note that `--fragments` is advisory and runs about half false alarms, so the 21 and
+the 3 are an upper bound rather than a count of defects.
+
 ### PHASE_MOVE_MARGIN is a literal where a derivation would do
 
 `ContinuousAnalyzer.PHASE_MOVE_MARGIN` is 1.05, commented as about 0.4 dB.  The dB

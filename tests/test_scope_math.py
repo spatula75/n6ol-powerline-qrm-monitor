@@ -13,6 +13,8 @@ from buzz.scope import (
     _DIVISIONS_PER_PULSE, _PRETRIGGER_DIVISIONS,
     _FLOOR_STEPS, _RANGE_HEADROOM, _RANGE_PERCENTILE, _RANGE_EMA_ALPHA,
 )
+from buzz.sdr_device import RtlSdrDevice
+from buzz.sdrplay_device import SdrplayDevice
 from buzz.waterfall import (
     DISPLAY_BINS, _AXIS_H, _PIXELS_PER_BIN, _WATERFALL_H, panel_width)
 
@@ -109,7 +111,7 @@ class TestSynchronisation:
 
     def test_untriggered_pulse_position_follows_the_signal(self):
         """Control: without the trigger phase the pulse moves, so the test above is
-        actually measuring synchronisation rather than an artefact of the fixture."""
+        actually measuring synchronization rather than an artefact of the fixture."""
         positions = set()
         for phase in (0, 37, 133, 200):
             signal = pulse_train(SWEEP * 6, phase)
@@ -199,22 +201,45 @@ class TestTheFloorFollowsTheReceiver:
             assert bits == declared, (
                 f'{device.__name__} answers {bits} where its module constant says '
                 f'{declared}, so one of the two was changed without the other.')
+
     def test_default_conversion_sets_the_floor_seen_by_the_scope(self):
-        """The filter must contribute because the scope sees its output."""
-        from buzz.iq import IqToAudio
-        from buzz.sdr_device import RtlSdrDevice
-        from buzz.sdrplay_device import SdrplayDevice
-        converter = IqToAudio(256_000, 16, 4_000, 50_000)
-        rtl_bits = min(16.0, RtlSdrDevice.effective_bits() + converter.processing_gain_bits)
-        rsp_bits = min(16.0, SdrplayDevice.effective_bits() + converter.processing_gain_bits)
-        assert minimum_full_scale(rtl_bits) == pytest.approx(30.3, abs=0.1)
-        assert minimum_full_scale(rsp_bits) == pytest.approx(1.0)
+        """The filter must contribute because the scope sees its output.
+
+        This checks one step of each receiver, which is the size the conversion
+        leaves a step at rather than the whole floor.  How many steps the floor is worth is the
+        receiver's own answer, and the tests below cover that.
+        """
+        assert minimum_full_scale(self._audio_bits(RtlSdrDevice)) == pytest.approx(
+            30.3, abs=0.1)
+        assert minimum_full_scale(self._audio_bits(SdrplayDevice)) == pytest.approx(1.0)
+
+    def test_each_receiver_owns_the_multiple_its_floor_is_worth(self):
+        """A drift pin between each classmethod and the constant beside it, the same
+        shape as the effective_bits pin above.
+        """
+        from buzz.sdr_device import SCOPE_FLOOR_STEPS as RTL_STEPS
+        from buzz.sdrplay_device import SCOPE_FLOOR_STEPS as RSP_STEPS
+        for device, declared in ((RtlSdrDevice, RTL_STEPS), (SdrplayDevice, RSP_STEPS)):
+            steps = device.scope_floor_steps()
+            assert steps == declared, (
+                f'{device.__name__} answers {steps} where its module constant says '
+                f'{declared}, so one of the two was changed without the other.')
+
+    def test_an_unmeasured_source_gives_up_nothing(self):
+        """One step clamps nothing, which is the answer to give where the window has
+        not been measured.  A sound card is that case for good: its dead level moves
+        with the operator's AF gain, so no figure here would hold across two stations.
+        """
+        from buzz.sampler import RingBufferPipeline
+        from buzz.sdr_device import SdrDevice
+        assert SdrDevice.scope_floor_steps() == 1.0
+        assert RingBufferPipeline(sample_rate=16000).scope_floor_steps == 1.0
 
     def test_a_sound_card_pipeline_answers_sixteen(self):
         """The base class default, and the one source that really is int16 throughout.
 
-        Asserted through the pipeline rather than the constant, because the scope asks
-        a pipeline and a sound card is the one that never had a device to ask.
+        This asserts through the pipeline rather than the constant, because the scope
+        asks a pipeline and a sound card is the one that never had a device to ask.
         """
         from buzz.sampler import RingBufferPipeline
         assert RingBufferPipeline(sample_rate=16000).effective_bits == 16
@@ -226,6 +251,106 @@ class TestTheFloorFollowsTheReceiver:
         from buzz.sdr_device import SdrDevice
         with pytest.raises(NotImplementedError, match='how many bits'):
             SdrDevice.effective_bits()
+
+    def test_the_floor_stays_under_what_each_receiver_asks_for_in_use(self):
+        """The property the arithmetic above cannot express, and the one that broke.
+
+        A floor above what a working receiver asks for clamps a signal that is really
+        there, and the display then sits pinned at one value forever.  That happened
+        to an RTL-SDR, which read -36.1 dBFS and never moved, while every arithmetic
+        test here passed.  This class had such a test and it was replaced by the
+        equality check above, so the property went unguarded again.
+
+        The figure that pinned it was two steps of the receiver's raw eight bits,
+        before the filter's processing gain joined effective_bits.  A step is about
+        3.1 bits finer now, so the danger sits at a different multiple and the
+        constant alone cannot say where.  That is the reason this measures dBFS
+        against hardware rather than counting steps.
+
+        The levels come from hardware rather than from this program: what each
+        receiver's scope settled at on a live band, measured 2026-09-19 and recorded
+        in docs-notebook/scope-auto-range-floor.md.  That is what makes this a test of
+        the floor rather than a restatement of it.
+        """
+        for device, live_dbfs in ((RtlSdrDevice, -52.2), (SdrplayDevice, -72.4)):
+            floor_dbfs = self._floor_dbfs(device)
+            assert floor_dbfs < live_dbfs, (
+                f'{device.__name__} has a scope floor of {floor_dbfs:.1f} dBFS, which '
+                f'is at or above the {live_dbfs:.1f} dBFS it was measured asking for '
+                f'on a live band.  The display will sit pinned at its floor rather '
+                f'than following the signal.  Lower _FLOOR_STEPS, or show that this '
+                f'receiver now runs louder than the figure recorded in '
+                f'docs-notebook/scope-auto-range-floor.md.')
+
+    def test_the_floor_clears_what_each_receiver_makes_with_no_antenna(self):
+        """The other half of the property, which one shared multiple could not reach.
+
+        A floor under what a dead channel produces never binds, so the auto-ranger
+        draws silence at 76.9 percent of the deflection, the same as it draws anything
+        else.  Both receivers were in that state while the multiple was one for both,
+        because the narrower window set the figure for the wider one.
+
+        These levels come from hardware: each receiver with its antenna disconnected,
+        at the gain it runs at, measured 2026-09-19 and recorded in
+        docs-notebook/scope-auto-range-floor.md.
+        """
+        for device, dead_dbfs in ((RtlSdrDevice, -59.7), (SdrplayDevice, -88.0)):
+            floor_dbfs = self._floor_dbfs(device)
+            assert floor_dbfs > dead_dbfs, (
+                f'{device.__name__} has a scope floor of {floor_dbfs:.1f} dBFS, at or '
+                f'below the {dead_dbfs:.1f} dBFS it was measured producing with no '
+                f'antenna.  The floor will not bind on a dead channel, so the display '
+                f'draws one at full height and cannot be told from a working '
+                f'station.  Raise scope_floor_steps on this receiver, keeping it '
+                f'under the live level the test above pins.')
+
+    def test_the_floor_wins_against_the_converters_own_quantization(self):
+        """The job the floor does do, as opposed to the one it cannot.
+
+        An input carrying nothing but quantization error is dither spread evenly over
+        one step, and the auto-ranger would otherwise draw it at full height.  The
+        floor has to come out on top of what that input asks for, or the display
+        magnifies the converter rather than the band.
+
+        This simulates the dither and pushes it through the real auto-ranger, so the
+        percentile and the headroom are the ones the display uses rather than numbers
+        copied out of them.  A floor below about 0.65 of a step loses this.
+
+        Real front-end noise is a different and louder thing, which no floor here
+        catches.  See the _FLOOR_STEPS comment and the notebook for the measurements
+        that settled that.
+        """
+        rng = np.random.default_rng(0)
+        for device in (RtlSdrDevice, SdrplayDevice):
+            bits = self._audio_bits(device)
+            step = FULL_SCALE_COUNTS / 2 ** (bits - 1)
+            floor = minimum_full_scale(bits, device.scope_floor_steps())
+            dither = rng.uniform(-step / 2, step / 2, size=(8, SWEEP))
+            scale = floor
+            for _ in range(400):
+                scale = auto_range_full_scale(dither, scale, floor)
+            assert scale == pytest.approx(floor), (
+                f'{device.__name__} asks for {scale:.3g} counts on quantization '
+                f'dither alone, against a floor of {floor:.3g}.  The floor is meant '
+                f'to win here, so the scope shows a flat trace rather than the '
+                f'converter magnified to full height.')
+
+    @classmethod
+    def _floor_dbfs(cls, device):
+        """Where this receiver's scope floor sits, as the display computes it."""
+        return full_scale_dbfs(minimum_full_scale(cls._audio_bits(device),
+                                                  device.scope_floor_steps()))
+
+    @staticmethod
+    def _audio_bits(device):
+        """What the scope sees from this receiver at the shipped IQ settings.
+
+        The filter's noise gain is part of it, because the scope is downstream of the
+        conversion rather than of the converter.
+        """
+        from buzz.iq import IqToAudio
+        converter = IqToAudio(256_000, 16, 4_000, 50_000)
+        return min(16.0, device.effective_bits() + converter.processing_gain_bits)
 
     def test_fewer_bits_means_a_coarser_floor(self):
         """The direction, stated once so nobody has to re-derive it: fewer bits are

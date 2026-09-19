@@ -105,6 +105,16 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   delivery and joining them at each block boundary. The callback runs on the library's
   own thread and needs the GIL, so allocation churn there is the worst place for it.
 
+### Changed
+- The scope's magnification limit is now a figure each receiver states for itself,
+  rather than one multiple of a step shared by all of them. A dead channel no longer
+  fills the display: with the antenna disconnected an RTL-SDR draws at about two
+  thirds of the height and an SDRplay at about two fifths, where both previously drew
+  at full height and could not be told from a working station. A sound card is
+  unchanged, because its level depends on the operator's AF gain and no figure here
+  would suit two stations. See `docs-notebook/scope-auto-range-floor.md` for the
+  measurements.
+
 ### Fixed
 - An IQ recording from a 16-bit receiver keeps all sixteen bits. The raw IQ ring buffer
   held unsigned bytes whatever the receiver was, so every SDRplay capture written with

@@ -93,6 +93,14 @@ _USB_PACKET_BYTES = 512
 # EFFECTIVE_BITS in buzz.sdrplay_device.
 EFFECTIVE_BITS = 8
 
+# How many of its own steps this receiver's scope floor is worth.
+#
+# The value came from measuring rather than from theory.  `RtlSdrDevice.scope_floor_steps`
+# gives the two readings and the window they define, and
+# docs-notebook/scope-auto-range-floor.md says how they were taken.  A module constant
+# so a test can read the figure rather than restate it, matching EFFECTIVE_BITS above.
+SCOPE_FLOOR_STEPS = 1.75
+
 
 @dataclass(frozen=True)
 class SampleFormat:
@@ -394,6 +402,27 @@ class SdrDevice(ABC):
             f'{cls.__name__} does not say how many bits it resolves.')
 
     @classmethod
+    def scope_floor_steps(cls) -> float:
+        """How many of this receiver's own steps the scope refuses to magnify past.
+
+        The floor stops the display drawing a converter's own noise at full height,
+        and how much room there is to place it belongs to the receiver.  Between the
+        level a receiver produces with no antenna and the level it produces on a band
+        there is a window, and the floor has to sit inside it: under the window it
+        never binds, and over it the display sits pinned and follows nothing.
+
+        This answers one by default, which is the bottom of every window and so
+        clamps nothing.  That is the honest answer where nobody has measured, and it
+        accepts that a dead channel is drawn at full height.  A receiver whose two
+        levels have been measured overrides this with the midpoint between them.
+
+        The figure is measured rather than derived, because the window depends on a
+        receiver's own front-end noise at the gain it runs at, and nothing in this
+        program predicts that.  See docs-notebook/scope-auto-range-floor.md.
+        """
+        return 1.0
+
+    @classmethod
     def floor_margin_db(cls) -> float:
         """How far above the knee this receiver can afford to put the floor bound.
 
@@ -530,6 +559,22 @@ class RtlSdrDevice(SdrDevice):
         Nothing here decimates enough to recover a bit of it.
         """
         return EFFECTIVE_BITS
+
+    @classmethod
+    def scope_floor_steps(cls) -> float:
+        """The midpoint of the narrowest window either receiver here has.
+
+        The figures came from measuring on 2026-09-19 at 22.9 dB of gain.  With the
+        antenna off this receiver asked the scope for 1.14 of its own steps, and on a
+        live band it asked for 2.68.  That is 7.4 dB of window, which is little,
+        because an RTL-SDR runs at the knee where the antenna only matches the
+        converter.  See floor_margin_db.
+
+        The midpoint in decibels is the square root of 1.14 times 2.68, which leaves
+        3.7 dB to either fault.  A dead channel is then drawn at about two thirds of
+        the height rather than filling the screen, which is the most this window buys.
+        """
+        return SCOPE_FLOOR_STEPS
 
     @classmethod
     def floor_margin_db(cls) -> float:

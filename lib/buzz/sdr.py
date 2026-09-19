@@ -262,6 +262,11 @@ class SdrSource:
         return self._device.effective_bits()
 
     @property
+    def scope_floor_steps(self) -> float:
+        """How many of its own steps this receiver can afford to give up."""
+        return self._device.scope_floor_steps()
+
+    @property
     def profile(self) -> DeviceProfile:
         """Facts about this configured device that its consumers need."""
         return self._device.profile
@@ -634,6 +639,16 @@ class SdrPipeline(RingBufferPipeline):
         See buzz.scope.minimum_full_scale.
         """
         return min(16.0, self._source.effective_bits + self._converter.processing_gain_bits)
+
+    @property
+    def scope_floor_steps(self) -> float:
+        """The receiver's own answer, passed through unchanged.
+
+        The filter moves the size of a step, which `effective_bits` already carries.
+        How many steps the floor is worth is a fact about the receiver's noise rather
+        than about the conversion, so this adds nothing to it.
+        """
+        return self._source.scope_floor_steps
 
     @property
     def iq_buffer(self) -> IqRingBuffer | None:

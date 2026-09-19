@@ -235,18 +235,26 @@ _RANGE_HEADROOM = 1.30
 # hundred milliseconds and the trace visibly breathes.  0.05 at 100 ms frames gives
 # a settling time of a couple of seconds.
 _RANGE_EMA_ALPHA = 0.05
-# How many effective audio steps the smallest full scale is worth.
+# How many effective audio steps the smallest full scale is worth, where the source
+# does not say.
 #
-# The floor caps magnification when a quiet input would otherwise stretch converter
-# noise across the display.  The relevant step is the one after IQ filtering and
-# decimation, because that int16 audio is what the scope receives.  SdrPipeline
-# combines the receiver's delivered depth with the filter's noise gain to describe
-# that step.  One step keeps the policy separate from both facts.
+# The relevant step is the one after IQ filtering and decimation, because that int16
+# audio is what the scope receives.  SdrPipeline combines the receiver's delivered
+# depth with the filter's noise gain to describe that step.
 #
-# At the default filter settings this gives an RTL-SDR a floor near 30 counts, close to
-# the original fixed 32.  An SDRplay reaches the 16-bit output cap and gets a floor of
-# one count, which exposes quiet detail that the fixed value hid.
-# See docs-notebook/scope-auto-range-floor.md.
+# **How many steps is the source's business, not this module's.**  A source states it
+# through `scope_floor_steps`, and this is only the answer for one that does not: one
+# step, which is under every window measured so far and therefore clamps nothing.  A
+# sound card keeps it for good, because its dead level moves with the operator's AF
+# gain and no figure here would hold across two stations.
+#
+# A single shared figure was tried first and cannot serve two receivers.  The floor has
+# to sit above what a dead channel produces, or it never binds, and below what the
+# receiver produces on a band, or the display sits pinned.  Those windows are 7.4 dB
+# wide on an RTL-SDR and 15.6 dB on an RSP1B, at levels 30 dB apart, so one multiple
+# has to suit the narrower and spends most of the wider.  At one step it bound on
+# neither, and both receivers drew a dead channel at full height.
+# See SdrDevice.scope_floor_steps and docs-notebook/scope-auto-range-floor.md.
 _FLOOR_STEPS = 1.0
 # Initial guess, used only until the EMA has real data to converge from.
 _INITIAL_FULL_SCALE = 2048.0
@@ -415,7 +423,8 @@ def extract_sweeps(samples: np.ndarray, start: int, sweep_samples: int,
 # Auto-ranging
 # ---------------------------------------------------------------------------
 
-def minimum_full_scale(effective_bits: float) -> float:
+def minimum_full_scale(effective_bits: float,
+                       floor_steps: float = _FLOOR_STEPS) -> float:
     """The smallest full scale the converted audio resolution justifies.
 
     Everything reaching the scope is int16, whatever the receiver, because
@@ -425,9 +434,12 @@ def minimum_full_scale(effective_bits: float) -> float:
     includes that processing gain in `effective_bits`.
 
     Magnifying past one effective audio step means drawing conversion noise at full
-    height.  See _FLOOR_STEPS and docs-notebook/scope-auto-range-floor.md.
+    height.  `floor_steps` is how many steps the source can afford to give up, which
+    belongs to the source rather than to this arithmetic: a receiver measured against
+    its own dead channel overrides the default.  See _FLOOR_STEPS,
+    `SdrDevice.scope_floor_steps` and docs-notebook/scope-auto-range-floor.md.
     """
-    return FULL_SCALE_COUNTS / 2 ** (effective_bits - 1) * _FLOOR_STEPS
+    return FULL_SCALE_COUNTS / 2 ** (effective_bits - 1) * floor_steps
 
 
 def auto_range_full_scale(sweeps: np.ndarray, previous: float, floor: float) -> float:
@@ -673,7 +685,8 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
         # Read once because neither the receiver nor its IQ filter changes while this
         # pipeline runs.  Recomputing their combined resolution every frame adds no
         # information.
-        self._floor = minimum_full_scale(pipeline.effective_bits)
+        self._floor = minimum_full_scale(pipeline.effective_bits,
+                                         pipeline.scope_floor_steps)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
