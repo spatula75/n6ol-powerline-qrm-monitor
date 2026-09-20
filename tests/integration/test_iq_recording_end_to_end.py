@@ -30,15 +30,15 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-from fake_sdr import FakeSdrDevice
+from tests.receiver.fake_sdr import FakeSdrDevice
 from harness import StateLog, config_for
 
 from buzz.analyzer import AnalyzerState, ContinuousAnalyzer
-from buzz.iq import IqToAudio
+from buzz.receiver.iq import IqToAudio
 from buzz.recorder import build_recording
-from buzz.sdr import SdrPipeline, SdrSource
-from buzz.sdr_device import RTL_SDR_FORMAT, IqBlock, SampleFormat
-from buzz.sdrplay_device import SDRPLAY_FORMAT
+from buzz.receiver.source import SdrPipeline, SdrSource
+from buzz.receiver.device import RTL_SDR_FORMAT, IqBlock, SampleFormat
+from buzz.receiver.sdrplay import SDRPLAY_FORMAT
 
 IQ_RATE = 256_000
 DECIMATION = 16

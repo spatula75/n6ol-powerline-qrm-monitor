@@ -1,4 +1,4 @@
-"""Generate `lib/buzz/sdrplay_api.py` from SDRplay's own C headers.
+"""Generate `lib/buzz/receiver/sdrplay_api.py` from SDRplay's own C headers.
 
 The SDRplay API is a C library, and no published Python binding suits this project.
 What is published is either not on PyPI at all, or is a SWIG build needing a compiler,
@@ -31,7 +31,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 DEFAULT_HEADERS = REPO / 'vendor' / 'sdrplay-api-3.15' / 'inc'
-DEFAULT_OUTPUT = REPO / 'lib' / 'buzz' / 'sdrplay_api.py'
+DEFAULT_OUTPUT = REPO / 'lib' / 'buzz' / 'receiver' / 'sdrplay_api.py'
 
 # Dependency order, not alphabetical.  ctypes needs a nested struct defined before the
 # struct that embeds it, and this is the order the headers include each other in.

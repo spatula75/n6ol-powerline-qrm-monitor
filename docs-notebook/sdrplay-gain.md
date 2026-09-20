@@ -27,7 +27,7 @@ and the table's prediction enter that sum from opposite directions.  Seven LNA s
 agreeing to 0.6 dB is not something a wrong table produces.
 
 And the receiver's gain is a fixed 91.4 dB less whatever reduction is set.  That is
-what lets `buzz.sdrplay_device` state its ladder in real decibels, from +71 down to
+what lets `buzz.receiver.sdrplay` state its ladder in real decibels, from +71 down to
 -29, rather than as the negative of a reduction.  The figure is asked of the hardware
 at open rather than assumed, because it is measured here at one frequency on one unit
 and the conversion gain is not flat across HF.  The constant is the fallback for a
@@ -114,7 +114,7 @@ could have been silently wrong.
 This covers one unit, one frequency, one day and one operator's roof.  The
 conversion gain is measured rather than assumed at run time, so a second unit
 costs nothing, but the LNA table is vendored and covers only the band below 50 MHz
-on an RSP1B and 60 MHz on an RSP1A.  `buzz.sdrplay_device` refuses a tuning above
+on an RSP1B and 60 MHz on an RSP1A.  `buzz.receiver.sdrplay` refuses a tuning above
 that edge rather than using the row it has.
 
 Whether 32 dB of arc headroom suits an antenna this large is a separate question that

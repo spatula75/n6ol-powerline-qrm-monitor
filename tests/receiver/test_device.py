@@ -1,4 +1,4 @@
-"""Tests for lib/buzz/sdr_device.py, the hardware contract and its RTL-SDR shim.
+"""Tests for lib/buzz/receiver/device.py, the hardware contract and its RTL-SDR shim.
 
 Everything here runs against a fake handle, so the whole module is exercised with no
 receiver attached.  That is the point of RtlSdrHandle existing at all.
@@ -14,7 +14,7 @@ from dataclasses import replace
 import numpy as np
 import pytest
 from buzz.config import RtlSdrConfig
-from buzz.sdr_device import (
+from buzz.receiver.device import (
     RTL_SDR_FORMAT, DeviceProfile, IqBlock, RtlSdrDevice, SampleFormat,
 )
 
@@ -254,7 +254,7 @@ class TestGainWhileStreaming:
         docstring says the SDRplay API has sdrplay_api_Update for exactly this, so
         another device may answer differently, while `if self.is_streaming` gave every
         device the RTL-SDR's answer.  A subclass declaring it could move the gain got
-        the refusal anyway, and the fake in tests/fake_sdr.py already read the flag,
+        the refusal anyway, and the fake in tests/receiver/fake_sdr.py already read the flag,
         so the contract and its only real implementation disagreed.
         """
         device = _device()
@@ -419,7 +419,7 @@ class TestClosing:
         handle = FakeHandle()
         handle.close_blocks = True
         device = _device(handle)
-        import buzz.sdr_device as module
+        import buzz.receiver.device as module
         original = module._DEVICE_CLOSE_TIMEOUT_SECONDS
         module._DEVICE_CLOSE_TIMEOUT_SECONDS = 0.05
         try:
@@ -441,7 +441,7 @@ class TestClosing:
         device = _device(handle)
         device.start_stream(CountingSink(), 512)
         handle.cancel_read_async = lambda: None      # the read never ends
-        import buzz.sdr_device as module
+        import buzz.receiver.device as module
         original = module._THREAD_JOIN_TIMEOUT_SECONDS
         module._THREAD_JOIN_TIMEOUT_SECONDS = 0.05
         try:

@@ -15,7 +15,7 @@ file through this program is out of scope on purpose.  Nothing here reads one ba
 `AudioEventRecorder` the only subclass so far.  All three live in
 `lib/buzz/recorder.py`.
 
-The raw IQ buffer is built too - `IqRingBuffer` in `lib/buzz/sdr.py`, filled by
+The raw IQ buffer is built too - `IqRingBuffer` in `lib/buzz/receiver/source.py`, filled by
 `SdrPipeline` and gated on the new `[recording] record_iq` - and `IqEventRecorder`
 reads it.  An event on a receiver with the setting on now writes two files.
 
@@ -212,7 +212,7 @@ the whole reason it exists.
   procedure - frequency, gain, check, level - which a fifth unrelated item would
   interrupt.  It carries an `x-visible-when` reaching into `[audio] source`, so a
   sound-card station never sees it.  That is the second cross-section gate in the
-  schema, and `tests/test_setup_schema.py` keeps an allowlist of them precisely so a
+  schema, and `tests/setup/test_schema.py` keeps an allowlist of them precisely so a
   third has to be argued for.  `[recording]`'s existing budget and timing fields apply
   to both recorders unchanged, since the trigger they configure is the only thing that
   reads them.

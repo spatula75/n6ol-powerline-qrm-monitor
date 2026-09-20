@@ -24,8 +24,8 @@ from PySide6.QtGui import QColor, QFontMetrics, QImage, QPainter        # noqa: 
 from PySide6.QtWidgets import QPushButton, QWidget                      # noqa: E402
 
 from buzz.config import BuzzConfig                                      # noqa: E402
-from buzz.fonts import FAMILY, display_family, display_font             # noqa: E402
-from buzz.waterfall import (                                            # noqa: E402
+from buzz.display.fonts import FAMILY, display_family, display_font             # noqa: E402
+from buzz.display.waterfall import (                                            # noqa: E402
     _AXIS_H, _BAR_BG, _BAR_H, _WATERFALL_H, MainWindow, RecordingBarWidget,
     WaterfallWidget)
 
@@ -291,10 +291,11 @@ class TestTheDisplayFontSurvivesAHeadlessPlatform:
 
     def test_the_bundled_family_is_what_gets_used(self, qt_app):
         assert display_family() == FAMILY, (
-            f'The display resolved to {display_family()!r} rather than {FAMILY!r}. '
-            'Falling back means buzz.fonts could not load the .ttf from matplotlib -- '
-            'see the warning it logs, and tests/test_fonts.py for where it looks. On '
-            'a platform with no font database this leaves every label an empty box.')
+            f'The display resolved to {display_family()!r} rather than {FAMILY!r}.  '
+            'Falling back means buzz.display.fonts could not load the .ttf from '
+            'matplotlib -- see the warning it logs, and tests/display/test_fonts.py '
+            'for where it looks.  On a platform with no font database this leaves '
+            'every label an empty box.')
 
     def test_it_is_genuinely_monospace(self, qt_app):
         """The bug underneath the tofu: 'Monospace' is a fontconfig generic that

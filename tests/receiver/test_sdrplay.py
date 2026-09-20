@@ -1,6 +1,6 @@
 """Tests for the SDRplay shim.
 
-These run against `tests/fake_sdrplay.FakeSdrplayApi`, which fills in the real
+These run against `tests/receiver/fake_sdrplay.FakeSdrplayApi`, which fills in the real
 generated structs, so what passes here also says the bindings are usable.  No receiver
 and no SDRplay API are needed.
 
@@ -18,16 +18,16 @@ from unittest.mock import patch
 
 import numpy as np
 import pytest
-from buzz import sdrplay_api as api
+from buzz.receiver import sdrplay_api as api
 from buzz.config import SdrplayConfig
-from buzz.sdr import SweepReader
-from buzz.sdr_device import IqBlock, OverloadStatus
-from buzz.sdrplay_device import (ESTIMATED_CALIBRATION_INTERCEPT_DB, FLOOR_MARGIN_DB,
+from buzz.receiver.source import SweepReader
+from buzz.receiver.device import IqBlock, OverloadStatus
+from buzz.receiver.sdrplay import (ESTIMATED_CALIBRATION_INTERCEPT_DB, FLOOR_MARGIN_DB,
                                  HF_CONVERSION_GAIN_DB, HF_LNA_GAIN_REDUCTION_DB,
                                  MAX_GAIN_REDUCTION_DB, MIN_GAIN_REDUCTION_DB,
                                  SDRPLAY_FORMAT, SdrplayDevice, SdrplayLibrary,
                                  _GAIN_DISAGREEMENT_DB, _SyncBlocks)
-from fake_sdrplay import FakeSdrplayApi
+from tests.receiver.fake_sdrplay import FakeSdrplayApi
 
 TUNED_HZ = 7_050_000
 IQ_SAMPLE_RATE = 256_000
@@ -517,13 +517,13 @@ class TestTheBacklogReport:
 
     @pytest.fixture(autouse=True)
     def _short_window(self, monkeypatch):
-        monkeypatch.setattr('buzz.sdrplay_device._LATE_REPORT_INTERVAL_SECONDS',
+        monkeypatch.setattr('buzz.receiver.sdrplay._LATE_REPORT_INTERVAL_SECONDS',
                             self.WINDOW)
 
     @staticmethod
     def _deliver_at(device, library, moment, samples=256):
         """Deliver `samples` frames with the clock reading `moment`."""
-        with patch('buzz.sdrplay_device.monotonic', return_value=moment):
+        with patch('buzz.receiver.sdrplay.monotonic', return_value=moment):
             library.deliver(list(range(samples)), list(range(samples)))
 
     @staticmethod
@@ -549,7 +549,7 @@ class TestTheBacklogReport:
         delivers in bursts and is behind for most of every burst period.
         """
         device, library = self._streaming()
-        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+        with caplog.at_level(logging.DEBUG, logger='buzz.receiver.sdrplay'):
             self._deliver_at(device, library, 100.0)
             self._deliver_at(device, library, 100.050)
             self._deliver_at(device, library, 100.070)
@@ -562,7 +562,7 @@ class TestTheBacklogReport:
         the receiver fell behind, because the two cannot both be right.
         """
         device, library = self._streaming()
-        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+        with caplog.at_level(logging.DEBUG, logger='buzz.receiver.sdrplay'):
             self._deliver_on_time_until(device, library, 100.0, 100.110)
         assert 'fell at worst 0.0 ms behind' in caplog.text, (
             f'Every delivery carried exactly the audio the interval used, so the '
@@ -576,7 +576,7 @@ class TestTheBacklogReport:
         behind by the end of it, whatever it chooses to send afterwards.
         """
         device, library = self._streaming()
-        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+        with caplog.at_level(logging.DEBUG, logger='buzz.receiver.sdrplay'):
             self._deliver_at(device, library, 100.0)             # opens the window
             self._deliver_at(device, library, 100.054)           # 54 ms on, 8 ms audio
             self._deliver_on_time_until(device, library, 100.058, 100.110)
@@ -593,7 +593,7 @@ class TestTheBacklogReport:
         small ones.  The backlog at its peak is the same 46 ms, and it closes.
         """
         device, library = self._streaming()
-        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+        with caplog.at_level(logging.DEBUG, logger='buzz.receiver.sdrplay'):
             self._deliver_at(device, library, 100.0)
             # One delivery carrying 54 ms of audio, which is the pause paid back.
             self._deliver_at(device, library, 100.054, samples=3456)
@@ -610,9 +610,9 @@ class TestTheBacklogReport:
         library.  The threshold is moved down here rather than the pause being made
         longer, because a pause past 100 ms would close the 100 ms window.
         """
-        monkeypatch.setattr('buzz.sdrplay_device._UNUSUAL_BACKLOG_SECONDS', 0.030)
+        monkeypatch.setattr('buzz.receiver.sdrplay._UNUSUAL_BACKLOG_SECONDS', 0.030)
         device, library = self._streaming()
-        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+        with caplog.at_level(logging.DEBUG, logger='buzz.receiver.sdrplay'):
             self._deliver_at(device, library, 100.0)
             self._deliver_at(device, library, 100.054)
             self._deliver_on_time_until(device, library, 100.058, 100.110)
@@ -629,7 +629,7 @@ class TestTheBacklogReport:
         figures were read as faults before the wording said which window they came from.
         """
         device, library = self._streaming()
-        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+        with caplog.at_level(logging.DEBUG, logger='buzz.receiver.sdrplay'):
             self._deliver_on_time_until(device, library, 100.0, 100.110)
             first = caplog.text
             caplog.clear()
@@ -646,7 +646,7 @@ class TestTheBacklogReport:
         carries no audio and must not be read as a delivery that arrived empty.
         """
         device, library = self._streaming()
-        with caplog.at_level(logging.DEBUG, logger='buzz.sdrplay_device'):
+        with caplog.at_level(logging.DEBUG, logger='buzz.receiver.sdrplay'):
             self._deliver_at(device, library, 100.0, samples=0)
             self._deliver_on_time_until(device, library, 100.200, 100.310)
         assert 'fell at worst 0.0 ms behind' in caplog.text, (
@@ -874,7 +874,7 @@ class TestSynchronousReads:
         """A sweep reads in a loop, so a read that blocks forever would hang it rather
         than end it, and the operator would see a dialog that never finishes.
         """
-        monkeypatch.setattr('buzz.sdrplay_device._SYNC_READ_TIMEOUT_SECONDS', 0.01)
+        monkeypatch.setattr('buzz.receiver.sdrplay._SYNC_READ_TIMEOUT_SECONDS', 0.01)
         device, _ = make_device()
         with caplog.at_level(logging.WARNING):
             assert device.read_block(2) is None

@@ -16,16 +16,17 @@ import pytest
 from textual.widgets import Button, OptionList, Static
 
 from buzz.config import receiver_settings_from
-from buzz.gain_sweep import GainMeasurement, SweepResult
+from buzz.receiver.gain_sweep import GainMeasurement, SweepResult
 from buzz.setup.app import SetupApp
 from buzz.setup.screens.base import CANCELLED
-from buzz.setup.screens.gain_calibration import GainCalibrationDialog
+from buzz.setup.screens import gain_calibration as gain_calibration_module
+from buzz.setup.screens.gain_calibration import GainCalibrationDialog, open_sweep
 from buzz.setup.screens.section_menu import _ACTIONS, _SWEEP_ID, SectionMenuScreen
-from buzz import sdr as sdr_module
-from buzz.sdr import SweepReader
-from buzz.sdr_device import RtlSdrDevice
+from buzz.receiver import source as source_module
+from buzz.receiver.source import SdrSource, SweepReader
+from buzz.receiver.device import RtlSdrDevice
 from tests.patching import patch_in
-from tests.test_sdr_device import FakeHandle
+from tests.receiver.test_device import FakeHandle
 
 RTLSDR_VALUES = {'frequency_khz': 3588.0, 'gain_db': 40.2, 'device_index': 0,
                  'iq_sample_rate': 256_000, 'decimation': 16, 'bandwidth_khz': 4.0,
@@ -131,7 +132,7 @@ class TestTheDialogReportsWhatTheSweepFound:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            return_value=(_FakeSource(), sweep)):
                     app.push_screen(GainCalibrationDialog('rtlsdr', dict(RTLSDR_VALUES)))
                     await _wait_until(
@@ -172,7 +173,7 @@ class TestTheDialogReportsWhatTheSweepFound:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            return_value=(_FakeSource(), _FakeSweep(_result()))):
                     app.push_screen(GainCalibrationDialog('rtlsdr', dict(RTLSDR_VALUES)))
                     await _wait_until(
@@ -217,7 +218,7 @@ class TestTheDialogReportsWhatTheSweepFound:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            return_value=(source, _FakeSweep(_result()))):
                     app.push_screen(GainCalibrationDialog('rtlsdr', dict(RTLSDR_VALUES)))
                     await _wait_until(pilot, lambda: source.closed,
@@ -232,7 +233,7 @@ class TestTheDialogReportsWhatTheSweepFound:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            side_effect=RuntimeError('no driver is bound to it')):
                     app.push_screen(GainCalibrationDialog('rtlsdr', dict(RTLSDR_VALUES)))
                     await _wait_until(
@@ -315,7 +316,7 @@ class TestTheDialogSurvivesTheWaysItCanGoWrong:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            return_value=(source, _ExplodingSweep(_result()))):
                     app.push_screen(GainCalibrationDialog('rtlsdr', dict(RTLSDR_VALUES)))
                     await _wait_until(
@@ -334,7 +335,7 @@ class TestTheDialogSurvivesTheWaysItCanGoWrong:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            return_value=(_FakeSource(), _FakeSweep(_result()))):
                     dialog = GainCalibrationDialog('rtlsdr', dict(RTLSDR_VALUES))
                     app.push_screen(dialog)
@@ -358,7 +359,7 @@ class TestTheDialogSurvivesTheWaysItCanGoWrong:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            return_value=(_FakeSource(), sweep)):
                     dialog = GainCalibrationDialog('rtlsdr', dict(RTLSDR_VALUES))
                     app.push_screen(dialog)
@@ -411,10 +412,8 @@ class TestOpeningTheRealReceiver:
     """
 
     def test_it_opens_the_configured_device(self, tmp_path):
-        from buzz.setup.screens.gain_calibration import open_sweep
-
         with patch.object(RtlSdrDevice, 'open') as open_device, \
-             patch_in(sdr_module, SweepReader) as reader_class:
+             patch_in(source_module, SweepReader) as reader_class:
             values = dict(RTLSDR_VALUES, device_index=2)
             source, sweep = open_sweep('rtlsdr', values)
 
@@ -430,11 +429,9 @@ class TestOpeningTheRealReceiver:
         on a capture thread, and changing gain against that is two threads on one
         device, which wedged the receiver and hung the program.
         """
-        from buzz.setup.screens.gain_calibration import open_sweep
-
         with patch.object(RtlSdrDevice, 'open'), \
-             patch_in(sdr_module, SweepReader), \
-             patch('buzz.sdr.SdrSource') as streaming:
+             patch_in(source_module, SweepReader), \
+             patch_in(source_module, SdrSource) as streaming:
             open_sweep('rtlsdr', dict(RTLSDR_VALUES))
         streaming.assert_not_called()
 
@@ -442,9 +439,7 @@ class TestOpeningTheRealReceiver:
         """arc_headroom_db is the reserve the whole choice turns on, so a sweep built
         with the default instead of the operator's value would quietly ignore it.
         """
-        from buzz.setup.screens.gain_calibration import open_sweep
-
-        with patch.object(RtlSdrDevice, 'open'), patch_in(sdr_module, SweepReader):
+        with patch.object(RtlSdrDevice, 'open'), patch_in(source_module, SweepReader):
             _, sweep = open_sweep('rtlsdr', dict(RTLSDR_VALUES, arc_headroom_db=26.0))
         assert sweep._headroom_db == 26.0
 
@@ -462,7 +457,7 @@ class TestAMeasuredGainCanBeRefused:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            return_value=(_FakeSource(), sweep)):
                     dialog = GainCalibrationDialog('rtlsdr', dict(RTLSDR_VALUES))
                     app.push_screen(dialog, lambda value: result.update(value=value))
@@ -532,7 +527,7 @@ class TestTheKeyboardReachesBothButtons:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            return_value=(_FakeSource(), _FakeSweep(_result()))):
                     dialog = GainCalibrationDialog('rtlsdr', dict(RTLSDR_VALUES))
                     app.push_screen(dialog, lambda value: result.update(value=value))
@@ -595,7 +590,7 @@ class TestTheReceiverIsAlwaysReleased:
         """Drive the thread function with the receiver already stood in for."""
         from buzz.setup.screens.gain_calibration import _open_sweep_then_release
 
-        with patch('buzz.setup.screens.gain_calibration.open_sweep',
+        with patch_in(gain_calibration_module, open_sweep,
                    return_value=(source, sweep)):
             return _open_sweep_then_release('rtlsdr', dict(RTLSDR_VALUES), on_open,
                                             lambda *a: None)
@@ -658,12 +653,11 @@ class TestTheReceiverIsAlwaysReleased:
         the assertion is on the driver handle rather than on a mock, so nothing here
         can pass by agreeing with itself.
         """
-        from buzz.setup.screens.gain_calibration import open_sweep
-
         handle = FakeHandle()
         device = RtlSdrDevice(handle, tuned_hz=3_638_000, gain_db=22.9,
                               iq_sample_rate=256_000)
-        with patch.object(RtlSdrDevice, 'open', return_value=device),              patch.object(RtlSdrDevice, 'validate_sync_block',
+        with patch.object(RtlSdrDevice, 'open', return_value=device), \
+             patch.object(RtlSdrDevice, 'validate_sync_block',
                           side_effect=ValueError('reads whole 512-byte USB packets')):
             with pytest.raises(ValueError, match='USB packets'):
                 open_sweep('rtlsdr', dict(RTLSDR_VALUES))
@@ -696,7 +690,7 @@ class TestTheReceiverIsAlwaysReleased:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            side_effect=blocking_open):
                     dialog = GainCalibrationDialog('rtlsdr', dict(RTLSDR_VALUES))
                     app.push_screen(dialog)
@@ -727,7 +721,7 @@ class TestTheReceiverIsAlwaysReleased:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            side_effect=blocking_open):
                     dialog = GainCalibrationDialog('rtlsdr', dict(RTLSDR_VALUES))
                     app.push_screen(dialog)
@@ -758,7 +752,7 @@ class TestTheReceiverIsAlwaysReleased:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            return_value=(_FakeSource(), _FakeSweep(_result()))), \
                      patch.object(GainCalibrationDialog, '_show_result',
                                   side_effect=ValueError('cannot format that')):
@@ -857,7 +851,7 @@ class TestTheInstructionsStayOnScreen:
         async def scenario():
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            return_value=(_FakeSource(), sweep)):
                     app.push_screen(GainCalibrationDialog('rtlsdr', dict(RTLSDR_VALUES)))
                     await _wait_until(
@@ -921,7 +915,7 @@ class TestTheInstructionsStayOnScreen:
             app = SetupApp(config_path=tmp_path / 'config.toml')
             async with app.run_test() as pilot:
                 dialog = GainCalibrationDialog('rtlsdr', dict(RTLSDR_VALUES))
-                with patch('buzz.setup.screens.gain_calibration.open_sweep',
+                with patch_in(gain_calibration_module, open_sweep,
                            side_effect=RuntimeError('no receiver')):
                     app.push_screen(dialog)
                     await pilot.pause()

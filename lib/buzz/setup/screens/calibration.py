@@ -105,9 +105,9 @@ def _open_sdr_level_stream(source_name: str, receiver_values: SectionValues,
     to beat and a smaller block makes the transfer pool shallow, so the reading starts
     moving promptly instead of after most of a second.
     """
-    from buzz.iq import IqToAudio
-    from buzz.sdr import SdrLevelStream, SdrSource
-    from buzz.sdr_device import open_receiver
+    from buzz.receiver.device import open_receiver
+    from buzz.receiver.iq import IqToAudio
+    from buzz.receiver.source import SdrLevelStream, SdrSource
 
     settings = receiver_settings_from(source_name, receiver_values)
     source = SdrSource(open_receiver(source_name, settings),

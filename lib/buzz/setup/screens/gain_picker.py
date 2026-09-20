@@ -51,7 +51,7 @@ def supported_gains(source: str, values: SectionValues) -> list[float]:
     sweep from opening it.  Whatever this raises carries wording the device wrote for
     whoever is standing at the radio.
     """
-    from buzz.sdr_device import supported_gains as gains_for
+    from buzz.receiver.device import supported_gains as gains_for
 
     settings = receiver_settings_from(source, values)
     if settings is None:

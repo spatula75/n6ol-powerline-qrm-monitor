@@ -302,7 +302,7 @@ class TestTheShippedRtlSdrDefaultsAreUsable:
     """
 
     def test_the_default_settings_build_a_converter(self):
-        from buzz.iq import IqToAudio
+        from buzz.receiver.iq import IqToAudio
         s = RtlSdrConfig()
         converter = IqToAudio(s.iq_sample_rate, s.decimation, s.bandwidth_hz,
                               s.tuning_offset_hz, s.sideband)
@@ -314,7 +314,7 @@ class TestTheShippedRtlSdrDefaultsAreUsable:
         refused, on the next start, by a traceback naming a setting the operator
         picked from a list.
         """
-        from buzz.iq import IqToAudio
+        from buzz.receiver.iq import IqToAudio
         from buzz.setup.schema import field_schema, load_schema
         offered = field_schema(load_schema(), 'rtlsdr', 'sideband')['enum']
         s = RtlSdrConfig()

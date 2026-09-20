@@ -1,7 +1,7 @@
 """Tests for moving gain safely, and for the reader a gain sweep uses.
 
-Most of what this file used to cover moved into `buzz.sdr_device`, and
-`tests/test_sdr_device.py` covers it there: snapping to a step, the transfer pool
+Most of what this file used to cover moved into `buzz.receiver.device`, and
+`tests/receiver/test_device.py` covers it there: snapping to a step, the transfer pool
 depth, the raw conversion, the bounded close, and refusing a synchronous read size
 librtlsdr cannot serve.
 
@@ -9,9 +9,9 @@ What is left is the part no single class owns.  A gain sweep has to clear two bu
 rather than one, and it has to read in the mode that makes a gain change safe at all.
 """
 import pytest
-from buzz.gain_sweep import GainSweep
-from buzz.sdr import DEFAULT_SWEEP_BLOCK_SAMPLES, SdrSource, SweepReader
-from tests.fake_sdr import V4_GAINS, FakeSdrDevice
+from buzz.receiver.gain_sweep import GainSweep
+from buzz.receiver.source import DEFAULT_SWEEP_BLOCK_SAMPLES, SdrSource, SweepReader
+from tests.receiver.fake_sdr import V4_GAINS, FakeSdrDevice
 
 BLOCK = 64
 

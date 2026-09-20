@@ -35,8 +35,8 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'lib'))
 
 from buzz.config import CONFIG_PATH, BuzzConfig  # noqa: E402
-from buzz.gain_sweep import BandMeasurement, SweepSource  # noqa: E402
-from buzz.sdr_device import OverloadStatus  # noqa: E402
+from buzz.receiver.device import OverloadStatus  # noqa: E402
+from buzz.receiver.gain_sweep import BandMeasurement, SweepSource  # noqa: E402
 
 # Match the gain sweep's read size so the probe uses the same settling interval.
 BLOCK_SAMPLES = 2048
@@ -203,8 +203,8 @@ def main(argv: list[str] | None = None) -> int:
                         help='seconds of samples to measure at each gain')
     args = parser.parse_args(argv)
 
-    from buzz.sdr import SweepReader
-    from buzz.sdr_device import open_receiver
+    from buzz.receiver.device import open_receiver
+    from buzz.receiver.source import SweepReader
 
     config = BuzzConfig.from_toml(args.config)
     settings = config.receiver_settings

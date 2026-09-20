@@ -431,6 +431,6 @@ class TestForeignSampleRates:
                         int(probe(output)['video']['height']))
                  for rate, (_, output) in foreign_renders.items()}
         assert set(sizes.values()) == {EXPECTED_SIZE}, (
-            f'Frame sizes by rate came out {sizes}, expected {EXPECTED_SIZE} for all '
-            'of them. The display geometry has gone back to depending on the sample '
-            'rate -- see spectrum_geometry in buzz.waterfall.')
+            f'Frame sizes by rate came out {sizes}, expected {EXPECTED_SIZE} for all of '
+            'them.  The display geometry has gone back to depending on the sample '
+            'rate -- see spectrum_geometry in buzz.display.waterfall.')

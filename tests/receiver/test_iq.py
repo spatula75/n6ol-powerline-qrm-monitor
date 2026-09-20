@@ -1,4 +1,4 @@
-"""Tests for buzz.iq, the IQ-to-audio conversion.
+"""Tests for buzz.receiver.iq, the IQ-to-audio conversion.
 
 Every test here is aimed at one specific way the chain could be wrong, and each one
 was chosen because that particular mistake produces audio that looks entirely
@@ -15,10 +15,10 @@ import numpy as np
 import pytest
 from scipy.signal import freqz, lfilter
 
-from buzz import iq as iq_module
+from buzz.receiver import iq as iq_module
 from buzz.constants import FULL_SCALE_COUNTS, MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 from buzz.dsp import amplitude_to_dbfs
-from buzz.iq import LOWER, UPPER, IqToAudio
+from buzz.receiver.iq import LOWER, UPPER, IqToAudio
 
 IQ_RATE = 256_000
 DECIMATION = 16
@@ -796,7 +796,7 @@ class TestAFailedConversionDoesNotGrowTheBacklogForever:
         c.convert(noise(IQ_RATE // 10))
         settled = len(c._pending)
 
-        with patch('buzz.iq.upfirdn', side_effect=MemoryError('no room')):
+        with patch('buzz.receiver.iq.upfirdn', side_effect=MemoryError('no room')):
             for _ in range(20):
                 with pytest.raises(MemoryError):
                     c.convert(noise(IQ_RATE // 10))
@@ -815,7 +815,7 @@ class TestAFailedConversionDoesNotGrowTheBacklogForever:
         c = converter()
         c.convert(noise(IQ_RATE // 10))
 
-        with patch('buzz.iq.upfirdn', side_effect=MemoryError('no room')):
+        with patch('buzz.receiver.iq.upfirdn', side_effect=MemoryError('no room')):
             with pytest.raises(MemoryError):
                 c.convert(noise(IQ_RATE // 10))
 

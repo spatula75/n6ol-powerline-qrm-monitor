@@ -26,9 +26,11 @@ from buzz.recorder import (
     build_recording,
 )
 from buzz.sampler import RingBufferPipeline
-from buzz.sdr import IqRingBuffer
-from buzz.sdr_device import IqBlock
-from buzz.sdrplay_device import SDRPLAY_FORMAT
+from buzz.receiver.source import IqRingBuffer
+from buzz.receiver.device import IqBlock
+from buzz.receiver.sdrplay import SDRPLAY_FORMAT
+from buzz.wavmeta import append_metadata
+from tests.patching import patch_in
 
 CHUNK = RingBufferPipeline.CHUNK_SIZE
 
@@ -741,12 +743,12 @@ class TestMetadata:
         assert len(samples) == 4 * CHUNK                  # 2 s lead-in + 2 s trailer
 
     def test_a_failed_tagging_does_not_lose_the_recording(self, tmp_path):
-        with patch('buzz.recorder.wavmeta.append_metadata', side_effect=OSError('nope')):
+        with patch_in(wavmeta, append_metadata, side_effect=OSError('nope')):
             path = self._record(tmp_path)
         assert len(load_wav(path)[0]) == 4 * CHUNK
 
     def test_a_failed_tagging_is_logged(self, tmp_path, caplog):
-        with patch('buzz.recorder.wavmeta.append_metadata', side_effect=OSError('nope')):
+        with patch_in(wavmeta, append_metadata, side_effect=OSError('nope')):
             with caplog.at_level('ERROR'):
                 self._record(tmp_path)
         assert 'Could not tag' in caplog.text

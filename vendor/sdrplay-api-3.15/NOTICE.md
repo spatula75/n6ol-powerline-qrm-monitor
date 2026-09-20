@@ -4,8 +4,8 @@ The C headers under `inc/` are SDRplay's, copied unmodified from a Windows insta
 the SDRplay Hardware API 3.15, at `C:\Program Files\SDRplay\API\inc\`.
 
 They are here so that `tools/generate_sdrplay_api.py` can regenerate
-`lib/buzz/sdrplay_api.py` from the same source on any machine, including one with no
-receiver and no API installed.  Without them the generated bindings could only be
+`lib/buzz/receiver/sdrplay_api.py` from the same source on any machine, including one
+with no receiver and no API installed.  Without them the generated bindings could only be
 checked where the API happens to be present, which is neither CI nor most contributors.
 
 **These headers are not the library.** An operator still installs the SDRplay Hardware

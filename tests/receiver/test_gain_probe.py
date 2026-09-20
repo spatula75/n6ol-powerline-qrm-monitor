@@ -10,11 +10,11 @@ from types import SimpleNamespace
 import numpy as np
 import pytest
 from buzz.config import BuzzConfig
-from buzz.sdr_device import RTL_SDR_FORMAT, IqBlock, OverloadStatus
-from buzz.sdrplay_device import SDRPLAY_FORMAT
-from fake_sdr import FakeSdrDevice
+from buzz.receiver.device import RTL_SDR_FORMAT, IqBlock, OverloadStatus
+from buzz.receiver.sdrplay import SDRPLAY_FORMAT
+from tests.receiver.fake_sdr import FakeSdrDevice
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / 'tools'))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent / 'tools'))
 import sdr_gain_probe as probe_module  # noqa: E402
 
 GAINS = [float(-step) for step in range(20, 121)]
@@ -200,7 +200,7 @@ class TestRunningIt:
         device = FakeSdrDevice(gains=[0.0, 20.0, 40.0])
         monkeypatch.setattr(BuzzConfig, 'from_toml',
                             classmethod(lambda cls, path: self._config('rtlsdr')))
-        monkeypatch.setattr('buzz.sdr_device.open_receiver',
+        monkeypatch.setattr('buzz.receiver.device.open_receiver',
                             lambda source, settings: device)
 
         assert probe_module.main(['--step', '10', '--seconds', '0.001']) == 0
@@ -221,7 +221,7 @@ class TestRunningIt:
         device = FakeSdrDevice(gains=[0.0, 20.0])
         monkeypatch.setattr(BuzzConfig, 'from_toml',
                             classmethod(lambda cls, path: self._config('rtlsdr')))
-        monkeypatch.setattr('buzz.sdr_device.open_receiver',
+        monkeypatch.setattr('buzz.receiver.device.open_receiver',
                             lambda source, settings: device)
         monkeypatch.setattr(probe_module, 'measure_one',
                             lambda *args: (_ for _ in ()).throw(RuntimeError('no')))
@@ -238,11 +238,11 @@ class TestRunningIt:
         device = FakeSdrDevice(gains=[0.0])
         monkeypatch.setattr(BuzzConfig, 'from_toml',
                             classmethod(lambda cls, path: self._config('rtlsdr')))
-        monkeypatch.setattr('buzz.sdr_device.open_receiver',
+        monkeypatch.setattr('buzz.receiver.device.open_receiver',
                             lambda source, settings: device)
         # The reader is the boundary here, because FakeSdrDevice needs a gain to snap
         # its own starting figure to and so cannot itself report none.
-        monkeypatch.setattr('buzz.sdr.SweepReader',
+        monkeypatch.setattr('buzz.receiver.source.SweepReader',
                             lambda device, block_samples: SimpleNamespace(
                                 supported_gains_db=[], iq_sample_rate=256_000))
 

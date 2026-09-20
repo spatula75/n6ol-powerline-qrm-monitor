@@ -114,7 +114,7 @@ to a supported step itself and records that rather than asking the device.
 
 Whether the labels are true dB is **unresolved**.  One measurement put the full range
 at 57.5 dB against a nominal 49.6, a factor of 1.16, and that figure is quoted in
-`config.py` and `sdr.py`.  A later attempt to reproduce it could neither confirm nor
+`config.py` and `receiver/source.py`.  A later attempt to reproduce it could neither confirm nor
 refute it: four proxies for the gain curve over the same span gave 0.99x, 1.03x, 1.11x
 and 1.36x, each contaminated differently, and nothing on the band was strong enough to
 settle the question.  See `sdr-gain-calibration.md`.

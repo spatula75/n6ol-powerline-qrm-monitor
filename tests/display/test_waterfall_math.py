@@ -6,9 +6,9 @@ from buzz.analyzer import AnalysisResult
 from buzz.constants import MAX_SAMPLE_RATE, MIN_SAMPLE_RATE
 from buzz.dsp import SILENCE_DBFS
 from buzz.recorder import RecorderStatus
-from buzz.scope import H_DIVISIONS
+from buzz.display.scope import H_DIVISIONS
 from buzz.constants import DB_PER_S_UNIT, S9_DBM
-from buzz.waterfall import (
+from buzz.display.waterfall import (
     build_colormap, format_clock, format_countdown, format_mute_button,
     format_playback_button, format_playback_status, format_record_button,
     format_recorder_status,

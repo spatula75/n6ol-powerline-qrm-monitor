@@ -1545,7 +1545,7 @@ class TestRunResilience:
 
 
 class TestTriggerPhase:
-    """The sync source for the scope display (buzz.scope).
+    """The sync source for the scope display (buzz.display.scope).
 
     Everything the scope draws hangs off this returning the *predicted* phase, so
     these cover the projection and the three trust levels rather than just the

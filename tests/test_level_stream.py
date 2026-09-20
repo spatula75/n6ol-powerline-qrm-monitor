@@ -315,7 +315,7 @@ class TestBothSourcesAgree:
         """Stated as a test rather than a comment, because a comment would go quietly
         out of date the first time somebody added a method.
         """
-        from buzz.sdr import SdrLevelStream
+        from buzz.receiver.source import SdrLevelStream
         shared = {'_on_block', 'read', 'close', '__enter__', '__exit__'}
         for cls in (SoundCardLevelStream, SdrLevelStream):
             assert not shared & set(vars(cls)), (
@@ -328,7 +328,7 @@ class TestBothSourcesAgree:
         """
         from unittest.mock import MagicMock, patch
 
-        from buzz.sdr import SdrLevelStream
+        from buzz.receiver.source import SdrLevelStream
 
         samples = np.array([1000, -1000] * 160, dtype=np.int16)
 
@@ -365,7 +365,7 @@ class TestBothSourcesAgree:
         """
         from unittest.mock import MagicMock
 
-        from buzz.sdr import SdrLevelStream
+        from buzz.receiver.source import SdrLevelStream
 
         converter = MagicMock()
         converter.convert.return_value = np.array([], dtype=np.int16)
