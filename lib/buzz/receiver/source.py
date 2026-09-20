@@ -1,6 +1,6 @@
 """Raw IQ from a receiver, turned into the audio and the measurements above it.
 
-The hardware itself is `buzz.sdr_device`, which owns every operation performed against
+The hardware itself is `buzz.receiver.device`, which owns every operation performed against
 a device.  This module is what sits between that and the rest of the program:
 `SdrSource` queues the blocks a streaming device delivers, `SweepReader` reads one
 at a time for a gain sweep, `SdrPipeline` converts and fills the shared ring buffer,
@@ -14,7 +14,7 @@ kind of receiver arrives as another `SdrDevice` without touching any of this.
 Why the draining thread is the one with a deadline
 --------------------------------------------------
 A device copies each block on the driver's own thread and does nothing else there, for
-the reasons `buzz.sdr_device` gives.  The work falls to whichever thread drains it,
+the reasons `buzz.receiver.device` gives.  The work falls to whichever thread drains it,
 which is `SdrPipeline`'s feeder, and that thread has to average less than a block's
 own duration.  That is 64 ms at the default settings against roughly 2 ms of work.
 
@@ -55,11 +55,11 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from buzz.receiver.device import VALUES_PER_FRAME, DeviceProfile, IqBlock, OverloadStatus, SampleFormat, SdrDevice
 from buzz.sampler import LevelStream, RingBufferPipeline
-from buzz.sdr_device import VALUES_PER_FRAME, DeviceProfile, IqBlock, OverloadStatus, SampleFormat, SdrDevice
 
 if TYPE_CHECKING:
-    from buzz.iq import IqToAudio
+    from buzz.receiver.iq import IqToAudio
 
 logger = logging.getLogger(__name__)
 
@@ -281,7 +281,7 @@ class SdrSource:
         """Where the device is tuned, which is not the frequency of interest.
 
         A receiver puts a strong false signal at exactly its tuning frequency, from the
-        tuner leaking into its own mixer.  `buzz.iq` tunes to one side and mixes back,
+        tuner leaking into its own mixer.  `buzz.receiver.iq` tunes to one side and mixes back,
         so that false signal falls outside the measured band.
         """
         return self._device.tuned_hz
@@ -636,7 +636,7 @@ class SdrPipeline(RingBufferPipeline):
 
         The receiver supplies the delivered bit depth.  The converter adds resolution
         when its filter reduces uncorrelated sample noise, up to the int16 output.
-        See buzz.scope.minimum_full_scale.
+        See buzz.display.scope.minimum_full_scale.
         """
         return min(16.0, self._source.effective_bits + self._converter.processing_gain_bits)
 

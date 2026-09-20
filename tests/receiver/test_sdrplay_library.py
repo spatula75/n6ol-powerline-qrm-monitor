@@ -14,10 +14,10 @@ import ctypes
 import threading
 
 import pytest
-from buzz import sdrplay_api as api
-from buzz.sdrplay_device import (SdrplayDevice, SdrplayLibrary, _bounded, _quietly,
+from buzz.receiver import sdrplay_api as api
+from buzz.receiver.sdrplay import (SdrplayDevice, SdrplayLibrary, _bounded, _quietly,
                                  _what_an_api_failure_usually_means)
-from fake_sdrplay import FakeSdrplayApi
+from tests.receiver.fake_sdrplay import FakeSdrplayApi
 
 SUCCESS = api.sdrplay_api_ErrT.sdrplay_api_Success
 
@@ -301,7 +301,7 @@ class TestTheCleanupHelpers:
         """The API waits on a background service, so a call can hang.  Waiting forever
         at shutdown would hang the monitor rather than the one call.
         """
-        monkeypatch.setattr('buzz.sdrplay_device._DEVICE_CLOSE_TIMEOUT_SECONDS', 0.05)
+        monkeypatch.setattr('buzz.receiver.sdrplay._DEVICE_CLOSE_TIMEOUT_SECONDS', 0.05)
         release = threading.Event()
         try:
             assert _bounded(lambda: release.wait(30), 'hanging') is False

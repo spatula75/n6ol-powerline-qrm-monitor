@@ -1,8 +1,8 @@
 """An SDRplay RSP1A or RSP1B, behind the `SdrDevice` contract.
 
-`buzz.sdr_device` states what a receiver has to do and implements it for an RTL-SDR.
+`buzz.receiver.device` states what a receiver has to do and implements it for an RTL-SDR.
 This module does the same job for an SDRplay RSP, over the generated ctypes bindings in
-`buzz.sdrplay_api`.  Nothing above either module knows which one it holds.
+`buzz.receiver.sdrplay_api`.  Nothing above either module knows which one it holds.
 
 Four things differ from an RTL-SDR, and each one shapes the code below.
 
@@ -18,7 +18,7 @@ ladder back into the pair, and `supported_gains_db` is the ladder.
 
 **The library never reads on the caller's thread.**  There is no synchronous call at
 all, so `read_block` runs a stream of its own and takes one block from it.  A gain
-sweep sees the same interface either way, and `buzz.sdr.SweepReader` needs no change.
+sweep sees the same interface either way, and `buzz.receiver.source.SweepReader` needs no change.
 
 **The hardware says when the gain moved.**  Every block carries `grChanged`, which is
 set on the block where a gain change took effect.  So this device drops stale blocks by
@@ -43,9 +43,17 @@ from typing import Protocol, Self
 
 import numpy as np
 
-from buzz import sdrplay_api as api
 from buzz.config import SdrConfig
-from buzz.sdr_device import VALUES_PER_FRAME, BlockSink, DeviceProfile, IqBlock, OverloadStatus, SampleFormat, SdrDevice
+from buzz.receiver import sdrplay_api as api
+from buzz.receiver.device import (
+    VALUES_PER_FRAME,
+    BlockSink,
+    DeviceProfile,
+    IqBlock,
+    OverloadStatus,
+    SampleFormat,
+    SdrDevice,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +154,7 @@ SCOPE_BAND_STEPS = 7.86
 
 # How many of its own steps this receiver's scope floor is worth: the midpoint of
 # those two in decibels.  Derived rather than written down, for the reason
-# buzz.sdr_device gives beside the same pair.
+# buzz.receiver.device gives beside the same pair.
 SCOPE_FLOOR_STEPS = (SCOPE_DEAD_STEPS * SCOPE_BAND_STEPS) ** 0.5
 
 # How far above the noise-floor knee to put the gain the sweep chooses.
@@ -212,7 +220,7 @@ _UNUSUAL_BACKLOG_SECONDS = 0.100
 
 # How often to summarize the waits, in seconds.
 #
-# A minute matches _HEALTH_INTERVAL_SECONDS in buzz.sdr, so a summary sits in the log
+# A minute matches _HEALTH_INTERVAL_SECONDS in buzz.receiver.source, so a summary sits in the log
 # beside the drift figure covering the same minute.  Comparing the two is the whole
 # purpose, and two different periods would make that arithmetic rather than reading.
 _LATE_REPORT_INTERVAL_SECONDS = 60.0
@@ -521,7 +529,7 @@ class SdrplayDevice(SdrDevice):
         7.8 dB to either fault and draws a dead channel at about two fifths of the
         height.  A figure shared with the RTL-SDR would have to suit that receiver's
         narrower window and would spend most of this one, which is why the multiple
-        belongs to the receiver rather than to buzz.scope.
+        belongs to the receiver rather than to buzz.display.scope.
         """
         return SCOPE_FLOOR_STEPS
 
@@ -1181,7 +1189,7 @@ class SdrplayDevice(SdrDevice):
             logger.warning(
                 'The receiver reports %.1f dB of gain at LNA state %d and %d dB of '
                 'baseband reduction, where this program predicts %.1f dB.  Levels will '
-                'read about %.1f dB out.  The LNA gain table in buzz.sdrplay_device is '
+                'read about %.1f dB out.  The LNA gain table in buzz.receiver.sdrplay is '
                 'wrong for this receiver or this band.',
                 reported, lna_state, baseband, wanted_db, reported - wanted_db)
 
@@ -1275,7 +1283,7 @@ class SdrplayDevice(SdrDevice):
         The churn matters more on this thread than it would on another.  The callback
         runs on the library's own thread and needs the GIL, so anything else that holds
         the GIL delays the next delivery.  A long enough delay makes the library hand
-        over a backlog in one burst, which `buzz.sdr` reports as the receiver clock
+        over a backlog in one burst, which `buzz.receiver.source` reports as the receiver clock
         running away from the system clock.  `buzz.plotter` already disables collection
         around its own work for the same reason.
         """

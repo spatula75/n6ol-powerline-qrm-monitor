@@ -5,8 +5,8 @@ it, moving its gain, streaming from it, reading one block synchronously, and clo
 it.  Nothing above it imports a driver library, so adding a second kind of receiver
 means writing another `SdrDevice` rather than editing the code that acquires IQ.
 
-The split from `buzz.sdr` is by subject.  This module reaches the hardware, and
-`buzz.sdr` turns what arrives into IQ, audio and measurements.
+The split from `buzz.receiver.source` is by subject.  This module reaches the hardware, and
+`buzz.receiver.source` turns what arrives into IQ, audio and measurements.
 
 Three things shape the interface, and each came from the hardware rather than from
 taste.
@@ -90,7 +90,7 @@ _USB_PACKET_BYTES = 512
 #
 # See `RtlSdrDevice.effective_bits` for why there are no more than the converter's own.
 # A module constant so that a test can read the figure rather than restate it, matching
-# EFFECTIVE_BITS in buzz.sdrplay_device.
+# EFFECTIVE_BITS in buzz.receiver.sdrplay.
 EFFECTIVE_BITS = 8
 
 # What this receiver's scope asked for with its antenna off, and on a live band, in
@@ -314,7 +314,7 @@ class SdrDevice(ABC):
         """Where the device is tuned, which is not the frequency of interest.
 
         A receiver puts a strong false signal at exactly its tuning frequency, from the
-        tuner leaking into its own mixer.  `buzz.iq` tunes to one side and mixes back,
+        tuner leaking into its own mixer.  `buzz.receiver.iq` tunes to one side and mixes back,
         so that false signal falls outside the measured band.
         """
 
@@ -396,7 +396,7 @@ class SdrDevice(ABC):
         Everything downstream of `IqToAudio._as_int16` is int16 whatever the receiver,
         because each source is scaled against FULL_SCALE_COUNTS.  So a receiver of
         fewer bits arrives in coarser steps rather than in a smaller range, and this
-        says how coarse.  `buzz.scope.minimum_full_scale` turns it into the point past
+        says how coarse.  `buzz.display.scope.minimum_full_scale` turns it into the point past
         which the display would magnify the receiver's own quantization noise to full
         height.
 
@@ -490,7 +490,7 @@ def receiver_class(source: str) -> type[SdrDevice]:
     """The device class that serves one `[audio] source`, imported on demand.
 
     The import is deferred so that a station never loads a driver for hardware it does
-    not own.  pyrtlsdr resolves a symbol as it imports, and `buzz.sdrplay_device` loads
+    not own.  pyrtlsdr resolves a symbol as it imports, and `buzz.receiver.sdrplay` loads
     a shared library only an SDRplay station installs, so either would fail at import
     on a machine that has no business touching it.
 
@@ -500,7 +500,7 @@ def receiver_class(source: str) -> type[SdrDevice]:
     if source == RTLSDR:
         return RtlSdrDevice
     if source == SDRPLAY:
-        from buzz.sdrplay_device import SdrplayDevice
+        from buzz.receiver.sdrplay import SdrplayDevice
         return SdrplayDevice
     raise ValueError(
         f'{source!r} names no receiver this program can open.  A receiver source is '

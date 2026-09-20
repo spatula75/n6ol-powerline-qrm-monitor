@@ -14,7 +14,6 @@ import pytest
 from buzz import ffmpeg as ffmpeg_module
 from buzz import loudness as loudness_module
 from buzz import main as main_module
-from buzz import sdr as sdr_module
 from buzz import wavmeta
 from buzz.analyzer import ContinuousAnalyzer
 from buzz.collector import Collector
@@ -31,7 +30,8 @@ from buzz.plotter import Plotter
 from buzz.publisher import Publisher
 from buzz.sampler import AudioSampler, RingBufferPipeline
 from buzz.weather import CumulusMXWeatherClient, NullWeatherClient, OpenMeteoWeatherClient
-from buzz.sdr_device import RtlSdrDevice
+from buzz.receiver.device import RtlSdrDevice
+from buzz.receiver.sdrplay import SdrplayDevice
 from tests.patching import patch_in
 
 
@@ -85,7 +85,7 @@ class TestTheLogLevelCanBeRaised:
     def test_debug_lets_the_diagnostics_through(self):
         configure_logging('DEBUG')
         assert logging.getLogger('buzz').level == logging.DEBUG
-        assert logging.getLogger('buzz.scope').isEnabledFor(logging.DEBUG)
+        assert logging.getLogger('buzz.display.scope').isEnabledFor(logging.DEBUG)
 
     def test_raising_it_leaves_the_root_logger_silent(self):
         """Third-party libraries log without configuring themselves, and DEBUG on the
@@ -867,7 +867,7 @@ class TestEachReceiverOpensThroughItsOwnSection:
         config = BuzzConfig()
         config.audio.source = RTLSDR
         config.rtlsdr.frequency_khz = 7050.0
-        with patch('buzz.sdr_device.RtlSdrDevice.open') as opened, \
+        with patch.object(RtlSdrDevice, 'open') as opened, \
                 patch.object(main_module, '_pipeline_for') as built:
             open_live_source(config)
         assert opened.call_args.kwargs['tuned_hz'] == config.rtlsdr.frequency_hz + 50_000
@@ -878,7 +878,7 @@ class TestEachReceiverOpensThroughItsOwnSection:
         config.audio.source = SDRPLAY
         config.sdrplay.frequency_khz = 14_200.0
         config.sdrplay.api_path = '/opt/sdrplay/libsdrplay_api.so'
-        with patch('buzz.sdrplay_device.SdrplayDevice.open') as opened, \
+        with patch.object(SdrplayDevice, 'open') as opened, \
                 patch.object(main_module, '_pipeline_for') as built:
             open_live_source(config)
         assert opened.call_args.kwargs['tuned_hz'] == config.sdrplay.frequency_hz + 50_000
@@ -898,7 +898,7 @@ class TestEachReceiverOpensThroughItsOwnSection:
 
 
 class TestAReceiverThatWillNotOpenPrintsItsReason:
-    """buzz.sdr composes messages for whoever is standing at the radio: which driver to
+    """buzz.receiver.source composes messages for whoever is standing at the radio: which driver to
     install, what else is holding the device, which setting is wrong.
 
     They were then raised through a call site that caught nothing, so all of that
@@ -965,7 +965,7 @@ class TestOpeningAReceiverAsTheLiveSource:
         Everything above the device is the production code, so the converter, the
         pipeline and the rate bookkeeping are all the real ones.
         """
-        from tests.fake_sdr import FakeSdrDevice
+        from tests.receiver.fake_sdr import FakeSdrDevice
 
         def opens(index, *, tuned_hz, gain_db, iq_sample_rate):
             # Honours the request rather than answering from a fixture.  A fake that
@@ -1022,7 +1022,7 @@ class TestOpeningAReceiverAsTheLiveSource:
         the samples as something they are not, and the recorder counts its lead-in at
         one rate against a capacity counted at the other.
         """
-        from tests.fake_sdr import FakeSdrDevice
+        from tests.receiver.fake_sdr import FakeSdrDevice
         config = self.rtlsdr_config()
         config.recording.record_iq = True
         settled = 256_016

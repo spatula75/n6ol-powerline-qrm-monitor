@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from buzz.constants import FULL_SCALE_COUNTS
-from buzz.scope import (
+from buzz.display.scope import (
     SCOPE_H, accumulate_trace, auto_range_full_scale, build_graticule,
     build_phosphor_colormap, extract_sweeps, full_scale_dbfs, minimum_full_scale,
     n_complete_sweeps,
@@ -13,9 +13,9 @@ from buzz.scope import (
     _DIVISIONS_PER_PULSE, _PRETRIGGER_DIVISIONS,
     _FLOOR_STEPS, _RANGE_HEADROOM, _RANGE_PERCENTILE, _RANGE_EMA_ALPHA,
 )
-from buzz.sdr_device import RtlSdrDevice
-from buzz.sdrplay_device import SdrplayDevice
-from buzz.waterfall import (
+from buzz.receiver.device import RtlSdrDevice
+from buzz.receiver.sdrplay import SdrplayDevice
+from buzz.display.waterfall import (
     DISPLAY_BINS, _AXIS_H, _PIXELS_PER_BIN, _WATERFALL_H, panel_width)
 
 # The width ScopeWidget is actually given: the waterfall's 128 bins x 5 px,
@@ -194,8 +194,8 @@ class TestTheFloorFollowsTheReceiver:
     """The hardware depth and converter noise gain meet at the pipeline."""
 
     def test_each_receiver_owns_its_delivered_depth(self):
-        from buzz.sdr_device import EFFECTIVE_BITS as RTL_BITS, RtlSdrDevice
-        from buzz.sdrplay_device import EFFECTIVE_BITS as RSP_BITS, SdrplayDevice
+        from buzz.receiver.device import EFFECTIVE_BITS as RTL_BITS, RtlSdrDevice
+        from buzz.receiver.sdrplay import EFFECTIVE_BITS as RSP_BITS, SdrplayDevice
         for device, declared in ((RtlSdrDevice, RTL_BITS), (SdrplayDevice, RSP_BITS)):
             bits = device.effective_bits()
             assert bits == declared, (
@@ -218,8 +218,8 @@ class TestTheFloorFollowsTheReceiver:
         """A drift pin between each classmethod and the constant beside it, the same
         shape as the effective_bits pin above.
         """
-        from buzz.sdr_device import SCOPE_FLOOR_STEPS as RTL_STEPS
-        from buzz.sdrplay_device import SCOPE_FLOOR_STEPS as RSP_STEPS
+        from buzz.receiver.device import SCOPE_FLOOR_STEPS as RTL_STEPS
+        from buzz.receiver.sdrplay import SCOPE_FLOOR_STEPS as RSP_STEPS
         for device, declared in ((RtlSdrDevice, RTL_STEPS), (SdrplayDevice, RSP_STEPS)):
             steps = device.scope_floor_steps()
             assert steps == declared, (
@@ -232,7 +232,7 @@ class TestTheFloorFollowsTheReceiver:
         with the operator's AF gain, so no figure here would hold across two stations.
         """
         from buzz.sampler import RingBufferPipeline
-        from buzz.sdr_device import SdrDevice
+        from buzz.receiver.device import SdrDevice
         assert SdrDevice.scope_floor_steps() == 1.0
         assert RingBufferPipeline(sample_rate=16000).scope_floor_steps == 1.0
 
@@ -249,7 +249,7 @@ class TestTheFloorFollowsTheReceiver:
         """No default, because a wrong depth makes the display lie in whichever
         direction it is wrong, and inheriting another receiver's is a wrong one.
         """
-        from buzz.sdr_device import SdrDevice
+        from buzz.receiver.device import SdrDevice
         with pytest.raises(NotImplementedError, match='how many bits'):
             SdrDevice.effective_bits()
 
@@ -349,7 +349,7 @@ class TestTheFloorFollowsTheReceiver:
         The filter's noise gain is part of it, because the scope is downstream of the
         conversion rather than of the converter.
         """
-        from buzz.iq import IqToAudio
+        from buzz.receiver.iq import IqToAudio
         converter = IqToAudio(256_000, 16, 4_000, 50_000)
         return min(16.0, device.effective_bits() + converter.processing_gain_bits)
 

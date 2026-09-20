@@ -18,7 +18,7 @@ each other.
   * The setup program's screens (`screens/`) build their fields from it directly.
 
 The running program still reads the dataclasses in `buzz.config`.  The schema
-describes those dataclasses and does not replace them.  `tests/test_setup_schema.py`
+describes those dataclasses and does not replace them.  `tests/setup/test_schema.py`
 pins the two together, so a field added to one and forgotten in the other fails the
 suite.
 """

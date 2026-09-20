@@ -9,8 +9,8 @@ import numpy as np
 import pytest
 from dataclasses import replace
 
-import buzz.gain_sweep as gain_sweep
-from buzz.gain_sweep import (
+import buzz.receiver.gain_sweep as gain_sweep
+from buzz.receiver.gain_sweep import (
     BandMeasurement,
     GainChooser,
     GainMeasurement,
@@ -19,8 +19,8 @@ from buzz.gain_sweep import (
     SweepResult,
     _PassReading,
 )
-from buzz.sdr import CLIPPING_WORTH_NOTICING, IqBlock
-from buzz.sdr_device import RTL_SDR_FORMAT, OverloadStatus
+from buzz.receiver.source import CLIPPING_WORTH_NOTICING, IqBlock
+from buzz.receiver.device import RTL_SDR_FORMAT, OverloadStatus
 
 # The 29 steps an RTL-SDR Blog V4 reports, which is what the real sweep walks.
 # The receiver rate these captures stand for, which sets the frame length.

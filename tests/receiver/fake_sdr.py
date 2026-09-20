@@ -1,4 +1,4 @@
-"""A stand-in receiver, for every test above `buzz.sdr_device`.
+"""A stand-in receiver, for every test above `buzz.receiver.device`.
 
 There is one fake here rather than one in each test file.  Before the device shim
 existed there were two `FakeDevice` classes mirroring pyrtlsdr's own members, so
@@ -10,13 +10,13 @@ real device calls its sink from a thread the driver owns, and a test that waits 
 is a test that can hang, so this offers blocks on the calling thread and returns what
 the sink said.
 
-`tests/test_sdr_device.py` does not use this.  It tests the shim itself, so it fakes
+`tests/receiver/test_device.py` does not use this.  It tests the shim itself, so it fakes
 pyrtlsdr's handle instead, one layer further down.
 """
 from time import monotonic
 
 import numpy as np
-from buzz.sdr_device import (
+from buzz.receiver.device import (
     RTL_SDR_FORMAT, VALUES_PER_FRAME, BlockSink, DeviceProfile, IqBlock, SdrDevice,
 )
 

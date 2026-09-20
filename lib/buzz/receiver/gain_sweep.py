@@ -30,8 +30,8 @@ from typing import Protocol
 
 import numpy as np
 
-from buzz.sdr import CLIPPING_WORTH_NOTICING
-from buzz.sdr_device import IqBlock, OverloadStatus
+from buzz.receiver.device import IqBlock, OverloadStatus
+from buzz.receiver.source import CLIPPING_WORTH_NOTICING
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +41,7 @@ ProgressCallback = Callable[[int, int, float], None]
 
 
 class SweepSource(Protocol):
-    """What a sweep needs of whatever it reads from.  `buzz.sdr.SweepReader` is it.
+    """What a sweep needs of whatever it reads from.  `buzz.receiver.source.SweepReader` is it.
 
     This is declared rather than imported so that the whole sweep runs against a
     stand-in with no receiver attached, the same reason RtlSdrDevice exists one layer

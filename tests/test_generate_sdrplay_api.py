@@ -2,7 +2,7 @@
 
 These run against small headers written here rather than against the vendored ones,
 because each states one rule and says which rule broke when it fails.
-`tests/test_sdrplay_api.py` covers the real headers end to end, by pinning what comes
+`tests/receiver/test_sdrplay_api.py` covers the real headers end to end, by pinning what comes
 out of them.
 
 Most of these exist because the generator got that case wrong first.  Every one of the

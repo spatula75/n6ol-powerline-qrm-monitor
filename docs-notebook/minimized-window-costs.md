@@ -71,7 +71,7 @@ Microsoft references:
 
 ## What changed
 
-`buzz.windows_qos.keep_execution_speed_while_hidden` now makes the same request during
+`buzz.display.windows_qos.keep_execution_speed_while_hidden` now makes the same request during
 monitor startup on Windows.  It clears only the execution-speed throttling bit for the
 current process.  Other platforms return without loading a Windows library.  A failed
 request warns the operator and leaves the monitor running, because keeping the window

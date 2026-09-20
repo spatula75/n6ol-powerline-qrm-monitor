@@ -4,13 +4,13 @@ The arithmetic and the parsing are the parts worth pinning down, and neither nee
 binary: real ebur128 output is pasted in as fixtures, so these run anywhere.
 """
 
-from unittest.mock import patch
-
 import pytest
 
+from buzz import loudness as loudness_module
 from buzz.ffmpeg import FfmpegError
 from buzz.loudness import (CEILING_DBTP, TARGET_LUFS, Loudness, auto_gain_db, measure,
-                           resolve_gain)
+                           resolve_gain, run)
+from tests.patching import patch_in
 
 # Real output, from one of the recordings this was developed against.
 SUMMARY = """\
@@ -42,7 +42,7 @@ def measured(**overrides) -> Loudness:
 class TestParsingTheMeter:
 
     def test_it_reads_all_three_values(self):
-        with patch('buzz.loudness.run', return_value=SUMMARY):
+        with patch_in(loudness_module, run, return_value=SUMMARY):
             loudness = measure('event.wav', 'ffmpeg')
         assert loudness.true_peak_dbtp == -21.5
         assert loudness.loudness_range_lu == 13.7
@@ -51,24 +51,24 @@ class TestParsingTheMeter:
         """R128 counts a mono file sent to both speakers as 3.01 LU louder, which is
         what a player does with the mono track in the rendered .mp4.  Without this
         every render comes out that much hot."""
-        with patch('buzz.loudness.run', return_value=SUMMARY):
+        with patch_in(loudness_module, run, return_value=SUMMARY):
             assert measure('event.wav', 'ffmpeg').integrated_lufs == pytest.approx(-42.29)
 
     def test_it_does_not_confuse_lra_with_the_lines_beneath_it(self):
         """"LRA low" and "LRA high" sit directly under "LRA", and "Threshold" appears
         twice, so the patterns are anchored to the line and the unit."""
-        with patch('buzz.loudness.run', return_value=SUMMARY):
+        with patch_in(loudness_module, run, return_value=SUMMARY):
             assert measure('event.wav', 'ffmpeg').loudness_range_lu == 13.7
 
     def test_a_summary_that_never_arrived_says_so(self):
-        with patch('buzz.loudness.run', return_value='Unknown filter ebur128'):
+        with patch_in(loudness_module, run, return_value='Unknown filter ebur128'):
             with pytest.raises(FfmpegError, match='printed no integrated value'):
                 measure('event.wav', 'ffmpeg')
 
     def test_the_failure_points_at_the_patterns_to_update(self, ):
         """If ffmpeg ever changes the summary format, the person reading this failure
         needs to know it is a parsing problem and where the parsing lives."""
-        with patch('buzz.loudness.run', return_value='Summary: nothing familiar'):
+        with patch_in(loudness_module, run, return_value='Summary: nothing familiar'):
             with pytest.raises(FfmpegError, match='buzz.loudness'):
                 measure('event.wav', 'ffmpeg')
 
@@ -78,14 +78,14 @@ class TestSilence:
 
     def test_the_meters_floor_is_recognised(self):
         """ebur128 reports exactly -70.0 to mean "nothing here"."""
-        with patch('buzz.loudness.run', return_value=SILENT):
+        with patch_in(loudness_module, run, return_value=SILENT):
             assert measure('empty.wav', 'ffmpeg').is_effectively_silent
 
     def test_silence_is_judged_before_the_dual_mono_correction(self):
         """The bug this pins: adding 3.01 first lifts the -70.0 sentinel to -66.99, so
         the test never fires and a zero-length recording gets a real gain computed for
         it.  Observed on an actual 0-second file, which came out at -2.2 dB."""
-        with patch('buzz.loudness.run', return_value=SILENT):
+        with patch_in(loudness_module, run, return_value=SILENT):
             loudness = measure('empty.wav', 'ffmpeg')
         assert loudness.integrated_lufs > -70.0     # corrected, above the sentinel
         assert loudness.is_effectively_silent       # and still known to be silent
@@ -137,7 +137,7 @@ class TestResolveGain:
     def test_it_reports_which_constraint_decided(self, caplog):
         """The one thing an operator checks when a render comes out louder or quieter
         than expected."""
-        with patch('buzz.loudness.run', return_value=SUMMARY):
+        with patch_in(loudness_module, run, return_value=SUMMARY):
             with caplog.at_level('INFO', logger='buzz.loudness'):
                 resolve_gain('event.wav', 'ffmpeg')
         assert 'the loudness target' in caplog.text
@@ -145,7 +145,7 @@ class TestResolveGain:
     def test_silence_does_not_claim_a_constraint_it_did_not_use(self, caplog):
         """Reporting a gain of zero as "set by the true-peak ceiling" would be
         inventing a reason."""
-        with patch('buzz.loudness.run', return_value=SILENT):
+        with patch_in(loudness_module, run, return_value=SILENT):
             with caplog.at_level('INFO', logger='buzz.loudness'):
                 resolve_gain('empty.wav', 'ffmpeg')
         assert 'set by' not in caplog.text

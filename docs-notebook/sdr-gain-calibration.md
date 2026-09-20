@@ -81,7 +81,7 @@ cannot be recovered once it clips.
 
 The reserve decides the highest gain.  A second bound decides the lowest, because a
 gain too small leaves the converter making most of the noise the station reports.
-`buzz.gain_sweep._ANTENNA_SHARE_TARGET` is where that bound sits, and the sweep picks
+`buzz.receiver.gain_sweep._ANTENNA_SHARE_TARGET` is where that bound sits, and the sweep picks
 the gain nearest to it.
 
 At one half the antenna equals the converter and the reported floor reads 3.01 dB
@@ -402,5 +402,5 @@ This is why the audio-to-RF offset estimate stays at the negative of the nominal
 rather than a measured curve.  Not merely because the label error is under one S unit,
 but because the curve frequently cannot be obtained at all.
 
-The figure of 57.5 dB against a nominal 49.6, quoted in `config.py` and `sdr.py`, was
+The figure of 57.5 dB against a nominal 49.6, quoted in `config.py` and `receiver/source.py`, was
 measured once on one unit and has not been reproduced.  Treat it as provisional.

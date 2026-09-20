@@ -1,6 +1,6 @@
 """Choose the receiver's tuner gain by measuring the band.
 
-A modal that runs buzz.gain_sweep against the receiver described by the in-progress
+A modal that runs buzz.receiver.gain_sweep against the receiver described by the in-progress
 [rtlsdr] section, shows where it has got to, and offers the answer.  The measurement
 and the arithmetic live in gain_sweep; this file is the screen around them.
 
@@ -21,12 +21,12 @@ from textual.css.query import NoMatches
 from textual.widgets import Button, Static
 
 from buzz.config import receiver_settings_from
-from buzz.gain_sweep import GainSweep, ProgressCallback, SweepResult
+from buzz.receiver.gain_sweep import GainSweep, ProgressCallback, SweepResult
 from buzz.setup.schema import SectionValues
 from buzz.setup.screens.base import CANCELLED, ScopeModalScreen
 
 if TYPE_CHECKING:
-    from buzz.sdr import SweepReader
+    from buzz.receiver.source import SweepReader
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +60,8 @@ def open_sweep(source: str,
     read size SweepReader refuses and whatever building the sweep does.  Either one
     leaves a receiver no object owns and no atexit hook covers.
     """
-    from buzz.sdr import SweepReader
-    from buzz.sdr_device import open_receiver
+    from buzz.receiver.device import open_receiver
+    from buzz.receiver.source import SweepReader
 
     settings = receiver_settings_from(source, values)
     if settings is None:

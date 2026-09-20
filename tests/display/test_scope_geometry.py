@@ -15,7 +15,7 @@ from math import floor
 import numpy as np
 import pytest
 
-from buzz.scope import (
+from buzz.display.scope import (
     _DIVISIONS_PER_PULSE,
     _PHOSPHOR_PULSES,
     _SWEEP_PULSES,

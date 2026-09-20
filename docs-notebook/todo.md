@@ -105,8 +105,8 @@ measurements imply, never seen on hardware.
 the sweep measures differences and the chain constant cancels only in a difference.
 Four proxies for the curve disagreed over the same span, from 0.99x to 1.36x, and
 nothing on the band was strong enough to settle it.  A signal generator would.  The
-figure of 57.5 dB against a nominal 49.6 in `config.py` and `sdr.py` is provisional,
-neither confirmed nor refuted.  See `sdr-gain-calibration.md`.
+figure of 57.5 dB against a nominal 49.6 in `config.py` and `receiver/source.py`
+is provisional, neither confirmed nor refuted.  See `sdr-gain-calibration.md`.
 
 ## Other receivers
 
@@ -143,17 +143,17 @@ carries a 14-bit ADC where the RTL-SDR has 8 bits.
 
 The reading so far says it needs SoapySDR to drive it rather than a direct Python
 binding, which is the first thing to confirm, because it decides whether this is a
-new module beside `sdr.py` or a new dependency for the whole program.  Nobody has the
-hardware, so none of what follows has been tested against one.
+new module beside `receiver/source.py` or a new dependency for the whole program.
+Nobody has the hardware, so none of what follows has been tested against one.
 
 What the port would touch, read off the code rather than off the device:
 
-- `sdr.py` holds every 8-bit assumption there is.  `_RAW_MAX = 255`, the
+- `receiver/source.py` holds every 8-bit assumption there is.  `_RAW_MAX = 255`, the
   `(byte / 127.5) - 1` conversion, `_BYTES_PER_SAMPLE = 2` and `IqBlock`'s raw byte
   buffer all say the sample format out loud.  A 14-bit converter changes each of
   them, and `count_clipped` most of all, since the rails move.
-- `iq.py` needs nothing.  `IqToAudio` works in `complex128` from the first line, so
-  the conversion to audio does not care what produced the samples.
+- `receiver/iq.py` needs nothing.  `IqToAudio` works in `complex128` from the first
+  line, so the conversion to audio does not care what produced the samples.
 - The gain calibration assumes the tuner reports a ladder of discrete steps.
   `supported_gains_db` feeds both the gain picker and `GainSweep.run`, and
   `set_gain` returns the step the hardware snapped to.  An RSP presents its gain
@@ -478,8 +478,8 @@ sample config afterwards.  Reported in the same review.
 `BandMeasurement.peak_dbfs` runs on every collected block, `GainSweep._combine` takes
 the maximum across passes, and it rides in `GainMeasurement` and `SweepResult`.
 `GainChooser` decides on `quiet_dbfs` and `clipped` alone, and no screen or log shows
-it.  Outside `tests/test_gain_sweep.py` there is no reader, which is the same shape as
-the four published counters the earlier RTL-SDR review found.
+it.  Outside `tests/receiver/test_gain_sweep.py` there is no reader, which is the
+same shape as the four published counters the earlier RTL-SDR review found.
 
 Either it belongs in the headroom reasoning, where a measured peak would say how much
 of the reserve an observed signal already used, or it should go.  What stops it is
@@ -533,59 +533,28 @@ the author rather than for a model to fill in unattended.
 
 ## Housekeeping
 
-### Most patch targets are still strings
+### A coverage line in the offset dialog flips between runs
 
-`tests/patching.py` builds a patch target from real references, so that a rename in
-`lib/` reaches the tests that patch it: an IDE updates them, a grep finds them, and
-an import fails at collection rather than as a mock error minutes into a full run.
-`tests/test_main.py` uses it throughout, which is the file the problem happened in
-twice.
+`OffsetCalibrationDialog._show` in `lib/buzz/setup/screens/calibration.py` guards its
+widget update with `except NoMatches`, because a read that finishes as the dialog is
+dismissed can still resume and reach a widget that has left the DOM.  Nothing drives
+that guard deliberately, so whether it runs at all depends on real scheduling.
 
-The rest of the suite still names our own symbols as strings.  Counted on 2026-09-14
-there are 312 string targets, of which 107 name a symbol we can rename, spread over
-nine files:
+Measured on 2026-09-19, three unit runs over one unedited tree reported 53, 55 and 53
+uncovered lines.  The two that moved were this guard.  Nothing goes red, and the gate
+cannot fail either, because the suite sits at 99.2% against a 97% floor.  The cost is
+a coverage number that drifts for no visible reason, and a reader who sees that learns
+to distrust the figure.
 
-| uses | file | targets |
-| --- | --- | --- |
-| 25 | `test_gain_calibration_dialog.py` | `open_device`, `open_sweep`, `SdrSource`, `SweepReader`, `close_device` |
-| 23 | `test_level_stream_source_choice.py` | `open_device`, `SdrSource`, `SdrLevelStream`, `IqToAudio`, `SoundCardLevelStream` |
-| 15 | `test_release_render_check.py` | `run`, `render_variant`, `count_black_segments` |
-| 14 | `test_batch_render_recordings.py` | `render`, `default_recordings_directory`, `BuzzConfig` |
-| 9 | `test_gain_picker.py` | `open_device` |
-| 9 | `test_loudness.py` | `run` |
-| 6 | `test_pulse_probe.py` | `AudioSampler`, `capture` |
-| 4 | `test_render.py` | `wavmeta.read_settings` |
-| 2 | `test_recorder.py` | `wavmeta.append_metadata` |
+The sibling guard in `CalibrationMeterDialog._show` runs every time, because a test
+drives it.  The pattern to copy is
+`test_device_picker_show_devices_survives_being_called_after_dismissal` in
+`tests/setup/test_app.py`.  That test calls the method directly after dismissal rather
+than racing it, and its docstring says why a timed test cannot hit the window
+reliably.
 
-Those counts predate the `SdrDevice` work, which rewrote most of the first two rows:
-`open_device`, `configure_device` and `close_device` are gone, and the tests that
-named them now patch `RtlSdrDevice` members through `patch.object`.  Recount the three
-SDR files before planning against this table.
-
-The last two need the owning module rather than the calling one, for the reason
-`tests/patching.py` now explains: a target that reaches through a module binding
-patches whoever owns the attribute, so `buzz.render.wavmeta.read_settings` already
-patches `buzz.wavmeta` and `patch_in(wavmeta, read_settings)` says so.
-
-The other 205 targets reach through one of our modules to somebody else's, such as
-`buzz.playback.sd.OutputStream` and `buzz.recorder.time.monotonic`.  Those stay as
-strings.
-
-**Do this on its own branch, from the backlog, rather than folding it into whatever
-work touches one of these files.**  It is cleanup across nine test files at once, so a
-diff that mixes it with a feature buries both.  Meanwhile every new test uses
-`patch_in` from the start, which is what stops the count growing.
-
-Three kinds stay as strings on purpose.  Third-party names reached through one of our
-modules, such as `buzz.sampler.sd.InputStream`, are not ours to rename.  Constants
-have no `__name__` to build a path from, which `buzz.sdr._DEVICE_CLOSE_TIMEOUT_SECONDS`
-is.  And an attribute of a module we imported, such as
-`buzz.recorder.wavmeta.append_metadata`, is a shape the helper does not fit, since the
-name bound in the module is `wavmeta` rather than the function.
-
-`tests/test_patch_targets.py` resolves every remaining string, so nothing is
-unguarded meanwhile.  This is mechanical rather than urgent.
-
+Nothing stops this beyond nobody having written it.  The test is one call against a
+method that takes a string.
 
 ### The "worth" construct is still through the codebase
 

@@ -211,7 +211,7 @@ class SdrConfig:
         """
         if self.calibrated_offset_db is not None:
             return self.calibrated_offset_db
-        from buzz.sdr_device import receiver_class
+        from buzz.receiver.device import receiver_class
         return receiver_class(self.device_source).estimated_calibration_offset_db(
             self.gain_db)
 
@@ -267,7 +267,7 @@ class SdrplayConfig(SdrConfig):
     """Settings for an SDRplay RSP1A or RSP1B.
 
     This states the gain as gain rather than as the two knobs the hardware takes,
-    because `buzz.sdrplay_device` splits one figure back into a gain reduction and an
+    because `buzz.receiver.sdrplay` splits one figure back into a gain reduction and an
     LNA state.  `api_path` is here because the library it names is not part of this
     program and an operator may have put it anywhere.
     """
@@ -289,7 +289,7 @@ class SdrplayConfig(SdrConfig):
     # Where the SDRplay API library is, for a station that installed it somewhere the
     # loader does not look.  Unset means search: the plain library name first, so an
     # installation already on the search path wins, then the directories an installer
-    # uses.  See `buzz.sdrplay_device.SdrplayLibrary.load`.
+    # uses.  See `buzz.receiver.sdrplay.SdrplayLibrary.load`.
     #
     # Almost nobody needs this, which is why the setup program does not offer it.
     api_path: str | None = None
@@ -515,7 +515,7 @@ class BuzzConfig:
     audio: AudioConfig = field(default_factory=AudioConfig)
     # Second, matching the schema, because the setup program walks the sections in
     # that order and a receiver is configured immediately after the source that
-    # selects it.  tests/test_setup_schema.py pins the two together.
+    # selects it.  tests/setup/test_schema.py pins the two together.
     rtlsdr: RtlSdrConfig = field(default_factory=RtlSdrConfig)
     sdrplay: SdrplayConfig = field(default_factory=SdrplayConfig)
     station: StationConfig = field(default_factory=StationConfig)

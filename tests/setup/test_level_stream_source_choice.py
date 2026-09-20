@@ -9,8 +9,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from buzz.setup.screens.calibration import _open_level_stream
-from buzz.sdr_device import RtlSdrDevice
+from buzz.receiver import iq as iq_module
+from buzz.receiver import source as source_module
+from buzz.receiver.iq import IqToAudio
+from buzz.receiver.device import RtlSdrDevice
+from buzz.receiver.source import SdrLevelStream, SdrSource
+from buzz.setup.screens import calibration as calibration_module
+from buzz.setup.screens.calibration import SoundCardLevelStream, _open_level_stream
+from tests.patching import patch_in
 
 AUDIO_SOUNDCARD = {'source': 'soundcard', 'sample_rate': 16000, 'pulse_rate': 120,
                    'input_device_name': 'Test'}
@@ -24,7 +30,7 @@ class TestTheMeterOpensTheConfiguredSource:
     def test_a_sound_card_station_gets_a_sound_card_stream(self):
         with patch('buzz.setup.screens.calibration.sd.query_devices',
                    return_value={'index': 3}) as query, \
-             patch('buzz.setup.screens.calibration.SoundCardLevelStream') as stream:
+             patch_in(calibration_module, SoundCardLevelStream) as stream:
             result = _open_level_stream(AUDIO_SOUNDCARD, -32.0)
         assert result is stream.return_value
         query.assert_called_once()
@@ -33,9 +39,9 @@ class TestTheMeterOpensTheConfiguredSource:
     def test_a_receiver_station_gets_a_receiver_stream(self):
         """The bug this file exists for: no sound card is opened at all."""
         with patch.object(RtlSdrDevice, 'open') as open_device, \
-             patch('buzz.sdr.SdrSource') as source, \
-             patch('buzz.sdr.SdrLevelStream') as stream, \
-             patch('buzz.iq.IqToAudio') as converter, \
+             patch_in(source_module, SdrSource) as source, \
+             patch_in(source_module, SdrLevelStream) as stream, \
+             patch_in(iq_module, IqToAudio) as converter, \
              patch('buzz.setup.screens.calibration.sd.query_devices') as query:
             result = _open_level_stream(AUDIO_RTLSDR, -40.2, RTLSDR_VALUES)
         assert result is stream.return_value
@@ -49,9 +55,9 @@ class TestTheMeterOpensTheConfiguredSource:
         second.
         """
         with patch.object(RtlSdrDevice, 'open'), \
-             patch('buzz.sdr.SdrSource') as source, \
-             patch('buzz.sdr.SdrLevelStream'), \
-             patch('buzz.iq.IqToAudio'):
+             patch_in(source_module, SdrSource) as source, \
+             patch_in(source_module, SdrLevelStream), \
+             patch_in(iq_module, IqToAudio):
             _open_level_stream(AUDIO_RTLSDR, -40.2, RTLSDR_VALUES)
         assert source.call_args.kwargs['block_samples'] == 2048
 
@@ -61,12 +67,12 @@ class TestTheMeterOpensTheConfiguredSource:
         """
         with patch('buzz.setup.screens.calibration.sd.query_devices',
                    return_value={'index': 0}), \
-             patch('buzz.setup.screens.calibration.SoundCardLevelStream') as card:
+             patch_in(calibration_module, SoundCardLevelStream) as card:
             _open_level_stream(AUDIO_SOUNDCARD, -12.5)
         assert card.call_args[0][0].station.audio_rf_conversion_db == -12.5
 
-        with patch.object(RtlSdrDevice, 'open'), patch('buzz.sdr.SdrSource'), \
-             patch('buzz.sdr.SdrLevelStream') as sdr, patch('buzz.iq.IqToAudio'):
+        with patch.object(RtlSdrDevice, 'open'), patch_in(source_module, SdrSource), \
+             patch_in(source_module, SdrLevelStream) as sdr, patch_in(iq_module, IqToAudio):
             _open_level_stream(AUDIO_RTLSDR, -12.5, RTLSDR_VALUES)
         assert sdr.call_args[0][2] == -12.5
 
@@ -76,8 +82,8 @@ class TestTheMeterOpensTheConfiguredSource:
         an operator who only wanted to look at a meter.
         """
         with patch.object(RtlSdrDevice, 'open') as open_device, \
-             patch('buzz.sdr.SdrSource'), patch('buzz.sdr.SdrLevelStream'), \
-             patch('buzz.iq.IqToAudio'):
+             patch_in(source_module, SdrSource), patch_in(source_module, SdrLevelStream), \
+             patch_in(iq_module, IqToAudio):
             _open_level_stream(AUDIO_RTLSDR, -40.2, None)
         assert open_device.call_args.args[0] == 0
 
@@ -88,7 +94,7 @@ class TestTheMeterOpensTheConfiguredSource:
         """
         with patch('buzz.setup.screens.calibration.sd.query_devices',
                    return_value={'index': 0}), \
-             patch('buzz.setup.screens.calibration.SoundCardLevelStream') as card:
+             patch_in(calibration_module, SoundCardLevelStream) as card:
             _open_level_stream(dict(AUDIO_SOUNDCARD, source='nonsense'), -32.0)
         assert card.called
 
@@ -101,7 +107,7 @@ class TestBothStreamsShareTheirArithmetic:
 
     def test_neither_subclass_overrides_how_a_block_becomes_a_reading(self):
         from buzz.sampler import LevelStream, SoundCardLevelStream
-        from buzz.sdr import SdrLevelStream
+        from buzz.receiver.source import SdrLevelStream
         shared = ('_on_block', 'read', 'dc_ema_alpha')
         for subclass in (SoundCardLevelStream, SdrLevelStream):
             for name in shared:
@@ -112,7 +118,7 @@ class TestBothStreamsShareTheirArithmetic:
     def test_the_same_samples_give_the_same_reading_through_either(self):
         import numpy as np
         from buzz.sampler import LevelStream, SoundCardLevelStream
-        from buzz.sdr import SdrLevelStream
+        from buzz.receiver.source import SdrLevelStream
 
         block = np.full(320, 1000.0, dtype=np.float32)
         readings = []
@@ -167,7 +173,7 @@ class TestTheMeterLabelsTheReadingWithTheRightOffset:
         from buzz.setup.screens.calibration import level_offset_for
         values = dict(RTLSDR_VALUES, calibrated_offset_db=None, gain_db=40.2)
         offset = level_offset_for(AUDIO_RTLSDR, self.STATION, values)
-        with patch.object(RtlSdrDevice, 'open'), patch('buzz.sdr.SdrSource'), \
-             patch('buzz.sdr.SdrLevelStream') as stream, patch('buzz.iq.IqToAudio'):
+        with patch.object(RtlSdrDevice, 'open'), patch_in(source_module, SdrSource), \
+             patch_in(source_module, SdrLevelStream) as stream, patch_in(iq_module, IqToAudio):
             _open_level_stream(AUDIO_RTLSDR, offset, values)
         assert stream.call_args[0][2] == -40.2

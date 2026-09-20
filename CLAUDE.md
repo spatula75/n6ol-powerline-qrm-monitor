@@ -286,7 +286,7 @@ In that order:
    The paragraph above covers the prose a change writes. That leaves everything
    written before the newest rule existed, which passes every mechanical check and
    which nothing ever sends anybody back to. "Safe to call more than once, and it will
-   be." shipped in `sdr.py` and survived until somebody happened to read it again in a
+   be." shipped in `receiver/source.py` and survived until somebody happened to read it again in a
    new file. It is a headless fragment whose "it" names nothing, and no tool can see
    either fault.
 
@@ -304,7 +304,7 @@ In that order:
    carries the procedure: the mechanical commands, and the reading pass for the three
    rules no tool can check, which are sentence fragments, passive voice, and an `-ing`
    form used as the main verb. A clean `ste_lint` run says nothing about any of the
-   three. A first draft of `lib/buzz/sdr.py` shipped eight fragments straight past a
+   three. A first draft of `lib/buzz/receiver/source.py` shipped eight fragments straight past a
    clean run, among them "Deliberately almost empty." and "Good enough to start, not
    good enough to publish." Both read fine in place, which is exactly why nothing
    catches them but looking.
@@ -667,8 +667,8 @@ Practical consequences:
   The exceptions are a factory that builds something (`buzz.main.open_live_source`,
   `buzz.setup.screens.gain_picker.supported_gains`), a private helper belonging to one
   of those factories,
-  and a module that is procedural by nature such as `main.py`. `buzz.iq.filter_length`
-  and `buzz.sdr.count_clipped` both started bare and were wrong that way: only
+  and a module that is procedural by nature such as `main.py`. `buzz.receiver.iq.filter_length`
+  and `buzz.receiver.source.count_clipped` both started bare and were wrong that way: only
   `IqToAudio` builds a filter, and only `IqBlock` holds raw bytes.
 - **A second path into an existing contract has to satisfy what the first one already
   satisfies.** Adding a source, a backend or a caller beside an existing one is the
@@ -702,7 +702,7 @@ Practical consequences:
   against.  They renamed to `SdrSource` and `SdrPipeline`.
 
 - **Generated bindings need a runtime check that the installed library matches.**
-  `lib/buzz/sdrplay_api.py` is generated from vendored headers because a wrong struct
+  `lib/buzz/receiver/sdrplay_api.py` is generated from vendored headers because a wrong struct
   field is memory corruption rather than an exception.  That reasoning has a second
   half nobody wrote down: generating from one version's headers pins the bindings to
   that version, and an operator with a different one installed gets exactly the
@@ -801,7 +801,7 @@ Practical consequences:
   useful to the next reader.
 - **A constant used by two or more modules belongs in `buzz/constants.py`, not
   redefined in each.** `FULL_SCALE_COUNTS`, `S9_DBM`, and `DB_PER_S_UNIT` live there
-  because dsp.py, scope.py, device_setup.py, waterfall.py, and plotter.py all need
+  because dsp.py, display/scope.py, device_setup.py, display/waterfall.py, and plotter.py all need
   the same numbers, and a since-removed root-level script that once needed them too
   had already defined its own copy, which is how device_setup.py's level bar drifted
   to 4.75 dB/segment while every S-meter in the program stayed at 6, with nothing to
@@ -1017,7 +1017,7 @@ that call rather than quietly compiling another variant mid-flight.
   device.** The same test also claimed the floor sat above what a dead channel
   produces, so that silence is caught, and for a while neither receiver managed it.
   The reason was not that the property was unreachable.  It was that `_FLOOR_STEPS`
-  was one number in `buzz.scope` serving two receivers whose windows are 7.4 dB and
+  was one number in `buzz.display.scope` serving two receivers whose windows are 7.4 dB and
   15.6 dB wide at levels 30 dB apart, so the figure had to suit the narrower one and
   spent most of the wider one.  Moving it to `SdrDevice.scope_floor_steps`, beside
   `effective_bits` and `floor_margin_db` which answer the neighboring questions, made
@@ -1132,7 +1132,7 @@ that call rather than quietly compiling another variant mid-flight.
   every `asyncio.to_thread` call, so a timing assumption fails there rather than
   intermittently on somebody else's branch:
 
-      PYTHONPATH=tools pytest tests/test_setup_app.py -p slow_workers --no-cov
+      PYTHONPATH=tools pytest tests/setup/test_app.py -p slow_workers --no-cov
 
   Every test should pass with it loaded. Wait on the signal that the work finished -
   a list filling, a status line replacing "Scanning...", a meter replacing
@@ -1150,7 +1150,7 @@ The shape that works, and what `render.py` does:
 
 - **Unit-test against the boundary, mocked.** `shutil.which` and `subprocess.Popen`
   are patched, so every line of the module is exercised with no binary present.
-  Measured: `render.py` sits at 96% and `fonts.py` at 100% with ffmpeg entirely absent
+  Measured: `render.py` sits at 96% and `display/fonts.py` at 100% with ffmpeg entirely absent
   from PATH.
 - **Put the real thing in the integration tier**, which runs `--no-cov` and is
   deselected from the unit run, so it cannot affect the number either way.
@@ -1308,7 +1308,7 @@ Say the thing.
   a glance, sentence by sentence.
 
 - **Don't make the reader hold anything in suspense.** Four habits do this. They came
-  out of one review of `lib/buzz/sdr_device.py`, and they share a cause: the sentence
+  out of one review of `lib/buzz/receiver/device.py`, and they share a cause: the sentence
   withholds what it is about until the reader has already had to carry something.
 
   - **A noun phrase in the subject slot with no verb after it.** "Two reading modes,
@@ -1326,8 +1326,8 @@ Say the thing.
   - **A trailing `, which is ...` clause**, especially two sentences running, so the
     point arrives last every time.
   - **A pronoun with a nearer candidate sitting between it and its antecedent.**
-    "Tuning to one side and mixing back in `buzz.iq` moves it out of the measured
-    band" puts `buzz.iq` between *it* and the signal it means. Name the noun.
+    "Tuning to one side and mixing back in `buzz.receiver.iq` moves it out of the measured
+    band" puts `buzz.receiver.iq` between *it* and the signal it means. Name the noun.
 
   Say what a thing does before saying why. A docstring that opens with the mechanism
   can reach its end without ever stating what the method returns, which is how
@@ -1362,8 +1362,8 @@ Say the thing.
   subject is already right.
 
 - **Qualify a domain noun in a module that doesn't establish it.** Bare "sweep" reads
-  fine in `gain_sweep.py`, which is about nothing else, and is ambiguous in
-  `sdr_device.py`, which is about hardware. The fix is not a repo-wide rename: it is
+  fine in `receiver/gain_sweep.py`, which is about nothing else, and is ambiguous in
+  `receiver/device.py`, which is about hardware. The fix is not a repo-wide rename: it is
   to ask whether the surrounding module supplies the context, and to write "gain
   sweep" where it does not.
 
@@ -1380,13 +1380,13 @@ Say the thing.
   example that was simply wrong (`0.3 * 30` is exactly `9.0` in Python, not the
   `8.999999999999998` the comment claimed), a dB-per-segment figure calculated for the
   wrong constant, and two docstrings still describing a design a refactor had already
-  replaced - `scope.py`'s "sweep width equals the phase period" claim, true only at the
+  replaced - `display/scope.py`'s "sweep width equals the phase period" claim, true only at the
   16 kHz default, false in general since the sample-rate-independence work decoupled the
   two. All four read as perfectly reasonable until checked.
 - **A change that touches the reasoning a nearby comment depends on means checking that
   comment, not just the code.** A constant that moved, a formula that changed, a design
   that was replaced - each can leave a comment three lines away (or in a different
-  module entirely, as with `scope.py`'s stale claim above) stating something that used
+  module entirely, as with `display/scope.py`'s stale claim above) stating something that used
   to be true. Re-derive the comment's claim against the new code before moving on, the
   same way a changed API means checking every caller.
 - **Anticipate the reader's objection.** If someone would reasonably ask "why didn't you
@@ -1397,13 +1397,13 @@ Say the thing.
   plainly before quoting any figures - "the value came from measuring, not from
   theory" - and then say what was measured and across what range. This is the same
   job as de-magickifying a constant, carried one step further: the name says what the
-  number is for, and this says how much to believe it. `buzz.iq._SKIRT_FRACTION` is
+  number is for, and this says how much to believe it. `buzz.receiver.iq._SKIRT_FRACTION` is
   the worked example.
 - **No length cap in flavored mode is not a license for 30-word sentences.** The rule
   that still binds is "split any sentence that has to be read twice". It gets broken
   by chaining clauses with *and*, *so* and *which* until four sentences are doing the
   work of twelve, which reads as slop however accurate it is. A first draft of
-  `lib/buzz/iq.py` had thirteen sentences over 30 words and was sent back as hard to
+  `lib/buzz/receiver/iq.py` had thirteen sentences over 30 words and was sent back as hard to
   parse. Check it while drafting rather than after: pull the docstrings and comments
   out with `ast`, split on sentence ends, and reread anything past about 25 words.
   The fix is nearly always to cut the chain at a conjunction and start a new sentence.
@@ -1423,7 +1423,7 @@ Say the thing.
   instead. That rule and this one meet at the same requirement, which is that the
   reader gets the claim and its reason in one pass.
 - **A comment explaining data flow at a call site is usually a missing argument.**
-  `iq.py`'s `convert` briefly read `self._filtered_and_decimated()  # reads from
+  `receiver/iq.py`'s `convert` briefly read `self._filtered_and_decimated()  # reads from
   self._pending from the prior calculation`. That is the call site apologizing for not
   saying where its input came from. Passing the block instead removed the need for the
   comment. It also gave `_pending` a single owner, where one method had been appending
@@ -1482,7 +1482,7 @@ Say the thing.
   rate-limiting", "worth keeping apart", "worth explaining", and "not a cost worth
   reasoning about". It argues for the code rather than describing it, which is the
   sales habit above in miniature. At the density it reaches it also reads as a tic.
-  `sdr.py` carried five of them, two inside one four-line docstring. Say what the code
+  `receiver/source.py` carried five of them, two inside one four-line docstring. Say what the code
   does and why, and let the reader decide what it was worth. Write "the log is
   rate-limited because this will not happen once" rather than "worth rate-limiting
   because it will not happen once". The occasional one is fine and the frequency is

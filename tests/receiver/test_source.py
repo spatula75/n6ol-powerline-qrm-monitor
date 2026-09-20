@@ -1,8 +1,8 @@
 """Tests for SdrSource, the queue between a receiver and whoever converts its IQ.
 
-What this class does shrank when `buzz.sdr_device` took over the hardware.  Gain
+What this class does shrank when `buzz.receiver.device` took over the hardware.  Gain
 snapping, configuring, the pyrtlsdr boundary, the C callback and the bounded close all
-moved, and `tests/test_sdr_device.py` covers them there.  What is left here is the
+moved, and `tests/receiver/test_device.py` covers them there.  What is left here is the
 queue, the accounting that depends on arrival times, and the delegation.
 
 Every test drives delivery with `FakeSdrDevice.deliver`, on the calling thread.  A real
@@ -12,9 +12,9 @@ test that can hang.
 import queue
 
 import pytest
-from buzz.sdr import (_what_a_loss_means, _what_a_sustained_drift_means,
+from buzz.receiver.source import (_what_a_loss_means, _what_a_sustained_drift_means,
                       _DISCARD_LOG_EVERY, DEFAULT_BLOCK_SAMPLES, SdrSource)
-from tests.fake_sdr import V4_GAINS, FakeSdrDevice
+from tests.receiver.fake_sdr import V4_GAINS, FakeSdrDevice
 
 BLOCK = 64
 IQ_RATE = 256_000
@@ -313,8 +313,8 @@ class TestTheLevelMeterStream:
     """
 
     def _stream(self, device=None):
-        from buzz.iq import IqToAudio
-        from buzz.sdr import SdrLevelStream
+        from buzz.receiver.iq import IqToAudio
+        from buzz.receiver.source import SdrLevelStream
         device = device or FakeSdrDevice(iq_sample_rate=IQ_RATE)
         source = SdrSource(device, block_samples=BLOCK, buffer_blocks=2)
         converter = IqToAudio(IQ_RATE, 16, 6_400, 50_000)

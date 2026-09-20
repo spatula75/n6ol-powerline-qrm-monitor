@@ -19,7 +19,7 @@ from textual.widgets import OptionList, Static
 
 from buzz.setup.app import SetupApp
 from buzz.setup.screens.base import CANCELLED
-from buzz.sdr_device import RtlSdrDevice
+from buzz.receiver.device import RtlSdrDevice
 from buzz.setup.screens.gain_picker import (
     UNAVAILABLE,
     GainPickerDialog,
@@ -41,7 +41,7 @@ def _offering(gains=None):
     It used to patch RtlSdrDevice.open and hand back a MagicMock device, from which
     the picker read supported_gains_db.  Going through open meant configuring a
     receiver to answer a read-only question, which is what RtlSdrDevice.supported_gains
-    now avoids; tests/test_sdr_device.py covers the opening and closing underneath it.
+    now avoids; tests/receiver/test_device.py covers the opening and closing underneath it.
     """
     return patch.object(RtlSdrDevice, 'supported_gains',
                         return_value=list(V4_GAINS if gains is None else gains))

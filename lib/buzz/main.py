@@ -41,6 +41,7 @@ from buzz.analyzer import ContinuousAnalyzer
 from buzz.collector import Collector
 from buzz.config import CONFIG_PATH, RTLSDR, SDRPLAY, SOUNDCARD, BuzzConfig, SdrConfig, validate_sample_rate
 from buzz.csv_store import CsvStore
+from buzz.display.windows_qos import keep_execution_speed_while_hidden
 from buzz.playback import (
     FilePlaybackPipeline,
     resolve_playback_path,
@@ -57,7 +58,6 @@ from buzz.weather import (
     OpenMeteoWeatherClient,
     WeatherClient,
 )
-from buzz.windows_qos import keep_execution_speed_while_hidden
 
 if TYPE_CHECKING:
     # Named for the type hints below and imported nowhere at runtime.  Qt and the
@@ -67,8 +67,8 @@ if TYPE_CHECKING:
     # would undo both.
     from PySide6.QtWidgets import QApplication
 
-    from buzz.sdr_device import SdrDevice
-    from buzz.waterfall import DisplayRecorder, MainWindow
+    from buzz.display.waterfall import DisplayRecorder, MainWindow
+    from buzz.receiver.device import SdrDevice
 
 faulthandler.enable()
 
@@ -396,7 +396,7 @@ def _open_receiver(config: BuzzConfig) -> RingBufferPipeline:
     shared library only an SDRplay station installs, so either would fail at import on
     a machine with no business touching it.
     """
-    from buzz.sdr_device import open_receiver
+    from buzz.receiver.device import open_receiver
 
     settings = config.receiver_settings
     return _pipeline_for(config, settings,
@@ -411,8 +411,8 @@ def _pipeline_for(config: BuzzConfig, settings: SdrConfig,
     contract exists to make true.  Only opening differs, so only opening lives in the
     two functions above.
     """
-    from buzz.iq import IqToAudio
-    from buzz.sdr import SdrPipeline, SdrSource
+    from buzz.receiver.iq import IqToAudio
+    from buzz.receiver.source import SdrPipeline, SdrSource
 
     source = SdrSource(device)
     converter = IqToAudio(
@@ -542,8 +542,8 @@ def _start_render(args: argparse.Namespace, config: BuzzConfig, window: 'MainWin
     the control strip, so it is 742x248 instead of 742x284.  A hard-coded frame size
     here would be a second place to keep that in step.
     """
+    from buzz.display.waterfall import DisplayRecorder
     from buzz.render import RenderError, RenderSession
-    from buzz.waterfall import DisplayRecorder
 
     # Said before anything starts, because a render takes as long as the recording and
     # otherwise looks like a hang -- particularly headless, where there is not even a
@@ -804,7 +804,7 @@ def main() -> None:  # pragma: no cover
     try:
         from PySide6.QtCore import QTimer  # noqa: I001
         from PySide6.QtWidgets import QApplication
-        from buzz.waterfall import MainWindow
+        from buzz.display.waterfall import MainWindow
     except ImportError:
         logger.warning(
             'PySide6 not installed - falling back to headless mode. '

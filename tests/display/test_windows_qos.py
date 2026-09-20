@@ -24,7 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from buzz import windows_qos
+from buzz.display import windows_qos
 
 
 def _kernel32(changed: bool = True):
@@ -67,7 +67,7 @@ def test_a_windows_failure_warns_and_leaves_the_monitor_usable(caplog):
                          return_value=5), \
             patch.object(windows_qos.ctypes, 'FormatError', create=True,
                          return_value='Access denied'), \
-            caplog.at_level(logging.WARNING, logger='buzz.windows_qos'):
+            caplog.at_level(logging.WARNING, logger='buzz.display.windows_qos'):
         assert windows_qos.keep_execution_speed_while_hidden() is False
 
     assert 'Access denied' in caplog.text
@@ -78,7 +78,7 @@ def test_a_windows_library_failure_uses_the_same_survivable_path(caplog):
     with patch.object(windows_qos.sys, 'platform', 'win32'), \
             patch.object(windows_qos.ctypes, 'WinDLL', create=True,
                          side_effect=OSError('no kernel32')), \
-            caplog.at_level(logging.WARNING, logger='buzz.windows_qos'):
+            caplog.at_level(logging.WARNING, logger='buzz.display.windows_qos'):
         assert windows_qos.keep_execution_speed_while_hidden() is False
 
     assert 'no kernel32' in caplog.text
@@ -100,8 +100,10 @@ def test_a_windows_without_the_call_warns_rather_than_crashing(caplog):
         def __getattr__(self, name):
             raise AttributeError(f'function {name!r} not found')
 
-    with patch.object(windows_qos.sys, 'platform', 'win32'),             patch.object(windows_qos.ctypes, 'WinDLL', create=True,
-                         return_value=WithoutTheCall()),             caplog.at_level(logging.WARNING, logger='buzz.windows_qos'):
+    with patch.object(windows_qos.sys, 'platform', 'win32'), \
+         patch.object(windows_qos.ctypes, 'WinDLL', create=True,
+                      return_value=WithoutTheCall()), \
+         caplog.at_level(logging.WARNING, logger='buzz.display.windows_qos'):
         assert windows_qos.keep_execution_speed_while_hidden() is False
 
     assert 'SetProcessInformation' in caplog.text

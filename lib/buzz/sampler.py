@@ -426,7 +426,7 @@ class LevelStream:
     estimated DC differently, or rectified differently, or converted to dBm
     differently, they would calibrate against a number the monitor never reports and
     bake the difference into every level that station ever logs.  See
-    `SoundCardLevelStream` and `buzz.sdr.SdrLevelStream`, and the test that puts the
+    `SoundCardLevelStream` and `buzz.receiver.source.SdrLevelStream`, and the test that puts the
     same samples through both.
 
     DC is removed before rectification, using the same EMA-smoothed median estimate

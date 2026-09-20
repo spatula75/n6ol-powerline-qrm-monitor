@@ -3,7 +3,7 @@ Check prose against the writing rules in CLAUDE.md and docs/ste-writing.md.
 
 Run this before a commit, over whatever the change touched:
 
-    python tools/ste_lint.py lib/buzz/scope.py tests/test_scope_math.py
+    python tools/ste_lint.py lib/buzz/display/scope.py tests/display/test_scope_math.py
     python tools/ste_lint.py --changed              # every line the diff added
     python tools/ste_lint.py --changed --base main
 

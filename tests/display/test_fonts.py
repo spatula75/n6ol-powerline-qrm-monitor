@@ -9,8 +9,8 @@ That is worth a test that runs everywhere, not only where there is a Qt platform
 from pathlib import Path
 from unittest.mock import patch
 
-from buzz import fonts
-from buzz.fonts import FAMILY, display_family, font_files
+from buzz.display import fonts
+from buzz.display.fonts import FAMILY, display_family, font_files
 
 
 def clear_cache():
@@ -19,7 +19,7 @@ def clear_cache():
 
 def _font_dir() -> str:
     """Where the fonts are expected to live, for failure messages that can be acted on
-    without first going and reading lib/buzz/fonts.py."""
+    without first going and reading lib/buzz/display/fonts.py."""
     try:
         import matplotlib
         return str(Path(matplotlib.get_data_path()) / 'fonts' / 'ttf')
@@ -39,19 +39,19 @@ class TestFontFiles:
         assert files, (
             f'No DejaVu Sans Mono found under {_font_dir()}.\n'
             '\n'
-            'buzz.fonts loads the display typeface out of matplotlib\'s bundled font '
-            'data rather than from the system, so that a headless render (whose Qt '
-            'platform reports no fonts at all) and Windows (where "Monospace" '
-            'resolves to a proportional face) both get a real monospace font.\n'
+            'buzz.display.fonts loads the display typeface out of matplotlib\'s '
+            'bundled font data rather than from the system.  A headless render sees '
+            'no fonts at all, and Windows resolves "Monospace" to a proportional '
+            'face.  The bundled file gives both a real monospace font.\n'
             '\n'
-            'The likely cause is that matplotlib reorganised mpl-data, or that a '
-            'slimmed-down install dropped its fonts.\n'
+            'The likely cause is that matplotlib reorganized mpl-data.  A '
+            'slimmed-down install may also have dropped its fonts.\n'
             '\n'
-            'To fix: find the new location of DejaVuSansMono.ttf in the matplotlib '
-            'package and update the directory or _FILES in lib/buzz/fonts.py. Until '
-            'then the display falls back to "Monospace" with a logged warning, which '
-            'means proportional labels on Windows and empty boxes in a headless '
-            'render -- ugly and wrong respectively, but not a crash.')
+            'To fix: find DejaVuSansMono.ttf in the matplotlib package.  Then update '
+            'the directory or _FILES in lib/buzz/display/fonts.py.  Until then the '
+            'display falls back to "Monospace" with a logged warning.  That means '
+            'proportional labels on Windows and empty boxes in a headless render, '
+            'which is ugly but not a crash.')
         missing = [path for path in files if not path.exists()]
         assert not missing, (
             f'font_files() returned paths that do not exist: {missing}.\n'
@@ -67,15 +67,15 @@ class TestFontFiles:
             f'Expected both the regular and bold DejaVu Sans Mono in {_font_dir()}, '
             f'found {sorted(names) or "nothing"}.\n'
             '\n'
-            'Both are loaded so that bold labels -- the scope header and the meter '
-            'legends -- use the face\'s own bold. With only the regular present Qt '
-            'fakes it by smearing glyphs sideways, which at 7 points on a monospace '
-            'face reads as a rendering fault rather than as bold text.\n'
+            'Both are loaded so that the bold labels, the scope header and the meter '
+            'legends, use the face\'s own bold.  With only the regular present, Qt '
+            'fakes bold by smearing glyphs sideways.  At 7 points on a monospace '
+            'face that reads as a rendering fault.\n'
             '\n'
             'To fix: check what matplotlib now ships under fonts/ttf and update '
-            '_FILES in lib/buzz/fonts.py. If the bold file is truly gone, drop it '
-            'from _FILES deliberately and accept synthesised bold, rather than '
-            'leaving this failing.')
+            '_FILES in lib/buzz/display/fonts.py.  If the bold file is truly gone, '
+            'drop it from _FILES deliberately and accept synthesised bold, rather '
+            'than leaving this failing.')
 
     def test_a_missing_matplotlib_is_survivable(self):
         """A display with proportional labels is ugly; one that refuses to start is

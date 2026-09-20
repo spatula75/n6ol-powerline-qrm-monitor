@@ -13,10 +13,12 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from buzz import render
+from buzz import render, wavmeta
 from buzz.ffmpeg import FfmpegError
 from buzz.render import (FRAME_RATE, RenderError, RenderSession, _FrameGrid,
                          _nearest_slot, ffmpeg_command)
+from buzz.wavmeta import read_settings
+from tests.patching import patch_in
 
 WIDTH, HEIGHT = 742, 248
 FRAME_BYTES = WIDTH * HEIGHT * 4
@@ -371,27 +373,27 @@ class TestRenderedComment:
 
     def test_the_gain_is_added_to_the_recordings_settings(self, tmp_path):
         source = tmp_path / 'event.wav'
-        with patch('buzz.render.wavmeta.read_settings',
+        with patch_in(wavmeta, read_settings,
                    return_value={'sample_rate': '16000', 'ended': 'capped'}):
             comment = render.rendered_comment(source, 19.0)
         assert 'render_gain_db=+19.0' in comment
         assert 'sample_rate=16000' in comment, 'the original settings must survive'
 
     def test_a_negative_gain_keeps_its_sign(self, tmp_path):
-        with patch('buzz.render.wavmeta.read_settings', return_value={'ended': 'capped'}):
+        with patch_in(wavmeta, read_settings, return_value={'ended': 'capped'}):
             assert 'render_gain_db=-2.2' in render.rendered_comment(tmp_path / 'e.wav', -2.2)
 
     def test_a_recording_with_no_settings_is_left_alone(self, tmp_path):
         """One made by other software, or by a version predating the settings line.
         Returning None leaves the copied tags untouched rather than inventing a
         comment that claims to describe a recording it does not."""
-        with patch('buzz.render.wavmeta.read_settings', return_value={}):
+        with patch_in(wavmeta, read_settings, return_value={}):
             assert render.rendered_comment(tmp_path / 'e.wav', 19.0) is None
 
     def test_an_unreadable_recording_warns_and_carries_on(self, tmp_path, caplog):
         """Failing to annotate the metadata is not a reason to abandon a render that
         would otherwise be fine."""
-        with patch('buzz.render.wavmeta.read_settings', side_effect=OSError('gone')):
+        with patch_in(wavmeta, read_settings, side_effect=OSError('gone')):
             with caplog.at_level('WARNING', logger='buzz.render'):
                 assert render.rendered_comment(tmp_path / 'e.wav', 19.0) is None
         assert 'tags unchanged' in caplog.text

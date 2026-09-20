@@ -37,12 +37,12 @@ from PySide6.QtWidgets import (
 from buzz.analyzer import AnalysisResult, ContinuousAnalyzer
 from buzz.config import BuzzConfig
 from buzz.constants import DB_PER_S_UNIT, S9_DBM
+from buzz.display.fonts import display_family, display_font
+from buzz.display.scope import H_DIVISIONS, SCOPE_H, ScopeWidget
 from buzz.dsp import SILENCE_DBFS
-from buzz.fonts import display_family, display_font
 from buzz.playback import FilePlaybackPipeline
 from buzz.recorder import RecorderStatus, RecordingTrigger
 from buzz.sampler import RingBufferPipeline
-from buzz.scope import H_DIVISIONS, SCOPE_H, ScopeWidget
 
 if TYPE_CHECKING:
     # For the hint on DisplayRecorder only.  buzz.render is loaded lazily by main, so

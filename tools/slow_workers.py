@@ -4,18 +4,18 @@ The setup program's dialogs fill themselves from workers that leave the event lo
 The timezone picker reads tzdata that way, and the device picker probes the sound card.
 A test that pauses the app once and then asserts is racing those workers: it wins on a
 developer's machine and loses on a loaded runner.  Eleven tests in
-tests/test_setup_app.py were in exactly that state, and CI showed only one of them,
+tests/setup/test_app.py were in exactly that state, and CI showed only one of them,
 once, after the tree had already merged.
 
 Delaying to_thread makes the race lose every time, so a timing assumption fails here
 rather than at some later hour on somebody else's branch.  Run it over any test that
 drives a dialog with a worker behind it:
 
-    PYTHONPATH=tools pytest tests/test_setup_app.py -p slow_workers --no-cov
+    PYTHONPATH=tools pytest tests/setup/test_app.py -p slow_workers --no-cov
 
 Every test should pass with this loaded.  One that does not is asserting before the
 work it depends on has finished, and the fix is to wait for the condition rather than
-to sleep longer.  See _wait_until in tests/test_setup_app.py.
+to sleep longer.  See _wait_until in tests/setup/test_app.py.
 
 --no-cov because the gate is calibrated against the ordinary unit run, and this loads
 a plugin that run does not.

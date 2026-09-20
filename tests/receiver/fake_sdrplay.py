@@ -11,7 +11,7 @@ the interleaving can be wrong.
 import ctypes
 import threading
 
-from buzz import sdrplay_api as api
+from buzz.receiver import sdrplay_api as api
 
 # What the fake reports its gain as, so a test can tell a hardware figure from the one
 # the gain table predicts.  None selects the calculated answer, leaving zero available
@@ -20,7 +20,7 @@ NO_REPORTED_GAIN = None
 
 # LNA gain reduction by state, the same row the device carries.  Restated rather than
 # imported, so that a test of the device's table against the hardware is not checking
-# the table against itself.  See `tests/test_sdrplay_device.py`.
+# the table against itself.  See `tests/receiver/test_sdrplay.py`.
 HF_LNA_GAIN_REDUCTION_DB = (0, 6, 12, 18, 37, 42, 61)
 
 

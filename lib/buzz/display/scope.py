@@ -53,8 +53,8 @@ from PySide6.QtWidgets import QWidget
 from buzz.analyzer import ContinuousAnalyzer, TriggerSync
 from buzz.config import BuzzConfig
 from buzz.constants import FULL_SCALE_COUNTS
+from buzz.display.fonts import display_font
 from buzz.dsp import pulse_phase_period
-from buzz.fonts import display_font
 from buzz.sampler import RingBufferPipeline
 
 # ---------------------------------------------------------------------------

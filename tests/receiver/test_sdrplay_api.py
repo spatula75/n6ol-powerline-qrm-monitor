@@ -21,9 +21,9 @@ import sys
 from pathlib import Path
 
 import pytest
-from buzz import sdrplay_api as api
+from buzz.receiver import sdrplay_api as api
 
-REPO = Path(__file__).resolve().parent.parent
+REPO = Path(__file__).resolve().parent.parent.parent
 
 # Every struct and union the generator emits, and the size the C compiler gives it.
 # A change here is either a new API version, which is fine and wants these updated in
@@ -163,13 +163,13 @@ class TestTheGeneratedFileIsCurrent:
             [sys.executable, str(REPO / 'tools' / 'generate_sdrplay_api.py'), '--check'],
             capture_output=True, text=True, cwd=REPO)
         assert result.returncode == 0, (
-            f'lib/buzz/sdrplay_api.py is out of date with the vendored headers.  It is '
+            f'lib/buzz/receiver/sdrplay_api.py is out of date with the vendored headers.  It is '
             f'generated: change tools/generate_sdrplay_api.py or the headers, then run\n'
             f'    python tools/generate_sdrplay_api.py\n'
             f'{result.stdout}{result.stderr}')
 
     def test_it_says_it_is_generated(self):
         """Whoever opens it to make a change needs to know the edit will be lost."""
-        text = (REPO / 'lib' / 'buzz' / 'sdrplay_api.py').read_text(encoding='utf-8')
+        text = (REPO / 'lib' / 'buzz' / 'receiver' / 'sdrplay_api.py').read_text(encoding='utf-8')
         assert 'GENERATED FILE' in text
         assert 'generate_sdrplay_api.py' in text

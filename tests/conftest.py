@@ -11,7 +11,7 @@ import os
 #
 # Must be set before numba is first imported, which is why it is at the top of
 # conftest.py rather than anywhere else - pytest loads this file before any test
-# module, and therefore before anything imports buzz.dsp or buzz.scope.
+# module, and therefore before anything imports buzz.dsp or buzz.display.scope.
 #
 # setdefault rather than a plain assignment, so the compiled path stays testable:
 #

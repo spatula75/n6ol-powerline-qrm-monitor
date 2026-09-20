@@ -1,4 +1,4 @@
-"""Tests for buzz.sdr.SdrPipeline, the thread joining capture to the ring buffer.
+"""Tests for buzz.receiver.source.SdrPipeline, the thread joining capture to the ring buffer.
 
 No receiver and no threads: the feeder's body is driven by calling _consume directly,
 which is where all the behavior lives.  The thread itself only decides when to call
@@ -12,12 +12,12 @@ from unittest.mock import patch
 import numpy as np
 import pytest
 
-from buzz import sdr as sdr_module
-from buzz.iq import IqToAudio
+from buzz.receiver import source as source_module
+from buzz.receiver.iq import IqToAudio
 from buzz.sampler import buffer_chunks
-from buzz.sdr import IqBlock, SdrPipeline
-from buzz.sdr_device import RTL_SDR_FORMAT, DeviceProfile
-from buzz.sdrplay_device import SDRPLAY_FORMAT
+from buzz.receiver.source import IqBlock, SdrPipeline
+from buzz.receiver.device import RTL_SDR_FORMAT, DeviceProfile
+from buzz.receiver.sdrplay import SDRPLAY_FORMAT
 
 IQ_RATE, DECIMATION, BANDWIDTH, OFFSET = 256_000, 16, 4_000, 50_000
 BLOCK = 16_384
@@ -273,7 +273,7 @@ class TestWhatThePipelineSaysAboutItsReceiver:
         """End to end, in the unit the scope works in: a coarser receiver is allowed
         less magnification, and the arithmetic in between is scope.minimum_full_scale.
         """
-        from buzz.scope import _FLOOR_STEPS, minimum_full_scale
+        from buzz.display.scope import _FLOOR_STEPS, minimum_full_scale
         p, converter = pipeline()
         expected_bits = min(16.0, 12 + converter.processing_gain_bits)
         assert minimum_full_scale(p.effective_bits, _FLOOR_STEPS) == pytest.approx(
@@ -306,7 +306,7 @@ class TestTheHealthCountersReachTheLog:
         clock = FakeClock()
         p, _ = pipeline(clock)
 
-        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+        with caplog.at_level(logging.WARNING, logger='buzz.receiver.source'):
             self.consume_for(p, clock, 120.0)
 
         assert caplog.messages == [], (
@@ -321,7 +321,7 @@ class TestTheHealthCountersReachTheLog:
         clock = FakeClock()
         p, _ = pipeline(clock)
 
-        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+        with caplog.at_level(logging.WARNING, logger='buzz.receiver.source'):
             self.consume_for(p, clock, 120.0, clipped=400)
 
         assert len(caplog.messages) == 1, f'expected one warning, got {caplog.messages}'
@@ -342,7 +342,7 @@ class TestTheHealthCountersReachTheLog:
         clock = FakeClock()
         p, _ = pipeline(clock)
 
-        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+        with caplog.at_level(logging.WARNING, logger='buzz.receiver.source'):
             self.consume_for(p, clock, 120.0, clipped=7)
 
         assert caplog.messages == [], caplog.messages
@@ -354,7 +354,7 @@ class TestTheHealthCountersReachTheLog:
         clock = FakeClock()
         p, _ = pipeline(clock)
 
-        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+        with caplog.at_level(logging.WARNING, logger='buzz.receiver.source'):
             self.consume_for(p, clock, 59.0, clipped=40)
 
         assert caplog.messages == [], (
@@ -369,7 +369,7 @@ class TestTheHealthCountersReachTheLog:
         clock = FakeClock()
         p, _ = pipeline(clock)
 
-        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+        with caplog.at_level(logging.WARNING, logger='buzz.receiver.source'):
             self.consume_for(p, clock, 120.0, clipped=40)
             caplog.clear()
             self.consume_for(p, clock, 120.0)
@@ -390,7 +390,7 @@ class TestTheHealthCountersReachTheLog:
         clock = FakeClock()
         p, _ = pipeline(clock)
 
-        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+        with caplog.at_level(logging.WARNING, logger='buzz.receiver.source'):
             self.consume_for(p, clock, 60.0)
             p.source.clock_drift_seconds = 0.5      # 500 ms of audio missing
             self.consume_for(p, clock, 60.0)
@@ -411,7 +411,7 @@ class TestTheHealthCountersReachTheLog:
         p, _ = pipeline(clock)
         p.source.clock_drift_seconds = -0.037   # a startup burst, and nothing after it
 
-        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+        with caplog.at_level(logging.WARNING, logger='buzz.receiver.source'):
             self.consume_for(p, clock, 60.0)
             self.consume_for(p, clock, 60.0)
 
@@ -427,18 +427,18 @@ class TestTheHealthCountersReachTheLog:
         clock = FakeClock()
         p, _ = pipeline(clock)
         per_interval = 0.020
-        assert per_interval < 60.0 * sdr_module._DRIFT_PPM_LIMIT / 1e6, (
+        assert per_interval < 60.0 * source_module._DRIFT_PPM_LIMIT / 1e6, (
             'This has to stay under the per-interval limit, or it proves nothing about '
             'the total.')
 
-        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+        with caplog.at_level(logging.WARNING, logger='buzz.receiver.source'):
             for interval in range(1, 25):
                 p.source.clock_drift_seconds = per_interval * interval
                 self.consume_for(p, clock, 60.0)
 
         assert len(caplog.messages) == 1, (
             f'A leak of 20 ms a minute should be reported once, when the total passes '
-            f'{sdr_module._CUMULATIVE_DRIFT_LIMIT_SECONDS * 1e3:.0f} ms, and not once '
+            f'{source_module._CUMULATIVE_DRIFT_LIMIT_SECONDS * 1e3:.0f} ms, and not once '
             f'per minute afterwards: {caplog.messages}')
         assert 'from where it started' in caplog.messages[0], caplog.messages
         assert 'going missing' in caplog.messages[0], (
@@ -458,7 +458,7 @@ class TestTheHealthCountersReachTheLog:
         p, _ = pipeline(clock)
         cycle = [0.020, 0.042, 0.031, 0.041, 0.043, 0.045, 0.041, 0.064, 0.007]
 
-        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+        with caplog.at_level(logging.WARNING, logger='buzz.receiver.source'):
             for _ in range(3):
                 for total in cycle:
                     p.source.clock_drift_seconds = total
@@ -478,12 +478,12 @@ class TestTheHealthCountersReachTheLog:
         # 20 ppm over the two minutes below, an ordinary crystal rather than a loss.
         p.source.clock_drift_seconds = 120.0 * 20e-6
 
-        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+        with caplog.at_level(logging.WARNING, logger='buzz.receiver.source'):
             self.consume_for(p, clock, 120.0)
 
         assert caplog.messages == [], (
             f'A drift of 20 ppm was reported as lost samples: {caplog.messages}.  '
-            f'_DRIFT_PPM_LIMIT is {sdr_module._DRIFT_PPM_LIMIT} ppm, so anything under '
+            f'_DRIFT_PPM_LIMIT is {source_module._DRIFT_PPM_LIMIT} ppm, so anything under '
             'that has to pass as two clocks disagreeing.')
 
     def test_every_interval_is_reported_at_debug_even_when_it_does_not_warn(self, caplog):
@@ -497,7 +497,7 @@ class TestTheHealthCountersReachTheLog:
         clock = FakeClock()
         p, _ = pipeline(clock)
         # 20 ppm per interval, far under the 500 ppm limit, so nothing warns.
-        with caplog.at_level(logging.DEBUG, logger='buzz.sdr'):
+        with caplog.at_level(logging.DEBUG, logger='buzz.receiver.source'):
             for interval in range(1, 4):
                 p.source.clock_drift_seconds = -60.0 * 20e-6 * interval
                 self.consume_for(p, clock, 60.0)
@@ -509,7 +509,7 @@ class TestTheHealthCountersReachTheLog:
         assert all('-1.2 ms' in line for line in moved), (
             f'Each interval moved 20 ppm of 60 s, which is -1.2 ms.  Got {moved}.')
         assert not [m for m in caplog.messages if 'more than a crystal' in m], (
-            f'20 ppm is under the {sdr_module._DRIFT_PPM_LIMIT} ppm limit, so the '
+            f'20 ppm is under the {source_module._DRIFT_PPM_LIMIT} ppm limit, so the '
             f'DEBUG line must not come with a warning: {caplog.messages}.')
 
     def test_output_saturation_is_reported_even_without_raw_clipping(self, caplog):
@@ -520,7 +520,7 @@ class TestTheHealthCountersReachTheLog:
         clock = FakeClock()
         p, converter = pipeline(clock)
 
-        with caplog.at_level(logging.WARNING, logger='buzz.sdr'):
+        with caplog.at_level(logging.WARNING, logger='buzz.receiver.source'):
             p._consume(block(seed=1))
             converter._saturated += 7       # as the int16 scaling would have counted it
             clock.advance(120.0)
