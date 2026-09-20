@@ -16,6 +16,7 @@ not loudnorm either, and auto_gain_db() for why the application is not.
 """
 
 import logging
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,16 +32,17 @@ TARGET_LUFS = -23.0
 # overshoot that inter-sample peaks and lossy encoding both produce, so nothing
 # clips on playback even though the samples themselves never exceed it.
 CEILING_DBTP = -2.0
-# BS.1770's absolute gate is -70 LUFS. A file with nothing above it has no measurable loudness,
-# and ebur128 reports exactly this figure (or -inf) to say so - it is the meter's way
-# of reporting silence rather than a threshold this program chose on its own.
+# This is the meter's own floor, and what it prints when it has no answer.  BS.1770
+# discards every block under an absolute gate of -70 LUFS, so the mean of the blocks
+# that survive cannot come out below it, and a file with nothing above the gate
+# reports exactly this figure or -inf.
 #
-# We use a different limit for the "effectively silent" sentinel, because the signal levels we are dealing with are
-# often quite low.
-# -86.0 dB is approximately the noise floor with 14 significant bits of audio, allowing for
-# the bottom two bits to be just noise, which we wouldn't want to amplify all the way up to -23 LUFS,
-# but there could be valid audio between -70.0 dB and -86.0 dB that we do want to hear.
-_SILENCE_FLOOR_LUFS = -86.0
+# That means no threshold under -70 can ever be reached, and a threshold there cannot
+# tell an empty file from a quiet one.  Measured through ffmpeg on 2026-09-19: sine
+# tones at -60, -75, -85 and -95 dBFS all report -70.0 LUFS, and so does 15 s of
+# digital silence.  The true peak separates those two, which is what Loudness.is_silent
+# reads, and measure() recovers the loudness of the quiet one with a second pass.
+_METER_GATE_LUFS = -70.0
 # 10*log10(2): a mono signal sent to both speakers measures this much louder than the
 # same signal as one channel of a stereo pair. R128 says to account for it.
 _DUAL_MONO_LU = 3.01
@@ -53,9 +55,25 @@ class Loudness:
     integrated_lufs: float
     true_peak_dbtp: float
     loudness_range_lu: float
-    # Set from what the meter reported before any correction was applied; see
-    # _SILENCE_FLOOR_LUFS.
-    is_effectively_silent: bool = False
+    # This is false where the meter printed its own gate instead of a measurement, so
+    # integrated_lufs holds no answer and nothing may be computed from it.  It comes
+    # from the raw reading, before the dual-mono correction: adding 3.01 first would
+    # lift the gate value clear of the comparison, and a zero-length recording would
+    # get a real gain computed for it.  See _METER_GATE_LUFS.
+    has_integrated_reading: bool = True
+
+    @property
+    def is_silent(self) -> bool:
+        """Whether every sample in the file is zero.
+
+        The integrated figure cannot answer this, because it reads -70.0 LUFS for an
+        empty file and for a merely quiet one alike.  A true peak of -inf is the meter
+        saying that no sample rose above zero, so the peak is the one reading that
+        separates the two.  A capture that stopped before it wrote audio is the case
+        this catches, and it came out of an actual 0-second file that was given -2.2 dB
+        of gain.
+        """
+        return self.true_peak_dbtp == -math.inf
 
 
 def measure(path: Path | str, ffmpeg: str) -> Loudness:
@@ -64,7 +82,7 @@ def measure(path: Path | str, ffmpeg: str) -> Loudness:
     This uses `ebur128` rather than `loudnorm`, although loudnorm prints JSON and
     would be less work to read. ebur128 is ffmpeg's implementation of the ITU-R
     BS.1770 standard meter. loudnorm's analysis is tuned for its own normalization
-    and does not agree with it on this material. Measured across six real
+    and does not agree with it on this material.  Measured across six real
     recordings:
 
         duration   LRA    ebur128   loudnorm     diff
@@ -75,44 +93,91 @@ def measure(path: Path | str, ffmpeg: str) -> Loudness:
          129.6 s   3.8 LU   -42.4     -42.56    -0.16
 
     They agree to within 0.16 LU everywhere except the file with a wide loudness
-    range, and it is not a matter of duration: a shorter file agrees to 0.12. It
+    range, and it is not a matter of duration: a shorter file agrees to 0.12.  It
     tracks LRA, and the reason is the relative gate.
 
     BS.1770 measures integrated loudness in two passes: discard blocks below an
     absolute gate at -70 LUFS, then discard blocks more than 10 LU below the mean of
-    whatever survived. When the content sits in a narrow band, every block falls the
+    whatever survived.  When the content sits in a narrow band, every block falls the
     same side of that second gate in both implementations and they agree exactly.
     When the range is 13.7 LU, mostly quiet noise floor with brief loud bursts,
     which is precisely what a QRM recording is, a large fraction of blocks sit near
-    the threshold. A small difference in the ungated mean then moves the gate,
-    excludes more quiet blocks, raises the mean, and moves the gate again. Small
+    the threshold.  A small difference in the ungated mean then moves the gate,
+    excludes more quiet blocks, raises the mean, and moves the gate again.  Small
     implementation differences get amplified rather than averaged away.
-
-    Because we are often dealing with very low signal levels, we set our "effictively
-    silent" point at -86.0 dB, not -70.0 dB the theoretical minimum value for a 14-bit dynamic
-    range (allowing for the bottom two bits to be just noise).
 
     The direction confirms it: on that file loudnorm gated at -54.44 against ebur128's
     -56.3, keeping less of the quiet material and reporting a louder average, while
-    both reported an identical true peak. So the disagreement is entirely about
+    both reported an identical true peak.  So the disagreement is entirely about
     gating and not about measuring loudness.
 
     This content is therefore unusually good at exposing the difference, which makes
-    using the standard's own meter the right call rather than a fussy one. A target
+    using the standard's own meter the right call rather than a fussy one.  A target
     expressed as a broadcast standard should be measured by the standard's meter.
 
-    The whole file is measured, including the lead-in and the trailer. What is being
+    The whole file is measured, including the lead-in and the trailer.  What is being
     normalized is the viewer's experience of the video, not the event in isolation,
     and R128's own relative gate already discards the quiet passages, so the number
     reflects the part worth hearing without anyone having to trim to it.
 
-    Fast enough not to matter: over 200x real time.
+    This measures a file under the meter's gate twice.  The first pass comes back with
+    no integrated reading, so the second lifts the file to the true-peak ceiling and
+    asks again, and the gain applied is subtracted from the answer.  Loudness is a
+    ratio, so lifting a file by a constant moves its integrated figure by that same
+    constant: measured on a real event at probe gains of 20, 30, 40, 50 and 60 dB, the
+    recovered figure came out -77.29 LUFS at every one of them.  The station this was
+    written for records well under the gate, at a true peak of -65.8 dBFS, so this is
+    the ordinary path rather than an unusual one.
+
+    This is fast enough not to matter, at over 200x real time, and the second pass
+    only runs where the first found nothing.
     """
+    first_pass = _run_meter(path, ffmpeg)
+    if first_pass.has_integrated_reading or first_pass.is_silent:
+        return first_pass
+    return _measure_by_lifting(path, ffmpeg, first_pass)
+
+
+def _run_meter(path: Path | str, ffmpeg: str, pre_gain_db: float = 0.0) -> Loudness:
+    """One pass of ebur128, over the file lifted by `pre_gain_db` first.
+
+    The lift goes in the filter chain rather than into a temporary file, so the second
+    pass costs one more ffmpeg run and no disk.  `volume` works in floating point here
+    whatever the input sample format, so a lift that takes the peak to the ceiling
+    cannot clip on the way to the meter.  The same measurement taken from an
+    amplified file on disk agreed with this one to the penny.
+    """
+    lift = f'volume={pre_gain_db}dB,' if pre_gain_db else ''
     output = run([
         ffmpeg, '-hide_banner', '-nostats', '-i', str(path),
-        '-af', 'ebur128=peak=true', '-f', 'null', '-',
+        '-af', f'{lift}ebur128=peak=true', '-f', 'null', '-',
     ])
     return _parse(output, path)
+
+
+def _measure_by_lifting(path: Path | str, ffmpeg: str, first_pass: Loudness) -> Loudness:
+    """Measure a file the meter would not measure, by lifting it over the gate.
+
+    The lift takes the true peak to the ceiling, which is the loudest this program
+    would ever make the file.  A file that still reads nothing at that point holds too
+    little for R128 to describe at all, so it comes back as it arrived, with no
+    integrated reading, and auto_gain_db answers it from the peak.
+
+    This keeps the peak from the first pass.  The lifted pass reports the lifted peak,
+    which describes a file that does not exist.  The loudness range comes from the
+    lifted pass instead.  A range is the same either side of a constant gain, and the
+    first pass reports 0.0 LU for a file it could not measure.
+    """
+    lift = CEILING_DBTP - first_pass.true_peak_dbtp
+    lifted = _run_meter(path, ffmpeg, lift)
+    if not lifted.has_integrated_reading:
+        return first_pass
+    return Loudness(
+        integrated_lufs=lifted.integrated_lufs - lift,
+        true_peak_dbtp=first_pass.true_peak_dbtp,
+        loudness_range_lu=lifted.loudness_range_lu,
+        has_integrated_reading=True,
+    )
 
 
 # ebur128 prints a labeled summary; these pick the three values out of it. Anchored
@@ -147,11 +212,12 @@ def _parse(output: str, path: Path | str) -> Loudness:
     # same signal as one channel of a stereo pair, and that is what a player does with
     # the mono track in the rendered .mp4. loudnorm has a dual_mono option; the
     # standard meter does not, so the correction is applied here where it can be seen.
+    integrated = found['integrated']
     return Loudness(
-        integrated_lufs=found['integrated'] + _DUAL_MONO_LU,
+        integrated_lufs=integrated + _DUAL_MONO_LU,
         true_peak_dbtp=found['true peak'],
         loudness_range_lu=found['loudness range'],
-        is_effectively_silent=found['integrated'] <= _SILENCE_FLOOR_LUFS,
+        has_integrated_reading=integrated > _METER_GATE_LUFS,
     )
 
 
@@ -164,8 +230,8 @@ def auto_gain_db(loudness: Loudness, target_lufs: float = TARGET_LUFS,
         gain = min(target - integrated, ceiling - true_peak)
 
     Measured across three real events the target bound every time, giving +19.0, +19.3
-    and +16.4 dB. On one of them, though, the ceiling permitted only +19.5, so it came
-    within 0.2 dB of binding. The constraint is not theoretical: a recording whose
+    and +16.4 dB.  On one of them, though, the ceiling permitted only +19.5, so it came
+    within 0.2 dB of binding.  The constraint is not theoretical: a recording whose
     bursts sit higher above its noise floor will reach the ceiling first and end up
     quieter than the target, which is the right way round.
 
@@ -173,22 +239,42 @@ def auto_gain_db(loudness: Loudness, target_lufs: float = TARGET_LUFS,
     and nothing else happens to it. loudnorm can apply its own normalization and is
     not asked to: it switches to a dynamic mode that varies gain over time, which was
     observed on these very recordings even at a loudness range well inside its
-    threshold. Time-varying gain on a 2.5-6 ms burst train compresses the envelope
+    threshold.  Time-varying gain on a 2.5-6 ms burst train compresses the envelope
     that carries the severity of the interference, which is the one thing a recording
-    of it exists to preserve. A limiter is refused for the same reason: attack and
+    of it exists to preserve.  A limiter is refused for the same reason: attack and
     release exist to reshape transients.
+
+    Two kinds of recording offer no target to aim at, and they take different answers.
+    An empty file gets no gain, because multiplying zero by anything leaves zero and
+    the operator needs to hear that the capture holds nothing.  A file that measure()
+    could not read even lifted to the ceiling gets the ceiling constraint on its own,
+    which is the most this program would apply to it in any case.
+
+    A quiet file is not one of those two.  measure() recovers its loudness with a
+    second pass, so the file arrives here with a reading like any other and the target
+    binds it in the ordinary way.  Taking the ceiling for it instead overshot the
+    target by 9.5 dB on a real event, because that content is noise-like and has almost
+    no crest factor for the ceiling to leave room in.
     """
-    if loudness.is_effectively_silent:
+    if loudness.is_silent:
         logger.warning(
-            'The meter found nothing above its %.0f LUFS absolute gate, so this '
-            'recording has no measurable loudness and no automatic gain is applied. '
-            'It is silent, or short enough to hold no complete measurement block; '
-            'amplifying it would raise only its noise floor. Pass an explicit '
-            '--playback-gain if you want one anyway.',
-            _SILENCE_FLOOR_LUFS)
+            'This recording holds no signal at all, so no automatic gain is applied.  '
+            'Every sample is zero, which happens when a capture stopped before it '
+            'wrote any audio.  Pass an explicit --playback-gain to amplify it anyway.')
         return 0.0
-    to_target = target_lufs - loudness.integrated_lufs
     to_ceiling = ceiling_dbtp - loudness.true_peak_dbtp
+    if not loudness.has_integrated_reading:
+        # This is reachable only with a finite peak, because a silent file has
+        # already returned above, so the gain here cannot be infinite.
+        logger.warning(
+            'The meter found nothing to measure in this recording, even lifted to '
+            'the %.1f dBTP ceiling, so the true-peak ceiling sets the gain alone.  '
+            'It holds a few isolated samples and silence, or it is shorter than one '
+            'measurement block.  Pass an explicit --playback-gain to choose another '
+            'figure.',
+            ceiling_dbtp)
+        return to_ceiling
+    to_target = target_lufs - loudness.integrated_lufs
     return min(to_target, to_ceiling)
 
 
@@ -202,9 +288,11 @@ def resolve_gain(path: Path | str, ffmpeg: str) -> float:
     """
     loudness = measure(path, ffmpeg)
     gain = auto_gain_db(loudness)
-    if loudness.is_effectively_silent:
-        # auto_gain_db has already explained itself at warning level; saying which
-        # constraint "set" a gain of zero would be inventing a reason it did not use.
+    if loudness.is_silent or not loudness.has_integrated_reading:
+        # auto_gain_db has already explained both of these at warning level.  The line
+        # below would misreport either one: it names a constraint that a gain of zero
+        # did not use, and it quotes an integrated figure that is the meter's gate
+        # rather than a measurement.
         return gain
     binding = ('the true-peak ceiling'
                if CEILING_DBTP - loudness.true_peak_dbtp < TARGET_LUFS - loudness.integrated_lufs
