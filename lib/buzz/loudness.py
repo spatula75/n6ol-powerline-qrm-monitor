@@ -31,14 +31,16 @@ TARGET_LUFS = -23.0
 # overshoot that inter-sample peaks and lossy encoding both produce, so nothing
 # clips on playback even though the samples themselves never exceed it.
 CEILING_DBTP = -2.0
-# BS.1770's absolute gate. A file with nothing above it has no measurable loudness,
+# BS.1770's absolute gate is -70 LUFS. A file with nothing above it has no measurable loudness,
 # and ebur128 reports exactly this figure (or -inf) to say so - it is the meter's way
 # of reporting silence rather than a threshold this program chose on its own.
 #
-# Tested against the *raw* reading, before the dual-mono correction below. Adding 3.01
-# first would lift the sentinel to -66.99 and the test would never fire, which is
-# precisely the bug a zero-length recording exposed.
-_SILENCE_FLOOR_LUFS = -70.0
+# We use a different limit for the "effectively silent" sentinel, because the signal levels we are dealing with are
+# often quite low.
+# -86.0 dB is approximately the noise floor with 14 significant bits of audio, allowing for
+# the bottom two bits to be just noise, which we wouldn't want to amplify all the way up to -23 LUFS,
+# but there could be valid audio between -70.0 dB and -86.0 dB that we do want to hear.
+_SILENCE_FLOOR_LUFS = -86.0
 # 10*log10(2): a mono signal sent to both speakers measures this much louder than the
 # same signal as one channel of a stereo pair. R128 says to account for it.
 _DUAL_MONO_LU = 3.01
@@ -85,6 +87,10 @@ def measure(path: Path | str, ffmpeg: str) -> Loudness:
     the threshold. A small difference in the ungated mean then moves the gate,
     excludes more quiet blocks, raises the mean, and moves the gate again. Small
     implementation differences get amplified rather than averaged away.
+
+    Because we are often dealing with very low signal levels, we set our "effictively
+    silent" point at -86.0 dB, not -70.0 dB the theoretical minimum value for a 14-bit dynamic
+    range (allowing for the bottom two bits to be just noise).
 
     The direction confirms it: on that file loudnorm gated at -54.44 against ebur128's
     -56.3, keeping less of the quiet material and reporting a louder average, while
