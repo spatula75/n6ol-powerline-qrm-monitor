@@ -22,7 +22,7 @@ SUMMARY = """\
 
   Loudness range:
     LRA:        13.7 LU
-    Threshold: -86.0 LUFS
+    Threshold: -70.0 LUFS
     LRA low:   -56.2 LUFS
     LRA high:  -42.5 LUFS
 
