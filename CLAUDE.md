@@ -206,6 +206,21 @@ auto-closed the PR outright instead of migrating it, despite what its docs sugge
 2. Move the `[Unreleased]` entries in `CHANGELOG.md` under a new `## [x.y.z] - date`
    heading. That section is lifted verbatim as the release notes, so write it for
    whoever arrives at the release page.
+
+   **Audit those entries against the code before moving them.** Each one describes the
+   state at the commit that wrote it, and a cycle of commits moves that state
+   underneath it. Both releases so far found several wrong. 2.0.0 had a setting under
+   a name it never shipped with, a stale default, and a key that does not exist. 2.1.0
+   said "No SDRplay receiver works yet" in the release that ships one, quoted a scope
+   figure from before a later commit changed it, carried two `### Changed` headings and
+   an entry duplicating one 2.0.0 had already made, and never announced the headline
+   feature at all.
+
+   Four checks find those. Read every claim against what is now in the tree. Compute
+   any number the notes quote, rather than trusting the one written down. Look for a
+   subsystem with fixes listed and no Added entry behind them, which is how a headline
+   feature goes unannounced. And cut anything describing a change no released version
+   ever saw, since an intermediate step between two releases is not news to anybody.
 3. Run `python tools/release_render_check.py` against a recent recording before
    merging. It is not in CI - CI has no live radio, so it cannot produce a recording
    that means anything - which is exactly why skipping it is easy to justify and
@@ -1217,6 +1232,30 @@ its own comment states the test: -128 dBFS sits "well below the ~-90 dBFS minimu
 a 1-LSB 16-bit signal, so it is unambiguously a sentinel and is never confused with a
 real reading". A sentinel outside the valid range displaces nothing. One inside it
 takes a reading away from you.
+
+**A sentinel outside what the instrument can report never fires at all.** This is the
+counterweight to the paragraph above, and the same rule read from the other end.
+Putting a sentinel clear of the valid range is right, and it still has to sit inside
+the range the source can produce, because a threshold nothing reaches is a check that
+never runs.
+
+`buzz.loudness` set its "no measurable loudness" figure to -86 LUFS, under the -70
+that BS.1770's absolute gate makes ebur128's floor. The meter discards every block
+under -70 LUFS, so the mean of the blocks that survive cannot come out below it, and
+-70.0 is what it prints when it has nothing at all. Measured through ffmpeg: sine
+tones at -60, -75, -85 and -95 dBFS all report -70.0 LUFS, and so does 15 s of digital
+silence. Nothing the meter emits ever reaches -86, so the check never fired and the
+program gave 15 seconds of silence +43.99 dB of gain.
+
+The test beside it stayed green because its fixture came from the sentinel rather than
+from the meter: a "silent" summary was hand-edited to read -86.0 LUFS, which is a
+figure ebur128 never prints. That is "when a test stands in for a sound source, it uses
+the dtype the real source produces" one level up, and it takes the same answer. Ask
+what the instrument emits at its limits, capture the fixture from a real run of it, and
+where two states have to be told apart, keep two fixtures that differ only in the field
+that tells them apart. `SILENT` and `UNDER_THE_GATE` in `tests/test_loudness.py` are
+both real ffmpeg output and differ only in the true peak, which is the whole of the
+claim being tested.
 
 ## Comments and documentation
 

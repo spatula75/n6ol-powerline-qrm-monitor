@@ -7,7 +7,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-09-19
+
 ### Added
+- SDRplay RSP1A and RSP1B receivers are a third audio source, beside a sound card and
+  an RTL-SDR. Set `[audio] source = "sdrplay"` and the monitor tunes the receiver,
+  converts its IQ to audio and measures that, with everything downstream unchanged.
+  `[sdrplay]` carries the frequency, the gain, the level calibration and the IQ
+  settings, in the same shape `[rtlsdr]` has, and ships tuned to 3588 kHz at 40 dB of
+  gain. A 14-bit converter has the range to put band noise 10 dB above the receiver's
+  own noise, so the floor an RSP reports reads under half a decibel high where an
+  RTL-SDR reads about three. Where SDRplay's API sits somewhere other than its
+  installer's default, set `[sdrplay] api_path`. The monitor admits only those two
+  models, because every other RSP needs a different LNA table and nothing here can
+  test one. `docs/how-to-guides/sdrplay-rsp1-setup.md` covers the setup.
 - The gain probe reports exact I/Q endpoint counts alongside their percentage and
   SDRplay hardware overload state. A percentage that rounds to zero no longer hides
   a small number of endpoint hits.
@@ -18,7 +31,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   no receiver and no API installed.  A wrong struct field here is memory corruption
   rather than an exception, which is why the declarations are generated rather than
   transcribed, and why `tests/receiver/test_sdrplay_api.py` pins the size of all 32
-  structs.  No SDRplay receiver works yet: this is the layer a device shim will call.
+  structs.  `lib/buzz/receiver/sdrplay.py` is the device shim built on those
+  declarations.
 - `lib/buzz/receiver/device.py`, which holds every operation performed against a
   receiver: opening it, configuring it, moving its gain, streaming from it, reading
   one block, and closing it. Nothing above it imports a driver library, so a second
@@ -28,13 +42,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   on device type. `DeviceProfile` states what a device is, including whether its gain
   may move while it streams, which an RTL-SDR refuses and another device may not.
   Nothing an operator sets or sees changes.
-- A gain sweep reads synchronously through `SweepReader` rather than streaming.
-  Changing an RTL-SDR's gain during an async read is two threads on one device, and it
-  left a receiver that never answered again, twice in a few dozen sweeps.
-  `docs-notebook/rtl-sdr-hardware.md` records what else was tried. A synchronous read
-  misses the samples between one call and the next, which costs a sweep nothing and
-  would ruin the monitor, and in exchange there is no second thread to race. The
-  device refuses the unsafe order outright rather than leaving it to a convention.
 - `--log-level` sets how much the monitor says, from ERROR to DEBUG, defaulting to
   INFO. The diagnostics that explain a puzzling display or a health warning log at
   DEBUG, because they would be noise on a healthy run. Use it when something is
@@ -50,6 +57,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   Their tests moved to `tests/receiver`, `tests/display` and `tests/setup`.  No
   config key, command-line flag or output file changes.  A script that imports
   `buzz.sdr`, `buzz.iq` or `buzz.scope` directly needs the new path.
+- The shared receiver source and pipeline are named `SdrSource` and `SdrPipeline`,
+  where they were `RtlSdrSource` and `RtlSdrPipeline`. Their old names obscured that
+  the SDRplay uses the same queue and conversion path.
 - Gain selection aims the noise floor where each receiver can afford to put it. An
   SDRplay puts the band noise 10 dB above the receiver's own, which is what the setup
   notes have always told operators to aim for, and its reported floor then reads under
@@ -97,12 +107,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   266 ms after the same request, and the SDRplay stopped crossing 100 ms of delivery
   backlog. Process priority, Efficiency mode and timer resolution did not explain the
   difference. Other platforms do not load or call the Windows API.
-- The scope's magnification limit follows the resolution of the converted audio. Each
-  receiver supplies its delivered bit depth, and the IQ converter adds the noise
-  reduction from its actual filter before the 16-bit output cap is applied. The limit
-  therefore follows sample rate, bandwidth and decimation. At the defaults, an
-  RTL-SDR has a floor near the old 32-count limit while an SDRplay can use the full
-  int16 display range.
+- The scope's magnification limit comes from the receiver rather than from one count
+  shared by every source. Each receiver states the bit depth it delivers, and the IQ
+  converter adds the noise reduction from its actual filter before the 16-bit cap
+  applies. Each receiver also says how many of its own steps the display may magnify
+  past, measured against its own dead channel. The limit therefore follows sample
+  rate, bandwidth and decimation as well as the hardware. At the shipped defaults it
+  is 53 counts for an RTL-SDR and 3.2 for an SDRplay, against a flat 32 before. A dead
+  channel no longer fills the display. With the antenna disconnected an RTL-SDR now
+  draws at about two thirds of the height and an SDRplay at about two fifths, where
+  both previously drew at full height and could not be told from a working station. A
+  sound card is unchanged, because its level depends on the operator's AF gain and no
+  figure here would suit two stations. See `docs-notebook/scope-auto-range-floor.md`
+  for the measurements.
 - The display stops repainting while its window is minimized, and starts again when the
   window is restored. Each widget reads the newest audio when it repaints, so pausing
   work nobody can see loses no display history.
@@ -110,17 +127,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   delivery and joining them at each block boundary. The callback runs on the library's
   own thread and needs the GIL, so allocation churn there is the worst place for it.
 
-### Changed
-- The scope's magnification limit is now a figure each receiver states for itself,
-  rather than one multiple of a step shared by all of them. A dead channel no longer
-  fills the display: with the antenna disconnected an RTL-SDR draws at about two
-  thirds of the height and an SDRplay at about two fifths, where both previously drew
-  at full height and could not be told from a working station. A sound card is
-  unchanged, because its level depends on the operator's AF gain and no figure here
-  would suit two stations. See `docs-notebook/scope-auto-range-floor.md` for the
-  measurements.
-
 ### Fixed
+- `--playback-gain auto` works on the quiet recordings this program actually makes.
+  BS.1770 discards every block under -70 LUFS, so a recording whose whole level sits
+  below that has no integrated loudness at all. ebur128 reports the gate value to say
+  so. The monitor read that as silence and applied no gain, which left the render
+  inaudible. A 20-second event captured on 2026-09-19 peaks at -65.8 dBFS and is one
+  of these. Such a file is now measured a second time, lifted to the true-peak
+  ceiling, and the lift is subtracted from the answer: that event reads -77.3 LUFS and
+  gets +54.3 dB, which puts it on the -23 LUFS target like any other recording. A file
+  with every sample at zero still gets no gain, decided now by its true peak of -inf
+  rather than by a loudness reading that cannot tell it from a quiet one. See
+  `docs-notebook/loudness-under-the-gate.md` for the measurements.
 - An IQ recording from a 16-bit receiver keeps all sixteen bits. The raw IQ ring buffer
   held unsigned bytes whatever the receiver was, so every SDRplay capture written with
   `record_iq = true` carried the low byte of each sample under an 8-bit `.wav` header
@@ -150,9 +168,6 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Config loading excludes dataclass class variables from accepted TOML keys. A file
   containing the internal `device_source` marker is now warned about and ignored
   instead of reaching the dataclass constructor and stopping startup.
-- The shared receiver source and pipeline are named `SdrSource` and `SdrPipeline`.
-  Their old RTL-SDR names obscured that the SDRplay uses the same queue and conversion
-  path.
 - The SDRplay shim no longer treats the empty delivery the library sends at open and at
   every stream start as audio that arrived late, and no longer measures a stream's
   first delivery against one from the gain probe seconds earlier. Either would have
