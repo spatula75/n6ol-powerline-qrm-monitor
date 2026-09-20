@@ -30,7 +30,7 @@ SUMMARY = """\
     Peak:      -21.5 dBFS
 """
 
-SILENT = SUMMARY.replace('-45.3 LUFS', '-70.0 LUFS').replace('-21.5 dBFS', '0.2 dBFS')
+SILENT = SUMMARY.replace('-45.3 LUFS', '-86.0 LUFS').replace('-21.5 dBFS', '0.2 dBFS')
 
 
 def measured(**overrides) -> Loudness:
@@ -77,17 +77,19 @@ class TestSilence:
     """A file with nothing above the absolute gate has no measurable loudness."""
 
     def test_the_meters_floor_is_recognised(self):
-        """ebur128 reports exactly -70.0 to mean "nothing here"."""
+        """We consider <= -86.0 to mean "nothing here", which is lower than ebur's
+        gate at -70 LUFS, but still greater than the minimum LUFS of a 16-bit
+        audio file."""
         with patch_in(loudness_module, run, return_value=SILENT):
             assert measure('empty.wav', 'ffmpeg').is_effectively_silent
 
     def test_silence_is_judged_before_the_dual_mono_correction(self):
-        """The bug this pins: adding 3.01 first lifts the -70.0 sentinel to -66.99, so
+        """The bug this pins: adding 3.01 first lifts the -86.0 sentinel to -82.99, so
         the test never fires and a zero-length recording gets a real gain computed for
         it.  Observed on an actual 0-second file, which came out at -2.2 dB."""
         with patch_in(loudness_module, run, return_value=SILENT):
             loudness = measure('empty.wav', 'ffmpeg')
-        assert loudness.integrated_lufs > -70.0     # corrected, above the sentinel
+        assert loudness.integrated_lufs > -86.0     # corrected, above the sentinel
         assert loudness.is_effectively_silent       # and still known to be silent
 
     def test_no_gain_is_applied_to_silence(self):
