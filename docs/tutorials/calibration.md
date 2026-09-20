@@ -46,7 +46,8 @@ instead.
 S meter on your screen agrees with the S meter on your radio.  Press `ENTER` when you're done.
 
 ## SDR Calibration
-SDR use requires calibrating two settings: hardware gain and audio-to-RF offset.  Hardware gain is applied by the
+
+SDR use requires calibrating two settings: hardware gain and level calibration.  Hardware gain is applied by the
 receiver itself to the incoming RF signal, before sampling, and a value must be carefully chosen to minimize noise 
 introduced by the hardware itself, while also allowing for maximum dynamic range so that capturing
 strong signals does not overload the ADC circuitry and cause digital clipping.
@@ -55,13 +56,27 @@ It is also necessary to determine an appropriate offset to convert between the a
 was applied and the approximate amplitude of the RF signal seen at the receiver input, in order to correctly estimate
 signal levels for logging and the on-screen S meters.
 
+### RTL-SDR notes
+
 Unfortunately, inexpensive 8-bit analog-to-digital converters such as those found in RTL-SDR devices do not offer
 tremendous dynamic range - only about 48 dB - so any measurements taken are by necessity a compromise of some kind.
 
 By making gain adjustments, we can decide where in the RF envelope that ~48dB of dynamic range sits.  Below the
 envelope nothing can be known, and above it, everything becomes digitally clipped.
 
-The monitor defaults to using RTL-SDR receiver number 0.  For most users this should be fine. 
+See the [RTL-SDR setup](../how-to-guides/rtl-sdr-v4-setup.md) notes for more details and notes about the RTL-SDR v4.
+
+### SDRPlay notes
+
+The 14-bit ADC in the SDRPlay, combined with the receiver's internal oversampling, in contrast to the RTL-SDR
+provide a comfortably low noise floor and wide dynamic range.
+
+See the [SDRPlay setup](../how-to-guides/sdrplay-rsp1-setup.md) notes for more details and notes about the SDRPlay
+RSP1 series of receivers.
+
+### Calibration Steps
+
+The monitor defaults to using receiver number 0.  For most users this should be fine. 
 If you are using multiple receivers, ensure the correct receiver number is selected first, before proceeding.
 
 The first step to take is to run the `Auto-calibrate gain` tool with your antenna connected to your SDR device.
