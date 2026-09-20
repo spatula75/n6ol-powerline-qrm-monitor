@@ -77,7 +77,9 @@ class TestSilence:
     """A file with nothing above the absolute gate has no measurable loudness."""
 
     def test_the_meters_floor_is_recognised(self):
-        """ebur128 reports exactly -86.0 to mean "nothing here"."""
+        """We consider <= -86.0 to mean "nothing here", which is lower than ebur's
+        gate at -70 LUFS, but still greater than the minimum LUFS of a 16-bit
+        audio file."""
         with patch_in(loudness_module, run, return_value=SILENT):
             assert measure('empty.wav', 'ffmpeg').is_effectively_silent
 
