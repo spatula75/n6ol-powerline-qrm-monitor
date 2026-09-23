@@ -108,6 +108,31 @@ nothing on the band was strong enough to settle it.  A signal generator would.  
 figure of 57.5 dB against a nominal 49.6 in `config.py` and `receiver/source.py`
 is provisional, neither confirmed nor refuted.  See `sdr-gain-calibration.md`.
 
+### CumulusMX unit handling has never met a live station
+
+`CumulusMXWeatherClient` builds its own query string, with the `tempunitnodeg` and
+`windunit` webtags beside the six weather tags, and converts from the units those two
+name.  The Cumulus wiki confirms that both tags exist.  The client converts because
+CumulusMX serves every figure in the station's own units: on 2026-09-22 the operator
+read its webtag documentation, which is sparse, and found no parameter that asks for
+other units.  Three things about what they
+and the other tags return have never been checked against a running station, and the
+tests pin all three as assumptions.
+
+First, `windunit` is taken to return one of `km/h`, `mph`, `m/s` and `kts`.  A
+different spelling, such as `knots` or `MPH`, makes every fetch refuse, and the
+weather columns stay blank with a warning each minute.  Second, the values are taken
+to arrive as strings, which `float()` reads either way.  Third, nothing handles a
+station set to a locale with a decimal comma.  A value such as `20,5` now fails the
+conversion and blanks the row, where it used to reach the CSV and split the column
+in two.
+
+What stops it is access to a station.  Run the URL the client builds, once on an
+imperial station and once on a metric one, and compare the JSON with
+`TestCumulusMXWeatherClient`.  A station in a
+decimal-comma locale settles the third point, and the webtag parameter `rc=y` is the
+likely fix if it fails.
+
 ## Other receivers
 
 ### Verify the revised gain selection on an RTL-SDR

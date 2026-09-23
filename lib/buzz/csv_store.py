@@ -2,18 +2,23 @@
 CSV persistence layer for noise measurements.
 
 Each day's data lives in a separate file named noise_data.YYYY-MM-DD.csv in the
-configured output directory. CsvStore owns the file format end to end: writing
+configured output directory.  CsvStore owns the file format end to end: writing
 new rows, parsing files back into typed CsvRow records (including old-format
 files that predate the Signal Lock Status column), and aggregating a date range
 into the time-bucketed score dict the summary graphs consume.
 
 Column order is: timestamp, SNR, signal, noise floor, lock status, grid frequency,
-phase drift, then the six weather fields. New columns belong immediately after
+phase drift, then the six weather fields.  New columns belong immediately after
 lock status, because read_rows() stops reading at index 4 and every field past
 that point is written for humans and external tools rather than parsed here.
+
+The header names the units of the weather columns, and a file keeps the units its
+header names.  A change to `[weather] units` therefore shows up in the first file
+created after the monitor restarts, and no file holds rows in two different units.
 """
 
 import csv
+import logging
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
@@ -22,16 +27,17 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from buzz.config import BuzzConfig
+from buzz.weather import CsvValue, WeatherData, WeatherUnits
 
-CsvValue = str | float
+logger = logging.getLogger(__name__)
 
-# Summary scores are bucketed to intervals of this many minutes. The summary
+# Summary scores are bucketed to intervals of this many minutes.  The summary
 # graph builds its time axis from the same constant so the two can't drift apart.
 BUCKET_MINUTES = 15
 
-# The header cell naming the grid-frequency column.  Written by _header_line and read
-# back by read_grid_frequencies(), so the two cannot drift apart and a rename cannot
-# quietly turn every frequency chart empty.
+# The header cell naming the grid-frequency column.  _header_line writes it and
+# read_grid_frequencies() reads it back, so the two cannot drift apart and a rename
+# cannot quietly turn every frequency chart empty.
 _GRID_FREQUENCY_HEADING = 'Grid frequency (Hz)'
 
 
@@ -48,52 +54,91 @@ class CsvRow:
 class CsvStore:
     def __init__(self, config: BuzzConfig) -> None:
         self._config = config
-        pps = config.audio.pulse_rate
-        self._header_line = (f'ISO datetime,{pps}pps SNR,{pps}pps signal (dBm),Noise floor (dBm),'
-                             f'Signal Lock Status,'
-                             f'{_GRID_FREQUENCY_HEADING},Phase drift (samples/s),'
-                             f'Temperature (F),Humidity (%),Solar radiation (w/m^2),'
-                             f'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)\n')
+        self._weather_units = WeatherUnits.from_setting(config.weather.units)
+        # The file whose units the log has already explained, so that the explanation
+        # appears once per file rather than once a minute.
+        self._explained_units_of: Path | None = None
 
     def filename_for_date(self, date: datetime) -> Path:
         return Path(self._config.station.path) / f'noise_data.{date.strftime("%Y-%m-%d")}.csv'
 
     def append(self, now: datetime, snr: float, signal: float, noise: float,
-               lock_status: str,
-               temperature: CsvValue, humidity: CsvValue, solar_radiation: CsvValue,
-               wind_speed: CsvValue, wind_gust: CsvValue, wind_bearing: CsvValue,
+               lock_status: str, weather: WeatherData,
                *, grid_frequency: CsvValue = '', phase_drift: CsvValue = '') -> str:
         """Append one measurement row, writing the header first if the file is new.
 
-        grid_frequency and phase_drift are keyword-only and default to blank. They
+        The weather goes in the units the file's header names.  A new file gets the
+        configured units, and an existing one keeps whatever units it started with.
+
+        grid_frequency and phase_drift are keyword-only and default to blank.  They
         are by-products of the analyzer's drift tracking rather than measurements the
         monitor depends on, and a row with no pulse-train lock has nothing to report
-        for them. They are written after Signal Lock Status, ahead of the weather
+        for them.  They are written after Signal Lock Status, ahead of the weather
         fields: read_rows() only ever reads up to index 4, so inserting there leaves
         parsing of both older and newer files completely unaffected.
         """
         csv_filename = self.filename_for_date(now)
         write_header = not csv_filename.exists()
+        units = self._weather_units if write_header else self._units_named_in(csv_filename)
+        weather_fields = ','.join(str(value) for value in weather.in_units(units))
         csv_str = (f'{now.isoformat()},{snr:.2f},{signal:.2f},{noise:.2f},'
                    f'{lock_status},'
                    f'{grid_frequency},{phase_drift},'
-                   f'{temperature},{humidity},{solar_radiation},'
-                   f'{wind_speed},{wind_gust},{wind_bearing}')
+                   f'{weather_fields}')
         with open(csv_filename, 'a') as f:
             if write_header:
-                f.write(self._header_line)
+                f.write(self._header_line(units))
             f.write(f'{csv_str}\n')
         return csv_str
+
+    def _header_line(self, units: WeatherUnits) -> str:
+        """The header row for a new file, naming `units` for the weather columns."""
+        pps = self._config.audio.pulse_rate
+        wind = units.wind_speed_label
+        return (f'ISO datetime,{pps}pps SNR,{pps}pps signal (dBm),Noise floor (dBm),'
+                f'Signal Lock Status,'
+                f'{_GRID_FREQUENCY_HEADING},Phase drift (samples/s),'
+                f'{self._temperature_heading(units)},Humidity (%),Solar radiation (w/m^2),'
+                f'Wind speed ({wind}),Wind gust ({wind}),Wind bearing (deg)\n')
+
+    @staticmethod
+    def _temperature_heading(units: WeatherUnits) -> str:
+        """The temperature column's header cell, which is how a file names its units.
+
+        _header_line writes it and _units_named_in reads it back, so the two cannot
+        drift apart.
+        """
+        return f'Temperature ({units.temperature_label})'
+
+    def _units_named_in(self, csv_filename: Path) -> WeatherUnits:
+        """The units an existing file's header names, so that later rows can match them.
+
+        This reads the header on every append.  An append happens once a minute and the
+        header is one short line, so the cost is too small to matter, and an answer read
+        fresh stays right if somebody edits or replaces the file.  A header that names
+        neither unit gets the configured units, because it gives nothing to match.
+        """
+        with open(csv_filename, newline='') as f:
+            header = next(csv.reader(f), [])
+        named = next((units for units in WeatherUnits if self._temperature_heading(units) in header),
+                     self._weather_units)
+        if named is not self._weather_units and self._explained_units_of != csv_filename:
+            self._explained_units_of = csv_filename
+            logger.info(
+                '[weather] units is %s, but %s already records weather in %s units.  The '
+                'monitor keeps that file in %s units.  The next new file uses %s units.',
+                self._weather_units, csv_filename.name, named, named, self._weather_units)
+        return named
 
     def read_rows(self, input_filename: Path | str) -> list[CsvRow]:
         """Parse one CSV file into CsvRow records, skipping headers and malformed lines.
 
-        Timestamps are converted to the station timezone. Old-format files without
+        It converts timestamps to the station timezone.  Old-format files without
         the Signal Lock Status column get a non-'none' value at index 4 (either the
-        temperature field or nothing), which correctly reads as locked. Rows too
+        temperature field or nothing), which correctly reads as locked.  Rows too
         short to hold the measurement fields default the status to 'full'.
 
-        Nothing beyond index 4 is read. That is deliberate, and is what lets columns
+        It reads nothing beyond index 4.  That is deliberate, and is what lets columns
         be added after Signal Lock Status without breaking files written by older
         versions: the fields that shift are ones this parser never looks at.
         """
@@ -118,7 +163,7 @@ class CsvStore:
     def read_grid_frequencies(self, input_filename: Path | str) -> list[tuple[datetime, float | None]]:
         """One day's (timestamp, grid frequency) pairs, with None where there was no lock.
 
-        The column is found by its header name rather than by its position, and that
+        This finds the column by its header name rather than by its position, and that
         is not fussiness.  Grid frequency sits at index 5, which in a file written
         before that column existed holds Temperature.  Reading by position would plot
         degrees as hertz with nothing on the chart to say so, which is the failure
@@ -159,9 +204,9 @@ class CsvStore:
     def _read_day_scores(self, input_filename: Path | str) -> dict[time, int]:
         """Read one day's CSV file and return a {time: score} dict bucketed to 15-minute intervals.
 
-        Only rows where the signal is at or above the noise threshold AND the SNR is at
-        or above snr_gate are counted. Each qualifying row contributes log(snr, snr_gate)
-        to its bucket, so stronger events weigh more than just-threshold events. The
+        It counts only rows where the signal is at or above the noise threshold AND the SNR is at
+        or above snr_gate.  Each qualifying row contributes log(snr, snr_gate)
+        to its bucket, so stronger events weigh more than just-threshold events.  The
         returned dict maps datetime.time keys (minute is a multiple of 15) to integer scores.
         """
         time_to_score = defaultdict(int)
@@ -183,7 +228,7 @@ class CsvStore:
     def read_range_scores(self, start_date: datetime, end_date: datetime) -> dict[time, int]:
         """Aggregate scores across a date range into a single {time: score} dict.
 
-        Missing CSV files (days with no data) are silently skipped. The returned
+        It silently skips missing CSV files (days with no data).  The returned
         dict is the sum of all per-day dicts, suitable for passing directly to the
         summary graph generator.
         """

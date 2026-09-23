@@ -11,6 +11,7 @@ import pytest
 from buzz.analyzer import AnalysisResult
 from buzz.collector import ALL_TIME_SUMMARY_NAME, FREQUENCY_CHART_NAME, Collector
 from buzz.config import BuzzConfig
+from buzz.weather import EMPTY_WEATHER
 
 _TZ = ZoneInfo('America/Los_Angeles')
 
@@ -105,7 +106,7 @@ class TestRunCollectionAveraging:
             collector._run_collection()
         collector._store.append.assert_called_once()
         args = collector._store.append.call_args[0]
-        assert args[5:] == ('', '', '', '', '', '')   # blank weather fields
+        assert args[5] == EMPTY_WEATHER
 
 
 class TestRunCollectionGridFrequency:

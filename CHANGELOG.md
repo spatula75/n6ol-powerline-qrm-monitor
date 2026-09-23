@@ -7,6 +7,24 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+- `[weather] units` chooses the units for temperature and wind speed in the CSV:
+  `imperial` (F and MPH, the default) or `metric` (C and km/h). The header names the
+  units, and a file that already exists keeps the units it started with, so no file
+  mixes the two. A change therefore appears in the first file created after a
+  restart.
+
+### Changed
+- `[weather] url` takes the CumulusMX station's address, such as
+  `http://cumulusmx.local:8998/`, and the monitor builds the endpoint path and the
+  query string itself. A full URL from an older config still works, and a warning at
+  startup names the address to set it to instead.
+
+### Fixed
+- A CumulusMX station set to metric units wrote Celsius and its own wind unit into
+  columns headed F and MPH. The monitor now asks the station which units it serves
+  and converts from them.
+
 ## [2.1.0] - 2026-09-19
 
 ### Added
