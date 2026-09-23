@@ -120,7 +120,7 @@ class TestReadGridFrequencies:
 
     _NEW_HEADER = ('ISO datetime,120pps SNR,120pps signal (dBm),Noise floor (dBm),Signal Lock Status,'
                    'Grid frequency (Hz),Phase drift (samples/s),Temperature (F),Humidity (%),'
-                   'Solar radiation (w/m^2),Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)')
+                   'Solar radiation (W/m^2),Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)')
     # Pre-grid-frequency layout: the sixth column is Temperature, not frequency.
     _OLD_HEADER = ('ISO datetime,120pps SNR,120pps signal (dBm),Noise floor (dBm),Signal Lock Status,'
                    'Temperature (F),Humidity (%),Solar radiation (w/m^2),'
@@ -445,7 +445,7 @@ class TestWeatherUnitsInTheCsv:
         now = _ts(2024, 1, 15, 10, 30)
         store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
         header, row = self._lines(store, now)
-        assert header[7:] == ['Temperature (C)', 'Humidity (%)', 'Solar radiation (w/m^2)',
+        assert header[7:] == ['Temperature (C)', 'Humidity (%)', 'Solar radiation (W/m^2)',
                               'Wind speed (km/h)', 'Wind gust (km/h)', 'Wind bearing (deg)']
         assert row[7:] == ['20.0', '52.0', '300.0', '12.0', '19.3', '225']
 

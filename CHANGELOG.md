@@ -24,6 +24,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A CumulusMX station set to metric units wrote Celsius and its own wind unit into
   columns headed F and MPH. The monitor now asks the station which units it serves
   and converts from them.
+- The CSV header writes the solar radiation unit as `W/m^2`, with the capital W the
+  watt takes. Files written before this say `w/m^2`.
 
 ## [2.1.0] - 2026-09-19
 

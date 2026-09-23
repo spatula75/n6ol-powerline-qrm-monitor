@@ -98,7 +98,7 @@ class CsvStore:
         return (f'ISO datetime,{pps}pps SNR,{pps}pps signal (dBm),Noise floor (dBm),'
                 f'Signal Lock Status,'
                 f'{_GRID_FREQUENCY_HEADING},Phase drift (samples/s),'
-                f'{self._temperature_heading(units)},Humidity (%),Solar radiation (w/m^2),'
+                f'{self._temperature_heading(units)},Humidity (%),Solar radiation (W/m^2),'
                 f'Wind speed ({wind}),Wind gust ({wind}),Wind bearing (deg)\n')
 
     @staticmethod

@@ -359,7 +359,7 @@ def _write_frequency_csv(path: Path, values: list[str], day: str = '2024-01-15')
     """A new-format CSV whose grid-frequency column holds `values`, blank for no lock."""
     lines = ['ISO datetime,120pps SNR,120pps signal (dBm),Noise floor (dBm),Signal Lock Status,'
              'Grid frequency (Hz),Phase drift (samples/s),Temperature (F),Humidity (%),'
-             'Solar radiation (w/m^2),Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)']
+             'Solar radiation (W/m^2),Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)']
     for minute, value in enumerate(values):
         lines.append(f'{day}T10:{minute:02d}:00-08:00,15.0,-80.0,-95.0,full,'
                      f'{value},-6.1,68,52,300,7,12,225')
