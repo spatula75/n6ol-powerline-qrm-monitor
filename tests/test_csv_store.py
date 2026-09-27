@@ -1,7 +1,7 @@
 """Tests for CsvStore: filename generation, row append, time bucketing, and range aggregation."""
 
 import logging
-from datetime import datetime, time
+from datetime import UTC, datetime, time
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -13,9 +13,11 @@ from buzz.weather import EMPTY_WEATHER, WeatherData
 
 _TZ = ZoneInfo('America/Los_Angeles')
 
-# One observation in the units every weather client returns, degrees C and km/h.  In the
-# default imperial units it comes out as 68.0 F, 7.5 MPH and 12.0 MPH.
-_WEATHER = WeatherData(20.0, 52.0, 300.0, 12.0, 19.3, 225)
+# One observation in the units every weather client returns, degrees C, km/h and mm.  In
+# the default imperial units it comes out as 68.0 F, 7.5 MPH and 12.0 MPH.  The rain and
+# the weather timestamp have no column yet.
+_WEATHER = WeatherData(20.0, 52.0, 300.0, 12.0, 19.3, 225, 5.08,
+                       datetime(2024, 1, 15, 18, 29, tzinfo=UTC))
 
 
 def _make_store(tmp_path: Path) -> CsvStore:
@@ -80,6 +82,12 @@ class TestGridFrequencyColumns:
     def test_weather_still_follows_them(self, tmp_path):
         fields = self._row(tmp_path, grid_frequency='60.023', phase_drift='-6.12')
         assert fields[7:] == ['68.0', '52.0', '300.0', '7.5', '12.0', '225']
+
+    def test_rain_and_the_weather_timestamp_are_not_written_yet(self, tmp_path):
+        """The header has no column for either, so the row stops at wind bearing."""
+        fields = self._row(tmp_path)
+        assert len(fields) == 13
+        assert fields[-1] == '225'
 
     def test_default_is_blank_not_zero(self, tmp_path):
         """A minute with no lock has nothing to report, and 0.000 Hz would be a lie."""

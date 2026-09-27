@@ -174,20 +174,23 @@ def make_weather_client(config: BuzzConfig) -> WeatherClient:
     weather_config = config.weather
     if weather_config.source == 'openmeteo':
         if weather_config.latitude is None or weather_config.longitude is None:
-            logger.warning('Weather source is openmeteo but latitude/longitude are not set; '
-                           'weather data disabled.')
+            logger.warning('[weather] source is openmeteo, but latitude and longitude are not both '
+                           'set.  The monitor records no weather until somebody sets both in the config file.')
             return NullWeatherClient()
-        return OpenMeteoWeatherClient(weather_config.latitude, weather_config.longitude)
+        return OpenMeteoWeatherClient(weather_config.latitude, weather_config.longitude,
+                                      config.station.timezone)
     if weather_config.source == 'cumulusmx':
         if not weather_config.url:
-            logger.warning('Weather source is cumulusmx but url is not set; '
-                           'weather data disabled.')
+            logger.warning('[weather] source is cumulusmx, but url is not set.  The monitor records '
+                           'no weather until url holds the station address, such as '
+                           'http://cumulusmx.local:8998/.')
             return NullWeatherClient()
         return CumulusMXWeatherClient(weather_config.url)
     if weather_config.source != 'none':
         logger.warning(
-            "Unknown weather source %r - expected 'cumulusmx', 'openmeteo', or 'none'; "
-            'weather data disabled.', weather_config.source)
+            "[weather] source is %r, and it must be 'cumulusmx', 'openmeteo' or 'none'.  The "
+            'monitor records no weather until somebody corrects the setting in the config file.',
+            weather_config.source)
     return NullWeatherClient()
 
 

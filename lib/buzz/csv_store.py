@@ -80,7 +80,12 @@ class CsvStore:
         csv_filename = self.filename_for_date(now)
         write_header = not csv_filename.exists()
         units = self._weather_units if write_header else self._units_named_in(csv_filename)
-        weather_fields = ','.join(str(value) for value in weather.in_units(units))
+        converted = weather.in_units(units)
+        # The six columns the header names.  Rain and the weather timestamp have no
+        # column yet, so they are left out rather than written under no heading.
+        weather_fields = ','.join(str(value) for value in (
+            converted.temperature, converted.humidity, converted.solar_radiation,
+            converted.wind_speed, converted.wind_gust, converted.wind_bearing))
         csv_str = (f'{now.isoformat()},{snr:.2f},{signal:.2f},{noise:.2f},'
                    f'{lock_status},'
                    f'{grid_frequency},{phase_drift},'

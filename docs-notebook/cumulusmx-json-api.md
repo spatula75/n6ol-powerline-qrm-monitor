@@ -50,17 +50,36 @@ database, so the source is the only check there is.
 ## The unit parameter reaches the text API only
 
 `webtags.cs` converts units on request.  `CheckTempUnit` takes `unit=c` or `f`,
-`CheckWindUnit` takes `unit=mph`, `kph`, `ms` or `kt`, and `CheckRainUnit` handles rain.
-The wiki page the operator read on 2026-09-22 does not mention it.
+`CheckWindUnit` takes `unit=mph`, `kph`, `ms` or `kt`, and `CheckRainUnit` takes
+`unit=mm` or `in`.  The wiki page the operator read on 2026-09-22 does not mention it.
+CumulusMX's `Updates.txt` dates it to version 3.23.0, build 3220: "Most weather value
+web tags now perform unit conversion."  The operator's station runs 5.1.5, build 5012.
 
 The JSON API cannot pass the parameter, and the text API can.  An earlier version of
 this page said no API could, which was wrong.
 
-The client converts on its own side all the same, for two reasons.  A CSV file keeps
-the units it started with, so the client needs its own conversion whatever the
-station sends.  And `CheckRcDp` rounds a converted figure to the station's configured
-decimal places unless the template also passes `dp=`.  The operator's station
-returned 11 mph as `17` km/h, with no decimals at all.
+On 2026-09-27, with the client already on the text API, the operator decided to keep
+reading the station's own units and converting them, rather than asking for `unit=`.
+There were three reasons:
+
+- A CumulusMX older than 3.23.0 ignores the parameter and answers in the station's own
+  units, with nothing in the reply to say so.  That writes Celsius under a Fahrenheit
+  heading, the fault the units work set out to fix.  Reading `tempunitnodeg`,
+  `windunit` and `rainunit` from the same reply checks itself instead.  A guard would
+  have to ask for `<#build>` and refuse anything under 3220.  Build numbers rise across
+  major versions, with version 3 ending near 3283 and version 5 in the 5000s, so that
+  guard would work, at the cost of trusting a version number over the reply.
+- `CheckRcDp` rounds a converted figure to the station's configured decimal places
+  unless the template also passes `dp=`.  The operator's station returned 11 mph as
+  `17` km/h, with no decimals at all, so every converted tag would need `dp=2` too.
+  `Updates.txt` gives the same warning.
+- The client keeps conversion code anyway, because a CSV file keeps the units it
+  started with.  Asking CumulusMX to convert would have saved about twenty lines.
+
+What it would have gained is a slightly finer figure.  CumulusMX converts its own
+unrounded value, where the client converts one already rounded to the station's
+decimal places.  At one decimal of a degree Fahrenheit, the difference is below
+anything this program reports.
 
 ## The time of the data
 
