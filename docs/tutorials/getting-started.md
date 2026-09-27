@@ -55,7 +55,11 @@ once.
 
 The monitor has many options. The most critical ones will be covered here; others can be found in the how-to guides.
 Each section of the configuration file corresponds to a section in the configuration program. Enter a section
-with the `ENTER` key and go back with the `ESC` key. Use arrow keys to navigate. Start with Audio.
+with the `ENTER` key and go back with the `ESC` key.  Use arrow keys and `TAB` to navigate.
+
+Note: after making changes it is necessary to restart the monitor for those changes to take effect.
+
+Let's start with Audio.
 
 ### Audio source
 
@@ -167,11 +171,11 @@ checks every day from then until today.
 
 Sometimes there are interesting correlations to be had between the weather and whether your electrical utility's
 equipment is making noise. Currently two systems are supported for retrieving weather data for your location: OpenMeteo
-and CumulusMX. 
+and CumulusMX.
 
 #### Selecting a Weather Provider
 
-If you have your own weather station supported by CumulusMX, you can point to it here. 
+If you have your own weather station supported by CumulusMX, you can point to it here.
 You need only supply the base URL for your station; for example: `http://cumulusmx.local:8998/`
 replacing `cumulusmx.local` with the IP address or hostname of the machine running CumulusMX.  The necessary API
 parameters will be added automatically.
@@ -183,7 +187,7 @@ used to retrieve weather data.
 
 Choose whether you would like to log temperature and wind speed in imperial or metric units here.  In `imperial`
 mode, temperature is expressed in degrees Fahrenheit and wind speed in MPH.  In `metric` mode, temperature is
-expressed in degrees Celsius and wind speed in kph.
+expressed in degrees Celsius and wind speed in km/h.
 
 ### Others
 
@@ -221,8 +225,12 @@ the estimate was taken.
 
 Note: at present, decimal values are denoted with a period, never a comma, regardless of locale, and fields are
 always separated by commas.  Locale-specific CSV format limitations may be addressed in a future release.  Header
-values do reflect the units chosen in the weather settings.  If you change units partway through the day, the
-headers do not change and previously written rows are not re-calculated.
+values do reflect the units chosen in the weather settings.
+
+If you change units partway through the day, the headers do not change immediately, and CSV collection for the
+remainder of the current day continues to log in the existing units.  The recorded units will change at midnight
+local time when the next CSV file is written.  This prevents a CSV file from containing different units throughout
+the day if you decide to change them.
 
 CSV files roll over automatically at the end of the day in the local time zone.
 
