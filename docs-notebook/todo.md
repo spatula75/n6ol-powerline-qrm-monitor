@@ -108,6 +108,62 @@ nothing on the band was strong enough to settle it.  A signal generator would.  
 figure of 57.5 dB against a nominal 49.6 in `config.py` and `receiver/source.py`
 is provisional, neither confirmed nor refuted.  See `sdr-gain-calibration.md`.
 
+## Weather
+
+### Log rain since midnight, and when the weather was read
+
+The design was settled on 2026-09-27 and is waiting for its own branch.  The findings
+behind it are in `cumulusmx-json-api.md` and `online-weather-sources.md`.
+
+- **Rain since midnight.**  CumulusMX supplies `rmidnight`.  Open-Meteo gets the sum
+  of its completed 15-minute `precipitation` values labeled after 00:00 in
+  `[station] timezone`, up to and including `current.time`, from the request the
+  client already makes.  Both are recorded as the source sends them, with no clamping,
+  so a total that falls is logged as falling.  Units follow `[weather] units`, inches
+  or millimeters.
+- **The time of the weather.**  One column holds the latest time the source stands
+  behind its values.  For CumulusMX that is `LastDataReadT`, and for Open-Meteo the end
+  of the current interval.  It is written as ISO 8601 in `[station] timezone`, like
+  the row's own timestamp, and left blank when a fetch fails.
+- **The CumulusMX client moves to the text API**, a POST to `process.txt`, because only
+  that endpoint can ask for `LastDataReadT format=Unix`.  Each tag in the template
+  carries `rc=y`, which replaces the leading `rc` of the JSON query.
+- **A startup warning when CumulusMX's midnight is not ours.**  `rmidnight` resets at
+  the host's midnight.  Derive the host's offset from `timeUnix` and `timehhmmss`, and
+  warn when it differs from `[station] timezone`.
+- **The header decides the weather columns.**  The core columns, timestamp through
+  phase drift, stay positional, because their headings carry the pulse rate and a
+  change to it must not blank the measurement.  Every column after them is matched by
+  name against a table of known columns and the unit labels each accepts.  A heading
+  splits into a name and an optional `(label)`.  A column that needs no conversion
+  accepts every label it has had, so `Solar radiation (w/m^2)` and `(W/m^2)` both
+  match.  A heading or label the table does not know leaves that column blank, with a
+  warning once per file.  This replaces `CsvStore._units_named_in`, and means an
+  existing file keeps its layout until midnight, where today the day of an upgrade
+  gets rows that do not match its header.
+- **New columns go at the end**, so an older header is always a prefix of a newer one.
+
+The operator will write the documentation caveats for Open-Meteo: the figures are
+model output, and a total is not guaranteed only to rise.
+
+What stops it is that `weather-metric-todo` has to merge first.
+
+### OpenWeatherMap as a third weather source
+
+OpenWeatherMap's free Current Weather API could serve operators who have no station
+and would rather not use a model.  It was left out of the release after units, on
+2026-09-27, for three reasons.
+
+It has no total since midnight, so one would have to be integrated from `rain.1h`,
+and a 40-minute poll showed that figure unchanged while `dt` moved five times.  It
+needs an API key, which the setup program has no way to require for one source and
+not the others.  And its data is a blend whose makeup the documentation does not
+describe.  See `online-weather-sources.md`.
+
+What would settle the rain question is running the integration beside a CumulusMX
+`rmidnight` through several days with rain at one station, and comparing the totals.
+Until somebody does that, a total derived from OpenWeatherMap cannot be trusted.
+
 ## Other receivers
 
 ### Verify the revised gain selection on an RTL-SDR
