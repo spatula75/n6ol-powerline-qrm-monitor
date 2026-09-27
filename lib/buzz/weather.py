@@ -149,11 +149,16 @@ class CumulusMXWeatherClient(WeatherClient):
 
     _ENDPOINT_PATH = 'api/tags/process.json'
     # The webtags for the six weather fields, then the two that name the station's units.
-    _QUERY = 'temp&hum&SolarRad&wspeed&wgust&avgbearing&tempunitnodeg&windunit'
+    # CumulusMX formats a decimal in its host's locale, so a station in Germany serves
+    # "20,5" and float() refuses it.  The leading `rc` is CumulusMX's "remove commas"
+    # switch for the whole request, and it works only as the first parameter.  See
+    # docs-notebook/cumulusmx-json-api.md.
+    _QUERY = 'rc&temp&hum&SolarRad&wspeed&wgust&avgbearing&tempunitnodeg&windunit'
 
-    # The four wind units CumulusMX offers, spelled as `windunit` is expected to spell
-    # them.  Nobody has checked the spellings against a live station, and
-    # docs-notebook/todo.md carries that as an open question.
+    # The four wind units CumulusMX offers, spelled as `windunit` returns them.  The
+    # spellings come from CumulusMX's source, where Cumulus.cs sets `Units.WindText` to
+    # exactly one of these, and `tempunitnodeg` returns the letter after the degree
+    # sign in "°C" or "°F".  Its master branch confirmed both on 2026-09-27.
     _KMH_PER_WIND_UNIT: dict[str, float] = {
         'km/h': 1.0,
         'mph': _KMH_PER_MPH,

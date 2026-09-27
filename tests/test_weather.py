@@ -104,7 +104,7 @@ class TestCumulusMXWeatherClient:
             return client.fetch()
 
     _FULL = ('http://cumulusmx.local:8998/api/tags/process.json'
-             '?temp&hum&SolarRad&wspeed&wgust&avgbearing&tempunitnodeg&windunit')
+             '?rc&temp&hum&SolarRad&wspeed&wgust&avgbearing&tempunitnodeg&windunit')
 
     _ADDRESSES = ['http://cumulusmx.local:8998/', 'http://cumulusmx.local:8998', 'cumulusmx.local:8998']
     _OLDER_FORMS = [
@@ -118,6 +118,14 @@ class TestCumulusMXWeatherClient:
     def test_every_form_of_the_setting_builds_the_same_url(self, setting):
         """The station's address alone, and every longer form an older config holds."""
         assert CumulusMXWeatherClient(setting)._url == self._FULL
+
+    def test_remove_commas_comes_first(self):
+        """CumulusMX honors `rc` only as the first parameter, and reads it as a tag anywhere else.
+
+        Without it, a station in a decimal-comma locale serves "20,5", and every fetch fails.
+        """
+        query = CumulusMXWeatherClient('http://cumulusmx.local:8998/')._url.split('?', 1)[1]
+        assert query.split('&')[0] == 'rc'
 
     def test_a_https_station_keeps_its_scheme(self):
         assert CumulusMXWeatherClient('https://wx.example.net/')._url.startswith('https://wx.example.net/api/')

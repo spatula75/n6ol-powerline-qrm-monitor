@@ -108,31 +108,6 @@ nothing on the band was strong enough to settle it.  A signal generator would.  
 figure of 57.5 dB against a nominal 49.6 in `config.py` and `receiver/source.py`
 is provisional, neither confirmed nor refuted.  See `sdr-gain-calibration.md`.
 
-### CumulusMX unit handling has never met a live station
-
-`CumulusMXWeatherClient` builds its own query string, with the `tempunitnodeg` and
-`windunit` webtags beside the six weather tags, and converts from the units those two
-name.  The Cumulus wiki confirms that both tags exist.  The client converts because
-CumulusMX serves every figure in the station's own units: on 2026-09-22 the operator
-read its webtag documentation, which is sparse, and found no parameter that asks for
-other units.  Three things about what they
-and the other tags return have never been checked against a running station, and the
-tests pin all three as assumptions.
-
-First, `windunit` is taken to return one of `km/h`, `mph`, `m/s` and `kts`.  A
-different spelling, such as `knots` or `MPH`, makes every fetch refuse, and the
-weather columns stay blank with a warning each minute.  Second, the values are taken
-to arrive as strings, which `float()` reads either way.  Third, nothing handles a
-station set to a locale with a decimal comma.  A value such as `20,5` now fails the
-conversion and blanks the row, where it used to reach the CSV and split the column
-in two.
-
-What stops it is access to a station.  Run the URL the client builds, once on an
-imperial station and once on a metric one, and compare the JSON with
-`TestCumulusMXWeatherClient`.  A station in a
-decimal-comma locale settles the third point, and the webtag parameter `rc=y` is the
-likely fix if it fails.
-
 ## Other receivers
 
 ### Verify the revised gain selection on an RTL-SDR
@@ -580,6 +555,24 @@ reliably.
 
 Nothing stops this beyond nobody having written it.  The test is one call against a
 method that takes a string.
+
+### The daily chart warns on a file with one row
+
+The first row of a new day's CSV gives the raw daily chart one timestamp, so
+`Plotter.generate_graph_from_csv` calls `set_xlim` with equal ends.  Matplotlib widens
+the range, prints a `UserWarning` about a singular transformation, and saves the chart
+anyway.  This happens once a day at the first minute after midnight, and on the first
+minute of any new file.  The smoothed chart is not affected, because it skips a file
+with no more rows than its window.
+
+The proposed fix sets the x range only when the series holds two different timestamps,
+and lets matplotlib choose it otherwise.  A test should turn warnings into errors over
+a one-row file, so that it fails if the warning returns.  Skipping the chart for one
+row was considered and set aside, because nobody has checked what the collector and
+the uploader do when that chart file is missing.
+
+Nothing stops it.  The operator put it off on 2026-09-27 to finish the weather work
+first.
 
 ### The "worth" construct is still through the codebase
 

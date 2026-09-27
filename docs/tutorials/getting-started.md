@@ -167,13 +167,23 @@ checks every day from then until today.
 
 Sometimes there are interesting correlations to be had between the weather and whether your electrical utility's
 equipment is making noise. Currently two systems are supported for retrieving weather data for your location: OpenMeteo
-and CumulusMX. If you have your own weather station supported by CumulusMX, you can point to it here. Getting the URL
-format for Cumulus is important; make sure it looks like
-this: `http://cumulusmx.local:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing`
-replacing `cumulusmx.local` with the IP address or hostname of the machine running CumulusMX.
+and CumulusMX. 
+
+#### Selecting a Weather Provider
+
+If you have your own weather station supported by CumulusMX, you can point to it here. 
+You need only supply the base URL for your station; for example: `http://cumulusmx.local:8998/`
+replacing `cumulusmx.local` with the IP address or hostname of the machine running CumulusMX.  The necessary API
+parameters will be added automatically.
 
 For OpenMeteo, enter your location's latitute and longitude, and the closest weather station to your location will be
 used to retrieve weather data.
+
+#### Unit Selection
+
+Choose whether you would like to log temperature and wind speed in imperial or metric units here.  In `imperial`
+mode, temperature is expressed in degrees Fahrenheit and wind speed in MPH.  In `metric` mode, temperature is
+expressed in degrees Celsius and wind speed in kph.
 
 ### Others
 
@@ -208,6 +218,11 @@ Once per minute, on the minute, the average noise floor and average signal stren
 filename is formatted with the current date, along with an indication of whether a signal lock was found for the full
 minute, part of the minute, or none of the minute. The CSV row also contains the most recent weather data at the time
 the estimate was taken.
+
+Note: at present, decimal values are denoted with a period, never a comma, regardless of locale, and fields are
+always separated by commas.  Locale-specific CSV format limitations may be addressed in a future release.  Header
+values do reflect the units chosen in the weather settings.  If you change units partway through the day, the
+headers do not change and previously written rows are not re-calculated.
 
 CSV files roll over automatically at the end of the day in the local time zone.
 
