@@ -8,8 +8,8 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from buzz.config import BuzzConfig
-from buzz.csv_store import CsvRow, CsvStore
-from buzz.weather import EMPTY_WEATHER, WeatherData
+from buzz.csv_store import _WEATHER_COLUMNS, CsvRow, CsvStore
+from buzz.weather import EMPTY_WEATHER, WeatherData, WeatherUnits
 
 _TZ = ZoneInfo('America/Los_Angeles')
 
@@ -486,9 +486,107 @@ class TestWeatherUnitsInTheCsv:
         explanations = [r for r in caplog.records if 'already records weather in imperial' in r.getMessage()]
         assert len(explanations) == 1
 
-    def test_a_header_naming_neither_unit_gets_the_configured_one(self, tmp_path):
+    def test_a_file_whose_header_names_no_weather_gets_none(self, tmp_path):
+        """The header is the file's schema, so a first line with no weather headings gets no weather cells."""
         store = self._store(tmp_path, 'metric')
         now = _ts(2024, 1, 15, 10, 30)
         store.filename_for_date(now).write_text('not a header\n')
         store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
-        assert self._lines(store, now)[1][7] == '20.0'
+        assert len(self._lines(store, now)[1]) == 7
+
+
+# The core headings every file starts with, as the 120 pps default writes them.
+_CORE = ('ISO datetime,120pps SNR,120pps signal (dBm),Noise floor (dBm),Signal Lock Status,'
+         'Grid frequency (Hz),Phase drift (samples/s)')
+
+
+class TestHeaderDrivenWeatherColumns:
+    """A row fills the weather columns its file's header lists, in the units each heading names."""
+
+    def _append_to(self, tmp_path: Path, weather_headings: str, units: str = 'imperial') -> tuple[list[str], str]:
+        """Append one row to a file that already has `weather_headings`, returning header and row."""
+        store = _make_store(tmp_path)
+        store._config.weather.units = units
+        store = CsvStore(store._config)
+        now = _ts(2024, 1, 15, 10, 30)
+        header = f'{_CORE},{weather_headings}' if weather_headings else _CORE
+        store.filename_for_date(now).write_text(header + '\n')
+        row = store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER, grid_frequency='60.010', phase_drift='-6.1')
+        return header.split(','), row
+
+    def test_a_new_file_gets_exactly_the_header_it_always_has(self, tmp_path):
+        """Pinned as text, so a change to the table that alters the header shows up here."""
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
+        assert store.filename_for_date(now).read_text().splitlines()[0] == (
+            f'{_CORE},Temperature (F),Humidity (%),Solar radiation (W/m^2),'
+            'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)')
+
+    def test_a_file_with_fewer_weather_columns_keeps_them_until_midnight(self, tmp_path):
+        """What stops a new column from appearing in a file an older version started."""
+        header, row = self._append_to(tmp_path, 'Temperature (F),Humidity (%)')
+        assert row.split(',')[7:] == ['68.0', '52.0']
+        assert len(row.split(',')) == len(header)
+
+    def test_the_columns_come_in_the_order_the_header_gives(self, tmp_path):
+        _, row = self._append_to(tmp_path, 'Wind bearing (deg),Temperature (F),Wind speed (MPH)')
+        assert row.split(',')[7:] == ['225', '68.0', '7.5']
+
+    def test_the_lowercase_watt_of_older_files_is_still_filled(self, tmp_path):
+        _, row = self._append_to(tmp_path, 'Solar radiation (w/m^2)')
+        assert row.split(',')[7:] == ['300.0']
+
+    def test_each_column_takes_the_units_its_own_label_names(self, tmp_path):
+        """A hand-edited header can mix systems, and each cell still matches its heading."""
+        _, row = self._append_to(tmp_path, 'Temperature (C),Wind speed (MPH)', units='imperial')
+        assert row.split(',')[7:] == ['20.0', '7.5']
+
+    @pytest.mark.parametrize('heading', ['Dew point (F)', 'Temperature (K)', 'Temperature', 'Humidity (percent)'])
+    def test_an_unknown_heading_or_label_gets_a_blank_cell(self, tmp_path, heading):
+        """Writing a number under a heading this version cannot read would be the silent error the header prevents."""
+        _, row = self._append_to(tmp_path, f'Temperature (F),{heading},Humidity (%)')
+        assert row.split(',')[7:] == ['68.0', '', '52.0']
+
+    def test_an_empty_heading_from_a_stray_comma_gets_a_blank_cell(self, tmp_path):
+        header, row = self._append_to(tmp_path, 'Temperature (F),')
+        assert row.split(',')[7:] == ['68.0', '']
+        assert len(row.split(',')) == len(header)
+
+    def test_an_unknown_heading_is_reported_once_per_file(self, tmp_path, caplog):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.filename_for_date(now).write_text(f'{_CORE},Temperature (F),Dew point (F)\n')
+        with caplog.at_level(logging.WARNING, logger='buzz.csv_store'):
+            for _ in range(3):
+                store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
+        warnings = [r.getMessage() for r in caplog.records if 'does not recognize' in r.getMessage()]
+        assert len(warnings) == 1
+        assert 'does not recognize: Dew point (F).' in warnings[0]
+
+    @pytest.mark.parametrize('weather_headings', [
+        '', 'Temperature (F)', 'Dew point (F),Wind gust (km/h)',
+        'Temperature (F),Humidity (%),Solar radiation (W/m^2),Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)',
+    ])
+    def test_every_row_has_as_many_cells_as_its_header(self, tmp_path, weather_headings):
+        header, row = self._append_to(tmp_path, weather_headings)
+        assert len(row.split(',')) == len(header)
+
+
+class TestTheWeatherColumnTable:
+    """The table that writes a new header and reads an old one back."""
+
+    def test_every_column_holds_a_real_weather_field(self):
+        assert {column.field for column in _WEATHER_COLUMNS} <= set(WeatherData._fields)
+
+    @pytest.mark.parametrize('units', ['imperial', 'metric'])
+    def test_every_heading_a_new_file_writes_is_read_back_as_itself(self, tmp_path, units):
+        """The drift pin between writing a header and reading it: each heading names its own column and units."""
+        store = _make_store(tmp_path)
+        store._config.weather.units = units
+        store = CsvStore(store._config)
+        for column in _WEATHER_COLUMNS:
+            written_in = WeatherUnits(units)
+            found, read_in = store._column_headed(column.heading(written_in))
+            assert found is column
+            assert read_in is written_in

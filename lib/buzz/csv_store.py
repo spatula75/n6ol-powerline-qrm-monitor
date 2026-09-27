@@ -8,18 +8,30 @@ files that predate the Signal Lock Status column), and aggregating a date range
 into the time-bucketed score dict the summary graphs consume.
 
 Column order is: timestamp, SNR, signal, noise floor, lock status, grid frequency,
-phase drift, then the six weather fields.  New columns belong immediately after
-lock status, because read_rows() stops reading at index 4 and every field past
-that point is written for humans and external tools rather than parsed here.
+phase drift, then the weather columns.  read_rows() stops reading at index 4, and
+read_grid_frequencies() finds its column by name, so every other field is written for
+people and external tools rather than parsed here.
 
-The header names the units of the weather columns, and a file keeps the units its
-header names.  A change to `[weather] units` therefore shows up in the first file
-created after the monitor restarts, and no file holds rows in two different units.
+A new weather column goes at the end of _WEATHER_COLUMNS, so that an older file's
+header stays a prefix of a newer one.  A new core column needs more care.  It would
+move the start of the weather section, and every file written before it would then
+have its first weather heading read as a core column.
+
+The weather columns follow the file's own header.  A new file gets every weather
+column this version knows, in the configured units.  A row added to an existing file
+gets one cell for each weather heading already there, in that heading's order and in
+the units its label names.  So a file keeps its columns and its units until midnight,
+whatever changed in between: a new version with more columns, or a change to
+`[weather] units` after a restart.  The core columns, timestamp through phase drift,
+stay positional, because their headings carry the pulse rate and a change to it must
+not blank the measurements.
 """
 
 import csv
 import logging
+import re
 from collections import defaultdict
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, time, timedelta
 from math import log
@@ -35,10 +47,58 @@ logger = logging.getLogger(__name__)
 # graph builds its time axis from the same constant so the two can't drift apart.
 BUCKET_MINUTES = 15
 
-# The header cell naming the grid-frequency column.  _header_line writes it and
+# The header cell naming the grid-frequency column.  _core_headings writes it and
 # read_grid_frequencies() reads it back, so the two cannot drift apart and a rename
 # cannot quietly turn every frequency chart empty.
 _GRID_FREQUENCY_HEADING = 'Grid frequency (Hz)'
+
+
+# A weather heading is a name with an optional unit label in parentheses, such as
+# "Temperature (F)" or "Humidity (%)".
+_WEATHER_HEADING = re.compile(r'(?P<name>.+?)(?: \((?P<label>[^()]*)\))?')
+
+
+@dataclass(frozen=True)
+class _WeatherColumn:
+    """One weather column: its heading, and the WeatherData field it holds.
+
+    A heading is the column's name with its unit in parentheses, such as
+    "Temperature (F)".  `labels` lists every unit the heading may show, with the
+    system each one belongs to: "F" is imperial and "C" is metric.  Humidity's "%" is
+    the same in both systems, so its entry is None.  A new file's header shows the
+    first entry that fits the configured system.
+    """
+    name: str
+    field: str  # the WeatherData field the column holds
+    labels: Mapping[str, WeatherUnits | None]
+
+    def heading(self, units: WeatherUnits) -> str:
+        """The heading a new file gives this column in `units`."""
+        label = next(label for label, meant in self.labels.items() if meant in (units, None))
+        return f'{self.name} ({label})'
+
+    def value(self, weather: WeatherData) -> CsvValue:
+        """The figure for this column, from weather the caller has converted to this column's units."""
+        return getattr(weather, self.field)
+
+
+# Every weather column this version writes, in the order a new header lists them.  The
+# labels for temperature and wind come from WeatherUnits, so a label cannot change in one
+# place and not the other.
+_WEATHER_COLUMNS = (
+    _WeatherColumn('Temperature', 'temperature', {units.temperature_label: units for units in WeatherUnits}),
+    _WeatherColumn('Humidity', 'humidity', {'%': None}),
+    # Files written before the watt got its capital W say "w/m^2", and still match.
+    _WeatherColumn('Solar radiation', 'solar_radiation', {'W/m^2': None, 'w/m^2': None}),
+    _WeatherColumn('Wind speed', 'wind_speed', {units.wind_speed_label: units for units in WeatherUnits}),
+    _WeatherColumn('Wind gust', 'wind_gust', {units.wind_speed_label: units for units in WeatherUnits}),
+    _WeatherColumn('Wind bearing', 'wind_bearing', {'deg': None}),
+)
+
+# A file's weather columns, one entry for each weather heading in its header.  An entry
+# holds the column that heading names and the system to write it in, or None when this
+# version does not recognize the heading.
+_WeatherLayout = list[tuple[_WeatherColumn, WeatherUnits] | None]
 
 
 @dataclass(frozen=True)
@@ -55,9 +115,9 @@ class CsvStore:
     def __init__(self, config: BuzzConfig) -> None:
         self._config = config
         self._weather_units = WeatherUnits.from_setting(config.weather.units)
-        # The file whose units the log has already explained, so that the explanation
-        # appears once per file rather than once a minute.
-        self._explained_units_of: Path | None = None
+        # The file whose weather layout the log has already explained, so that the
+        # explanation appears once per file rather than once a minute.
+        self._explained_layout_of: Path | None = None
 
     def filename_for_date(self, date: datetime) -> Path:
         return Path(self._config.station.path) / f'noise_data.{date.strftime("%Y-%m-%d")}.csv'
@@ -67,8 +127,9 @@ class CsvStore:
                *, grid_frequency: CsvValue = '', phase_drift: CsvValue = '') -> str:
         """Append one measurement row, writing the header first if the file is new.
 
-        The weather goes in the units the file's header names.  A new file gets the
-        configured units, and an existing one keeps whatever units it started with.
+        The weather section follows the file's header.  A new file gets every weather
+        column in the configured units, and an existing one keeps the columns and the
+        units its header names.
 
         grid_frequency and phase_drift are keyword-only and default to blank.  They
         are by-products of the analyzer's drift tracking rather than measurements the
@@ -79,61 +140,85 @@ class CsvStore:
         """
         csv_filename = self.filename_for_date(now)
         write_header = not csv_filename.exists()
-        units = self._weather_units if write_header else self._units_named_in(csv_filename)
-        converted = weather.in_units(units)
-        # The six columns the header names.  Rain and the weather timestamp have no
-        # column yet, so they are left out rather than written under no heading.
-        weather_fields = ','.join(str(value) for value in (
-            converted.temperature, converted.humidity, converted.solar_radiation,
-            converted.wind_speed, converted.wind_gust, converted.wind_bearing))
-        csv_str = (f'{now.isoformat()},{snr:.2f},{signal:.2f},{noise:.2f},'
-                   f'{lock_status},'
-                   f'{grid_frequency},{phase_drift},'
-                   f'{weather_fields}')
+        layout = self._new_weather_layout() if write_header else self._weather_layout_of(csv_filename)
+        cells = [now.isoformat(), f'{snr:.2f}', f'{signal:.2f}', f'{noise:.2f}', lock_status,
+                 str(grid_frequency), str(phase_drift), *self._weather_cells(weather, layout)]
+        csv_str = ','.join(cells)
         with open(csv_filename, 'a') as f:
             if write_header:
-                f.write(self._header_line(units))
+                weather_headings = [column.heading(units) for column, units in filter(None, layout)]
+                f.write(','.join(self._core_headings() + weather_headings) + '\n')
             f.write(f'{csv_str}\n')
         return csv_str
 
-    def _header_line(self, units: WeatherUnits) -> str:
-        """The header row for a new file, naming `units` for the weather columns."""
+    def _core_headings(self) -> list[str]:
+        """The headings of the columns every row writes by position, ahead of the weather."""
         pps = self._config.audio.pulse_rate
-        wind = units.wind_speed_label
-        return (f'ISO datetime,{pps}pps SNR,{pps}pps signal (dBm),Noise floor (dBm),'
-                f'Signal Lock Status,'
-                f'{_GRID_FREQUENCY_HEADING},Phase drift (samples/s),'
-                f'{self._temperature_heading(units)},Humidity (%),Solar radiation (W/m^2),'
-                f'Wind speed ({wind}),Wind gust ({wind}),Wind bearing (deg)\n')
+        return ['ISO datetime', f'{pps}pps SNR', f'{pps}pps signal (dBm)', 'Noise floor (dBm)',
+                'Signal Lock Status', _GRID_FREQUENCY_HEADING, 'Phase drift (samples/s)']
 
-    @staticmethod
-    def _temperature_heading(units: WeatherUnits) -> str:
-        """The temperature column's header cell, which is how a file names its units.
+    def _new_weather_layout(self) -> _WeatherLayout:
+        """Every weather column, in the configured units, for a file this row creates."""
+        return [(column, self._weather_units) for column in _WEATHER_COLUMNS]
 
-        _header_line writes it and _units_named_in reads it back, so the two cannot
-        drift apart.
-        """
-        return f'Temperature ({units.temperature_label})'
-
-    def _units_named_in(self, csv_filename: Path) -> WeatherUnits:
-        """The units an existing file's header names, so that later rows can match them.
+    def _weather_layout_of(self, csv_filename: Path) -> _WeatherLayout:
+        """The weather layout an existing file's header describes.
 
         This reads the header on every append.  An append happens once a minute and the
-        header is one short line, so the cost is too small to matter, and an answer read
-        fresh stays right if somebody edits or replaces the file.  A header that names
-        neither unit gets the configured units, because it gives nothing to match.
+        header is one short line, so the cost is too small to matter.  A layout read
+        fresh also stays right if somebody edits or replaces the file.
+
+        The weather section is every heading after the core columns, counted by
+        position.  A file written before the grid frequency columns existed has two
+        fewer core columns, so its first two weather headings are counted as core.  Its
+        rows then come out as misaligned as they always did on the day of that upgrade.
         """
         with open(csv_filename, newline='') as f:
             header = next(csv.reader(f), [])
-        named = next((units for units in WeatherUnits if self._temperature_heading(units) in header),
-                     self._weather_units)
-        if named is not self._weather_units and self._explained_units_of != csv_filename:
-            self._explained_units_of = csv_filename
+        headings = header[len(self._core_headings()):]
+        layout = [self._column_headed(heading) for heading in headings]
+        if csv_filename != self._explained_layout_of:
+            self._explained_layout_of = csv_filename
+            self._explain_layout(csv_filename, headings, layout)
+        return layout
+
+    def _column_headed(self, heading: str) -> tuple[_WeatherColumn, WeatherUnits] | None:
+        """Look up the column a heading names, and the system its unit belongs to.
+
+        This returns None when the table does not have the heading's name, or has it
+        with a different unit.  A column such as humidity, whose unit is the same in
+        both systems, comes back with the configured system.  Either system would do,
+        because humidity reads the same in both.
+        """
+        match = _WEATHER_HEADING.fullmatch(heading.strip())
+        if match is None:
+            return None
+        column = next((column for column in _WEATHER_COLUMNS if column.name == match['name']), None)
+        if column is None or match['label'] not in column.labels:
+            return None
+        meant = column.labels[match['label']]
+        return column, self._weather_units if meant is None else meant
+
+    def _explain_layout(self, csv_filename: Path, headings: list[str], layout: _WeatherLayout) -> None:
+        """Log what an existing file's layout does that the configuration would not."""
+        unknown = [heading for heading, slot in zip(headings, layout) if slot is None]
+        if unknown:
+            logger.warning(
+                '%s has weather headings this version does not recognize: %s.  The monitor '
+                'leaves those columns blank in the rows it adds to that file.  The next new '
+                'file gets the current columns.', csv_filename.name, ', '.join(unknown))
+        kept = sorted({units for _, units in filter(None, layout)} - {self._weather_units})
+        if kept:
             logger.info(
                 '[weather] units is %s, but %s already records weather in %s units.  The '
                 'monitor keeps that file in %s units.  The next new file uses %s units.',
-                self._weather_units, csv_filename.name, named, named, self._weather_units)
-        return named
+                self._weather_units, csv_filename.name, kept[0], kept[0], self._weather_units)
+
+    @staticmethod
+    def _weather_cells(weather: WeatherData, layout: _WeatherLayout) -> list[str]:
+        """One cell per heading in `layout`, each in the units its heading names."""
+        converted = {units: weather.in_units(units) for units in {units for _, units in filter(None, layout)}}
+        return ['' if slot is None else str(slot[0].value(converted[slot[1]])) for slot in layout]
 
     def read_rows(self, input_filename: Path | str) -> list[CsvRow]:
         """Parse one CSV file into CsvRow records, skipping headers and malformed lines.
