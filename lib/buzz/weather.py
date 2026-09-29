@@ -214,6 +214,11 @@ class CumulusMXWeatherClient(WeatherClient):
     # tags are read a few milliseconds apart and can straddle a second.  Every one of the
     # 598 zones in the tz database sat on a whole quarter hour in January and July 2026.
     _OFFSET_ROUNDING_MINUTES = 15
+    # The extremes of UTC offset in the tz database, which were Etc/GMT+12 at -12:00 and
+    # Pacific/Kiritimati at +14:00 in January and July 2026.  They span 26 hours, so a
+    # host's time of day alone cannot always name its offset.
+    _EARLIEST_UTC_OFFSET = timedelta(hours=-12)
+    _LATEST_UTC_OFFSET = timedelta(hours=14)
 
     # What `LastDataReadT` returns before CumulusMX has read anything from the station.
     # webtags.cs substitutes it for any date at or before its default record date,
@@ -301,18 +306,26 @@ class CumulusMXWeatherClient(WeatherClient):
         """Warn when the computer running CumulusMX keeps another zone's time.
 
         `utc_epoch` and `host_clock` are the same moment in UTC and on the host's own
-        clock.  Their difference, taken across midnight where the two fall on different
-        days, is the host's offset from UTC.
+        clock.  The host clock gives only a time of day, so their difference fixes the
+        host's offset from UTC to within a whole day.  Offsets run from -12:00 to +14:00,
+        which is more than a day, so no 24-hour range holds them all.  The check
+        therefore compares the two offsets modulo a day.  That is also the comparison
+        that matters, because two clocks a whole day apart reach midnight together.
         """
         utc = datetime.fromtimestamp(utc_epoch, UTC)
         hours, minutes, seconds = (int(part) for part in host_clock.split(':'))
         seconds_apart = (hours * 3600 + minutes * 60 + seconds) - (utc.hour * 3600 + utc.minute * 60 + utc.second)
-        wrapped = (seconds_apart + 12 * 3600) % (24 * 3600) - 12 * 3600
-        step = self._OFFSET_ROUNDING_MINUTES * 60
-        host_offset = timedelta(seconds=round(wrapped / step) * step)
         station_offset = utc.astimezone(self._zone).utcoffset()
-        if host_offset == station_offset:
+        # `ahead` is how far the host clock runs ahead of the station's, folded into the
+        # half day either side of it.  The rounding absorbs a second that ticks between
+        # the two readings.
+        half_day = 12 * 3600
+        ahead = (seconds_apart - station_offset.total_seconds() + half_day) % (2 * half_day) - half_day
+        step = self._OFFSET_ROUNDING_MINUTES * 60
+        ahead_of_station = timedelta(seconds=round(ahead / step) * step)
+        if not ahead_of_station:
             return
+        host_offset = self._as_real_offset(station_offset + ahead_of_station)
         # The station's local time at the moment the host's clock reads midnight.  Any
         # midnight would do as the starting point, since only the hour and minute print.
         restart = (datetime(2000, 1, 1) + station_offset - host_offset).strftime('%H:%M')
@@ -323,6 +336,22 @@ class CumulusMXWeatherClient(WeatherClient):
             'zone, or correct [station] timezone.',
             self._utc_offset_text(host_offset), self._zone.key,
             self._utc_offset_text(station_offset), restart)
+
+    @classmethod
+    def _as_real_offset(cls, offset: timedelta) -> timedelta:
+        """Move `offset` by a whole day where that brings it into the range real zones use.
+
+        Real zones use every offset from -12:00 to -10:00, and also the offsets one day
+        later, from +12:00 to +14:00.  The host's time of day cannot tell such a pair
+        apart, and both print the same restart hour, so the method keeps whichever one
+        it was given.
+        """
+        day = timedelta(days=1)
+        if offset > cls._LATEST_UTC_OFFSET:
+            return offset - day
+        if offset < cls._EARLIEST_UTC_OFFSET:
+            return offset + day
+        return offset
 
     @staticmethod
     def _utc_offset_text(offset: timedelta) -> str:
@@ -400,16 +429,26 @@ class OpenMeteoWeatherClient(WeatherClient):
         interval_end = current['time']
         series = payload['minutely_15']
         return WeatherData(
-            temperature=current['temperature_2m'],
-            humidity=current['relative_humidity_2m'],
-            solar_radiation=current['shortwave_radiation'],
-            wind_speed=current['wind_speed_10m'],
-            wind_gust=current['wind_gusts_10m'],
-            wind_bearing=current['wind_direction_10m'],
+            temperature=self._current_reading(current, 'temperature_2m'),
+            humidity=self._current_reading(current, 'relative_humidity_2m'),
+            solar_radiation=self._current_reading(current, 'shortwave_radiation'),
+            wind_speed=self._current_reading(current, 'wind_speed_10m'),
+            wind_gust=self._current_reading(current, 'wind_gusts_10m'),
+            wind_bearing=self._current_reading(current, 'wind_direction_10m'),
             rain_since_midnight=self._rain_since_midnight(series['time'], series['precipitation'],
                                                           interval_end),
             timestamp=datetime.fromtimestamp(interval_end, UTC),
         )
+
+    @staticmethod
+    def _current_reading(current: Mapping[str, float | None], field: str) -> CsvValue:
+        """A figure from `current`, or blank where Open-Meteo sends null or leaves it out.
+
+        A null passed through would reach `WeatherData.in_units` as None, where float()
+        raises and the collector loses the whole row, noise measurement included.
+        """
+        value = current.get(field)
+        return '' if value is None else value
 
     def _rain_since_midnight(self, times: Sequence[int], amounts: Sequence[float | None],
                              interval_end: int) -> CsvValue:

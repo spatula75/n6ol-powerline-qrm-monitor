@@ -5,7 +5,7 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock, patch
-from zoneinfo import ZoneInfo
+from zoneinfo import ZoneInfo, available_timezones
 
 import pytest
 
@@ -301,6 +301,36 @@ class TestTheCumulusMXHostClock:
         assert 'runs on a clock at UTC+00:00' in text
         assert 'restarts at 17:00 station time.' in text
 
+    @pytest.mark.parametrize('zone, host_clock', [('Pacific/Auckland', '15:29:08'),
+                                                  ('Pacific/Kiritimati', '16:29:08')])
+    def test_a_host_east_of_utc_plus_12_agrees_with_its_own_zone(self, zone, host_clock, caplog):
+        """Auckland keeps daylight time, UTC+13:00, from 2026-09-27, and Kiritimati is UTC+14:00.
+
+        A fold of the host's offset into -12:00 to +12:00 read these as -11:00 and -10:00.
+        """
+        assert self._first_fetch(zone, self._UTC_EPOCH, host_clock, caplog) == ''
+
+    def test_a_host_far_from_an_eastern_station_prints_a_real_offset(self, caplog):
+        """A Los Angeles host reaches midnight at 07:00 UTC, which is 20:00 in Auckland.
+
+        The host is 20 hours behind Auckland, which equals 4 hours ahead modulo a day.  Adding
+        that to +13:00 would print +17:00, an offset no zone uses.
+        """
+        text = self._first_fetch('Pacific/Auckland', self._UTC_EPOCH, '19:29:08', caplog)
+        assert ('CumulusMX runs on a clock at UTC-07:00, and [station] timezone Pacific/Auckland is at '
+                'UTC+13:00.') in text
+        assert 'restarts at 20:00 station time.' in text
+
+    def test_every_zone_falls_inside_the_offsets_the_client_prints(self):
+        """A zone outside the range would have its host offset printed a day away from the truth."""
+        stated = (CumulusMXWeatherClient._EARLIEST_UTC_OFFSET, CumulusMXWeatherClient._LATEST_UTC_OFFSET)
+        outside = [zone for zone in available_timezones() for month in (1, 7)
+                   if not stated[0] <= datetime(2026, month, 15, tzinfo=ZoneInfo(zone)).utcoffset() <= stated[1]]
+        assert not outside, (
+            f'{sorted(set(outside))} sit outside {stated[0]} to {stated[1]}.  The tz database has '
+            f'probably gained a zone at a new extreme.  Widen _EARLIEST_UTC_OFFSET or '
+            f'_LATEST_UTC_OFFSET in buzz.weather to match.')
+
     def test_the_warning_appears_once_however_many_fetches_follow(self, caplog):
         text = self._first_fetch('America/New_York', self._UTC_EPOCH, '19:29:08', caplog, fetches=3)
         assert text.count('CumulusMX runs on a clock') == 1
@@ -350,6 +380,27 @@ class TestOpenMeteoWeatherClient:
         result = self._fetch(self._BANGKOK)
         assert (result.temperature, result.humidity, result.solar_radiation) == (24.7, 95, 0.0)
         assert (result.wind_speed, result.wind_gust, result.wind_bearing) == (17.1, 42.1, 165)
+
+    _CURRENT_FIELDS = ('temperature_2m', 'relative_humidity_2m', 'shortwave_radiation',
+                       'wind_speed_10m', 'wind_gusts_10m', 'wind_direction_10m')
+
+    @pytest.mark.parametrize('units', list(WeatherUnits))
+    def test_a_null_reading_is_blank_and_converts_without_error(self, units):
+        """Open-Meteo sends null for a figure its model lacks, as the precipitation series already shows.
+
+        A None that reached in_units raised in float() and cost the collector the whole row.
+        """
+        payload = json.loads(self._BANGKOK)
+        payload['current'].update(dict.fromkeys(self._CURRENT_FIELDS))
+        result = self._fetch(json.dumps(payload).encode()).in_units(units)
+        assert result[:6] == ('',) * 6
+
+    def test_a_reading_left_out_of_the_reply_is_blank(self):
+        payload = json.loads(self._BANGKOK)
+        del payload['current']['wind_gusts_10m']
+        result = self._fetch(json.dumps(payload).encode())
+        assert result.wind_gust == ''
+        assert result.wind_speed == 17.1
 
     def test_the_weather_timestamp_is_the_end_of_the_current_interval(self):
         # GNU `date -u -d @1790549100` gives 22:45 UTC, which is 05:45 in Bangkok.
