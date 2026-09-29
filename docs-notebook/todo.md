@@ -131,17 +131,10 @@ behind it are in `cumulusmx-json-api.md` and `online-weather-sources.md`.
 - **A startup warning when CumulusMX's midnight is not ours.**  `rmidnight` resets at
   the host's midnight.  Derive the host's offset from `timeUnix` and `timehhmmss`, and
   warn when it differs from `[station] timezone`.
-- **The header decides the weather columns.**  The core columns, timestamp through
-  phase drift, stay positional, because their headings carry the pulse rate and a
-  change to it must not blank the measurement.  Every column after them is matched by
-  name against a table of known columns and the unit labels each accepts.  A heading
-  splits into a name and an optional `(label)`.  A column that needs no conversion
-  accepts every label it has had, so `Solar radiation (w/m^2)` and `(W/m^2)` both
-  match.  A heading or label the table does not know leaves that column blank, with a
-  warning once per file.  This replaces `CsvStore._units_named_in`, and means an
-  existing file keeps its layout until midnight, where today the day of an upgrade
-  gets rows that do not match its header.
-- **New columns go at the end**, so an older header is always a prefix of a newer one.
+- **Rows follow their file's header.**  Done on `rain-and-weather-timestamp`: every
+  column, core and weather, is an entry in `_COLUMNS` in `csv_store.py`, and a row
+  added to an existing file fills the columns its header names.  What remains is to
+  add rain and the weather timestamp to that table, at the end.
 
 The operator will write the documentation caveats for Open-Meteo: the figures are
 model output, and a total is not guaranteed only to rise.
@@ -164,7 +157,123 @@ What would settle the rain question is running the integration beside a CumulusM
 `rmidnight` through several days with rain at one station, and comparing the totals.
 Until somebody does that, a total derived from OpenWeatherMap cannot be trusted.
 
+## Display and playback
+
+### The scope takes seconds to find a quiet recording's scale
+
+On 2026-09-28 the operator noticed that a replay, and a render to video, of an event an
+SDRplay recorded spends its opening seconds with the scope still scaling down.  An
+SDRplay needs so little gain that its audio sits far below where the scope starts.
+
+The scope starts every run at `_INITIAL_FULL_SCALE`, 2048 counts, and
+`auto_range_full_scale` blends each 100 ms frame's measurement in with an EMA weight
+of 0.05.  So the distance to the right scale shrinks by 5% a frame, and a quiet input
+takes a long time to reach it.  From 2048 counts, worked out from those two figures:
+
+| settled scale | within 2x of it | within 10% of it |
+|---|---|---|
+| 2.84 counts | 12.8 s | 17.3 s |
+| 31.05 counts | 8.1 s | 12.6 s |
+| 100 counts | 5.8 s | 10.3 s |
+
+2.84 and 31.05 counts are the range an RSP1B asked for on 2026-09-18, from
+`scope-auto-range-floor.md`.  A render is the worst case, because those seconds open
+the video, and an event recording is short to begin with.
+
+There are two ways to start nearer the answer:
+
+- **Take the first frame's measurement as the starting scale**, rather than blending
+  it into 2048, and let the EMA carry on from there as it does now.  This needs no
+  file access and helps a live start as much as a replay.  On 2026-09-28 the operator
+  chose it as the one to build.
+- **Seed the scale from the recording before the display starts**, as the operator
+  suggested, by measuring the opening of the file with the same percentile and
+  headroom `auto_range_full_scale` uses.  The span should be fixed in time rather
+  than in samples, per the rule in `CLAUDE.md`.  100 samples is 6 ms at 16 kHz, less
+  than one 8.3 ms pulse period, so it can miss every impulse and seed the scale at
+  the noise.  Half a second covers dozens of pulses at any rate.
+
+The first-frame seed has three conditions, and the first decides whether it works at
+all:
+
+- **The first frame must hold real audio.**  Before the buffer has any, or when an
+  aligned window ends before the first sample, `get_snapshot` in `sampler.py` returns
+  a window of zeros, and `_tick` measures it like any other.  Seeding from that
+  frame would put the scale at the floor, the most magnification the scope allows.
+  The signal would then sit pinned at the rails, looking like overload, while the
+  scale spent seconds climbing back up.  So the seed waits for the first frame whose
+  window is full of delivered audio, which is when `total_samples` has reached the
+  capture length plus the alignment.  The scope can tell that without looking at the
+  samples.
+- **Each scale takes its own seed.**  `_average_full_scale` moves only while averaging
+  is on, so a switch into averaging minutes into a run still starts it from 2048.
+  It should seed from its own first frame instead.  That frame averages only a few
+  sweeps and reads somewhat high, and the EMA brings it down.
+- **A new stream starts a new seed.**  The flag that says "seeded" belongs to the
+  stream, not to the widget, so a second replay in one session is seeded from its own
+  audio rather than starting from the last one's scale.
+
+A first frame caught during a burst of static, or a receiver's startup transient,
+seeds the scale too high.  The EMA then takes its usual seconds to correct it, which
+is no worse than today's start.
+
+The test has to measure the settling rather than the constant.  It feeds a quiet input
+and counts the frames until the scale is within 2x of where it ends up.  A second test
+feeds a window of zeros first and checks that it does not seed the scale.
+
+Nothing stops it beyond the CSV work in progress coming first.
+
 ## Other receivers
+
+### An RTL-SDR closed twice at shutdown, and the first close faulted
+
+This is for the next release.  On 2026-09-27, closing the monitor window with an
+RTL-SDR running printed a faulthandler dump, "Windows fatal exception: access
+violation", on the `rtlsdr` thread inside pyrtlsdr's `close()` (`rtlsdr.py:214`),
+which `read_bytes_async` (`rtlsdr.py:726`) had called.  The main thread was waiting in
+`RtlSdrDevice.stop_stream` for that thread at the time.  Three seconds later the log
+said the receiver "did not close within 3 seconds and was left to the operating
+system".  It has happened once.
+
+The process most likely survived the fault.  faulthandler on Windows prints an access
+violation the moment it happens, before ctypes turns it into an `OSError`, and the
+warning that followed comes from `_close_handle`, which runs only after the capture
+thread has ended.
+
+What follows is reconstructed from the Python frames and the code, because the dump
+had no C frames.  `cancel_read_async` made `rtlsdr_read_async` return an error code,
+which is an inference.  pyrtlsdr answers an error code by closing the device itself,
+and that `rtlsdr_close` faulted.  The fault escaped as an `OSError` before pyrtlsdr set
+`device_opened = False`, and `_run` discarded it because `_stopping` was set.  The join
+then returned, `close()` called `_close_handle`, and pyrtlsdr's `close()` called
+`rtlsdr_close` a second time on a handle already half torn down.  That call blocked
+until the three-second timeout gave up on it.
+
+The defect on our side is the second close.  `read_block` already knows that pyrtlsdr
+closes the device on a read error, and sets `_released_by_driver`.  `_run` does not, so
+any exception out of `read_bytes_async` leads to a second `rtlsdr_close`.  It hung
+harmlessly this time, and a close on a freed handle could as easily crash for real.
+
+The fix planned is for `_run` to record that the driver has already attempted the
+close, so `close()` never calls it again.  pyrtlsdr's own `device_opened` then tells
+the two outcomes apart.  False means its close worked and the receiver is free.  True
+means its close failed, the receiver may stay held until the process ends, and the
+log should say that rather than report it released.  The test is a stand-in device
+whose `read_bytes_async` raises after a failed close, asserting no second close.
+
+The fault inside `rtlsdr_close` itself belongs to librtlsdr and cannot be fixed from
+Python.  Avoiding pyrtlsdr's own close altogether would mean calling
+`rtlsdr_read_async` through ctypes directly, and that change should wait for a way to
+reproduce the fault.
+
+Check the SDRplay at the same time.  Its device class drives a different library and
+does not go through pyrtlsdr, so this exact path cannot occur there.  Whether its own
+shutdown can close twice, or close while a callback is still running, has not been
+looked at.
+
+What stops it is the CSV work in progress on `rain-and-weather-timestamp`, which comes
+first.  If the fault happens again before the fix, a run with `--log-level DEBUG` would
+show the exception `_run` currently discards.
 
 ### Verify the revised gain selection on an RTL-SDR
 

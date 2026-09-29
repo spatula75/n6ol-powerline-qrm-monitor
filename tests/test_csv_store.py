@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from buzz.config import BuzzConfig
-from buzz.csv_store import _WEATHER_COLUMNS, CsvRow, CsvStore
+from buzz.csv_store import _COLUMNS, _GRID_FREQUENCY_HEADING, _HEADING_FORMAT, CsvRow, CsvStore, _Row
 from buzz.weather import EMPTY_WEATHER, WeatherData, WeatherUnits
 
 _TZ = ZoneInfo('America/Los_Angeles')
@@ -223,7 +223,7 @@ class TestAppend:
         store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
         content = store.filename_for_date(now).read_text()
         assert 'ISO datetime' in content
-        assert '120pps SNR' in content
+        assert 'SNR [120 pps] (dB)' in content
 
     def test_no_headers_on_subsequent_calls(self, tmp_path):
         store = _make_store(tmp_path)
@@ -486,16 +486,19 @@ class TestWeatherUnitsInTheCsv:
         explanations = [r for r in caplog.records if 'already records weather in imperial' in r.getMessage()]
         assert len(explanations) == 1
 
-    def test_a_file_whose_header_names_no_weather_gets_none(self, tmp_path):
-        """The header is the file's schema, so a first line with no weather headings gets no weather cells."""
+    def test_a_first_line_that_is_not_a_header_gets_the_full_current_row(self, tmp_path):
+        """Following it would drop every measurement, so the row is written whole instead."""
         store = self._store(tmp_path, 'metric')
         now = _ts(2024, 1, 15, 10, 30)
         store.filename_for_date(now).write_text('not a header\n')
         store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
-        assert len(self._lines(store, now)[1]) == 7
+        row = self._lines(store, now)[1]
+        assert row[1:5] == ['15.00', '-80.00', '-95.00', 'full']
+        assert row[7:] == ['20.0', '52.0', '300.0', '12.0', '19.3', '225']
 
 
-# The core headings every file starts with, as the 120 pps default writes them.
+# The core headings a file started before SNR moved its pulse rate begins with.  Rows added
+# to one of these must still fill every column.
 _CORE = ('ISO datetime,120pps SNR,120pps signal (dBm),Noise floor (dBm),Signal Lock Status,'
          'Grid frequency (Hz),Phase drift (samples/s)')
 
@@ -514,14 +517,43 @@ class TestHeaderDrivenWeatherColumns:
         row = store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER, grid_frequency='60.010', phase_drift='-6.1')
         return header.split(','), row
 
-    def test_a_new_file_gets_exactly_the_header_it_always_has(self, tmp_path):
+    def test_a_new_file_gets_exactly_this_header(self, tmp_path):
         """Pinned as text, so a change to the table that alters the header shows up here."""
         store = _make_store(tmp_path)
         now = _ts(2024, 1, 15, 10, 30)
         store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
         assert store.filename_for_date(now).read_text().splitlines()[0] == (
-            f'{_CORE},Temperature (F),Humidity (%),Solar radiation (W/m^2),'
+            'ISO datetime,SNR [120 pps] (dB),Signal [120 pps] (dBm),Noise floor (dBm),Signal Lock Status,'
+            'Grid frequency (Hz),Phase drift (samples/s),Temperature (F),Humidity (%),Solar radiation (W/m^2),'
             'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)')
+
+    @pytest.mark.parametrize('units, weather_cells', [
+        ('imperial', ['68.0', '52.0', '300.0', '7.5', '12.0', '225']),
+        ('metric', ['20.0', '52.0', '300.0', '12.0', '19.3', '225']),
+    ])
+    def test_the_next_row_in_a_file_this_version_started_fills_every_column(self, tmp_path, caplog, units,
+                                                                            weather_cells):
+        """The case that runs every minute: the second row is read against the header the first one wrote.
+
+        The rows alone cannot show that the header was read.  A header the reader could
+        not follow falls back to the full current row, which here looks the same, so the
+        test also requires that the file drew no warning.
+        """
+        store = _make_store(tmp_path)
+        store._config.weather.units = units
+        store = CsvStore(store._config)
+        first, second = _ts(2024, 1, 15, 10, 30), _ts(2024, 1, 15, 10, 31)
+        with caplog.at_level(logging.INFO, logger='buzz.csv_store'):
+            store.append(first, 15.0, -80.0, -95.0, 'full', _WEATHER, grid_frequency='60.010', phase_drift='-6.1')
+            store.append(second, 17.5, -81.0, -96.0, 'partial', _WEATHER, grid_frequency='59.990',
+                         phase_drift='-5.9')
+        assert caplog.records == [], 'a file this version started should need no explaining'
+        header, *rows = [line.split(',') for line in store.filename_for_date(first).read_text().splitlines()]
+        assert rows == [
+            [first.isoformat(), '15.00', '-80.00', '-95.00', 'full', '60.010', '-6.1', *weather_cells],
+            [second.isoformat(), '17.50', '-81.00', '-96.00', 'partial', '59.990', '-5.9', *weather_cells],
+        ]
+        assert all(len(row) == len(header) for row in rows)
 
     def test_a_file_with_fewer_weather_columns_keeps_them_until_midnight(self, tmp_path):
         """What stops a new column from appearing in a file an older version started."""
@@ -573,20 +605,211 @@ class TestHeaderDrivenWeatherColumns:
         assert len(row.split(',')) == len(header)
 
 
-class TestTheWeatherColumnTable:
+class TestTheColumnTable:
     """The table that writes a new header and reads an old one back."""
 
-    def test_every_column_holds_a_real_weather_field(self):
-        assert {column.field for column in _WEATHER_COLUMNS} <= set(WeatherData._fields)
+    def test_every_column_can_fill_a_cell(self):
+        """A weather column names its WeatherData field as text, so a misspelled field only fails here."""
+        row = _Row(_ts(2024, 1, 15, 10, 30), 15.0, -80.0, -95.0, 'full', '60.010', '-6.1', _WEATHER)
+        assert [column.cell(row, _WEATHER) for column in _COLUMNS][1:] == [
+            '15.00', '-80.00', '-95.00', 'full', '60.010', '-6.1',
+            '20.0', '52.0', '300.0', '12.0', '19.3', '225']
 
     @pytest.mark.parametrize('units', ['imperial', 'metric'])
-    def test_every_heading_a_new_file_writes_is_read_back_as_itself(self, tmp_path, units):
+    @pytest.mark.parametrize('pulse_rate', [120, 100])
+    def test_every_heading_a_new_file_writes_is_read_back_as_itself(self, tmp_path, units, pulse_rate):
         """The drift pin between writing a header and reading it: each heading names its own column and units."""
         store = _make_store(tmp_path)
         store._config.weather.units = units
+        store._config.audio.pulse_rate = pulse_rate
         store = CsvStore(store._config)
-        for column in _WEATHER_COLUMNS:
-            written_in = WeatherUnits(units)
-            found, read_in = store._column_headed(column.heading(written_in))
+        written_in = WeatherUnits(units)
+        for column in _COLUMNS:
+            found, read_in = store._column_headed(column.heading(written_in, pulse_rate))
             assert found is column
             assert read_in is written_in
+
+    def test_the_grid_frequency_heading_is_the_one_the_chart_reads(self):
+        """read_grid_frequencies finds its column by this text, so a change to one must change both."""
+        grid = next(column for column in _COLUMNS if column.name == 'Grid frequency')
+        assert grid.heading(WeatherUnits.IMPERIAL, 120) == _GRID_FREQUENCY_HEADING
+
+    def test_the_first_five_columns_are_the_ones_read_rows_reads(self):
+        """read_rows reads timestamp, SNR, signal, noise and lock status by position."""
+        assert [column.name for column in _COLUMNS[:5]] == [
+            'ISO datetime', 'SNR', 'Signal', 'Noise floor', 'Signal Lock Status']
+
+
+class TestHeadersFromOlderFiles:
+    """Rows added to a file that an older version, or another setting, started."""
+
+    def _append(self, tmp_path: Path, header: str, pulse_rate: int = 120) -> str:
+        store = _make_store(tmp_path)
+        store._config.audio.pulse_rate = pulse_rate
+        store = CsvStore(store._config)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.filename_for_date(now).write_text(header + '\n')
+        return store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER, grid_frequency='60.010', phase_drift='-6.1')
+
+    def test_a_file_from_before_the_grid_frequency_columns_stays_aligned(self, tmp_path):
+        """Positional writing put drift figures under Temperature and Humidity on the day of that upgrade."""
+        header = ('ISO datetime,120pps SNR,120pps signal (dBm),Noise floor (dBm),Signal Lock Status,'
+                  'Temperature (F),Humidity (%),Solar radiation (w/m^2),'
+                  'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)')
+        row = self._append(tmp_path, header).split(',')
+        assert row[4:] == ['full', '68.0', '52.0', '300.0', '7.5', '12.0', '225']
+        assert len(row) == len(header.split(','))
+
+    def test_a_file_headed_for_another_pulse_rate_keeps_its_measurements(self, tmp_path, caplog):
+        header = 'ISO datetime,120pps SNR,120pps signal (dBm),Noise floor (dBm),Signal Lock Status'
+        with caplog.at_level(logging.INFO, logger='buzz.csv_store'):
+            row = self._append(tmp_path, header, pulse_rate=100)
+        assert row.split(',')[1:] == ['15.00', '-80.00', '-95.00', 'full']
+        assert '[audio] pulse_rate is 100, but noise_data.2024-01-15.csv is headed for 120 pps.' in caplog.text
+
+    def test_a_header_missing_a_measurement_gets_the_full_row_and_one_warning(self, tmp_path, caplog):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.filename_for_date(now).write_text('ISO datetime,120pps SNR,Signal Lock Status\n')
+        with caplog.at_level(logging.WARNING, logger='buzz.csv_store'):
+            rows = [store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER) for _ in range(3)]
+        assert all(len(row.split(',')) == 13 for row in rows)
+        warnings = [r.getMessage() for r in caplog.records if 'has no heading for' in r.getMessage()]
+        assert len(warnings) == 1
+        assert 'has no heading for Signal [120 pps] (dBm), Noise floor (dBm), so' in warnings[0]
+
+    @pytest.mark.parametrize('heading', ['SNR', '120pps Temperature (F)'])
+    def test_a_pulse_rate_only_goes_with_a_column_that_has_one(self, tmp_path, heading):
+        store = _make_store(tmp_path)
+        assert store._column_headed(heading) is None
+
+
+# The whole header 2.1.0 wrote, from its csv_store.py, at each pulse rate.  Every release
+# from 1.0.0 onward wrote the same core headings.
+_RELEASED_HEADER = ('ISO datetime,{pps}pps SNR,{pps}pps signal (dBm),Noise floor (dBm),Signal Lock Status,'
+                    'Grid frequency (Hz),Phase drift (samples/s),Temperature (F),Humidity (%),'
+                    'Solar radiation (w/m^2),Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)')
+
+
+class TestTheHeadingFormat:
+    """Headings are written as `name [qualifier] (unit)`, and the formats they replaced still read."""
+
+    @staticmethod
+    def _column_named(name: str):
+        return next(column for column in _COLUMNS if column.name == name)
+
+    @pytest.mark.parametrize('heading, name, qualifier, unit', [
+        ('SNR [120 pps] (dB)', 'SNR', '120 pps', 'dB'),
+        ('Noise floor (dBm)', 'Noise floor', None, 'dBm'),
+        ('ISO datetime', 'ISO datetime', None, None),
+        ('Rain [since midnight] (in)', 'Rain', 'since midnight', 'in'),
+    ])
+    def test_the_format_splits_a_heading_into_its_three_parts(self, heading, name, qualifier, unit):
+        parsed = _HEADING_FORMAT.fullmatch(heading)
+        assert (parsed['name'], parsed['qualifier'], parsed['unit']) == (name, qualifier, unit)
+
+    @pytest.mark.parametrize('heading', ['SNR (dB) [120 pps]', 'SNR [120 pps] [fast] (dB)', 'SNR ((dB))', ''])
+    def test_the_format_takes_one_qualifier_then_one_unit_in_that_order(self, heading):
+        assert _HEADING_FORMAT.fullmatch(heading) is None
+
+    @pytest.mark.parametrize('heading, rate', [
+        ('SNR [120 pps] (dB)', '120'), ('SNR [100 pps] (dB)', '100'),
+        ('120pps SNR', '120'), ('100pps SNR', '100'),
+    ])
+    def test_snr_reads_in_the_heading_format_and_the_released_one(self, heading, rate):
+        match = self._column_named('SNR').match(heading)
+        assert match is not None and match.rate == rate
+
+    @pytest.mark.parametrize('heading, rate', [
+        ('Signal [120 pps] (dBm)', '120'), ('Signal [100 pps] (dBm)', '100'),
+        ('120pps signal (dBm)', '120'), ('100pps signal (dBm)', '100'),
+    ])
+    def test_signal_reads_in_the_heading_format_and_the_released_one(self, heading, rate):
+        match = self._column_named('Signal').match(heading)
+        assert match is not None and match.rate == rate
+
+    @pytest.mark.parametrize('heading', [
+        'SNR',                      # no pulse rate at all
+        'SNR (dB)',                 # the heading format needs the qualifier
+        'SNR [120 pps]',            # and the unit, since no version wrote SNR that way
+        'SNR (120 pps)',            # a rate in the unit's place, which never shipped
+        'SNR [fast] (dB)',          # a qualifier that is not a pulse rate
+        'SNR [120 pps] (dBm)',      # a unit SNR does not have
+        '120pps SNR [120 pps] (dB)',  # both formats at once
+        '120pps SNR (dB)',          # the released format never carried a unit
+    ])
+    def test_snr_is_not_found_in_a_heading_no_version_wrote(self, heading):
+        assert self._column_named('SNR').match(heading) is None
+
+    @pytest.mark.parametrize('heading', [
+        'signal [120 pps] (dBm)',   # the old name in the new format
+        '120pps Signal (dBm)',      # the new name in the old format
+        'SIGNAL [120 pps] (dBm)',   # a capitalization nobody wrote
+        'Signal [120 pps] (dB)',    # the signal is a level in dBm, not a ratio
+        '120pps signal',            # the released format always carried dBm
+    ])
+    def test_signal_is_not_found_in_a_heading_no_version_wrote(self, heading):
+        assert self._column_named('Signal').match(heading) is None
+
+    @pytest.mark.parametrize('heading', ['Noise floor [120 pps] (dBm)', 'Temperature [120 pps] (F)',
+                                         'Humidity [outdoor] (%)'])
+    def test_a_column_that_takes_no_qualifier_refuses_one(self, tmp_path, heading):
+        assert _make_store(tmp_path)._column_headed(heading) is None
+
+    @pytest.mark.parametrize('pulse_rate', [120, 100])
+    def test_a_new_file_writes_the_heading_format_and_no_deprecated_one(self, tmp_path, pulse_rate):
+        store = _make_store(tmp_path)
+        store._config.audio.pulse_rate = pulse_rate
+        store = CsvStore(store._config)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
+        header = store.filename_for_date(now).read_text().splitlines()[0].split(',')
+        assert header[1:4] == [f'SNR [{pulse_rate} pps] (dB)', f'Signal [{pulse_rate} pps] (dBm)', 'Noise floor (dBm)']
+        for heading in header:
+            assert _HEADING_FORMAT.fullmatch(heading), f'{heading!r} is not in the heading format'
+            assert not any(old.fullmatch(heading) for column in _COLUMNS for old in column.deprecated_formats)
+
+    @pytest.mark.parametrize('pulse_rate', [120, 100])
+    def test_a_file_started_by_the_last_release_is_filled_in_every_column(self, tmp_path, caplog, pulse_rate):
+        """The upgrade day: a file 2.1.0 started, appended to by this version at the same rate.
+
+        2.1.0's columns are the current ones in the current order, so a header the reader
+        could not follow would fall back to a row that looks the same.  The test also
+        requires that the file drew no warning, which is what shows the header was read.
+        """
+        store = _make_store(tmp_path)
+        store._config.audio.pulse_rate = pulse_rate
+        store = CsvStore(store._config)
+        now = _ts(2024, 1, 15, 10, 30)
+        header = _RELEASED_HEADER.format(pps=pulse_rate)
+        store.filename_for_date(now).write_text(header + '\n')
+        with caplog.at_level(logging.INFO, logger='buzz.csv_store'):
+            row = store.append(now, 17.5, -80.0, -95.0, 'full', _WEATHER, grid_frequency='60.010',
+                               phase_drift='-6.1')
+        assert caplog.records == [], 'a file the last release started should need no explaining'
+        assert row.split(',')[1:] == ['17.50', '-80.00', '-95.00', 'full', '60.010', '-6.1',
+                                      '68.0', '52.0', '300.0', '7.5', '12.0', '225']
+        assert len(row.split(',')) == len(header.split(','))
+
+    @pytest.mark.parametrize('header', [
+        _RELEASED_HEADER.format(pps=120),
+        'ISO datetime,SNR [120 pps] (dB),Signal [120 pps] (dBm),Noise floor (dBm),Signal Lock Status',
+    ])
+    def test_a_file_headed_for_another_rate_is_noted_in_either_format(self, tmp_path, caplog, header):
+        store = _make_store(tmp_path)
+        store._config.audio.pulse_rate = 100
+        store = CsvStore(store._config)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.filename_for_date(now).write_text(header + '\n')
+        with caplog.at_level(logging.INFO, logger='buzz.csv_store'):
+            row = store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
+        assert row.split(',')[1:5] == ['15.00', '-80.00', '-95.00', 'full']
+        assert '[audio] pulse_rate is 100, but noise_data.2024-01-15.csv is headed for 120 pps.' in caplog.text
+
+    def test_a_file_headed_for_the_configured_rate_gets_no_note(self, tmp_path, caplog):
+        store = _make_store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        store.filename_for_date(now).write_text(_RELEASED_HEADER.format(pps=120) + '\n')
+        with caplog.at_level(logging.INFO, logger='buzz.csv_store'):
+            store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
+        assert 'pulse_rate' not in caplog.text

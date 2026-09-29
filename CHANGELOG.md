@@ -19,6 +19,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `http://cumulusmx.local:8998/`, and the monitor builds the endpoint path and the
   query string itself. A full URL from an older config still works, and a warning at
   startup names the address to set it to instead.
+- CSV headings follow one format, `Name [qualifier] (unit)`: parentheses hold only
+  the unit, and square brackets hold anything else about what the column measured.
+  New files head the SNR and signal columns `SNR [120 pps] (dB)` and
+  `Signal [120 pps] (dBm)`, or `[100 pps]` on a 50 Hz grid, in place of `120pps SNR`
+  and `120pps signal (dBm)`. A file started under the old headings keeps them until
+  midnight, and a tool that reads the CSV by column name should accept both.
 
 ### Fixed
 - A CumulusMX station set to metric units wrote Celsius and its own wind unit into
