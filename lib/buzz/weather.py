@@ -19,7 +19,7 @@ import logging
 import urllib.request
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from typing import NamedTuple
 from urllib.parse import quote, urlsplit
@@ -83,7 +83,7 @@ class WeatherUnits(StrEnum):
 
     @property
     def rain_label(self) -> str:
-        """The rain unit as the CSV header will write it."""
+        """The rain unit as the CSV header writes it."""
         return 'in' if self is WeatherUnits.IMPERIAL else 'mm'
 
     def temperature_from_celsius(self, celsius: float) -> float:
@@ -175,6 +175,10 @@ class CumulusMXWeatherClient(WeatherClient):
     asks the station which units those are on every fetch, through the `tempunitnodeg`,
     `windunit` and `rainunit` webtags, and converts from them.  Asking each time means a
     station whose owner changes its units is read correctly from the next fetch.
+
+    CumulusMX starts its rain total at midnight on the clock of the computer it runs on.
+    The first fetch compares that clock with `[station] timezone` and warns once if they
+    disagree.  The rain column would then restart at another hour of the station's day.
     """
 
     _ENDPOINT_PATH = 'api/tags/process.txt'
@@ -196,7 +200,20 @@ class CumulusMXWeatherClient(WeatherClient):
         'windunit': '<#windunit>',
         'rainunit': '<#rainunit>',
         'LastDataReadT': '<#LastDataReadT format=Unix>',
+        # The host's clock in UTC and in local time, read together.  Their difference is
+        # the offset of the clock that decides when `rmidnight` resets.
+        'timeUnix': '<#timeUnix>',
+        'timehhmmss': '<#timehhmmss>',
     })
+
+    # What CumulusMX 5 returns for a tag whose sensor has no reading, such as SolarRad on
+    # a station without a solar sensor.  The client turns it into a blank field.
+    _NO_READING = '-'
+
+    # The host clock's offset from UTC is rounded to this many minutes.  The two clock
+    # tags are read a few milliseconds apart and can straddle a second.  Every one of the
+    # 598 zones in the tz database sat on a whole quarter hour in January and July 2026.
+    _OFFSET_ROUNDING_MINUTES = 15
 
     # What `LastDataReadT` returns before CumulusMX has read anything from the station.
     # webtags.cs substitutes it for any date at or before its default record date,
@@ -219,8 +236,10 @@ class CumulusMXWeatherClient(WeatherClient):
         'in': _MM_PER_INCH,
     }
 
-    def __init__(self, url: str) -> None:
+    def __init__(self, url: str, timezone: str) -> None:
         self._url = self._endpoint_url(url)
+        self._zone = ZoneInfo(timezone)
+        self._clock_checked = False
 
     @classmethod
     def _endpoint_url(cls, url: str) -> str:
@@ -249,20 +268,68 @@ class CumulusMXWeatherClient(WeatherClient):
                                          headers={'Content-Type': 'text/plain'}, method='POST')
         with urllib.request.urlopen(request, timeout=_FETCH_TIMEOUT_S) as response:
             data = json.loads(response.read())
+        if not self._clock_checked:
+            self._clock_checked = True
+            self._check_the_host_clock(int(data['timeUnix']), data['timehhmmss'])
         kmh_per_unit = self._conversion_factor(self._KMH_PER_WIND_UNIT, data.get('windunit'),
                                                'wind speed', 'windunit')
         mm_per_unit = self._conversion_factor(self._MM_PER_RAIN_UNIT, data.get('rainunit'),
                                               'rain', 'rainunit')
+        temperature_unit = data.get('tempunitnodeg')
         return WeatherData(
-            temperature=self._celsius(float(data['temp']), data.get('tempunitnodeg')),
-            humidity=data['hum'],
-            solar_radiation=data['SolarRad'],
-            wind_speed=float(data['wspeed']) * kmh_per_unit,
-            wind_gust=float(data['wgust']) * kmh_per_unit,
-            wind_bearing=data['avgbearing'],
-            rain_since_midnight=float(data['rmidnight']) * mm_per_unit,
+            temperature=self._reading(data['temp'], lambda value: self._celsius(value, temperature_unit)),
+            humidity=self._text(data['hum']),
+            solar_radiation=self._text(data['SolarRad']),
+            wind_speed=self._reading(data['wspeed'], lambda value: value * kmh_per_unit),
+            wind_gust=self._reading(data['wgust'], lambda value: value * kmh_per_unit),
+            wind_bearing=self._text(data['avgbearing']),
+            rain_since_midnight=self._reading(data['rmidnight'], lambda value: value * mm_per_unit),
             timestamp=self._last_data_read(data['LastDataReadT']),
         )
+
+    @classmethod
+    def _text(cls, value: str) -> CsvValue:
+        """A field passed through as CumulusMX wrote it, or blank for a missing reading."""
+        return '' if value == cls._NO_READING else value
+
+    @classmethod
+    def _reading(cls, value: str, convert: Callable[[float], float]) -> CsvValue:
+        """A figure converted to our units, or blank for a missing reading."""
+        return '' if value == cls._NO_READING else convert(float(value))
+
+    def _check_the_host_clock(self, utc_epoch: int, host_clock: str) -> None:
+        """Warn when the computer running CumulusMX keeps another zone's time.
+
+        `utc_epoch` and `host_clock` are the same moment in UTC and on the host's own
+        clock.  Their difference, taken across midnight where the two fall on different
+        days, is the host's offset from UTC.
+        """
+        utc = datetime.fromtimestamp(utc_epoch, UTC)
+        hours, minutes, seconds = (int(part) for part in host_clock.split(':'))
+        seconds_apart = (hours * 3600 + minutes * 60 + seconds) - (utc.hour * 3600 + utc.minute * 60 + utc.second)
+        wrapped = (seconds_apart + 12 * 3600) % (24 * 3600) - 12 * 3600
+        step = self._OFFSET_ROUNDING_MINUTES * 60
+        host_offset = timedelta(seconds=round(wrapped / step) * step)
+        station_offset = utc.astimezone(self._zone).utcoffset()
+        if host_offset == station_offset:
+            return
+        # The station's local time at the moment the host's clock reads midnight.  Any
+        # midnight would do as the starting point, since only the hour and minute print.
+        restart = (datetime(2000, 1, 1) + station_offset - host_offset).strftime('%H:%M')
+        logger.warning(
+            'CumulusMX runs on a clock at UTC%s, and [station] timezone %s is at UTC%s.  '
+            'CumulusMX starts its rain total at its own midnight, so the rain column '
+            'restarts at %s station time.  Set the CumulusMX computer to the station time '
+            'zone, or correct [station] timezone.',
+            self._utc_offset_text(host_offset), self._zone.key,
+            self._utc_offset_text(station_offset), restart)
+
+    @staticmethod
+    def _utc_offset_text(offset: timedelta) -> str:
+        """An offset from UTC as the log writes it, such as -07:00 or +05:30."""
+        minutes = round(offset.total_seconds() / 60)
+        sign = '-' if minutes < 0 else '+'
+        return f'{sign}{abs(minutes) // 60:02d}:{abs(minutes) % 60:02d}'
 
     @staticmethod
     def _celsius(temperature: float, unit: str | None) -> float:

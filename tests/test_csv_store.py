@@ -13,11 +13,16 @@ from buzz.weather import EMPTY_WEATHER, WeatherData, WeatherUnits
 
 _TZ = ZoneInfo('America/Los_Angeles')
 
-# One observation in the units every weather client returns, degrees C, km/h and mm.  In
-# the default imperial units it comes out as 68.0 F, 7.5 MPH and 12.0 MPH.  The rain and
-# the weather timestamp have no column yet.
+# One observation in the units every weather client returns, degrees C, km/h and mm.  The
+# cells it gives in each system are listed below it.
 _WEATHER = WeatherData(20.0, 52.0, 300.0, 12.0, 19.3, 225, 5.08,
                        datetime(2024, 1, 15, 18, 29, tzinfo=UTC))
+
+# The weather section a new file writes for _WEATHER, in each system.  5.08 mm is exactly
+# 0.2 inch.  18:29 UTC is 10:29 in Los Angeles in January, and the weather timestamp is
+# written in the station's timezone, like the row's own.
+_IMPERIAL_WEATHER_CELLS = ['68.0', '52.0', '300.0', '7.5', '12.0', '225', '0.2', '2024-01-15T10:29:00-08:00']
+_METRIC_WEATHER_CELLS = ['20.0', '52.0', '300.0', '12.0', '19.3', '225', '5.08', '2024-01-15T10:29:00-08:00']
 
 
 def _make_store(tmp_path: Path) -> CsvStore:
@@ -81,13 +86,13 @@ class TestGridFrequencyColumns:
 
     def test_weather_still_follows_them(self, tmp_path):
         fields = self._row(tmp_path, grid_frequency='60.023', phase_drift='-6.12')
-        assert fields[7:] == ['68.0', '52.0', '300.0', '7.5', '12.0', '225']
+        assert fields[7:] == _IMPERIAL_WEATHER_CELLS
 
-    def test_rain_and_the_weather_timestamp_are_not_written_yet(self, tmp_path):
-        """The header has no column for either, so the row stops at wind bearing."""
+    def test_rain_and_the_weather_timestamp_come_last(self, tmp_path):
+        """New columns go at the end, so an older file's header stays a prefix of a newer one."""
         fields = self._row(tmp_path)
-        assert len(fields) == 13
-        assert fields[-1] == '225'
+        assert len(fields) == 15
+        assert fields[13:] == ['0.2', '2024-01-15T10:29:00-08:00']
 
     def test_default_is_blank_not_zero(self, tmp_path):
         """A minute with no lock has nothing to report, and 0.000 Hz would be a lie."""
@@ -262,7 +267,7 @@ class TestAppend:
         store = _make_store(tmp_path)
         now = _ts(2024, 1, 15, 10, 30)
         result = store.append(now, 15.0, -80.0, -95.0, 'full', EMPTY_WEATHER)
-        assert result == f'{now.isoformat()},15.00,-80.00,-95.00,full,,,,,,,,'
+        assert result == f'{now.isoformat()},15.00,-80.00,-95.00,full,,,,,,,,,,'
 
     def test_lock_status_in_header(self, tmp_path):
         store = _make_store(tmp_path)
@@ -454,8 +459,9 @@ class TestWeatherUnitsInTheCsv:
         store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
         header, row = self._lines(store, now)
         assert header[7:] == ['Temperature (C)', 'Humidity (%)', 'Solar radiation (W/m^2)',
-                              'Wind speed (km/h)', 'Wind gust (km/h)', 'Wind bearing (deg)']
-        assert row[7:] == ['20.0', '52.0', '300.0', '12.0', '19.3', '225']
+                              'Wind speed (km/h)', 'Wind gust (km/h)', 'Wind bearing (deg)',
+                              'Rain [since midnight] (mm)', 'Weather timestamp']
+        assert row[7:] == _METRIC_WEATHER_CELLS
 
     def test_an_imperial_file_stays_imperial_after_the_setting_changes(self, tmp_path):
         """A restart with the setting changed must not put Celsius under an F header."""
@@ -465,7 +471,7 @@ class TestWeatherUnitsInTheCsv:
         metric.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
         header, first, second = self._lines(metric, now)
         assert header[7] == 'Temperature (F)'
-        assert first[7:] == second[7:] == ['68.0', '52.0', '300.0', '7.5', '12.0', '225']
+        assert first[7:] == second[7:] == _IMPERIAL_WEATHER_CELLS
 
     def test_the_next_new_file_uses_the_new_setting(self, tmp_path):
         today, tomorrow = _ts(2024, 1, 15, 23, 59), _ts(2024, 1, 16, 0, 0)
@@ -494,7 +500,7 @@ class TestWeatherUnitsInTheCsv:
         store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
         row = self._lines(store, now)[1]
         assert row[1:5] == ['15.00', '-80.00', '-95.00', 'full']
-        assert row[7:] == ['20.0', '52.0', '300.0', '12.0', '19.3', '225']
+        assert row[7:] == _METRIC_WEATHER_CELLS
 
 
 # The core headings a file started before SNR moved its pulse rate begins with.  Rows added
@@ -525,11 +531,11 @@ class TestHeaderDrivenWeatherColumns:
         assert store.filename_for_date(now).read_text().splitlines()[0] == (
             'ISO datetime,SNR [120 pps] (dB),Signal [120 pps] (dBm),Noise floor (dBm),Signal Lock Status,'
             'Grid frequency (Hz),Phase drift (samples/s),Temperature (F),Humidity (%),Solar radiation (W/m^2),'
-            'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)')
+            'Wind speed (MPH),Wind gust (MPH),Wind bearing (deg),Rain [since midnight] (in),Weather timestamp')
 
     @pytest.mark.parametrize('units, weather_cells', [
-        ('imperial', ['68.0', '52.0', '300.0', '7.5', '12.0', '225']),
-        ('metric', ['20.0', '52.0', '300.0', '12.0', '19.3', '225']),
+        ('imperial', _IMPERIAL_WEATHER_CELLS),
+        ('metric', _METRIC_WEATHER_CELLS),
     ])
     def test_the_next_row_in_a_file_this_version_started_fills_every_column(self, tmp_path, caplog, units,
                                                                             weather_cells):
@@ -612,8 +618,7 @@ class TestTheColumnTable:
         """A weather column names its WeatherData field as text, so a misspelled field only fails here."""
         row = _Row(_ts(2024, 1, 15, 10, 30), 15.0, -80.0, -95.0, 'full', '60.010', '-6.1', _WEATHER)
         assert [column.cell(row, _WEATHER) for column in _COLUMNS][1:] == [
-            '15.00', '-80.00', '-95.00', 'full', '60.010', '-6.1',
-            '20.0', '52.0', '300.0', '12.0', '19.3', '225']
+            '15.00', '-80.00', '-95.00', 'full', '60.010', '-6.1', *_METRIC_WEATHER_CELLS]
 
     @pytest.mark.parametrize('units', ['imperial', 'metric'])
     @pytest.mark.parametrize('pulse_rate', [120, 100])
@@ -673,7 +678,7 @@ class TestHeadersFromOlderFiles:
         store.filename_for_date(now).write_text('ISO datetime,120pps SNR,Signal Lock Status\n')
         with caplog.at_level(logging.WARNING, logger='buzz.csv_store'):
             rows = [store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER) for _ in range(3)]
-        assert all(len(row.split(',')) == 13 for row in rows)
+        assert all(len(row.split(',')) == 15 for row in rows)
         warnings = [r.getMessage() for r in caplog.records if 'has no heading for' in r.getMessage()]
         assert len(warnings) == 1
         assert 'has no heading for Signal [120 pps] (dBm), Noise floor (dBm), so' in warnings[0]
@@ -813,3 +818,62 @@ class TestTheHeadingFormat:
         with caplog.at_level(logging.INFO, logger='buzz.csv_store'):
             store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER)
         assert 'pulse_rate' not in caplog.text
+
+
+class TestRainAndTheWeatherTimestamp:
+    """The two columns added after wind bearing."""
+
+    def _store(self, tmp_path: Path, units: str = 'imperial') -> CsvStore:
+        store = _make_store(tmp_path)
+        store._config.weather.units = units
+        return CsvStore(store._config)
+
+    def test_a_file_started_before_these_columns_gets_neither_until_midnight(self, tmp_path, caplog):
+        """The upgrade day: a file this program started earlier today, before rain and the timestamp existed."""
+        store = self._store(tmp_path)
+        now = _ts(2024, 1, 15, 10, 30)
+        header = ('ISO datetime,SNR [120 pps] (dB),Signal [120 pps] (dBm),Noise floor (dBm),Signal Lock Status,'
+                  'Grid frequency (Hz),Phase drift (samples/s),Temperature (F),Humidity (%),'
+                  'Solar radiation (W/m^2),Wind speed (MPH),Wind gust (MPH),Wind bearing (deg)')
+        store.filename_for_date(now).write_text(header + '\n')
+        with caplog.at_level(logging.INFO, logger='buzz.csv_store'):
+            row = store.append(now, 15.0, -80.0, -95.0, 'full', _WEATHER).split(',')
+        assert caplog.records == []
+        assert row[7:] == _IMPERIAL_WEATHER_CELLS[:6]
+        assert len(row) == len(header.split(','))
+
+    def test_the_next_days_file_gets_both(self, tmp_path):
+        store = self._store(tmp_path)
+        today, tomorrow = _ts(2024, 1, 15, 23, 59), _ts(2024, 1, 16, 0, 0)
+        store.filename_for_date(today).write_text(_RELEASED_HEADER.format(pps=120) + '\n')
+        store.append(today, 15.0, -80.0, -95.0, 'full', _WEATHER)
+        row = store.append(tomorrow, 15.0, -80.0, -95.0, 'full', _WEATHER).split(',')
+        assert row[13:] == ['0.2', '2024-01-15T10:29:00-08:00']
+
+    def test_rain_keeps_one_tip_of_a_gauge(self, tmp_path):
+        """A tipping bucket counts 0.01 inch at a time, and the cell keeps it."""
+        now = _ts(2024, 1, 15, 10, 30)
+        row = self._store(tmp_path).append(now, 15.0, -80.0, -95.0, 'full', _WEATHER._replace(
+            rain_since_midnight=0.01 * 25.4)).split(',')
+        assert row[13] == '0.01'
+
+    def test_a_source_with_no_time_leaves_the_timestamp_blank(self, tmp_path):
+        now = _ts(2024, 1, 15, 10, 30)
+        row = self._store(tmp_path).append(now, 15.0, -80.0, -95.0, 'full', _WEATHER._replace(
+            timestamp=None)).split(',')
+        assert row[14] == ''
+
+    def test_the_weather_timestamp_is_in_the_stations_zone_on_either_side_of_a_clock_change(self, tmp_path):
+        """Los Angeles falls back on 2024-11-03, so the same UTC hour reads an hour apart across it."""
+        store = self._store(tmp_path)
+        before = _ts(2024, 11, 2, 12, 0)
+        after = _ts(2024, 11, 4, 12, 0)
+        cells = [store.append(when, 15.0, -80.0, -95.0, 'full', _WEATHER._replace(
+            timestamp=datetime(when.year, when.month, when.day, 19, 0, tzinfo=UTC))).split(',')[14]
+            for when in (before, after)]
+        assert cells == ['2024-11-02T12:00:00-07:00', '2024-11-04T11:00:00-08:00']
+
+    @pytest.mark.parametrize('heading', ['Rain (in)', 'Rain [since noon] (in)', 'Rain [since midnight] (cm)',
+                                         'Rain [120 pps] (in)', 'Weather timestamp (s)', 'Weather timestamp [UTC]'])
+    def test_a_heading_no_version_wrote_is_not_recognized(self, tmp_path, heading):
+        assert _make_store(tmp_path)._column_headed(heading) is None

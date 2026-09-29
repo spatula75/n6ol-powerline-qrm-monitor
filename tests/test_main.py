@@ -119,6 +119,11 @@ class TestMakeWeatherClient:
         client = make_weather_client(cfg)
         assert 'timezone=Asia%2FBangkok&' in client._url
 
+    def test_cumulusmx_checks_its_host_against_the_stations_timezone(self):
+        cfg = self._config('cumulusmx')
+        cfg.station.timezone = 'Asia/Bangkok'
+        assert make_weather_client(cfg)._zone.key == 'Asia/Bangkok'
+
     def test_cumulusmx(self):
         client = make_weather_client(self._config('cumulusmx'))
         assert isinstance(client, CumulusMXWeatherClient)

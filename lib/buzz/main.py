@@ -185,7 +185,7 @@ def make_weather_client(config: BuzzConfig) -> WeatherClient:
                            'no weather until url holds the station address, such as '
                            'http://cumulusmx.local:8998/.')
             return NullWeatherClient()
-        return CumulusMXWeatherClient(weather_config.url)
+        return CumulusMXWeatherClient(weather_config.url, config.station.timezone)
     if weather_config.source != 'none':
         logger.warning(
             "[weather] source is %r, and it must be 'cumulusmx', 'openmeteo' or 'none'.  The "

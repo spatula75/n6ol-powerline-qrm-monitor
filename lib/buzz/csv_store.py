@@ -67,6 +67,16 @@ class _Row(NamedTuple):
     phase_drift: CsvValue
     weather: WeatherData
 
+    def weather_time(self) -> str:
+        """When the source stands behind this row's weather, in the row's own timezone.
+
+        The row's timestamp carries the station's timezone, so the two times in a row
+        read alike.  A source that could not say gives a blank cell.
+        """
+        if self.weather.timestamp is None:
+            return ''
+        return self.weather.timestamp.astimezone(self.now.tzinfo).isoformat(timespec='seconds')
+
 
 @dataclass(frozen=True)
 class _Qualifier:
@@ -83,6 +93,9 @@ class _Qualifier:
 # The qualifier of a column measured on the pulse train, as in "[120 pps]".  Any rate
 # is accepted, so a file headed for another rate keeps its measurements.
 _PULSE_RATE = _Qualifier(re.compile(r'(?P<rate>\d+) pps'), lambda pulse_rate: f'{pulse_rate} pps')
+
+# The qualifier of the rain column, whose total runs from the source's midnight.
+_SINCE_MIDNIGHT = _Qualifier(re.compile('since midnight'), lambda _: 'since midnight')
 
 
 class _HeadingMatch(NamedTuple):
@@ -127,9 +140,10 @@ class _Column:
     required: bool = False
 
     @classmethod
-    def weather(cls, name: str, field: str, labels: Mapping[str | None, WeatherUnits | None]) -> '_Column':
+    def weather(cls, name: str, field: str, labels: Mapping[str | None, WeatherUnits | None],
+                qualifier: _Qualifier | None = None) -> '_Column':
         """A column that holds the WeatherData field named `field`."""
-        return cls(name, lambda row, weather: str(getattr(weather, field)), labels)
+        return cls(name, lambda row, weather: str(getattr(weather, field)), labels, qualifier)
 
     def heading(self, units: WeatherUnits, pulse_rate: int) -> str:
         """The heading a new file gives this column, in the heading format."""
@@ -197,6 +211,9 @@ _COLUMNS = (
     _Column.weather('Wind speed', 'wind_speed', {units.wind_speed_label: units for units in WeatherUnits}),
     _Column.weather('Wind gust', 'wind_gust', {units.wind_speed_label: units for units in WeatherUnits}),
     _Column.weather('Wind bearing', 'wind_bearing', {'deg': None}),
+    _Column.weather('Rain', 'rain_since_midnight', {units.rain_label: units for units in WeatherUnits},
+                    qualifier=_SINCE_MIDNIGHT),
+    _Column('Weather timestamp', lambda row, _: row.weather_time()),
 )
 
 # A file's columns, one entry for each heading in its header.  An entry holds the

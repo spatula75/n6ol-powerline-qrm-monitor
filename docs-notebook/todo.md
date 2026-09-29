@@ -135,42 +135,6 @@ is provisional, neither confirmed nor refuted.  See `sdr-gain-calibration.md`.
 
 ## Weather
 
-### Log rain since midnight, and when the weather was read
-
-The design was settled on 2026-09-27 and is waiting for its own branch.  The findings
-behind it are in `cumulusmx-json-api.md` and `online-weather-sources.md`.
-
-- **Rain since midnight.**  CumulusMX supplies `rmidnight`.  Open-Meteo gets the sum
-  of its completed 15-minute `precipitation` values labeled after 00:00 in
-  `[station] timezone`, up to and including `current.time`, from the request the
-  client already makes.  Both are recorded as the source sends them, with no clamping,
-  so a total that falls is logged as falling.  Units follow `[weather] units`, inches
-  or millimeters.
-- **The time of the weather.**  One column holds the latest time the source stands
-  behind its values.  For CumulusMX that is `LastDataReadT`, and for Open-Meteo the end
-  of the current interval.  It is written as ISO 8601 in `[station] timezone`, like
-  the row's own timestamp, and left blank when a fetch fails.
-- **The CumulusMX client moves to the text API**, a POST to `process.txt`, because only
-  that endpoint can ask for `LastDataReadT format=Unix`.  Each tag in the template
-  carries `rc=y`, which replaces the leading `rc` of the JSON query.
-- **A missing sensor's `"-"` becomes a blank cell.**  CumulusMX version 5 returns `"-"`
-  for a tag with no reading, and `SolarRad` does so on a station without a solar
-  sensor.  The client passes solar radiation through as text, so the CSV gets `-`.  A
-  `"-"` from any tag should arrive as a blank field instead.  See
-  `cumulusmx-json-api.md`.
-- **A startup warning when CumulusMX's midnight is not ours.**  `rmidnight` resets at
-  the host's midnight.  Derive the host's offset from `timeUnix` and `timehhmmss`, and
-  warn when it differs from `[station] timezone`.
-- **Rows follow their file's header.**  Done on `rain-and-weather-timestamp`: every
-  column, core and weather, is an entry in `_COLUMNS` in `csv_store.py`, and a row
-  added to an existing file fills the columns its header names.  What remains is to
-  add rain and the weather timestamp to that table, at the end.
-
-The operator will write the documentation caveats for Open-Meteo: the figures are
-model output, and a total is not guaranteed only to rise.
-
-What stops it is that `weather-metric-todo` has to merge first.
-
 ### OpenWeatherMap as a third weather source
 
 OpenWeatherMap's free Current Weather API could serve operators who have no station

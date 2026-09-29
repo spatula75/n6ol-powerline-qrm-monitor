@@ -8,17 +8,30 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ## [Unreleased]
 
 ### Added
-- `[weather] units` chooses the units for temperature and wind speed in the CSV:
-  `imperial` (F and MPH, the default) or `metric` (C and km/h). The header names the
-  units, and a file that already exists keeps the units it started with, so no file
-  mixes the two. A change therefore appears in the first file created after a
+- `[weather] units` chooses the units for temperature, wind speed and rain in the CSV:
+  `imperial` (F, MPH and inches, the default) or `metric` (C, km/h and mm). The header
+  names the units, and a file that already exists keeps the units it started with, so
+  no file mixes the two. A change therefore appears in the first file created after a
   restart.
+- Two CSV columns follow wind bearing. `Rain [since midnight] (in)`, or `(mm)`, is the
+  rain total since midnight. From CumulusMX it is the station's own total, which
+  restarts at midnight on the clock of the computer CumulusMX runs on. From Open-Meteo
+  it is the sum of the completed 15-minute amounts since the station's midnight.
+  `Weather timestamp` is the latest time the source vouches for the row's weather: the
+  moment CumulusMX last heard from the station, or the end of Open-Meteo's latest
+  15-minute interval. It is written in the station's time zone, like the row's own
+  timestamp, and left blank when the source cannot say.
+- A warning at startup when the computer running CumulusMX keeps a different time zone
+  from `[station] timezone`. It names the hour of the station's day at which the rain
+  column then restarts.
 
 ### Changed
 - `[weather] url` takes the CumulusMX station's address, such as
-  `http://cumulusmx.local:8998/`, and the monitor builds the endpoint path and the
-  query string itself. A full URL from an older config still works, and a warning at
-  startup names the address to set it to instead.
+  `http://cumulusmx.local:8998/`, and the monitor builds the rest of the request
+  itself. A full URL from an older config still works, and a warning at startup names
+  the address to set it to instead.
+- Each CSV row follows its file's own header. A file keeps the columns it started with
+  until midnight, so a column this release adds first appears in the next day's file.
 - CSV headings follow one format, `Name [qualifier] (unit)`: parentheses hold only
   the unit, and square brackets hold anything else about what the column measured.
   New files head the SNR and signal columns `SNR [120 pps] (dB)` and
@@ -34,6 +47,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   now reports its weather. The monitor asks CumulusMX to send periods instead.
 - The CSV header writes the solar radiation unit as `W/m^2`, with the capital W the
   watt takes. Files written before this say `w/m^2`.
+- A CumulusMX 5 station without a solar sensor wrote `-` in the solar radiation
+  column. A reading CumulusMX does not have now leaves the cell blank.
 
 ## [2.1.0] - 2026-09-19
 

@@ -15,6 +15,9 @@ from buzz.weather import (
 
 _RESOURCES = Path(__file__).parent / 'resources'
 
+# The operator's station keeps Los Angeles time, and so does the computer CumulusMX runs on.
+_STATION_ZONE = 'America/Los_Angeles'
+
 # A moment to stand in for a weather timestamp where the test does not care which.
 _WHEN = datetime(2026, 9, 27, 21, 0, tzinfo=UTC)
 
@@ -116,14 +119,16 @@ class TestWeatherDataInUnits:
 class TestCumulusMXWeatherClient:
     """A CumulusMX station serves figures in its own units, and says which they are."""
 
-    # The operator's station answered the client's template with this on 2026-09-27.
-    # CumulusMX returns every value as a string.
+    # The operator's station answered the client's template with this on 2026-09-27.  The
+    # two clock readings came from the same station on 2026-09-28, when its UTC clock read
+    # 02:29:08 and its own clock 19:29:08.  CumulusMX returns every value as a string.
     _REPLY = {'temp': '64.0', 'hum': '70', 'SolarRad': '445', 'wspeed': '9', 'wgust': '15',
               'avgbearing': '319', 'rmidnight': '0.00', 'tempunitnodeg': 'F', 'windunit': 'mph',
-              'rainunit': 'in', 'LastDataReadT': '1790549853'}
+              'rainunit': 'in', 'LastDataReadT': '1790549853',
+              'timeUnix': '1790648948', 'timehhmmss': '19:29:08'}
 
     def _fetch(self, **changes: str) -> WeatherData:
-        client = CumulusMXWeatherClient('http://fake')
+        client = CumulusMXWeatherClient('http://fake', _STATION_ZONE)
         reply = json.dumps({**self._REPLY, **changes}).encode()
         with patch('buzz.weather.urllib.request.urlopen', return_value=_mock_urlopen(reply)):
             return client.fetch()
@@ -142,26 +147,26 @@ class TestCumulusMXWeatherClient:
     @pytest.mark.parametrize('setting', _ADDRESSES + _OLDER_FORMS)
     def test_every_form_of_the_setting_builds_the_same_url(self, setting):
         """The station's address alone, and every longer form an older config holds."""
-        assert CumulusMXWeatherClient(setting)._url == self._FULL
+        assert CumulusMXWeatherClient(setting, _STATION_ZONE)._url == self._FULL
 
     def test_a_https_station_keeps_its_scheme(self):
-        assert CumulusMXWeatherClient('https://wx.example.net/')._url.startswith('https://wx.example.net/api/')
+        assert CumulusMXWeatherClient('https://wx.example.net/', _STATION_ZONE)._url.startswith('https://wx.example.net/api/')
 
     @pytest.mark.parametrize('setting', _OLDER_FORMS)
     def test_anything_after_the_port_is_dropped_with_a_warning(self, setting, caplog):
         with caplog.at_level(logging.WARNING, logger='buzz.weather'):
-            CumulusMXWeatherClient(setting)
+            CumulusMXWeatherClient(setting, _STATION_ZONE)
         assert 'set url to http://cumulusmx.local:8998/.' in caplog.text
 
     @pytest.mark.parametrize('setting', _ADDRESSES)
     def test_no_warning_for_the_address_alone(self, setting, caplog):
         with caplog.at_level(logging.WARNING, logger='buzz.weather'):
-            CumulusMXWeatherClient(setting)
+            CumulusMXWeatherClient(setting, _STATION_ZONE)
         assert caplog.records == []
 
     def test_the_template_is_posted_to_the_text_api(self):
         """Only the text API passes a tag its parameters, and `format=Unix` needs that."""
-        client = CumulusMXWeatherClient('http://cumulusmx.local:8998/')
+        client = CumulusMXWeatherClient('http://cumulusmx.local:8998/', _STATION_ZONE)
         with patch('buzz.weather.urllib.request.urlopen',
                    return_value=_mock_urlopen(json.dumps(self._REPLY).encode())) as urlopen:
             client.fetch()
@@ -176,7 +181,7 @@ class TestCumulusMXWeatherClient:
     def test_every_value_tag_removes_commas(self):
         """Without `rc=y`, a station in a decimal-comma locale serves "20,5", and every fetch fails."""
         template = json.loads(CumulusMXWeatherClient._TEMPLATE)
-        unit_tags = {'tempunitnodeg', 'windunit', 'rainunit', 'LastDataReadT'}
+        unit_tags = {'tempunitnodeg', 'windunit', 'rainunit', 'LastDataReadT', 'timeUnix', 'timehhmmss'}
         missing = [key for key, tag in template.items() if key not in unit_tags and 'rc=y' not in tag]
         assert missing == [], f'these tags would pass a locale comma through to float(): {missing}'
 
@@ -230,6 +235,75 @@ class TestCumulusMXWeatherClient:
     def test_an_unknown_rain_unit_refuses_rather_than_guessing(self):
         with pytest.raises(ValueError, match="rain unit as 'cm'.*the rainunit webtag"):
             self._fetch(rainunit='cm')
+
+
+class TestAMissingReadingFromCumulusMX:
+    """CumulusMX 5 answers "-" for a tag whose sensor has no reading."""
+
+    def _fetch(self, **changes: str) -> WeatherData:
+        client = CumulusMXWeatherClient('http://fake', _STATION_ZONE)
+        reply = json.dumps({**TestCumulusMXWeatherClient._REPLY, **changes}).encode()
+        with patch('buzz.weather.urllib.request.urlopen', return_value=_mock_urlopen(reply)):
+            return client.fetch()
+
+    def test_a_station_without_a_solar_sensor_gets_a_blank_rather_than_a_dash(self):
+        assert self._fetch(SolarRad='-').solar_radiation == ''
+
+    @pytest.mark.parametrize('tag, field', [
+        ('temp', 'temperature'), ('wspeed', 'wind_speed'), ('wgust', 'wind_gust'),
+        ('rmidnight', 'rain_since_midnight'), ('hum', 'humidity'), ('avgbearing', 'wind_bearing'),
+    ])
+    def test_any_missing_reading_is_blank_and_the_rest_still_arrive(self, tag, field):
+        """A figure that is converted would otherwise fail float() and blank the whole row."""
+        result = self._fetch(**{tag: '-'})
+        assert getattr(result, field) == ''
+        assert result.solar_radiation == '445'
+
+
+class TestTheCumulusMXHostClock:
+    """CumulusMX starts its rain total at its own midnight, which has to be the station's."""
+
+    def _first_fetch(self, zone: str, utc_epoch: int, host_clock: str, caplog, fetches: int = 1) -> str:
+        client = CumulusMXWeatherClient('http://fake', zone)
+        reply = json.dumps({**TestCumulusMXWeatherClient._REPLY, 'timeUnix': str(utc_epoch),
+                            'timehhmmss': host_clock}).encode()
+        with caplog.at_level(logging.WARNING, logger='buzz.weather'):
+            for _ in range(fetches):
+                with patch('buzz.weather.urllib.request.urlopen', return_value=_mock_urlopen(reply)):
+                    client.fetch()
+        return caplog.text
+
+    # 2026-09-28 19:29:08 in Los Angeles is 02:29:08 UTC the next day, epoch 1790648948.
+    _UTC_EPOCH = 1790648948
+
+    def test_the_operators_own_reading_raises_no_warning(self, caplog):
+        """The reading straddles UTC midnight, so the difference has to wrap round the day."""
+        assert self._first_fetch(_STATION_ZONE, self._UTC_EPOCH, '19:29:08', caplog) == ''
+
+    def test_a_second_that_ticks_between_the_two_readings_does_not_count(self, caplog):
+        assert self._first_fetch(_STATION_ZONE, self._UTC_EPOCH, '19:29:09', caplog) == ''
+
+    def test_a_host_on_another_zones_time_is_reported_with_the_hour_the_rain_restarts(self, caplog):
+        """New York is UTC-04:00 on that date, so Los Angeles midnight falls at 03:00 there."""
+        text = self._first_fetch('America/New_York', self._UTC_EPOCH, '19:29:08', caplog)
+        assert ('CumulusMX runs on a clock at UTC-07:00, and [station] timezone America/New_York is at '
+                'UTC-04:00.') in text
+        assert 'restarts at 03:00 station time.' in text
+
+    def test_a_zone_on_a_half_hour_is_told_apart(self, caplog):
+        """India is UTC+05:30, and 07:00 UTC, the host's midnight, is 12:30 there."""
+        text = self._first_fetch('Asia/Kolkata', self._UTC_EPOCH, '19:29:08', caplog)
+        assert 'is at UTC+05:30.' in text
+        assert 'restarts at 12:30 station time.' in text
+
+    def test_a_host_on_utc_is_caught(self, caplog):
+        text = self._first_fetch(_STATION_ZONE, self._UTC_EPOCH, '02:29:08', caplog)
+        assert 'runs on a clock at UTC+00:00' in text
+        assert 'restarts at 17:00 station time.' in text
+
+    def test_the_warning_appears_once_however_many_fetches_follow(self, caplog):
+        text = self._first_fetch('America/New_York', self._UTC_EPOCH, '19:29:08', caplog, fetches=3)
+        assert text.count('CumulusMX runs on a clock') == 1
 
 
 def _quarters_from_midnight(zone: str, year: int, month: int, day: int, count: int) -> list[int]:

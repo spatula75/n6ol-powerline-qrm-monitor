@@ -153,9 +153,9 @@ is read as a tag.  In the text API, `rc=y` goes on each tag in the template inst
 Version 5 added one behavior the client has to handle.  A tag whose sensor has no
 reading returns `"-"`, or whatever the tag's `nv` parameter names, where version 3
 returned a number.  `SolarRad` does this on a station with no solar sensor, and about
-a hundred tags in `webtags.cs` on `main` can.  The client passes solar radiation
-through as text, so such a station writes `-` in that column instead of leaving it
-blank.  `todo.md` carries the fix.
+a hundred tags in `webtags.cs` on `main` can.  The client turns a `"-"` from any tag
+it reads into a blank field, so such a station leaves the cell empty rather than
+writing `-` in it.
 
 The client puts `rc` first.  On 2026-09-27 the operator's station, which writes
 periods already, returned the same JSON with and without it, and did not echo `rc` as
