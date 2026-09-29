@@ -206,8 +206,8 @@ class CumulusMXWeatherClient(WeatherClient):
     # The units CumulusMX offers, spelled as `windunit` and `rainunit` return them.  The
     # spellings come from CumulusMX's source, where Cumulus.cs sets `Units.WindText` and
     # `Units.RainText` to exactly one of these, and `tempunitnodeg` returns the letter
-    # after the degree sign in "°C" or "°F".  Its master branch confirmed all three on
-    # 2026-09-27.
+    # after the degree sign in "°C" or "°F".  Its main branch confirmed all three on
+    # 2026-09-28.
     _KMH_PER_WIND_UNIT: dict[str, float] = {
         'km/h': 1.0,
         'mph': _KMH_PER_MPH,

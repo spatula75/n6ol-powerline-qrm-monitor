@@ -153,6 +153,11 @@ behind it are in `cumulusmx-json-api.md` and `online-weather-sources.md`.
 - **The CumulusMX client moves to the text API**, a POST to `process.txt`, because only
   that endpoint can ask for `LastDataReadT format=Unix`.  Each tag in the template
   carries `rc=y`, which replaces the leading `rc` of the JSON query.
+- **A missing sensor's `"-"` becomes a blank cell.**  CumulusMX version 5 returns `"-"`
+  for a tag with no reading, and `SolarRad` does so on a station without a solar
+  sensor.  The client passes solar radiation through as text, so the CSV gets `-`.  A
+  `"-"` from any tag should arrive as a blank field instead.  See
+  `cumulusmx-json-api.md`.
 - **A startup warning when CumulusMX's midnight is not ours.**  `rmidnight` resets at
   the host's midnight.  Derive the host's offset from `timeUnix` and `timehhmmss`, and
   warn when it differs from `[station] timezone`.
