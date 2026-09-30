@@ -36,9 +36,17 @@ INT16_FORMAT = SampleFormat(
 
 
 class FakeHandle:
-    """Stands in for pyrtlsdr's RtlSdr.  Records what was set, and streams on demand."""
+    """Stands in for pyrtlsdr's RtlSdr.  Records what was set, and streams on demand.
 
-    def __init__(self, gains=None, rate_returns=None, read_raises=False):
+    It closes itself the way pyrtlsdr does.  A read error closes the device before
+    raising, a close that fails leaves `device_opened` True, and a close once the
+    device is closed does nothing.  `read_fails_on_cancel` ends the async read with an
+    error once it is cancelled, which is the inferred cause of the fault on 2026-09-27,
+    and it happens on the capture thread while close() waits for that thread.
+    """
+
+    def __init__(self, gains=None, rate_returns=None, read_raises=False, read_fails_on_cancel=False,
+                 close_fails=False):
         self.sample_rate = 0.0
         self.center_freq = 0
         self.gain = 0.0
@@ -51,6 +59,10 @@ class FakeHandle:
         self._read_raises = read_raises
         self._cancel = threading.Event()
         self.async_bytes = None
+        self.device_opened = True
+        self.close_calls = 0
+        self._read_fails_on_cancel = read_fails_on_cancel
+        self._close_fails = close_fails
 
     def __setattr__(self, name, value):
         if name == 'sample_rate' and getattr(self, '_rate_returns', None) is not None:
@@ -63,6 +75,7 @@ class FakeHandle:
 
     def read_bytes(self, num_bytes):
         if self._read_raises:
+            self.close()
             raise OSError('libusb says no')
         return np.full(num_bytes, 200, np.uint8)
 
@@ -71,14 +84,23 @@ class FakeHandle:
         while not self._cancel.is_set():
             callback(np.full(num_bytes, 7, np.uint8))
             time.sleep(0.005)
+        if self._read_fails_on_cancel:
+            self.close()
+            raise OSError('Could not read bytes')
 
     def cancel_read_async(self):
         self.cancelled = True
         self._cancel.set()
 
     def close(self):
+        self.close_calls += 1
+        if not self.device_opened:
+            return
         while self.close_blocks:
             time.sleep(0.01)
+        if self._close_fails:
+            raise OSError('exception: access violation writing 0x0000000000000000')
+        self.device_opened = False
         self.closed = True
 
 
@@ -379,6 +401,16 @@ class TestSynchronousReads:
         assert device.close() is True, (
             'a receiver the driver had already closed was reported as still held')
 
+    def test_a_failed_read_whose_close_also_failed_is_reported_held_and_not_closed_again(self, caplog):
+        """pyrtlsdr's own close can fail, and then the device is not free at all."""
+        handle = FakeHandle(read_raises=True, close_fails=True)
+        device = _device(handle)
+        assert device.read_block(256) is None
+        with caplog.at_level('WARNING'):
+            assert device.close() is False
+        assert handle.close_calls == 1, 'the half-closed handle was closed a second time'
+        assert 'may stay held until this process ends' in caplog.text
+
     def test_a_device_the_driver_closed_will_not_start_streaming(self):
         """The handle is gone, so a capture thread would read through nothing."""
         device = _device(FakeHandle(read_raises=True))
@@ -453,6 +485,30 @@ class TestClosing:
         assert handle.closed is False, (
             'the device was closed while a thread was still reading through it')
         assert 'did not stop within' in caplog.text
+
+    def test_a_read_that_ends_in_an_error_when_cancelled_is_not_closed_twice(self):
+        """pyrtlsdr closes the device on the capture thread while close() is still waiting for it.
+
+        close() used to decide whether the driver had closed the device before it
+        stopped the stream, so it missed a close that happened during the stop.
+        """
+        handle = FakeHandle(read_fails_on_cancel=True)
+        device = _device(handle)
+        device.start_stream(CountingSink(), 512)
+        assert device.close() is True
+        assert handle.close_calls == 1, 'the device was closed a second time after the driver closed it'
+
+    def test_the_fault_from_2026_09_27_leaves_the_receiver_reported_held(self, caplog):
+        """The driver's own close failed there, and the second close hung for three seconds."""
+        handle = FakeHandle(read_fails_on_cancel=True, close_fails=True)
+        device = _device(handle)
+        device.start_stream(CountingSink(), 512)
+        with caplog.at_level('DEBUG', logger='buzz.receiver.device'):
+            assert device.close() is False
+        assert handle.close_calls == 1, 'the half-closed handle was closed a second time'
+        assert 'may stay held until this process ends' in caplog.text
+        assert 'ended with an error while it was being stopped' in caplog.text
+        assert 'access violation' in caplog.text, 'the exception the capture thread met was not logged'
 
     def test_cancelling_is_allowed_to_fail(self):
         handle = FakeHandle()

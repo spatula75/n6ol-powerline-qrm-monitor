@@ -219,56 +219,6 @@ Nothing stops it beyond the CSV work in progress coming first.
 
 ## Other receivers
 
-### An RTL-SDR closed twice at shutdown, and the first close faulted
-
-This is for the next release.  On 2026-09-27, closing the monitor window with an
-RTL-SDR running printed a faulthandler dump, "Windows fatal exception: access
-violation", on the `rtlsdr` thread inside pyrtlsdr's `close()` (`rtlsdr.py:214`),
-which `read_bytes_async` (`rtlsdr.py:726`) had called.  The main thread was waiting in
-`RtlSdrDevice.stop_stream` for that thread at the time.  Three seconds later the log
-said the receiver "did not close within 3 seconds and was left to the operating
-system".  It has happened once.
-
-The process most likely survived the fault.  faulthandler on Windows prints an access
-violation the moment it happens, before ctypes turns it into an `OSError`, and the
-warning that followed comes from `_close_handle`, which runs only after the capture
-thread has ended.
-
-What follows is reconstructed from the Python frames and the code, because the dump
-had no C frames.  `cancel_read_async` made `rtlsdr_read_async` return an error code,
-which is an inference.  pyrtlsdr answers an error code by closing the device itself,
-and that `rtlsdr_close` faulted.  The fault escaped as an `OSError` before pyrtlsdr set
-`device_opened = False`, and `_run` discarded it because `_stopping` was set.  The join
-then returned, `close()` called `_close_handle`, and pyrtlsdr's `close()` called
-`rtlsdr_close` a second time on a handle already half torn down.  That call blocked
-until the three-second timeout gave up on it.
-
-The defect on our side is the second close.  `read_block` already knows that pyrtlsdr
-closes the device on a read error, and sets `_released_by_driver`.  `_run` does not, so
-any exception out of `read_bytes_async` leads to a second `rtlsdr_close`.  It hung
-harmlessly this time, and a close on a freed handle could as easily crash for real.
-
-The fix planned is for `_run` to record that the driver has already attempted the
-close, so `close()` never calls it again.  pyrtlsdr's own `device_opened` then tells
-the two outcomes apart.  False means its close worked and the receiver is free.  True
-means its close failed, the receiver may stay held until the process ends, and the
-log should say that rather than report it released.  The test is a stand-in device
-whose `read_bytes_async` raises after a failed close, asserting no second close.
-
-The fault inside `rtlsdr_close` itself belongs to librtlsdr and cannot be fixed from
-Python.  Avoiding pyrtlsdr's own close altogether would mean calling
-`rtlsdr_read_async` through ctypes directly, and that change should wait for a way to
-reproduce the fault.
-
-Check the SDRplay at the same time.  Its device class drives a different library and
-does not go through pyrtlsdr, so this exact path cannot occur there.  Whether its own
-shutdown can close twice, or close while a callback is still running, has not been
-looked at.
-
-What stops it is the CSV work in progress on `rain-and-weather-timestamp`, which comes
-first.  If the fault happens again before the fix, a run with `--log-level DEBUG` would
-show the exception `_run` currently discards.
-
 ### Verify the revised gain selection on an RTL-SDR
 
 On 2026-09-18, three live captures at 71 dB gain reported hardware overload with zero

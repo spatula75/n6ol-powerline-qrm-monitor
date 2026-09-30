@@ -712,11 +712,13 @@ class RtlSdrDevice(SdrDevice):
         self._produced = 0
         self._closed = False
         self._released = False
-        # Set when the driver closed the device out from under us, which pyrtlsdr does
-        # on any read error.  Kept apart from _closed, which means close() has run:
-        # reading the two as one flag reported a released receiver as still held, and
-        # told the operator to restart the setup program over nothing.
-        self._released_by_driver = False
+        # Set when pyrtlsdr has tried to close the device itself, which it does on any
+        # read error, synchronous or asynchronous.  Its own close can fail, so this says
+        # only that it tried, and the handle's device_opened says whether it worked.
+        # Kept apart from _closed, which means close() has run: reading the two as one
+        # flag reported a released receiver as still held, and told the operator to
+        # restart the setup program over nothing.
+        self._driver_tried_to_close = False
         self._sink: BlockSink | None = None
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
@@ -816,7 +818,7 @@ class RtlSdrDevice(SdrDevice):
         it running with nothing able to cancel or join it.  Before the device owned its
         own thread, threading.Thread refused this on its own.
         """
-        if self._closed or self._released_by_driver:
+        if self._closed or self._driver_tried_to_close:
             raise RuntimeError(
                 'The receiver cannot start streaming because it is closed.  Open it '
                 'again with RtlSdrDevice.open.')
@@ -866,13 +868,13 @@ class RtlSdrDevice(SdrDevice):
         reports it once and returns None from then on.
         """
         self.validate_sync_block(block_samples)
-        if self._closed or self._released_by_driver:
+        if self._closed or self._driver_tried_to_close:
             return None
         try:
             buffer = self._handle.read_bytes(
                 block_samples * self._profile.sample_format.bytes_per_frame)
         except Exception:
-            self._released_by_driver = True
+            self._driver_tried_to_close = True
             logger.warning(
                 'Reading from the receiver failed, and the library closes the device '
                 'on any read error, so this read cannot continue.  Whatever was '
@@ -904,12 +906,6 @@ class RtlSdrDevice(SdrDevice):
             return self._released
         self._closed = True
         atexit.unregister(self.close)
-        if self._released_by_driver:
-            # pyrtlsdr closed the device itself after a read error, so there is nothing
-            # left to close and nothing still held.  Saying otherwise sends the operator
-            # to restart the program over a receiver that is already free.
-            self._released = True
-            return True
         # A join that timed out leaves the capture thread inside librtlsdr's own read.
         # Closing now would free the handle it is reading through, which is a crash in
         # C rather than an exception here.  The cost of skipping the close is measured
@@ -921,8 +917,31 @@ class RtlSdrDevice(SdrDevice):
                 'is still reading through.  The operating system releases it when this '
                 'process ends.', _THREAD_JOIN_TIMEOUT_SECONDS)
             return False
+        # Only now, with the capture thread stopped, is the driver's own attempt known.
+        # A cancelled read can end in an error, and pyrtlsdr then closes the device on
+        # the capture thread while stop_stream is still waiting for it.
+        if self._driver_tried_to_close:
+            self._released = self._after_the_drivers_own_close()
+            return self._released
         self._released = self._close_handle()
         return self._released
+
+    def _after_the_drivers_own_close(self) -> bool:
+        """Whether pyrtlsdr's own close released the device, and never a second attempt.
+
+        pyrtlsdr's close does nothing once it has succeeded, so a second call is only
+        possible when the first one failed.  That failure happened inside rtlsdr_close,
+        and a second rtlsdr_close on the same half-freed handle hung on 2026-09-27,
+        where it could as easily crash.  See docs-notebook/rtl-sdr-hardware.md.
+        """
+        if not self._handle.device_opened:
+            return True
+        logger.warning(
+            'The receiver library failed to close the receiver after a read error, so '
+            'the receiver may stay held until this process ends.  The monitor does not '
+            'try again, because a second close on that handle can crash.  If the next '
+            'start reports LIBUSB_ERROR_ACCESS, disconnect the receiver and connect it again.')
+        return False
 
     def validate_sync_block(self, block_samples: int) -> None:
         """Refuse a synchronous read size librtlsdr cannot serve exactly.
@@ -1017,11 +1036,17 @@ class RtlSdrDevice(SdrDevice):
                 self._on_block,
                 block_samples * self._profile.sample_format.bytes_per_frame)
         except Exception:
+            # pyrtlsdr closes the device before raising from its async read, whatever
+            # the error, so close() must not close it a second time.
+            self._driver_tried_to_close = True
             if not self._stopping.is_set():
                 logger.exception(
                     'The receiver stopped delivering samples.  Capture has ended and '
                     'will not restart on its own, because the device cannot be '
                     'reopened promptly.  Restart the monitor to try again.')
+            else:
+                logger.debug('The receiver read ended with an error while it was being '
+                             'stopped.', exc_info=True)
 
     def _on_block(self, buffer: object, _context: object = None) -> None:
         """Take one block from the device, on librtlsdr's own thread.
