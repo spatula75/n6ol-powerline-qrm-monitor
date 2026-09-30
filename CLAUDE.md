@@ -738,6 +738,19 @@ Practical consequences:
   generated bindings, a struct read from a file, a wire format.  The generator cannot
   know what will be installed, so the check belongs at the point of use.
 
+- **A subprocess started from a console receives that console's Ctrl+C too.** The
+  terminal signals every process attached to it, not only the one somebody typed at.
+  ffmpeg under `--render` got the Ctrl+C, quit on its own, and closed the file it was
+  writing. The monitor's next frame then hit a broken pipe, and it told the operator a
+  playable file was unusable. `RenderSession._outside_console_signals` starts ffmpeg in
+  its own session on Linux and macOS and its own process group on Windows, so it stops
+  only when the monitor stops it.
+
+  Start any long-running child that way, and let the parent end it through the path
+  that reports what happened. Windows still sends a typed Ctrl+Break to every process on
+  the console. Only a detached process escapes that, and a detached process has no
+  console for its stderr. `TestAnInterruptedRender` sends the interrupt to the whole
+  process group, the way a terminal does, which is the only way to see this fail.
 - **Push, don't poll.** Components publish state changes to their listeners rather than
   reaching into another component to read its state - a lock is an event, not a level,
   and a poller misses any event that begins and ends between two polls. Publish from the
@@ -1138,6 +1151,11 @@ that call rather than quietly compiling another variant mid-flight.
   does *not* imply `--mute` - only `--render --headless` does - and that headless
   playback never exits on its own, so a test driving it must stop the process rather
   than wait for it.
+- **Building a `QIcon` or `QPixmap` before a `QApplication` exists ends the process.**
+  There is no exception and no traceback, only an exit code, so a unit test that does it
+  takes the pytest worker down with it. `QImage` is safe without an application, which
+  is why `tests/display/test_app_icon.py` reads the icon files with it. The icon itself
+  is built in the offscreen integration tier, where `qt_app` supplies the application.
 - Integration tests complement running the program by hand; they don't replace it.
   A lit button or a timer starting at the wrong number needs a person looking.
 - **A Textual test that pauses once and then asserts is racing a worker.** The setup
