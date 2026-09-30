@@ -14,6 +14,7 @@ the elapsed timer that started at nine needed a person.  These pin down the two
 specific things known to have broken, and no more than that.
 """
 
+import numpy as np
 import pytest
 from harness import LOUD_PULSES, Monitor
 
@@ -23,8 +24,10 @@ from PySide6.QtCore import QPoint, QTimer                               # noqa: 
 from PySide6.QtGui import QColor, QFontMetrics, QImage, QPainter        # noqa: E402
 from PySide6.QtWidgets import QPushButton, QWidget                      # noqa: E402
 
+from buzz.analyzer import TriggerSync                                   # noqa: E402
 from buzz.config import BuzzConfig                                      # noqa: E402
 from buzz.display.fonts import FAMILY, display_family, display_font             # noqa: E402
+from buzz.display.scope import ScopeWidget                                      # noqa: E402
 from buzz.display.waterfall import (                                            # noqa: E402
     _AXIS_H, _BAR_BG, _BAR_H, _WATERFALL_H, MainWindow, RecordingBarWidget,
     WaterfallWidget)
@@ -174,6 +177,45 @@ class TestTheDisplayStopsWhileMinimized:
 
 
 @pytest.mark.integration
+class TestTheApplicationIcon:
+    """A QIcon can only be built once a QApplication exists, so this lives here."""
+
+    def test_the_icon_holds_every_size_in_resources(self, qt_app):
+        from buzz.display.app_icon import application_icon, icon_files
+
+        icon = application_icon()
+        assert not icon.isNull(), 'the application icon came out empty'
+        sizes = sorted(size.width() for size in icon.availableSizes())
+        expected = sorted(int(path.name.split('_')[1].split('x')[0]) for path in icon_files())
+        assert sizes == expected, (
+            f'The icon offers sizes {sizes} and resources/ holds {expected}.  Qt can '
+            'only pick a hand-drawn small size that made it into the icon.')
+
+
+@pytest.mark.integration
+class TestCloseListenersRunFirst:
+    """A reader from outside the window stops before anything inside it does.
+
+    DisplayRecorder takes the window's pixels on a timer of its own, and closeEvent
+    cannot find it among the window's widgets.  Stopped only at aboutToQuit, it could
+    take one more capture from a window that had already started to close.
+    """
+
+    def test_a_listener_runs_before_the_widgets_stop(self, qt_app, monitor):
+        window = MainWindow(monitor.pipeline, monitor.analyzer, BuzzConfig())
+        window.show()
+        qt_app.processEvents()
+        seen = []
+        window.add_close_listener(lambda: seen.append(
+            [widget._timer.isActive() for widget in window._repainting_widgets()]))
+        window.close()
+        assert seen, 'closing the window never called its close listener'
+        assert all(seen[0]), (
+            f'Some widgets had already stopped when the close listener ran, so a capture '
+            f'could still reach them after they stopped: {seen[0]}')
+
+
+@pytest.mark.integration
 class TestRecordButtonShowsItsState:
     """Armed reads as spent, not as inviting.
 
@@ -244,7 +286,7 @@ class TestTheWaterfallSitsCenteredInItsPanel:
         widget = WaterfallWidget(monitor.pipeline, BuzzConfig())
         try:
             widget.resize(widget.width(), _WATERFALL_H)
-            widget._history_db[:] = widget._color_floor + widget._color_range
+            widget._history_db[:] = widget._range.floor + widget._range.span
             return widget.grab().toImage()
         finally:
             widget.stop()
@@ -333,3 +375,141 @@ class TestTheDisplayFontSurvivesAHeadlessPlatform:
         monospace -- and a transport time index whose digits shift as it counts."""
         bar = RecordingBarWidget(monitor.recorder, None, monitor.analyzer)
         assert f'font-family: "{FAMILY}"' in bar.styleSheet()
+
+
+class _SquareWavePipeline:
+    """A pipeline whose audio is a square wave at whatever amplitude the test sets.
+
+    A square wave rectifies to its own amplitude at every sample and has a median of
+    zero, so neither the scope's DC removal nor the phase of its sweeps can move the
+    level the averaging view sees.  That leaves the amplitude as the only input.
+    """
+
+    effective_bits = 16
+    scope_floor_steps = 1.0
+
+    def __init__(self) -> None:
+        self.total_samples = 0
+        self.amplitude = 0.0
+
+    def advance(self, samples: int) -> None:
+        self.total_samples += samples
+
+    def get_snapshot(self, n_samples: int, align: int = 1) -> np.ndarray:
+        signs = np.where(np.arange(n_samples) % 2 == 0, 1.0, -1.0)
+        return (self.amplitude * signs).astype(np.float32)
+
+
+class _FreeRunningAnalyzer:
+    """An analyzer with no lock, which is all the scope needs to sweep."""
+
+    def trigger_phase(self) -> tuple[int, TriggerSync]:
+        return 0, TriggerSync.FREE
+
+    def grid_frequency_hz(self) -> float:
+        return 60.0
+
+
+@pytest.mark.integration
+class TestARestartedReplaySeedsTheAveragingScaleFromItsOwnAudio:
+    """After a restart, the averaging scale starts at the new pass's level.
+
+    The averaging scale seeds from the running average, and one frame moves that
+    average only _AVERAGE_ALPHA of the way to new audio.  A restart that kept the old
+    average seeded the new pass near the old pass's level, and then took seconds to
+    come down.  A replay usually ends on audio much like its start, so the fault was
+    hard to see on screen.
+    """
+
+    LOUD = 10_000.0
+    QUIET = 100.0
+    # The width only sets how many columns the trace is drawn across.  The scale is
+    # measured from the samples, so any width serves.
+    WIDTH = 648
+
+    def test_a_quiet_pass_after_a_loud_one_is_scaled_for_the_quiet_one(self, qt_app):
+        pipeline = _SquareWavePipeline()
+        scope = ScopeWidget(pipeline, _FreeRunningAnalyzer(), BuzzConfig(), self.WIDTH)
+        try:
+            scope.stop()
+            scope.toggle_mode()
+            # Each frame advances a whole window, so the first frame of each pass
+            # seeds its scale.
+            window = scope._capture_samples + scope._geometry.phase_period
+
+            pipeline.amplitude = self.LOUD
+            for _ in range(3):
+                pipeline.advance(window)
+                scope._tick()
+            assert scope._average_range.full_scale > self.LOUD, (
+                'The loud pass never set the averaging scale, so this test cannot tell '
+                'whether the restart below kept that scale.')
+
+            scope.restart()
+            pipeline.amplitude = self.QUIET
+            pipeline.advance(window)
+            scope._tick()
+
+            # The scale sits a little above the rectified level, for headroom.  Twice
+            # the quiet level allows for that and still lies far below the loud level
+            # that a kept average produces.
+            full_scale = scope._average_range.full_scale
+            assert self.QUIET <= full_scale < 2 * self.QUIET, (
+                f'After a restart into audio at {self.QUIET:.0f} counts, the averaging '
+                f'scale seeded at {full_scale:.0f} counts.  A figure near '
+                f"{self.LOUD:.0f} means ScopeWidget.restart() kept the previous pass's "
+                f'running average.  Clear _average there.')
+        finally:
+            scope.stop()
+
+
+@pytest.mark.integration
+class TestSwitchingViewsSeedsTheIncomingScale:
+    """Each view's scale stands still while the other view is on.
+
+    A level change made in the other view, such as a band or gain change, left the
+    incoming view scaled for the old level.  It then took seconds to come down, which
+    is the slow start the seeding exists to remove.
+    """
+
+    LOUD = 10_000.0
+    QUIET = 100.0
+    WIDTH = 648
+
+    @staticmethod
+    def _frames(scope, pipeline, amplitude, count=3):
+        window = scope._capture_samples + scope._geometry.phase_period
+        pipeline.amplitude = amplitude
+        for _ in range(count):
+            pipeline.advance(window)
+            scope._tick()
+
+    @pytest.mark.parametrize('view', ['average', 'raw'])
+    def test_a_view_switched_into_after_a_level_change_scales_for_the_new_level(self, qt_app, view):
+        pipeline = _SquareWavePipeline()
+        scope = ScopeWidget(pipeline, _FreeRunningAnalyzer(), BuzzConfig(), self.WIDTH)
+        try:
+            scope.stop()
+            if view == 'average':
+                scope.toggle_mode()
+            scale = lambda: (scope._average_range if view == 'average' else scope._range).full_scale  # noqa: E731
+            self._frames(scope, pipeline, self.LOUD)
+            assert scale() > self.LOUD, (
+                f'The loud audio never set the {view} scale, so this test cannot tell '
+                'whether switching back kept that scale.')
+
+            scope.toggle_mode()
+            self._frames(scope, pipeline, self.QUIET)
+            scope.toggle_mode()
+            self._frames(scope, pipeline, self.QUIET, count=1)
+
+            # The raw scale holds the peak and the averaging scale the rectified mean,
+            # each with headroom.  Twice the quiet level allows for both and lies far
+            # below the loud level a kept scale would still show.
+            assert self.QUIET <= scale() < 2 * self.QUIET, (
+                f'Switching back into the {view} view after the level fell to '
+                f'{self.QUIET:.0f} counts gave a scale of {scale():.0f} counts.  A figure '
+                f'near {self.LOUD:.0f} means toggle_mode did not restart the incoming '
+                "view's ScopeRange.")
+        finally:
+            scope.stop()

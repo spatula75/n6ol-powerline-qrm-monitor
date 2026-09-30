@@ -155,3 +155,42 @@ The first health interval established a receiver clock baseline of -3 ms and pro
 no clipping warning.  Both receiver checks therefore selected their scales from live
 input rather than from the floor, exposed more SDRplay detail than the old limit, and
 left the RTL-SDR display looking as it did before this change.
+
+## The starting scale
+
+Every stream used to start at 2048 counts and blend toward the measured scale at an
+EMA weight of 0.05 per 100 ms frame.  On 2026-09-28 the operator noticed that a replay
+or a render of an SDRplay recording spent its opening seconds scaling down, because an
+SDRplay needs so little gain.  Worked out from those two figures, the time to come
+within 2x of the final scale was:
+
+| settled scale | within 2x of it | within 10% of it |
+|---|---|---|
+| 2.84 counts | 12.8 s | 17.3 s |
+| 31.05 counts | 8.1 s | 12.6 s |
+| 100 counts | 5.8 s | 10.3 s |
+
+Since 2026-09-29, `ScopeRange` sets the scale outright from the first frame that holds
+a whole window of the stream's own audio, and blends every frame after that.  Two
+alternatives were weighed.  Seeding from the opening of the recorded file would have
+needed file access and would not have helped a live start.  Seeding from any first
+frame would have failed on a window of zeros, which `get_snapshot` returns before the
+buffer holds enough audio, and would have put the scale at the floor.
+
+The window is counted from the start of the current stream, not of the run.  A replay
+that starts over empties the ring buffer, while the pipeline's sample count keeps
+running as the audio clock.  The playback bar's restart tells the scope, which counts
+its window again from there.  The trace and the averaging view each keep their own
+scale, and each scale moves only while its view is on.  So a switch between the two
+seeds the incoming view's scale again from its first full window after the switch.
+Without that, a band or gain change made in one view left the other scaled for the old
+level, and it took seconds to come down.  This was found in review on 2026-09-30.
+
+The waterfall's color scale had the same fault in a stronger form, and `WaterfallRange`
+fixes it the same way.  Its floor started from the configured calibration, its 48 rows
+of history started at that guess, and each row moved the floor and ceiling 5% of the
+way toward percentiles of the whole history.  A first row of real audio therefore had
+one forty-eighth of the say, even before the blend.  The first full row now sets the
+floor and ceiling outright.  Only rows filled since then count toward the percentiles,
+and an unfilled row holds a level far below any receiver's, so it draws at the cold end
+of the colormap.

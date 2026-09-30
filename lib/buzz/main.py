@@ -33,7 +33,9 @@ import signal
 import sys
 import threading
 import wave
+from collections.abc import Callable
 from pathlib import Path
+from types import FrameType
 from typing import TYPE_CHECKING, TypeVar
 
 from buzz import wavmeta
@@ -511,9 +513,31 @@ def _start_collector(config: BuzzConfig, analyzer: ContinuousAnalyzer) -> None:
     ).start()
 
 
+# The signals that ask this program to stop and give it the chance to clean up.  Ctrl+C
+# sends SIGINT, `kill` on Linux and macOS sends SIGTERM, and Ctrl+Break sends SIGBREAK,
+# which exists only on Windows.  SIGKILL and a forced taskkill are absent because no
+# program can catch them, and the process then ends without painting anything.
+_SHUTDOWN_SIGNALS: tuple[signal.Signals, ...] = tuple(
+    getattr(signal, name) for name in ('SIGINT', 'SIGTERM', 'SIGBREAK') if hasattr(signal, name))
+
+
+def _shut_down_on_signal(handler: Callable[[int, FrameType | None], object]) -> None:
+    """Route every signal in _SHUTDOWN_SIGNALS to `handler`.
+
+    Python's own default ends the process at once on SIGTERM and SIGBREAK, with no
+    cleanup.  A render then leaves an .mp4 that opens in nothing, and an event
+    recording is never closed.  So each of them takes the path Ctrl+C already takes.
+    """
+    for signum in _SHUTDOWN_SIGNALS:
+        signal.signal(signum, handler)
+
+
 def _wait_until_interrupted(pipeline: RingBufferPipeline, analyzer: ContinuousAnalyzer,
                             recorder: RecordingTrigger | None = None) -> None:
-    """Headless main loop: block until ^C, then stop the analyzer and the audio pipeline.
+    """Headless main loop: wait for a shutdown signal, then stop the analyzer and the pipeline.
+
+    Ctrl+C raises KeyboardInterrupt here, and _shut_down_on_signal makes the other
+    shutdown signals raise it too.
 
     This stops the analyzer first, mirroring MainWindow.closeEvent(), otherwise the
     analyzer thread's in-flight tick can end up calling into an already-closed
@@ -801,12 +825,16 @@ def main() -> None:  # pragma: no cover
     # paints them offscreen.  Only a headless run with nothing to render skips it.
     if args.headless and not args.render:
         _start_playback(pipeline, args.playback)
+        # Every shutdown signal raises KeyboardInterrupt, as Ctrl+C does, so each of
+        # them reaches the cleanup in _wait_until_interrupted.
+        _shut_down_on_signal(signal.default_int_handler)
         _wait_until_interrupted(pipeline, analyzer, recorder)
         return
 
     try:
         from PySide6.QtCore import QTimer  # noqa: I001
         from PySide6.QtWidgets import QApplication
+        from buzz.display.app_icon import application_icon, use_own_taskbar_identity
         from buzz.display.waterfall import MainWindow
     except ImportError:
         logger.warning(
@@ -814,10 +842,13 @@ def main() -> None:  # pragma: no cover
             'Install PySide6 or run with --headless to suppress this warning.'
         )
         _start_playback(pipeline, args.playback)
+        _shut_down_on_signal(signal.default_int_handler)
         _wait_until_interrupted(pipeline, analyzer, recorder)
         return
 
+    use_own_taskbar_identity()
     app = QApplication(sys.argv)
+    app.setWindowIcon(application_icon())
     window = MainWindow(pipeline, analyzer, config, always_on_top=args.top,
                         recorder=recorder,
                         playback=pipeline if args.playback else None,
@@ -842,10 +873,16 @@ def main() -> None:  # pragma: no cover
         # The transport is started by the recorder rather than here, so that the
         # opening frame is captured before playback moves - see DisplayRecorder.start.
         QTimer.singleShot(0, recording_display.start)
+        # The recorder stops first on close, before the widgets do, so no capture can
+        # reach a window that has started to go.  The aboutToQuit connection in
+        # _start_render stays for a render that ends by itself, which quits without a
+        # close.
+        window.add_close_listener(recording_display.stop)
 
-    # Allow Ctrl+C to close the window cleanly from the console
-    signal.signal(signal.SIGINT, lambda *_: window.close())
-    # QTimer keeps the Python interpreter ticking so SIGINT can be delivered
+    # Each shutdown signal closes the window, so it stops through closeEvent exactly as
+    # the close button does.
+    _shut_down_on_signal(lambda *_: window.close())
+    # QTimer keeps the Python interpreter ticking so a signal can be delivered
     sigint_keepalive = QTimer()
     sigint_keepalive.timeout.connect(lambda: None)
     sigint_keepalive.start(200)

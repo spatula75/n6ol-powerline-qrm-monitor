@@ -23,6 +23,7 @@ that is already right.
 import logging
 import math
 import subprocess
+import sys
 import wave
 from pathlib import Path
 
@@ -296,6 +297,11 @@ class _FrameGrid:
         return count
 
 
+# The Win32 CREATE_NEW_PROCESS_GROUP flag.  subprocess defines it only on Windows, so the
+# value is written out here, and the Windows choice can then be tested on any platform.
+_CREATE_NEW_PROCESS_GROUP = 0x00000200
+
+
 class RenderSession:
     """An ffmpeg process being fed frames, and the grid deciding how many to feed.
 
@@ -334,7 +340,8 @@ class RenderSession:
         logger.info('ffmpeg command: %s', ' '.join(self._command))
         try:
             self._process = subprocess.Popen(
-                self._command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL)
+                self._command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                **self._outside_console_signals(sys.platform))
         except OSError as exc:
             raise RenderError(
                 f'Could not start ffmpeg at {self._command[0]}: {exc}. The file was '
@@ -342,6 +349,26 @@ class RenderSession:
                 'means it is not executable, is a broken symlink, or is built for a '
                 'different architecture. Try running it directly from a terminal - '
                 'the error there is normally more specific than this one.') from exc
+
+    @staticmethod
+    def _outside_console_signals(platform: str) -> dict[str, int | bool]:
+        """Popen arguments that keep ffmpeg from receiving a Ctrl+C typed in the console.
+
+        The console sends Ctrl+C to every process attached to it, and ffmpeg exits
+        on its own when it gets one.  The monitor then found the pipe closed at its
+        next frame and reported a broken render, although the file ffmpeg left was
+        playable.  Outside the console's signals, ffmpeg stops only through finish()
+        or abort(), and those report what happened.
+
+        On Windows a new process group ignores Ctrl+C.  Windows documents a typed
+        Ctrl+Break as reaching every process on the console whatever its group, so
+        ffmpeg can still exit on that.  Only a process detached from the console
+        escapes it, and a detached ffmpeg has no console for its stderr, where the
+        render's error messages send the operator to read its reason.
+        """
+        if platform == 'win32':
+            return {'creationflags': _CREATE_NEW_PROCESS_GROUP}
+        return {'start_new_session': True}
 
     def submit(self, pixels: bytes, position: float) -> None:
         """Offer the frame on screen at playback `position`, in PIXEL_FORMAT bytes."""

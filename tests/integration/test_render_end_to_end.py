@@ -15,8 +15,10 @@ else, and a contributor who never renders should still get a green suite.
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -434,3 +436,90 @@ class TestForeignSampleRates:
             f'Frame sizes by rate came out {sizes}, expected {EXPECTED_SIZE} for all of '
             'them.  The display geometry has gone back to depending on the sample '
             'rate -- see spectrum_geometry in buzz.display.waterfall.')
+
+
+# Long enough that an interrupt a couple of seconds into the render falls well short
+# of the end, so a file padded to the whole recording cannot pass for one that stopped.
+_INTERRUPTED_SECONDS = 10.0
+# How long the render runs after ffmpeg has created its output, before the interrupt.
+# The figure is arbitrary; it only has to leave some video in the file.
+_RUN_BEFORE_INTERRUPT_SECONDS = 2.0
+
+
+def _interrupt(process: subprocess.Popen) -> None:
+    """Interrupt the monitor the way an operator at its console would.
+
+    On Linux and macOS this sends SIGINT to the monitor's whole process group, which is
+    what a terminal does with Ctrl+C, so ffmpeg receives it too unless it was started
+    outside that group.  Windows cannot aim a Ctrl+C at one group, so this sends
+    Ctrl+Break to the monitor's group instead.
+    """
+    if sys.platform == 'win32':
+        process.send_signal(signal.CTRL_BREAK_EVENT)
+    else:
+        os.killpg(process.pid, signal.SIGINT)
+
+
+@pytest.fixture(scope='module')
+def interrupted_render(tmp_path_factory):
+    """A headless render interrupted part way, and the recording it was made from."""
+    directory = tmp_path_factory.mktemp('interrupted')
+    source = write_pulse_train(directory / 'long.wav', RATE, _INTERRUPTED_SECONDS)
+    output = directory / 'interrupted.mp4'
+    environment = {**os.environ, 'QT_QPA_PLATFORM': 'offscreen',
+                   'PYTHONPATH': str(ROOT / 'lib'), 'NUMBA_DISABLE_JIT': '0'}
+    # Its own group, so the interrupt reaches the monitor and its children and nothing
+    # running this test.
+    isolation = ({'creationflags': subprocess.CREATE_NEW_PROCESS_GROUP} if sys.platform == 'win32'
+                 else {'start_new_session': True})
+    process = subprocess.Popen(
+        [sys.executable, '-m', 'buzz.main', '--playback', str(source),
+         '--render', str(output), '--headless'],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=environment,
+        cwd=str(ROOT), **isolation)
+    try:
+        deadline = time.monotonic() + 120
+        while not output.exists() and process.poll() is None and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert output.exists(), 'ffmpeg never created its output, so the render never started'
+        time.sleep(_RUN_BEFORE_INTERRUPT_SECONDS)
+        _interrupt(process)
+        _, stderr = process.communicate(timeout=60)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+    return process.returncode, stderr, source, output
+
+
+class TestAnInterruptedRender:
+    """Ctrl+C part way through a render leaves a file that ends where it stopped."""
+
+    def test_it_exits_cleanly_without_a_broken_pipe(self, interrupted_render):
+        returncode, stderr, _, _ = interrupted_render
+        assert returncode == 0 and 'Rendering stopped' not in stderr, (
+            f'The interrupted render exited {returncode}.\n\nstderr:\n{stderr[-3000:]}\n\n'
+            'A broken pipe here means ffmpeg received the interrupt itself and quit '
+            'before the monitor finished the file.  RenderSession.start launches it '
+            'outside the console\'s signals to prevent that.')
+
+    def test_the_video_ends_where_the_render_stopped(self, interrupted_render):
+        """The recording is measured from outside the .mp4, as in
+        test_the_video_lasts_as_long_as_the_replay_did."""
+        _, _, source, output = interrupted_render
+        recording = float(probe(source)['format']['duration'])
+        video = float(probe(output)['video']['duration'])
+        assert video < recording - 3, (
+            f'The render was interrupted about {_RUN_BEFORE_INTERRUPT_SECONDS:g} s in, '
+            f'and its video still runs {video:.2f} s of a {recording:.2f} s recording.  '
+            'DisplayRecorder.stop has to finish at the playback position.  Finishing at '
+            'the duration holds the last frame over the rest of the audio.')
+
+    def test_the_audio_stops_with_the_video(self, interrupted_render):
+        _, _, _, output = interrupted_render
+        streams = probe(output)
+        video = float(streams['video']['duration'])
+        audio = float(streams['audio']['duration'])
+        assert abs(video - audio) < 0.05, (
+            f'Video runs {video:.3f} s and audio {audio:.3f} s after an interrupt.  '
+            '-shortest in ffmpeg_command is what trims the audio to the video.')

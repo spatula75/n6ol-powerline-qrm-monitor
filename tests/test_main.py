@@ -2,6 +2,7 @@
 and headless wait."""
 import argparse
 import logging
+import signal
 import sys
 import time
 import wave
@@ -22,8 +23,8 @@ from buzz.csv_store import CsvStore
 from buzz.ffmpeg import find_ffmpeg
 from buzz.loudness import resolve_gain
 from buzz.main import (
-    _start_collector, _start_playback, _wait_until_interrupted, build_recording,
-    check_playback_source, configure_logging, keep_execution_speed_while_hidden,
+    _SHUTDOWN_SIGNALS, _shut_down_on_signal, _start_collector, _start_playback,
+    _wait_until_interrupted, build_recording, check_playback_source, configure_logging, keep_execution_speed_while_hidden,
     make_weather_client, open_live_source, open_playback_pipeline,
 )
 from buzz.plotter import Plotter
@@ -216,6 +217,50 @@ class TestWaitUntilInterrupted:
             mock_event.return_value.wait.side_effect = KeyboardInterrupt
             _wait_until_interrupted(pipeline, analyzer, recorder)
         assert calls == ['analyzer.stop', 'recorder.stop', 'pipeline.close']
+
+
+@pytest.fixture
+def restored_signal_handlers():
+    """Put back whatever handled each shutdown signal, so a test cannot leave the worker
+    raising KeyboardInterrupt on SIGTERM for every test after it."""
+    saved = {signum: signal.getsignal(signum) for signum in _SHUTDOWN_SIGNALS}
+    yield
+    for signum, handler in saved.items():
+        signal.signal(signum, handler)
+
+
+class TestShutdownSignals:
+    """Every signal that asks the program to stop reaches the same cleanup as Ctrl+C.
+
+    Python's default ends the process at once on SIGTERM and SIGBREAK, which leaves a
+    render's .mp4 unplayable and an event recording unclosed.
+    """
+
+    def test_termination_and_ctrl_break_are_routed_beside_ctrl_c(self):
+        """The names come from the operating system rather than from the tuple."""
+        expected = {signal.SIGINT, signal.SIGTERM}
+        if hasattr(signal, 'SIGBREAK'):
+            expected.add(signal.SIGBREAK)
+        assert set(_SHUTDOWN_SIGNALS) == expected
+
+    @pytest.mark.parametrize('signum', _SHUTDOWN_SIGNALS, ids=lambda s: s.name)
+    def test_each_signal_calls_the_handler(self, restored_signal_handlers, signum):
+        received = []
+        _shut_down_on_signal(lambda number, _frame: received.append(number))
+        signal.raise_signal(signum)
+        assert received == [signum]
+
+    def test_termination_in_headless_mode_runs_the_same_cleanup_as_ctrl_c(self, restored_signal_handlers):
+        """The headless path installs default_int_handler, which has to turn SIGTERM into
+        the KeyboardInterrupt that _wait_until_interrupted catches."""
+        _shut_down_on_signal(signal.default_int_handler)
+        pipeline, analyzer, recorder = MagicMock(), MagicMock(), MagicMock()
+        with patch('buzz.main.threading.Event') as mock_event:
+            mock_event.return_value.wait.side_effect = lambda: signal.raise_signal(signal.SIGTERM)
+            _wait_until_interrupted(pipeline, analyzer, recorder)
+        analyzer.stop.assert_called_once()
+        recorder.stop.assert_called_once()
+        pipeline.close.assert_called_once()
 
 
 class TestPlaybackWritesNothing:

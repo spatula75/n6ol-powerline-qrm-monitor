@@ -24,6 +24,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A warning at startup when the computer running CumulusMX keeps a different time zone
   from `[station] timezone`. It names the hour of the station's day at which the rain
   column then restarts.
+- The monitor's window, and its taskbar entry on Windows, show the monitor's own icon
+  in place of Python's.
 
 ### Changed
 - `[weather] url` takes the CumulusMX station's address, such as
@@ -56,6 +58,26 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The device is not closed again later either, when the library's handle is
   garbage-collected or the program exits. A close that fails, the library's or the
   monitor's own, now reports the receiver as still held instead of released.
+- The scope and the waterfall take their scales from the first full window of audio in
+  a stream, and a replay or render of a quiet recording, such as one from an SDRplay,
+  is in scale within its first second. The scope used to start at a fixed level, and
+  the quietest recordings took nearly 13 seconds to come within twice their final
+  scale. The waterfall started from a level guessed from the configuration. A replay
+  that starts over sets both scales again, and switching the scope between its trace
+  and average views sets the scale of the view switched into.
+- After a replay reached the end of its file, the analyzer went on analyzing the last
+  audio, so the meters' correction markers and readings kept moving with nothing
+  arriving. It now waits for new audio. A live receiver or sound card that stalls
+  therefore records silence for those minutes, where it used to repeat the last audio's
+  readings.
+- `kill` on Linux and macOS, and Ctrl+Break on Windows, now stop the monitor the way
+  Ctrl+C does. A render in progress finishes a playable file and an event recording is
+  closed. Both used to end the process at once, leaving the render's `.mp4` unplayable.
+- A render stopped part way, by closing the window or by Ctrl+C, ends where it stopped.
+  Closing the window used to give a video as long as the whole recording, with the
+  picture frozen at the moment of closing while the audio played on. Ctrl+C also
+  reached ffmpeg, which quit by itself, and the monitor then reported a broken pipe
+  and called a playable file unusable. Ctrl+Break on Windows can still reach ffmpeg.
 
 ## [2.1.0] - 2026-09-19
 

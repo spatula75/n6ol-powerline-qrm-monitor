@@ -8,6 +8,7 @@ ever started.
 """
 
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -206,6 +207,28 @@ class TestRenderSession:
     def test_it_starts_ffmpeg_with_a_pipe_for_frames(self, started):
         _, _, popen = started
         assert popen.call_args.kwargs['stdin'] is subprocess.PIPE
+
+    def test_ffmpeg_is_kept_out_of_the_consoles_signals(self, started):
+        """A Ctrl+C typed in the console used to reach ffmpeg too, which exited on its
+        own and left the monitor reporting a broken pipe."""
+        _, _, popen = started
+        expected = RenderSession._outside_console_signals(sys.platform)
+        assert {key: popen.call_args.kwargs.get(key) for key in expected} == expected
+
+    @pytest.mark.parametrize('platform, expected', [
+        ('win32', {'creationflags': 0x00000200}),
+        ('linux', {'start_new_session': True}),
+        ('darwin', {'start_new_session': True}),
+    ])
+    def test_each_platform_isolates_ffmpeg_its_own_way(self, platform, expected):
+        """0x200 is CREATE_NEW_PROCESS_GROUP, from the Win32 documentation."""
+        assert RenderSession._outside_console_signals(platform) == expected
+
+    @pytest.mark.skipif(not hasattr(subprocess, 'CREATE_NEW_PROCESS_GROUP'),
+                        reason='subprocess defines the flag only on Windows')
+    def test_the_written_out_flag_matches_the_one_subprocess_defines(self):
+        """A drift pin: render.py spells the value out so it can be tested anywhere."""
+        assert render._CREATE_NEW_PROCESS_GROUP == subprocess.CREATE_NEW_PROCESS_GROUP
 
     def test_it_will_not_overwrite_an_existing_file(self, tmp_path):
         """Checked here rather than left to ffmpeg so the operator gets a message

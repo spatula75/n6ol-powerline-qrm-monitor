@@ -404,6 +404,9 @@ class ContinuousAnalyzer:
         self._result_lock = threading.Lock()
         self._stop        = threading.Event()
         self._reset_requested = threading.Event()
+        # The pipeline's sample count at the last tick that analyzed anything.  -1 so
+        # that the first tick runs, and waits in wait_for_data while the buffer fills.
+        self._analyzed_through = -1
         self._state_listeners: list[Callable[[AnalyzerState], None]] = []
 
         self._thread = threading.Thread(target=self._run, daemon=True, name='analyzer')
@@ -598,21 +601,41 @@ class ContinuousAnalyzer:
         # catch-log-retry approach to the same class of failure.
         while not self._stop.is_set():
             try:
-                if self._reset_requested.is_set():
-                    self._apply_reset()
-                if self._state == AnalyzerState.LOCKED:
-                    interval = self._locked_tick()
-                elif self._state == AnalyzerState.SIGNAL_LOST:
-                    interval = self._signal_lost_tick()
-                else:
-                    interval = self._searching_tick()
+                interval = self._tick()
             except Exception:
                 logger.exception(
-                    'Analyzer tick failed - likely a transient audio-device or '
-                    'numerical error; retrying rather than stopping analysis.'
+                    'Analyzer tick failed, probably because of a brief audio-device or '
+                    'numerical error.  Analysis continues at the next tick.  Repeated '
+                    'failures point at the input device.'
                 )
                 interval = self.FAST_TICK_INTERVAL
             self._stop.wait(interval)
+
+    def _tick(self) -> float:
+        """Apply a pending reset, then analyze the newest audio if any has arrived.
+
+        With no audio since the last tick, this measures nothing and publishes nothing.
+        Audio is this analyzer's clock, as _audio_time explains, and without new samples
+        no time has passed.  Analyzing the same window again used to publish a new
+        result from old audio at every tick, and each refine added another point at
+        the same instant to the drift fit, which moved the predicted phase.  After a
+        replay ended, the meters' correction markers kept moving with no audio coming
+        in.  During a live stall, the collector now sees no results and records the
+        minute as silence, where it used to record the last audio again.
+
+        Returns the seconds to wait before the next tick.
+        """
+        if self._reset_requested.is_set():
+            self._apply_reset()
+        total = self._pipeline.total_samples
+        if total == self._analyzed_through:
+            return self.FAST_TICK_INTERVAL
+        self._analyzed_through = total
+        if self._state == AnalyzerState.LOCKED:
+            return self._locked_tick()
+        if self._state == AnalyzerState.SIGNAL_LOST:
+            return self._signal_lost_tick()
+        return self._searching_tick()
 
     def _searching_tick(self) -> float:
         self._transition(self._full_analysis())

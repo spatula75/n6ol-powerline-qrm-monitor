@@ -9,7 +9,7 @@ from buzz.recorder import RecorderStatus
 from buzz.display.scope import H_DIVISIONS
 from buzz.constants import DB_PER_S_UNIT, S9_DBM
 from buzz.display.waterfall import (
-    build_colormap, format_clock, format_countdown, format_mute_button,
+    WaterfallRange, build_colormap, format_clock, format_countdown, format_mute_button,
     format_playback_button, format_playback_status, format_record_button,
     format_recorder_status,
     _aggregate_meter_history, _color_scale_range, _correction_offset, _mean_spectrum_db,
@@ -17,6 +17,7 @@ from buzz.display.waterfall import (
     panel_width, spectrum_geometry, DISPLAY_BINS,
     _MAX_HZ, _N_ROWS, _DB_RANGE, _S_LEVELS_DBM, _PANEL_WIDTH_MULTIPLE, _PIXELS_PER_BIN,
     _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE, _COLOR_HEADROOM, _MIN_DYNAMIC_RANGE_DB,
+    _COLOR_RANGE_EMA_ALPHA, _UNFILLED_ROW_DB,
 )
 
 
@@ -402,7 +403,7 @@ class TestSpectrumPercentiles:
         assert floor > seed + 1.0
 
     def test_a_few_loud_rows_move_the_ceiling(self):
-        """The reason _update_color_range() smooths these rather than using them
+        """The reason WaterfallRange smooths these rather than using them
         directly: at the 98th percentile only the top 2% of values count, which is
         only a row or two of the history - so it takes just a couple of ticks of
         new, louder content for the raw ceiling to start moving."""
@@ -415,6 +416,79 @@ class TestSpectrumPercentiles:
         _, ceiling_loud = _spectrum_percentiles(loud, _COLOR_FLOOR_PERCENTILE,
                                                  _COLOR_CEILING_PERCENTILE)
         assert ceiling_loud > ceiling_quiet
+
+
+class TestWaterfallRange:
+    """The color floor and span start from the first full row of a stream, then blend."""
+
+    # Stands in for one display row's audio.  Only whether a stream has delivered this
+    # much matters, so the figure is arbitrary.
+    WINDOW = 2048
+
+    @staticmethod
+    def _row(quiet_db: float, loud_db: float) -> np.ndarray:
+        """90 bins at quiet_db and 10 at loud_db, so its 10th percentile is quiet_db and its 98th loud_db."""
+        row = np.full(100, quiet_db, dtype=np.float32)
+        row[90:] = loud_db
+        return row
+
+    def _history(self, *rows: np.ndarray) -> np.ndarray:
+        """A full history with `rows` at the top, newest first, and the rest unfilled."""
+        history = np.full((_N_ROWS, 100), _UNFILLED_ROW_DB, dtype=np.float32)
+        for index, row in enumerate(rows):
+            history[index] = row
+        return history
+
+    def test_the_first_full_row_sets_the_floor_and_ceiling_outright(self):
+        scale = WaterfallRange(-40.0, self.WINDOW)
+        scale.update(self._history(self._row(-100.0, -60.0)), self.WINDOW)
+        assert (scale.floor, scale.ceiling) == (pytest.approx(-100.0), pytest.approx(-60.0))
+        assert scale.span == pytest.approx(40.0 / (1 - _COLOR_HEADROOM))
+
+    def test_unfilled_rows_do_not_drag_the_floor_down(self):
+        """The other 47 rows hold the unfilled value, which would set a floor of -1000 dB."""
+        scale = WaterfallRange(-40.0, self.WINDOW)
+        scale.update(self._history(self._row(-100.0, -60.0)), self.WINDOW)
+        assert scale.floor == pytest.approx(-100.0)
+
+    def test_a_row_before_a_full_window_is_ignored_and_never_counted(self):
+        """A snapshot taken that early can be all zeros, which reads as the lowest level there is."""
+        scale = WaterfallRange(-40.0, self.WINDOW)
+        early = self._row(-300.0, -300.0)
+        scale.update(self._history(early), self.WINDOW - 1)
+        assert (scale.floor, scale.ceiling) == (-40.0, -40.0 + _DB_RANGE)
+        scale.update(self._history(self._row(-100.0, -60.0), early), self.WINDOW)
+        assert scale.floor == pytest.approx(-100.0), 'the early row counted toward the floor'
+
+    def test_rows_after_the_seed_blend_in(self):
+        """The second row raises the 98th percentile to -50, and the ceiling moves 5% of the way."""
+        scale = WaterfallRange(-40.0, self.WINDOW)
+        first = self._row(-100.0, -60.0)
+        scale.update(self._history(first), self.WINDOW)
+        scale.update(self._history(np.full(100, -50.0, dtype=np.float32), first), self.WINDOW + 512)
+        assert scale.floor == pytest.approx(-100.0)
+        assert scale.ceiling == pytest.approx(-60.0 + _COLOR_RANGE_EMA_ALPHA * (-50.0 - -60.0))
+
+    def test_a_quiet_row_still_gets_the_minimum_span(self):
+        scale = WaterfallRange(-40.0, self.WINDOW)
+        scale.update(self._history(np.full(100, -100.0, dtype=np.float32)), self.WINDOW)
+        assert scale.span == pytest.approx(_MIN_DYNAMIC_RANGE_DB / (1 - _COLOR_HEADROOM))
+
+    def test_a_restarted_stream_seeds_from_its_own_rows_alone(self):
+        """The previous pass's rows are still on screen below the new ones, and do not count."""
+        scale = WaterfallRange(-40.0, self.WINDOW)
+        old = self._row(-100.0, -60.0)
+        scale.update(self._history(old), self.WINDOW)
+        scale.restart(9000)
+        scale.update(self._history(self._row(-120.0, -120.0), old), 9000 + self.WINDOW - 1)
+        assert scale.floor == pytest.approx(-100.0)
+        scale.update(self._history(self._row(-130.0, -80.0), old), 9000 + self.WINDOW)
+        assert (scale.floor, scale.ceiling) == (pytest.approx(-130.0), pytest.approx(-80.0))
+
+    def test_the_unfilled_value_draws_as_the_cold_end_at_any_realistic_floor(self):
+        """paintEvent clips (value - floor) / span to 0, and every floor a receiver reaches is far above -1000 dB."""
+        for floor in (-150.0, -100.0, -30.0):
+            assert (_UNFILLED_ROW_DB - floor) / (_MIN_DYNAMIC_RANGE_DB / (1 - _COLOR_HEADROOM)) < 0
 
 
 class TestColorScaleRange:

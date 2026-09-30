@@ -17,7 +17,7 @@ outside these three classes will still trip the coverage gate.
 
 import logging
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from math import ceil, lcm
 from typing import TYPE_CHECKING, Protocol
@@ -65,8 +65,12 @@ _N_ROWS = 48                                # history rows (~4.8 s at 100 ms/fra
 _PIXELS_PER_ROW = 2                         # vertical scale; _WINDOW_H is derived from this
 _UPDATE_MS = 100
 # Initial guess for the floor-to-ceiling span (8 S-units), used only until the
-# color scale has real data to auto-range from - see _update_color_range().
+# color scale has real data to auto-range from - see WaterfallRange.
 _DB_RANGE = 48.0
+# What a history row holds before any audio has filled it.  It is far below any level
+# a receiver reports, so an unfilled row draws as the cold end of the colormap
+# whatever the floor, and WaterfallRange never reads it.
+_UNFILLED_ROW_DB = -1000.0
 _AXIS_H = 24                                # pixels reserved for frequency axis / header
 
 # The FFT window, in *time* rather than in samples.  32 ms, which is what 512 samples
@@ -525,6 +529,49 @@ def _color_scale_range(floor: float, ceiling: float, headroom: float) -> float:
     return span / (1.0 - headroom)
 
 
+class WaterfallRange:
+    """The waterfall's color floor and span, which start from the first full row of a stream.
+
+    Each row used to move the floor and the ceiling 5% of the way toward the
+    percentiles of the whole history, and the history started as 48 rows of a floor
+    guessed from the configuration.  A recording far from that guess, such as one from
+    an SDRplay, took seconds to come into color.  So the first row built from a whole
+    window of the stream's own audio sets the floor and the ceiling outright, and every
+    row after it blends in as before.
+
+    Only rows filled after that point count toward the percentiles.  Earlier rows are
+    the unfilled ones, a first snapshot that can be all zeros, or the rows of a replay
+    that has since started over, and none of them describes the audio on screen now.
+    """
+
+    def __init__(self, floor_seed: float, window_samples: int) -> None:
+        self.floor = floor_seed
+        self.ceiling = floor_seed + _DB_RANGE
+        self.span = _color_scale_range(self.floor, self.ceiling, _COLOR_HEADROOM)
+        self._window_samples = window_samples
+        self._stream_start = 0
+        self._rows_counted = 0
+
+    def restart(self, total_samples: int) -> None:
+        """Count a new stream from `total_samples`, and seed again from its own rows."""
+        self._stream_start = total_samples
+        self._rows_counted = 0
+
+    def update(self, history_db: np.ndarray, total_samples: int) -> None:
+        """Take the history just after a new row went in at the top."""
+        if total_samples - self._stream_start < self._window_samples:
+            return
+        self._rows_counted = min(self._rows_counted + 1, len(history_db))
+        floor, ceiling = _spectrum_percentiles(
+            history_db[:self._rows_counted], _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE)
+        if self._rows_counted == 1:
+            self.floor, self.ceiling = floor, ceiling
+        else:
+            self.floor += _COLOR_RANGE_EMA_ALPHA * (floor - self.floor)
+            self.ceiling += _COLOR_RANGE_EMA_ALPHA * (ceiling - self.ceiling)
+        self.span = _color_scale_range(self.floor, self.ceiling, _COLOR_HEADROOM)
+
+
 def build_colormap() -> np.ndarray:
     """Return a 256×3 uint8 RGB lookup table: black → blue → cyan → yellow → red."""
     lut = np.zeros((256, 3), dtype=np.uint8)
@@ -569,10 +616,9 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         self._geometry = spectrum_geometry(sample_rate)
         self._hz_per_bin = self._geometry.hz_per_bin
         self._display_bins = self._geometry.display_bins
-        # First guess for the color floor, from the station's configured
-        # calibration.  It only has to hold up for the first couple of seconds -
-        # _update_color_range() replaces it with the real, live level once actual
-        # data starts arriving.
+        # First guess for the color floor, from the station's configured calibration.
+        # WaterfallRange replaces it with the stream's own level from its first full
+        # row, and it is used only until then.
         floor_seed = (config.station.noise_floor
                       - config.level_offset_db
                       - self._geometry.noise_correction)
@@ -589,13 +635,9 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         self._frame_chunks = max(row_chunks,
                                  ceil(self._geometry.window / _BUFFER_CHUNK))
         self._last_total_samples = 0
-        self._history_db = np.full((_N_ROWS, self._display_bins), floor_seed, dtype=np.float32)
-        # Smoothed color floor/ceiling that paintEvent renders with; see
-        # _update_color_range(), which is what actually keeps these current.
-        self._color_floor = floor_seed
-        self._color_ceiling = floor_seed + _DB_RANGE
-        self._color_range = _color_scale_range(
-            self._color_floor, self._color_ceiling, _COLOR_HEADROOM)
+        self._history_db = np.full((_N_ROWS, self._display_bins), _UNFILLED_ROW_DB, dtype=np.float32)
+        # The smoothed color floor and span that paintEvent renders with.
+        self._range = WaterfallRange(floor_seed, self._frame_chunks * _BUFFER_CHUNK)
         # The spectrum keeps its natural width, and the widget is the next width the
         # scope's graticule divides exactly - see panel_width.  The difference is split
         # between the two sides, so the spectrum sits centered under the trace above it.
@@ -617,26 +659,17 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         self._last_total_samples = total
 
         samples = self._pipeline.get_snapshot(self._frame_chunks * _BUFFER_CHUNK)
-        db = _mean_spectrum_db(samples, self._geometry, self._color_floor)
+        db = _mean_spectrum_db(samples, self._geometry, self._range.floor)
         if db is None:
             return
         self._history_db[1:] = self._history_db[:-1]
         self._history_db[0] = db
-        self._update_color_range()
+        self._range.update(self._history_db, total)
         self.update()
 
-    def _update_color_range(self) -> None:
-        """Blend this tick's floor/ceiling percentiles into the smoothed values
-        paintEvent renders with.  See _COLOR_RANGE_EMA_ALPHA for why the raw
-        per-tick percentiles aren't used directly.
-        """
-        floor, ceiling = _spectrum_percentiles(
-            self._history_db, _COLOR_FLOOR_PERCENTILE, _COLOR_CEILING_PERCENTILE)
-        a = _COLOR_RANGE_EMA_ALPHA
-        self._color_floor   += a * (floor - self._color_floor)
-        self._color_ceiling += a * (ceiling - self._color_ceiling)
-        self._color_range = _color_scale_range(
-            self._color_floor, self._color_ceiling, _COLOR_HEADROOM)
+    def restart(self) -> None:
+        """Seed the color scale again from a replay that has started over."""
+        self._range.restart(self._pipeline.total_samples)
 
     def paintEvent(self, event) -> None:  # noqa: N802
         painter = QPainter(self)
@@ -667,11 +700,11 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
             painter.drawText(x + 2, _AXIS_H - 6, f'{hz} Hz')
 
         # Waterfall - each row is exactly _PIXELS_PER_ROW pixels tall.
-        # Map dB-above-floor onto the 0–255 colormap index range: _color_floor
-        # renders as the colormap's cold end, _color_floor + _color_range as hot.
-        # Both are auto-ranged from live data - see _update_color_range().
+        # Map dB-above-floor onto the 0–255 colormap index range: the floor renders
+        # as the colormap's cold end, and the floor plus the span as hot.  Both are
+        # auto-ranged from live data - see WaterfallRange.
         norm = np.clip(
-            (self._history_db - self._color_floor) / self._color_range * 255, 0, 255,
+            (self._history_db - self._range.floor) / self._range.span * 255, 0, 255,
         ).astype(np.uint8)
         used_h = _N_ROWS * _PIXELS_PER_ROW
         rgb_rows = np.ascontiguousarray(_COLORMAP[norm].repeat(_PIXELS_PER_ROW, axis=0))
@@ -841,11 +874,15 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
     def __init__(self, recorder: RecordingTrigger | None,
                  playback: FilePlaybackPipeline | None = None,
                  analyzer: ContinuousAnalyzer | None = None,
+                 on_restart: Callable[[], None] | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._recorder = recorder
         self._playback = playback
         self._analyzer = analyzer
+        # Told when a replay starts over, after the audio has been reset, so the scope
+        # can seed its scale from the new pass.
+        self._on_restart = on_restart
         self.setFixedHeight(_BAR_H)
         # A plain QWidget draws its palette background and ignores the stylesheet's,
         # which would leave the strip in the desktop's default gray with only the
@@ -948,6 +985,8 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
             if self._analyzer is not None:
                 self._analyzer.reset()
             self._playback.restart()
+            if self._on_restart is not None:
+                self._on_restart()
             self._tick()
 
     def _tick(self) -> None:
@@ -1048,6 +1087,7 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         self._pipeline = pipeline
         self._analyzer = analyzer
         self._recorder = recorder
+        self._close_listeners: list[Callable[[], None]] = []
 
         container = QWidget()
         # The gaps between panels are this widget showing through.  Without an explicit
@@ -1078,7 +1118,8 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         # invisible: --render wants the strip gone from the frame, and a widget that
         # still exists is a widget still polling its subject twice a second to update
         # a label nobody will see.
-        self._bar    = RecordingBarWidget(recorder, playback, analyzer) \
+        self._bar    = RecordingBarWidget(recorder, playback, analyzer,
+                                          on_restart=self._restart_displays) \
             if show_controls else None
 
         stack = QVBoxLayout()
@@ -1101,6 +1142,11 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         bar_height = _BAR_H + _PANEL_GAP if self._bar is not None else 0
         self.setFixedSize(self._waterfall.width() + _PANEL_GAP + self._meters.width(),
                           bar_height + _WINDOW_H)
+
+    def _restart_displays(self) -> None:
+        """Seed the scope's and the waterfall's scales again, for a replay that started over."""
+        self._scope.restart()
+        self._waterfall.restart()
 
     def keyPressEvent(self, event) -> None:  # noqa: N802
         """A toggles the scope's display mode; R records; Space and M drive playback.
@@ -1187,7 +1233,18 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
                     widget.start()
         super().changeEvent(event)
 
+    def add_close_listener(self, listener: Callable[[], None]) -> None:
+        """Call `listener` first when the window closes, before anything else stops.
+
+        This is for a timer that reads the window from outside it, because closeEvent
+        cannot find such a timer by itself.  DisplayRecorder is the case: it takes the
+        window's pixels, and it is built after the window because it needs the window.
+        """
+        self._close_listeners.append(listener)
+
     def closeEvent(self, event) -> None:  # noqa: N802
+        for listener in self._close_listeners:
+            listener()
         for widget in self._repainting_widgets():
             widget.stop()
         self._analyzer.stop()
@@ -1247,13 +1304,21 @@ class DisplayRecorder(QObject):  # pragma: no cover -- requires a live Qt displa
         self._timer.start(_UPDATE_MS)
 
     def stop(self) -> None:
-        """Close the file off wherever it has got to.  Idempotent."""
+        """Close the file off wherever playback has got to.  Idempotent.
+
+        This finishes at the playback position rather than at the recording's
+        duration, so a render stopped early ends where it stopped.  Finishing at the
+        duration held the last frame over the rest of the audio, which gave a video
+        as long as the recording with its picture frozen at the stop.  A replay that
+        reached the end has a position equal to its duration, which
+        test_playback.py pins, so a complete render still lasts the whole recording.
+        """
         if self._done:
             return
         self._done = True
         self._timer.stop()
         try:
-            self._session.finish(self._playback.duration)
+            self._session.finish(self._playback.position)
         except Exception as exc:                        # noqa: BLE001
             self._fail(exc)
         self.finished.emit()
