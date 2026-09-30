@@ -14,6 +14,7 @@ the elapsed timer that started at nine needed a person.  These pin down the two
 specific things known to have broken, and no more than that.
 """
 
+import numpy as np
 import pytest
 from harness import LOUD_PULSES, Monitor
 
@@ -23,8 +24,10 @@ from PySide6.QtCore import QPoint, QTimer                               # noqa: 
 from PySide6.QtGui import QColor, QFontMetrics, QImage, QPainter        # noqa: E402
 from PySide6.QtWidgets import QPushButton, QWidget                      # noqa: E402
 
+from buzz.analyzer import TriggerSync                                   # noqa: E402
 from buzz.config import BuzzConfig                                      # noqa: E402
 from buzz.display.fonts import FAMILY, display_family, display_font             # noqa: E402
+from buzz.display.scope import ScopeWidget                                      # noqa: E402
 from buzz.display.waterfall import (                                            # noqa: E402
     _AXIS_H, _BAR_BG, _BAR_H, _WATERFALL_H, MainWindow, RecordingBarWidget,
     WaterfallWidget)
@@ -372,3 +375,89 @@ class TestTheDisplayFontSurvivesAHeadlessPlatform:
         monospace -- and a transport time index whose digits shift as it counts."""
         bar = RecordingBarWidget(monitor.recorder, None, monitor.analyzer)
         assert f'font-family: "{FAMILY}"' in bar.styleSheet()
+
+
+class _SquareWavePipeline:
+    """A pipeline whose audio is a square wave at whatever amplitude the test sets.
+
+    A square wave rectifies to its own amplitude at every sample and has a median of
+    zero, so neither the scope's DC removal nor the phase of its sweeps can move the
+    level the averaging view sees.  That leaves the amplitude as the only input.
+    """
+
+    effective_bits = 16
+    scope_floor_steps = 1.0
+
+    def __init__(self) -> None:
+        self.total_samples = 0
+        self.amplitude = 0.0
+
+    def advance(self, samples: int) -> None:
+        self.total_samples += samples
+
+    def get_snapshot(self, n_samples: int, align: int = 1) -> np.ndarray:
+        signs = np.where(np.arange(n_samples) % 2 == 0, 1.0, -1.0)
+        return (self.amplitude * signs).astype(np.float32)
+
+
+class _FreeRunningAnalyzer:
+    """An analyzer with no lock, which is all the scope needs to sweep."""
+
+    def trigger_phase(self) -> tuple[int, TriggerSync]:
+        return 0, TriggerSync.FREE
+
+    def grid_frequency_hz(self) -> float:
+        return 60.0
+
+
+@pytest.mark.integration
+class TestARestartedReplaySeedsTheAveragingScaleFromItsOwnAudio:
+    """After a restart, the averaging scale starts at the new pass's level.
+
+    The averaging scale seeds from the running average, and one frame moves that
+    average only _AVERAGE_ALPHA of the way to new audio.  A restart that kept the old
+    average seeded the new pass near the old pass's level, and then took seconds to
+    come down.  A replay usually ends on audio much like its start, so the fault was
+    hard to see on screen.
+    """
+
+    LOUD = 10_000.0
+    QUIET = 100.0
+    # The width only sets how many columns the trace is drawn across.  The scale is
+    # measured from the samples, so any width serves.
+    WIDTH = 648
+
+    def test_a_quiet_pass_after_a_loud_one_is_scaled_for_the_quiet_one(self, qt_app):
+        pipeline = _SquareWavePipeline()
+        scope = ScopeWidget(pipeline, _FreeRunningAnalyzer(), BuzzConfig(), self.WIDTH)
+        try:
+            scope.stop()
+            scope.toggle_mode()
+            # Each frame advances a whole window, so the first frame of each pass
+            # seeds its scale.
+            window = scope._capture_samples + scope._geometry.phase_period
+
+            pipeline.amplitude = self.LOUD
+            for _ in range(3):
+                pipeline.advance(window)
+                scope._tick()
+            assert scope._average_range.full_scale > self.LOUD, (
+                'The loud pass never set the averaging scale, so this test cannot tell '
+                'whether the restart below kept that scale.')
+
+            scope.restart()
+            pipeline.amplitude = self.QUIET
+            pipeline.advance(window)
+            scope._tick()
+
+            # The scale sits a little above the rectified level, for headroom.  Twice
+            # the quiet level allows for that and still lies far below the loud level
+            # that a kept average produces.
+            full_scale = scope._average_range.full_scale
+            assert self.QUIET <= full_scale < 2 * self.QUIET, (
+                f'After a restart into audio at {self.QUIET:.0f} counts, the averaging '
+                f'scale seeded at {full_scale:.0f} counts.  A figure near '
+                f"{self.LOUD:.0f} means ScopeWidget.restart() kept the previous pass's "
+                f'running average.  Clear _average there.')
+        finally:
+            scope.stop()

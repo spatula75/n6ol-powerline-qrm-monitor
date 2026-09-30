@@ -862,10 +862,16 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
                              Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, 'CLIP')
 
     def restart(self) -> None:
-        """Seed both scales again from a replay that has started over."""
+        """Seed both scales again from a replay that has started over.
+
+        This also drops the running average.  The averaging scale seeds from that
+        average, and one frame moves it only _AVERAGE_ALPHA of the way to the new
+        audio, so a kept average would seed the new pass at the old pass's level.
+        """
         total = self._pipeline.total_samples
         self._range.restart(total)
         self._average_range.restart(total)
+        self._average = None
 
     def start(self) -> None:
         """Begin repainting, or begin again once the window is no longer minimized.
