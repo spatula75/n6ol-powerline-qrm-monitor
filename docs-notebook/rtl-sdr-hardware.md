@@ -174,6 +174,20 @@ Avoiding pyrtlsdr's own close would mean calling `rtlsdr_read_async` through cty
 directly, and that should wait for a way to reproduce the fault.  A run with
 `--log-level DEBUG` now logs the exception the capture thread met while stopping.
 
+A review on 2026-09-29 found two more ways to the same second close, and both are
+closed.  A failed `cancel_read_async` closes the device before it raises, so
+`stop_stream` now records the attempt the way `_run` does.  A close of this program's
+own that raised used to report the receiver released, and now reports it held.
+
+One case is left open on purpose.  When configuring a new handle in `open` fails, pyrtlsdr
+may already have closed it, and `_close_unstreamed` closes it again.  That is harmless
+when pyrtlsdr's close worked, because its close then does nothing.  It is a second
+`rtlsdr_close` only when pyrtlsdr's close also faulted, which needs two faults in a row
+during `open`, where the operator already sees an error.  Telling that case apart would
+mean reading pyrtlsdr's choice of exception type: `set_agc_mode` raises a `LibUSBError`
+without closing, and a fault inside `rtlsdr_close` arrives as a plain `OSError`.  The
+operator decided on 2026-09-29 not to depend on that.
+
 The SDRplay path was checked on the same day and needs no change.  Its library never
 closes the device on its own, `close()` releases it only after `sdrplay_api_Uninit` has
 returned, and a failed library call is reported rather than repeated.

@@ -461,7 +461,7 @@ class TestTheHandlesFinalizer:
     def test_a_close_of_our_own_that_failed_is_not_retried_when_the_handle_is_collected(self):
         handle = FakeHandle(close_fails=True)
         device = _device(handle)
-        device.close()
+        assert device.close() is False, 'a receiver whose close failed was reported as released'
         handle.collect()
         assert handle.rtlsdr_close_calls == 1, (
             'collecting the handle closed a half-closed receiver a second time')
@@ -524,10 +524,12 @@ class TestClosing:
             handle.close_blocks = False
         assert 'left to the operating system' in caplog.text
 
-    def test_a_close_failure_is_swallowed_rather_than_raised(self):
-        handle = FakeHandle()
-        handle.close = lambda: (_ for _ in ()).throw(OSError('gone'))
-        assert _device(handle).close() is True
+    def test_a_close_that_failed_is_reported_held_rather_than_raised(self, caplog):
+        """The failure happened inside rtlsdr_close, so the device may still be held."""
+        handle = FakeHandle(close_fails=True)
+        with caplog.at_level('WARNING'):
+            assert _device(handle).close() is False, 'a receiver whose close failed was reported as released'
+        assert 'may stay held until this process ends' in caplog.text
 
     def test_a_capture_thread_that_will_not_stop_leaves_the_device_open(self, caplog):
         """Closing a handle a thread is still reading through is a crash in C."""
@@ -572,18 +574,35 @@ class TestClosing:
         assert 'ended with an error while it was being stopped' in caplog.text
         assert 'access violation' in caplog.text, 'the exception the capture thread met was not logged'
 
+    def _cancel_that_fails(self, handle: FakeHandle) -> None:
+        """Make the cancel fail the way pyrtlsdr's does, which closes the device before raising."""
+        real_cancel = handle.cancel_read_async
+
+        def failing():
+            real_cancel()
+            handle.close()
+            raise OSError('Could not cancel async read')
+
+        handle.cancel_read_async = failing
+
     def test_cancelling_is_allowed_to_fail(self):
         handle = FakeHandle()
         device = _device(handle)
         device.start_stream(CountingSink(), 512)
-        real_cancel = handle.cancel_read_async
-
-        def angry():
-            real_cancel()
-            raise OSError('cancel failed')
-
-        handle.cancel_read_async = angry
+        self._cancel_that_fails(handle)
         assert device.close() is True
+        assert handle.close_calls == 1, 'the device was closed again after the failed cancel closed it'
+
+    def test_a_failed_cancel_whose_own_close_failed_is_not_closed_again(self, caplog):
+        """The same second rtlsdr_close as a failed read, reached through the cancel instead."""
+        handle = FakeHandle(close_fails=True)
+        device = _device(handle)
+        device.start_stream(CountingSink(), 512)
+        self._cancel_that_fails(handle)
+        with caplog.at_level('WARNING'):
+            assert device.close() is False
+        assert handle.rtlsdr_close_calls == 1, 'the half-closed handle was closed a second time'
+        assert 'may stay held until this process ends' in caplog.text
 
 
 class TestOpening:
