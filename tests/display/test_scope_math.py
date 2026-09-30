@@ -5,7 +5,8 @@ import pytest
 
 from buzz.constants import FULL_SCALE_COUNTS
 from buzz.display.scope import (
-    SCOPE_H, accumulate_trace, auto_range_full_scale, build_graticule,
+    SCOPE_H, ScopeRange, accumulate_trace, auto_range_full_scale, build_graticule,
+    measured_full_scale,
     build_phosphor_colormap, extract_sweeps, full_scale_dbfs, minimum_full_scale,
     n_complete_sweeps,
     resample_to_columns, sweep_start_offset, trace_rows, update_running_average,
@@ -188,6 +189,80 @@ class TestAutoRangeFullScale:
         for _ in range(500):
             scale = auto_range_full_scale(sweeps, scale, FLOOR)
         assert scale > 1000.0
+
+
+class TestScopeRange:
+    """A scale that starts from a stream's first full window, then blends as before."""
+
+    # Stands in for the capture plus the alignment.  The figure is arbitrary, because
+    # only whether a stream has delivered this much matters.
+    WINDOW = 1000
+
+    @staticmethod
+    def _frame(counts: float) -> np.ndarray:
+        """Sweeps swinging to exactly `counts`, whose measurement is counts x 1.30 headroom."""
+        return np.full((4, SWEEP), counts, dtype=np.float32)
+
+    def test_the_first_full_window_sets_the_scale_outright(self):
+        scope_range = ScopeRange(FLOOR, self.WINDOW)
+        assert scope_range.update(self._frame(24.0), self.WINDOW) == pytest.approx(24.0 * 1.30)
+
+    def test_a_frame_before_a_full_window_leaves_the_scale_alone(self):
+        """A snapshot taken that early can be all zeros, which would seed the scale at the floor."""
+        scope_range = ScopeRange(FLOOR, self.WINDOW)
+        assert scope_range.update(np.zeros((4, SWEEP), dtype=np.float32), self.WINDOW - 1) == 2048.0
+        assert scope_range.update(self._frame(24.0), self.WINDOW) == pytest.approx(24.0 * 1.30)
+
+    def test_frames_after_the_seed_blend_in(self):
+        scope_range = ScopeRange(FLOOR, self.WINDOW)
+        scope_range.update(self._frame(24.0), self.WINDOW)
+        seeded = 24.0 * 1.30
+        blended = seeded + _RANGE_EMA_ALPHA * (48.0 * 1.30 - seeded)
+        assert scope_range.update(self._frame(48.0), self.WINDOW + 100) == pytest.approx(blended)
+
+    def test_a_quiet_stream_is_in_scale_from_its_first_full_frame(self):
+        """Blending from 2048 took about 80 frames, 8 seconds, to come within 2x of 31 counts."""
+        target = 24.0 * 1.30
+
+        def frames_to_settle(update) -> int:
+            for frame in range(1, 500):
+                if update() < 2 * target:
+                    return frame
+            return 500
+
+        scope_range = ScopeRange(FLOOR, self.WINDOW)
+        seeded = frames_to_settle(lambda: scope_range.update(self._frame(24.0), self.WINDOW))
+        blended_scale = [2048.0]
+
+        def blend() -> float:
+            blended_scale[0] = auto_range_full_scale(self._frame(24.0), blended_scale[0], FLOOR)
+            return blended_scale[0]
+
+        assert (seeded, frames_to_settle(blend) > 60) == (1, True)
+
+    def test_the_seed_respects_the_floor(self):
+        scope_range = ScopeRange(100.0, self.WINDOW)
+        assert scope_range.update(self._frame(24.0), self.WINDOW) == 100.0
+
+    def test_an_empty_frame_changes_nothing(self):
+        scope_range = ScopeRange(FLOOR, self.WINDOW)
+        assert scope_range.update(np.empty((0, SWEEP)), self.WINDOW) == 2048.0
+        assert scope_range.update(self._frame(24.0), self.WINDOW) == pytest.approx(24.0 * 1.30)
+
+    def test_a_restarted_stream_seeds_again_once_its_own_window_arrives(self):
+        """A replay that starts over empties the buffer, while the sample count keeps running."""
+        scope_range = ScopeRange(FLOOR, self.WINDOW)
+        scope_range.update(self._frame(240.0), self.WINDOW)
+        scope_range.restart(5000)
+        assert scope_range.update(self._frame(24.0), 5000 + self.WINDOW - 1) == pytest.approx(240.0 * 1.30)
+        assert scope_range.update(self._frame(24.0), 5000 + self.WINDOW) == pytest.approx(24.0 * 1.30)
+
+    def test_the_seed_and_the_blend_share_one_measurement(self):
+        """auto_range_full_scale blends toward exactly what measured_full_scale reports."""
+        sweeps = np.random.default_rng(1).normal(0, 40, size=(4, SWEEP)).astype(np.float32)
+        measured = measured_full_scale(sweeps)
+        assert measured == pytest.approx(float(np.percentile(np.abs(sweeps), 99.5)) * 1.30)
+        assert auto_range_full_scale(sweeps, 500.0, FLOOR) == pytest.approx(500.0 + _RANGE_EMA_ALPHA * (measured - 500.0))
 
 
 class TestTheFloorFollowsTheReceiver:

@@ -256,7 +256,8 @@ _RANGE_EMA_ALPHA = 0.05
 # neither, and both receivers drew a dead channel at full height.
 # See SdrDevice.scope_floor_steps and docs-notebook/scope-auto-range-floor.md.
 _FLOOR_STEPS = 1.0
-# Initial guess, used only until the EMA has real data to converge from.
+# The scale before a stream's first full window has arrived.  ScopeRange replaces it
+# with that window's own measurement, so it is on screen for well under a second.
 _INITIAL_FULL_SCALE = 2048.0
 
 # Raw sample magnitude at which the input is treated as clipping.  Slightly inside
@@ -469,9 +470,53 @@ def auto_range_full_scale(sweeps: np.ndarray, previous: float, floor: float) -> 
     """
     if sweeps.size == 0:
         return previous
-    raw = float(np.percentile(np.abs(sweeps), _RANGE_PERCENTILE)) * _RANGE_HEADROOM
-    blended = previous + _RANGE_EMA_ALPHA * (raw - previous)
+    blended = previous + _RANGE_EMA_ALPHA * (measured_full_scale(sweeps) - previous)
     return max(blended, floor)
+
+
+def measured_full_scale(sweeps: np.ndarray) -> float:
+    """The full scale one frame's deflection asks for, before any smoothing or floor."""
+    return float(np.percentile(np.abs(sweeps), _RANGE_PERCENTILE)) * _RANGE_HEADROOM
+
+
+class ScopeRange:
+    """One auto-ranged full scale, which starts from the first full window of a stream.
+
+    Each frame moves the scale only _RANGE_EMA_ALPHA of the way to what it measures, so
+    blending from _INITIAL_FULL_SCALE took seconds to reach a quiet input.  From 2048
+    counts to within 2x of 31 counts took about 8 seconds, and that opened every render
+    of an SDRplay recording.  So the first frame that holds a whole window of the
+    stream's own audio sets the scale outright, and every frame after it blends in as
+    before.
+
+    The seed waits for that full window because a snapshot taken sooner can be a window
+    of zeros.  Seeding from one would put the scale at the floor and pin the trace to
+    the rails.  The window is counted from `restart`, because a replay that starts over
+    empties the buffer while the pipeline's sample count keeps running.
+    """
+
+    def __init__(self, floor: float, window_samples: int) -> None:
+        self._floor = floor
+        self._window_samples = window_samples
+        self.full_scale = _INITIAL_FULL_SCALE
+        self._stream_start = 0
+        self._seeded = False
+
+    def restart(self, total_samples: int) -> None:
+        """Count a new stream from `total_samples`, and seed again from its own audio."""
+        self._stream_start = total_samples
+        self._seeded = False
+
+    def update(self, sweeps: np.ndarray, total_samples: int) -> float:
+        """Take one frame's sweeps, and return the full scale to draw them at."""
+        if sweeps.size == 0:
+            return self.full_scale
+        if self._seeded:
+            self.full_scale = auto_range_full_scale(sweeps, self.full_scale, self._floor)
+        elif total_samples - self._stream_start >= self._window_samples:
+            self.full_scale = max(measured_full_scale(sweeps), self._floor)
+            self._seeded = True
+        return self.full_scale
 
 
 def full_scale_dbfs(full_scale: float) -> float:
@@ -677,8 +722,6 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
         self._graticule = build_graticule(_TRACE_H, width)
         self._average: np.ndarray | None = None
 
-        self._full_scale = _INITIAL_FULL_SCALE
-        self._average_full_scale = _INITIAL_FULL_SCALE
         self._sync = TriggerSync.FREE
         self._averaging = False
         self._clipping = False
@@ -691,6 +734,13 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
         # information.
         self._floor = minimum_full_scale(pipeline.effective_bits,
                                          pipeline.scope_floor_steps)
+        # Each view seeds from its own first frame.  The averaging view's scale moves
+        # only while averaging is on, so a switch into it later still starts from that
+        # view's own audio rather than from _INITIAL_FULL_SCALE.  A full window is the
+        # capture plus the alignment get_snapshot trims from its end.
+        window_samples = self._capture_samples + self._geometry.phase_period
+        self._range = ScopeRange(self._floor, window_samples)
+        self._average_range = ScopeRange(self._floor, window_samples)
 
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
@@ -738,14 +788,12 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
 
         if self._averaging:
             self._average = update_running_average(self._average, sweeps, _AVERAGE_ALPHA)
-            self._average_full_scale = auto_range_full_scale(
-                self._average, self._average_full_scale, self._floor)
+            self._average_range.update(self._average, total)
         else:
-            self._full_scale = auto_range_full_scale(sweeps, self._full_scale,
-                                                     self._floor)
+            full_scale = self._range.update(sweeps, total)
             self._phosphor *= _PHOSPHOR_DECAY
             for sweep in sweeps:
-                self._draw(self._phosphor, sweep, self._full_scale,
+                self._draw(self._phosphor, sweep, full_scale,
                            _SWEEP_INTENSITY, bipolar=True)
             np.clip(self._phosphor, 0.0, 1.0, out=self._phosphor)
         self.update()
@@ -766,7 +814,7 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
         if self._averaging:
             field = np.zeros((_TRACE_H, self._width), dtype=np.float32)
             if self._average is not None:
-                self._draw(field, self._average, self._average_full_scale,
+                self._draw(field, self._average, self._average_range.full_scale,
                            1.0, bipolar=False)
         else:
             field = self._phosphor
@@ -801,7 +849,7 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
                              Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
                              f'{self._analyzer.grid_frequency_hz():.2f} Hz')
 
-        scale = self._average_full_scale if self._averaging else self._full_scale
+        scale = self._average_range.full_scale if self._averaging else self._range.full_scale
         mode = 'AVG' if self._averaging else 'RAW'
         painter.drawText(0, 0, self._width - 6, _HEADER_H,
                          Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
@@ -812,6 +860,12 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
             painter.setPen(QColor(255, 80, 80))
             painter.drawText(180, 0, 50, _HEADER_H,
                              Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter, 'CLIP')
+
+    def restart(self) -> None:
+        """Seed both scales again from a replay that has started over."""
+        total = self._pipeline.total_samples
+        self._range.restart(total)
+        self._average_range.restart(total)
 
     def start(self) -> None:
         """Begin repainting, or begin again once the window is no longer minimized.

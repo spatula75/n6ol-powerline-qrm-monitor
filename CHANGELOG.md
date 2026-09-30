@@ -56,6 +56,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The device is not closed again later either, when the library's handle is
   garbage-collected or the program exits. A close that fails, the library's or the
   monitor's own, now reports the receiver as still held instead of released.
+- The scope takes its scale from the first full window of audio in a stream, and a
+  replay or render of a quiet recording, such as one from an SDRplay, is in scale
+  within its first second. The scale used to start at a fixed level, and the quietest
+  recordings took nearly 13 seconds to come within twice their final scale. A replay
+  that starts over sets its scale again.
 
 ## [2.1.0] - 2026-09-19
 

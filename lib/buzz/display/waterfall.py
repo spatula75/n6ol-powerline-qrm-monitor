@@ -17,7 +17,7 @@ outside these three classes will still trip the coverage gate.
 
 import logging
 from collections import deque
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from math import ceil, lcm
 from typing import TYPE_CHECKING, Protocol
@@ -841,11 +841,15 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
     def __init__(self, recorder: RecordingTrigger | None,
                  playback: FilePlaybackPipeline | None = None,
                  analyzer: ContinuousAnalyzer | None = None,
+                 on_restart: Callable[[], None] | None = None,
                  parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._recorder = recorder
         self._playback = playback
         self._analyzer = analyzer
+        # Told when a replay starts over, after the audio has been reset, so the scope
+        # can seed its scale from the new pass.
+        self._on_restart = on_restart
         self.setFixedHeight(_BAR_H)
         # A plain QWidget draws its palette background and ignores the stylesheet's,
         # which would leave the strip in the desktop's default gray with only the
@@ -948,6 +952,8 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
             if self._analyzer is not None:
                 self._analyzer.reset()
             self._playback.restart()
+            if self._on_restart is not None:
+                self._on_restart()
             self._tick()
 
     def _tick(self) -> None:
@@ -1078,7 +1084,8 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         # invisible: --render wants the strip gone from the frame, and a widget that
         # still exists is a widget still polling its subject twice a second to update
         # a label nobody will see.
-        self._bar    = RecordingBarWidget(recorder, playback, analyzer) \
+        self._bar    = RecordingBarWidget(recorder, playback, analyzer,
+                                          on_restart=self._scope.restart) \
             if show_controls else None
 
         stack = QVBoxLayout()
