@@ -402,13 +402,22 @@ enable_frequency_chart = false
 #   None - leave the weather columns empty
 source = "cumulusmx"
 
-# The JSON endpoint of your CumulusMX installation.
+# The units the CSV records temperature, wind speed and rain in.
 #
-# Change the query string tags to match the fields your station publishes.
+#   Imperial - degrees F, MPH and inches
+#   Metric - degrees C, km/h and mm
 #
-# You should normally only change the hostname and port here.
-# Example:
-# http://cumulusmx.local:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing
+# A CSV file that already exists keeps the units it started with, so that no
+# file mixes the two.
+units = "imperial"
+
+# The address of your CumulusMX installation: its host name or IP address,
+# its port, and a slash.
+#
+# The monitor adds the rest of the URL itself. A full URL from an older
+# config still works, and the monitor warns at startup about the part it
+# ignores.
+# Example: http://cumulusmx.local:8998/
 url = ""
 
 # The latitude that Open-Meteo looks up.

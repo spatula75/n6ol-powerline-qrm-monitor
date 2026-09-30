@@ -113,6 +113,17 @@ class TestMakeWeatherClient:
         client = make_weather_client(self._config('openmeteo'))
         assert isinstance(client, OpenMeteoWeatherClient)
 
+    def test_openmeteo_counts_rain_from_the_stations_midnight(self):
+        cfg = self._config('openmeteo')
+        cfg.station.timezone = 'Asia/Bangkok'
+        client = make_weather_client(cfg)
+        assert 'timezone=Asia%2FBangkok&' in client._url
+
+    def test_cumulusmx_checks_its_host_against_the_stations_timezone(self):
+        cfg = self._config('cumulusmx')
+        cfg.station.timezone = 'Asia/Bangkok'
+        assert make_weather_client(cfg)._zone.key == 'Asia/Bangkok'
+
     def test_cumulusmx(self):
         client = make_weather_client(self._config('cumulusmx'))
         assert isinstance(client, CumulusMXWeatherClient)
@@ -128,7 +139,7 @@ class TestMakeWeatherClient:
     def test_unknown_source_logs_warning(self, caplog):
         with caplog.at_level(logging.WARNING, logger='buzz'):
             make_weather_client(self._config('wunderground'))
-        assert 'Unknown weather source' in caplog.text
+        assert "[weather] source is 'wunderground', and it must be" in caplog.text
 
     def test_none_source_does_not_warn(self, caplog):
         with caplog.at_level(logging.WARNING, logger='buzz'):
@@ -146,7 +157,7 @@ class TestMakeWeatherClient:
         cfg.weather.longitude = None
         with caplog.at_level(logging.WARNING, logger='buzz'):
             make_weather_client(cfg)
-        assert 'latitude/longitude' in caplog.text
+        assert 'latitude and longitude are not both set.' in caplog.text
 
     def test_cumulusmx_without_url_returns_null_client(self):
         cfg = self._config('cumulusmx')
@@ -159,7 +170,7 @@ class TestMakeWeatherClient:
         cfg.weather.url = ''
         with caplog.at_level(logging.WARNING, logger='buzz'):
             make_weather_client(cfg)
-        assert 'url is not set' in caplog.text
+        assert 'url is not set.' in caplog.text
 
 
 class TestWaitUntilInterrupted:

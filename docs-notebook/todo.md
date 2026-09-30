@@ -43,6 +43,31 @@ min_free_disk_percent` keeps a tenth of the disk in reserve by default, so the
 ordinary case is that recording is held off before the disk fills at all, and starts
 again on its own once there is room.
 
+### Put the center frequency in an IQ recording's filename
+
+SDR programs take an IQ recording's center frequency from its filename, and nothing
+inside the file.  Tests on 2026-09-28 found a name that SDRconnect, SDR# and SDR++ all
+read correctly, and `iq-filenames.md` has the evidence and each program's rule:
+
+    event_IQ_20260928_154116-0700_3590000HZ_3590000Hz.wav
+
+The frequency appears twice because SDRconnect requires the fifth `_` field to end in
+`HZ`, and SDR++ matches `[0-9]+Hz` case-sensitively.  Both tokens carry the tuned
+frequency, not the listening one.  `IqEventRecorder` already holds it as `_tuned_hz`,
+and writes it into the file's metadata as `center_frequency_hz`, so recordings made
+before the change can be renamed by hand from that.
+
+The IQ name moves from dashes to underscores, so it no longer looks like its audio
+partner, `event-20260928-154116-0700.wav`.  Whether the audio name follows is for the
+operator to decide.  `event_filename` takes only a time and a suffix today, so the IQ
+recorder needs its own way to build the name.
+
+The tests build the name for a configured listening frequency and offset, and check
+that both tokens carry the tuned frequency.  They also apply each rule to the name:
+SDRconnect's field positions and capital `HZ`, and SDR++'s own pattern.
+
+Nothing stops it.
+
 ## Faster sample rate support
 
 The program runs at 16 kHz at the one station it was written for, and several pieces
@@ -108,7 +133,141 @@ nothing on the band was strong enough to settle it.  A signal generator would.  
 figure of 57.5 dB against a nominal 49.6 in `config.py` and `receiver/source.py`
 is provisional, neither confirmed nor refuted.  See `sdr-gain-calibration.md`.
 
+## Weather
+
+### OpenWeatherMap as a third weather source
+
+OpenWeatherMap's free Current Weather API could serve operators who have no station
+and would rather not use a model.  It was left out of the release after units, on
+2026-09-27, for three reasons.
+
+It has no total since midnight, so one would have to be integrated from `rain.1h`,
+and a 40-minute poll showed that figure unchanged while `dt` moved five times.  It
+needs an API key, which the setup program has no way to require for one source and
+not the others.  And its data is a blend whose makeup the documentation does not
+describe.  See `online-weather-sources.md`.
+
+What would settle the rain question is running the integration beside a CumulusMX
+`rmidnight` through several days with rain at one station, and comparing the totals.
+Until somebody does that, a total derived from OpenWeatherMap cannot be trusted.
+
+## Display and playback
+
+### The scope takes seconds to find a quiet recording's scale
+
+On 2026-09-28 the operator noticed that a replay, and a render to video, of an event an
+SDRplay recorded spends its opening seconds with the scope still scaling down.  An
+SDRplay needs so little gain that its audio sits far below where the scope starts.
+
+The scope starts every run at `_INITIAL_FULL_SCALE`, 2048 counts, and
+`auto_range_full_scale` blends each 100 ms frame's measurement in with an EMA weight
+of 0.05.  So the distance to the right scale shrinks by 5% a frame, and a quiet input
+takes a long time to reach it.  From 2048 counts, worked out from those two figures:
+
+| settled scale | within 2x of it | within 10% of it |
+|---|---|---|
+| 2.84 counts | 12.8 s | 17.3 s |
+| 31.05 counts | 8.1 s | 12.6 s |
+| 100 counts | 5.8 s | 10.3 s |
+
+2.84 and 31.05 counts are the range an RSP1B asked for on 2026-09-18, from
+`scope-auto-range-floor.md`.  A render is the worst case, because those seconds open
+the video, and an event recording is short to begin with.
+
+There are two ways to start nearer the answer:
+
+- **Take the first frame's measurement as the starting scale**, rather than blending
+  it into 2048, and let the EMA carry on from there as it does now.  This needs no
+  file access and helps a live start as much as a replay.  On 2026-09-28 the operator
+  chose it as the one to build.
+- **Seed the scale from the recording before the display starts**, as the operator
+  suggested, by measuring the opening of the file with the same percentile and
+  headroom `auto_range_full_scale` uses.  The span should be fixed in time rather
+  than in samples, per the rule in `CLAUDE.md`.  100 samples is 6 ms at 16 kHz, less
+  than one 8.3 ms pulse period, so it can miss every impulse and seed the scale at
+  the noise.  Half a second covers dozens of pulses at any rate.
+
+The first-frame seed has three conditions, and the first decides whether it works at
+all:
+
+- **The first frame must hold real audio.**  Before the buffer has any, or when an
+  aligned window ends before the first sample, `get_snapshot` in `sampler.py` returns
+  a window of zeros, and `_tick` measures it like any other.  Seeding from that
+  frame would put the scale at the floor, the most magnification the scope allows.
+  The signal would then sit pinned at the rails, looking like overload, while the
+  scale spent seconds climbing back up.  So the seed waits for the first frame whose
+  window is full of delivered audio, which is when `total_samples` has reached the
+  capture length plus the alignment.  The scope can tell that without looking at the
+  samples.
+- **Each scale takes its own seed.**  `_average_full_scale` moves only while averaging
+  is on, so a switch into averaging minutes into a run still starts it from 2048.
+  It should seed from its own first frame instead.  That frame averages only a few
+  sweeps and reads somewhat high, and the EMA brings it down.
+- **A new stream starts a new seed.**  The flag that says "seeded" belongs to the
+  stream, not to the widget, so a second replay in one session is seeded from its own
+  audio rather than starting from the last one's scale.
+
+A first frame caught during a burst of static, or a receiver's startup transient,
+seeds the scale too high.  The EMA then takes its usual seconds to correct it, which
+is no worse than today's start.
+
+The test has to measure the settling rather than the constant.  It feeds a quiet input
+and counts the frames until the scale is within 2x of where it ends up.  A second test
+feeds a window of zeros first and checks that it does not seed the scale.
+
+Nothing stops it beyond the CSV work in progress coming first.
+
 ## Other receivers
+
+### An RTL-SDR closed twice at shutdown, and the first close faulted
+
+This is for the next release.  On 2026-09-27, closing the monitor window with an
+RTL-SDR running printed a faulthandler dump, "Windows fatal exception: access
+violation", on the `rtlsdr` thread inside pyrtlsdr's `close()` (`rtlsdr.py:214`),
+which `read_bytes_async` (`rtlsdr.py:726`) had called.  The main thread was waiting in
+`RtlSdrDevice.stop_stream` for that thread at the time.  Three seconds later the log
+said the receiver "did not close within 3 seconds and was left to the operating
+system".  It has happened once.
+
+The process most likely survived the fault.  faulthandler on Windows prints an access
+violation the moment it happens, before ctypes turns it into an `OSError`, and the
+warning that followed comes from `_close_handle`, which runs only after the capture
+thread has ended.
+
+What follows is reconstructed from the Python frames and the code, because the dump
+had no C frames.  `cancel_read_async` made `rtlsdr_read_async` return an error code,
+which is an inference.  pyrtlsdr answers an error code by closing the device itself,
+and that `rtlsdr_close` faulted.  The fault escaped as an `OSError` before pyrtlsdr set
+`device_opened = False`, and `_run` discarded it because `_stopping` was set.  The join
+then returned, `close()` called `_close_handle`, and pyrtlsdr's `close()` called
+`rtlsdr_close` a second time on a handle already half torn down.  That call blocked
+until the three-second timeout gave up on it.
+
+The defect on our side is the second close.  `read_block` already knows that pyrtlsdr
+closes the device on a read error, and sets `_released_by_driver`.  `_run` does not, so
+any exception out of `read_bytes_async` leads to a second `rtlsdr_close`.  It hung
+harmlessly this time, and a close on a freed handle could as easily crash for real.
+
+The fix planned is for `_run` to record that the driver has already attempted the
+close, so `close()` never calls it again.  pyrtlsdr's own `device_opened` then tells
+the two outcomes apart.  False means its close worked and the receiver is free.  True
+means its close failed, the receiver may stay held until the process ends, and the
+log should say that rather than report it released.  The test is a stand-in device
+whose `read_bytes_async` raises after a failed close, asserting no second close.
+
+The fault inside `rtlsdr_close` itself belongs to librtlsdr and cannot be fixed from
+Python.  Avoiding pyrtlsdr's own close altogether would mean calling
+`rtlsdr_read_async` through ctypes directly, and that change should wait for a way to
+reproduce the fault.
+
+Check the SDRplay at the same time.  Its device class drives a different library and
+does not go through pyrtlsdr, so this exact path cannot occur there.  Whether its own
+shutdown can close twice, or close while a callback is still running, has not been
+looked at.
+
+What stops it is the CSV work in progress on `rain-and-weather-timestamp`, which comes
+first.  If the fault happens again before the fix, a run with `--log-level DEBUG` would
+show the exception `_run` currently discards.
 
 ### Verify the revised gain selection on an RTL-SDR
 
@@ -555,6 +714,24 @@ reliably.
 
 Nothing stops this beyond nobody having written it.  The test is one call against a
 method that takes a string.
+
+### The daily chart warns on a file with one row
+
+The first row of a new day's CSV gives the raw daily chart one timestamp, so
+`Plotter.generate_graph_from_csv` calls `set_xlim` with equal ends.  Matplotlib widens
+the range, prints a `UserWarning` about a singular transformation, and saves the chart
+anyway.  This happens once a day at the first minute after midnight, and on the first
+minute of any new file.  The smoothed chart is not affected, because it skips a file
+with no more rows than its window.
+
+The proposed fix sets the x range only when the series holds two different timestamps,
+and lets matplotlib choose it otherwise.  A test should turn warnings into errors over
+a one-row file, so that it fails if the warning returns.  Skipping the chart for one
+row was considered and set aside, because nobody has checked what the collector and
+the uploader do when that chart file is missing.
+
+Nothing stops it.  The operator put it off on 2026-09-27 to finish the weather work
+first.
 
 ### The "worth" construct is still through the codebase
 

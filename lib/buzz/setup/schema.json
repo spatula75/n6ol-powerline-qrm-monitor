@@ -495,19 +495,35 @@
             "none": "None - leave the weather columns empty"
           }
         },
+        "units": {
+          "type": "string",
+          "title": "Weather units",
+          "description": "The units the CSV records temperature, wind speed and rain in.",
+          "default": "imperial",
+          "enum": [
+            "imperial",
+            "metric"
+          ],
+          "x-enum-titles": {
+            "imperial": "Imperial - degrees F, MPH and inches",
+            "metric": "Metric - degrees C, km/h and mm"
+          },
+          "x-notes": [
+            "A CSV file that already exists keeps the units it started with, so that no file mixes the two."
+          ]
+        },
         "url": {
           "type": "string",
-          "title": "CumulusMX endpoint",
-          "description": "The JSON endpoint of your CumulusMX installation.",
+          "title": "CumulusMX address",
+          "description": "The address of your CumulusMX installation: its host name or IP address, its port, and a slash.",
           "default": "",
           "x-visible-when": {
             "field": "source",
             "equals": "cumulusmx"
           },
-          "x-example": "http://cumulusmx.local:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing",
+          "x-example": "http://cumulusmx.local:8998/",
           "x-notes": [
-            "Change the query string tags to match the fields your station publishes.",
-            "You should normally only change the hostname and port here."
+            "The monitor adds the rest of the URL itself. A full URL from an older config still works, and the monitor warns at startup about the part it ignores."
           ]
         },
         "latitude": {

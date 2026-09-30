@@ -55,7 +55,11 @@ once.
 
 The monitor has many options. The most critical ones will be covered here; others can be found in the how-to guides.
 Each section of the configuration file corresponds to a section in the configuration program. Enter a section
-with the `ENTER` key and go back with the `ESC` key. Use arrow keys to navigate. Start with Audio.
+with the `ENTER` key and go back with the `ESC` key.  Use arrow keys and `TAB` to navigate.
+
+Note: after making changes it is necessary to restart the monitor for those changes to take effect.
+
+Let's start with Audio.
 
 ### Audio source
 
@@ -167,13 +171,23 @@ checks every day from then until today.
 
 Sometimes there are interesting correlations to be had between the weather and whether your electrical utility's
 equipment is making noise. Currently two systems are supported for retrieving weather data for your location: OpenMeteo
-and CumulusMX. If you have your own weather station supported by CumulusMX, you can point to it here. Getting the URL
-format for Cumulus is important; make sure it looks like
-this: `http://cumulusmx.local:8998/api/tags/process.json?temp&hum&SolarRad&wspeed&wgust&avgbearing`
-replacing `cumulusmx.local` with the IP address or hostname of the machine running CumulusMX.
+and CumulusMX.
+
+#### Selecting a Weather Provider
+
+If you have your own weather station supported by CumulusMX, you can point to it here.
+You need only supply the base URL for your station; for example: `http://cumulusmx.local:8998/`
+replacing `cumulusmx.local` with the IP address or hostname of the machine running CumulusMX.  The necessary API
+parameters will be added automatically.
 
 For OpenMeteo, enter your location's latitute and longitude, and the closest weather station to your location will be
 used to retrieve weather data.
+
+#### Unit Selection
+
+Choose whether you would like to log temperature, wind speed, and rainfall in imperial or metric units here.
+In `imperial` mode, temperature is expressed in degrees Fahrenheit, wind speed in MPH, and rainfall in inches.
+In `metric` mode, temperature is expressed in degrees Celsius, wind speed in km/h, and rainfall in millimeters.
 
 ### Others
 
@@ -208,6 +222,22 @@ Once per minute, on the minute, the average noise floor and average signal stren
 filename is formatted with the current date, along with an indication of whether a signal lock was found for the full
 minute, part of the minute, or none of the minute. The CSV row also contains the most recent weather data at the time
 the estimate was taken.
+
+The weather data also includes rainfall since midnight and a weather timestamp.  The weather timestamp is the
+latest time the weather source vouches for its figures.  For CumulusMX, this is the last time it read data from your
+station.  For Open-Meteo, it's the end of the 15-minute period being reported by its API.  Note that Open-Meteo's
+figures come from weather models rather than direct measurements, so its rainfall total in particular isn't
+guaranteed to only go up during the day (subsequent model runs could adjust down the estimated rainfall).
+
+Note: at present, decimal values are denoted with a period, never a comma, regardless of locale, and fields are
+always separated by commas.  Locale-specific CSV format limitations may be addressed in a future release.  Header
+values do reflect the units chosen in the weather settings.
+
+If you change units partway through the day, the headers do not change immediately, and CSV collection for the
+remainder of the current day continues to log in the existing units.  The recorded units will change at midnight
+local time when the next CSV file is written.  This prevents a CSV file from containing different units throughout
+the day if you decide to change them.  The same goes for new columns.  After you upgrade to a version that adds one,
+a new column first appears in the following day's file.
 
 CSV files roll over automatically at the end of the day in the local time zone.
 

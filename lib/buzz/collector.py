@@ -19,7 +19,7 @@ from buzz.csv_store import CsvStore
 from buzz.dsp import SILENCE_DBFS
 from buzz.plotter import Plotter
 from buzz.publisher import Publisher
-from buzz.weather import EMPTY_WEATHER, WeatherClient
+from buzz.weather import EMPTY_WEATHER, WeatherClient, WeatherData
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +143,7 @@ class Collector:
             return '', ''
         return f'{self._analyzer.grid_frequency_hz():.3f}', f'{self._analyzer.phase_drift_rate():.2f}'
 
-    def _fetch_weather_or_blank(self) -> tuple:
+    def _fetch_weather_or_blank(self) -> WeatherData:
         """Fetch current weather, degrading to blank fields on any failure.
 
         Weather is decoration on the noise measurement. A failed fetch must not
@@ -254,7 +254,7 @@ class Collector:
         weather_data = self._fetch_weather_or_blank()
 
         csv_str = self._store.append(now, snr_mean, signal_mean, noise_mean,
-                                     lock_status, *weather_data,
+                                     lock_status, weather_data,
                                      grid_frequency=grid_frequency, phase_drift=phase_drift)
 
         output_dir = Path(station.path)
