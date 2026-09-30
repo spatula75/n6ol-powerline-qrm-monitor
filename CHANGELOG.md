@@ -61,6 +61,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   within its first second. The scale used to start at a fixed level, and the quietest
   recordings took nearly 13 seconds to come within twice their final scale. A replay
   that starts over sets its scale again.
+- After a replay reached the end of its file, the analyzer went on analyzing the last
+  audio, so the meters' correction markers and readings kept moving with nothing
+  arriving. It now waits for new audio. A live receiver or sound card that stalls
+  therefore records silence for those minutes, where it used to repeat the last audio's
+  readings.
 
 ## [2.1.0] - 2026-09-19
 

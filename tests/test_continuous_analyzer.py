@@ -456,6 +456,66 @@ class TestTickMethods:
 # Result ring buffer
 # ---------------------------------------------------------------------------
 
+class TestTheAudioIsTheClock:
+    """A tick with no new audio since the last one measures and publishes nothing."""
+
+    def _analyzer_at(self, total_samples: int, state: AnalyzerState) -> ContinuousAnalyzer:
+        az = _make_analyzer()
+        az._pipeline.total_samples = total_samples
+        az._transition(state)
+        return az
+
+    def test_a_replay_that_has_ended_is_not_analyzed_again(self):
+        """After the last sample, the markers kept moving on analysis of the same audio."""
+        az = self._analyzer_at(8000, AnalyzerState.LOCKED)
+        with patch.object(az, '_locked_tick', return_value=0.2) as locked:
+            for _ in range(5):
+                az._tick()
+        assert locked.call_count == 1
+
+    def test_new_audio_resumes_analysis(self):
+        az = self._analyzer_at(8000, AnalyzerState.LOCKED)
+        with patch.object(az, '_locked_tick', return_value=0.2) as locked:
+            az._tick()
+            az._tick()
+            az._pipeline.total_samples = 8512
+            az._tick()
+        assert locked.call_count == 2
+
+    def test_a_tick_with_nothing_new_waits_a_fast_tick(self):
+        az = self._analyzer_at(8000, AnalyzerState.SEARCHING)
+        with patch.object(az, '_full_analysis', return_value=AnalyzerState.SEARCHING):
+            az._tick()
+        assert az._tick() == ContinuousAnalyzer.FAST_TICK_INTERVAL
+
+    def test_the_first_tick_runs_before_any_audio_so_it_can_wait_for_the_buffer(self):
+        az = self._analyzer_at(0, AnalyzerState.SEARCHING)
+        with patch.object(az, '_searching_tick', return_value=1.0) as searching:
+            assert az._tick() == 1.0
+        searching.assert_called_once()
+
+    def test_a_reset_during_a_stall_is_still_applied(self):
+        """Restart has to work on a replay that has already finished."""
+        az = self._analyzer_at(8000, AnalyzerState.LOCKED)
+        with patch.object(az, '_locked_tick', return_value=0.2):
+            az._tick()
+        az.reset()
+        az._tick()
+        assert az.state == AnalyzerState.SEARCHING
+        assert not az._reset_requested.is_set()
+
+    @pytest.mark.parametrize('state, tier', [
+        (AnalyzerState.LOCKED, '_locked_tick'),
+        (AnalyzerState.SIGNAL_LOST, '_signal_lost_tick'),
+        (AnalyzerState.SEARCHING, '_searching_tick'),
+    ])
+    def test_each_state_runs_its_own_tier(self, state, tier):
+        az = self._analyzer_at(8000, state)
+        with patch.object(az, tier, return_value=0.5) as method:
+            assert az._tick() == 0.5
+        method.assert_called_once()
+
+
 class TestResultBuffer:
     def test_buffer_initially_empty(self):
         assert _make_analyzer().drain_results() == []
@@ -1518,6 +1578,9 @@ class TestRunResilience:
 
         def flaky_searching_tick():
             calls.append(1)
+            # Audio keeps arriving, as it does live, so the loop has something new to
+            # analyze on its next pass rather than skipping a tick with no audio.
+            az._pipeline.total_samples += 512
             if len(calls) == 1:
                 raise RuntimeError('simulated transient failure')
             az._stop.set()   # let the loop exit cleanly on the second pass
@@ -1533,6 +1596,7 @@ class TestRunResilience:
 
         def flaky_searching_tick():
             calls.append(1)
+            az._pipeline.total_samples += 512   # new audio for the next pass, as above
             if len(calls) == 1:
                 raise ValueError('boom')
             az._stop.set()
