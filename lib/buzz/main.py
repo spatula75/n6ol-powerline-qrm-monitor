@@ -880,8 +880,12 @@ def main() -> None:  # pragma: no cover
         window.add_close_listener(recording_display.stop)
 
     # Each shutdown signal closes the window, so it stops through closeEvent exactly as
-    # the close button does.
-    _shut_down_on_signal(lambda *_: window.close())
+    # the close button does.  The handler only queues the close, because Python runs a
+    # signal handler between any two bytecodes of the main thread.  A signal that came
+    # while a frame was going to ffmpeg would otherwise close the render inside that
+    # write, and the pipe refuses the nested call.  CI saw it as "reentrant call inside
+    # <_io.BufferedWriter>" and an unfinished .mp4.
+    _shut_down_on_signal(lambda *_: QTimer.singleShot(0, window.close))
     # QTimer keeps the Python interpreter ticking so a signal can be delivered
     sigint_keepalive = QTimer()
     sigint_keepalive.timeout.connect(lambda: None)
