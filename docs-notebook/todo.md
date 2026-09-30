@@ -323,15 +323,19 @@ Qt's own documentation describes the sequence as a leftover timer or event loop 
 firing a final paint after the platform resources are gone, which is the same reading
 this entry arrived at.
 
-One concrete instance of that exists and is not the cause of the reports above, because
-it only runs under `--render`.  `DisplayRecorder` owns a QTimer at the display's own
-cadence, and nothing stops it: `buzz.main` calls `recording_display.start` and never a
-matching stop, and `MainWindow.closeEvent` stops the bar, the scope, the waterfall and
-the meters without knowing the render recorder exists.  So closing a window part way
-through a render leaves a timer taking its pixels.  The class carries a coverage pragma
-for needing a live display, which is why nothing caught it.  A timer that outlives the
-window it reads is a defect whether or not it is the one reported here, and fixing it
-would rule one candidate out of this entry.
+One candidate is ruled out as of 2026-09-30.  `DisplayRecorder` takes the window's
+pixels on a QTimer of its own, and it only runs under `--render`, so it could not have
+caused the reports above.  It was stopped at `aboutToQuit`, which comes after the
+window has closed, so a capture could still reach a closing window.  It now stops
+first thing in `MainWindow.closeEvent`, through `add_close_listener`, before the bar,
+the scope, the waterfall and the meters stop.  An earlier version of this entry said
+nothing stopped it at all.  That was wrong, because the `aboutToQuit` connection had
+been there since the render work.
+
+Every exit that can be caught now goes through `closeEvent`.  Ctrl+C, `kill` on Linux
+and macOS, and Ctrl+Break close the window, as the close button does.  SIGKILL and a
+forced taskkill cannot be caught, and a process ended that way paints nothing, so
+neither can produce this warning.
 
 What to look at otherwise is whatever can repaint between the window starting to close
 and Qt destroying the handle.  `ContinuousAnalyzer` publishes to its listeners from its own
@@ -536,6 +540,26 @@ at a time, so a wrapped paragraph arrives as halves of sentences and each half r
 as a fragment.  Joining a Markdown paragraph the way `_joined_blocks` joins a comment
 run would close it.  Until then, `docs/` and `docs-notebook/` get the reading pass and
 nothing mechanical.
+
+## Display
+
+### The window shows Python's icon
+
+The monitor's window and its taskbar entry show the generic Python icon.  Qt sets a
+window's icon from `QApplication.setWindowIcon`, which takes a `QIcon` built from an
+image file shipped with the program.
+
+Windows needs one more step, which is expected from its documentation and not yet
+tried here.  The taskbar groups a window under the executable that owns it, which is
+`python.exe`, and shows that program's icon whatever Qt sets.  A call to
+`SetCurrentProcessExplicitAppUserModelID` before the first window opens gives the
+process its own identity, and the taskbar then uses the window's icon.
+`buzz.display.windows_qos` already makes Windows-only calls through `ctypes` at
+startup, so it shows the shape this would take.
+
+What stops it now is that no icon exists.  It wants artwork at several sizes, from
+16 px for a title bar to 256 px for a large taskbar, and that is a design decision
+for the author rather than something to generate.
 
 ## Documentation
 

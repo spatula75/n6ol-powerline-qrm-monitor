@@ -174,6 +174,29 @@ class TestTheDisplayStopsWhileMinimized:
 
 
 @pytest.mark.integration
+class TestCloseListenersRunFirst:
+    """A reader from outside the window stops before anything inside it does.
+
+    DisplayRecorder takes the window's pixels on a timer of its own, and closeEvent
+    cannot find it among the window's widgets.  Stopped only at aboutToQuit, it could
+    take one more capture from a window that had already started to close.
+    """
+
+    def test_a_listener_runs_before_the_widgets_stop(self, qt_app, monitor):
+        window = MainWindow(monitor.pipeline, monitor.analyzer, BuzzConfig())
+        window.show()
+        qt_app.processEvents()
+        seen = []
+        window.add_close_listener(lambda: seen.append(
+            [widget._timer.isActive() for widget in window._repainting_widgets()]))
+        window.close()
+        assert seen, 'closing the window never called its close listener'
+        assert all(seen[0]), (
+            f'Some widgets had already stopped when the close listener ran, so a capture '
+            f'could still reach them after they stopped: {seen[0]}')
+
+
+@pytest.mark.integration
 class TestRecordButtonShowsItsState:
     """Armed reads as spent, not as inviting.
 

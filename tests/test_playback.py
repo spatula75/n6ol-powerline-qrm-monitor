@@ -268,6 +268,15 @@ class TestFilePlaybackPipeline:
             _wait_for_finish(pipeline)
             assert pipeline.position == pytest.approx(pipeline.duration)
 
+    def test_a_finished_replay_sits_exactly_at_its_duration(self, tmp_path):
+        """DisplayRecorder.stop finishes a render at the playback position.  A render
+        that played to the end lasts the whole recording only because the position
+        there equals the duration, so this checks equality rather than closeness."""
+        path = _write_wav(tmp_path / 'a.wav', _ramp(8))
+        with _playing(path) as pipeline:
+            _wait_for_finish(pipeline)
+            assert pipeline.position == pipeline.duration
+
 
 class TestTransport:
     """Pause, resume and restart, driven the way the toolbar drives them."""

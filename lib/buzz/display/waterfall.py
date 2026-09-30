@@ -1087,6 +1087,7 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         self._pipeline = pipeline
         self._analyzer = analyzer
         self._recorder = recorder
+        self._close_listeners: list[Callable[[], None]] = []
 
         container = QWidget()
         # The gaps between panels are this widget showing through.  Without an explicit
@@ -1232,7 +1233,18 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
                     widget.start()
         super().changeEvent(event)
 
+    def add_close_listener(self, listener: Callable[[], None]) -> None:
+        """Call `listener` first when the window closes, before anything else stops.
+
+        This is for a timer that reads the window from outside it, because closeEvent
+        cannot find such a timer by itself.  DisplayRecorder is the case: it takes the
+        window's pixels, and it is built after the window because it needs the window.
+        """
+        self._close_listeners.append(listener)
+
     def closeEvent(self, event) -> None:  # noqa: N802
+        for listener in self._close_listeners:
+            listener()
         for widget in self._repainting_widgets():
             widget.stop()
         self._analyzer.stop()
@@ -1292,13 +1304,21 @@ class DisplayRecorder(QObject):  # pragma: no cover -- requires a live Qt displa
         self._timer.start(_UPDATE_MS)
 
     def stop(self) -> None:
-        """Close the file off wherever it has got to.  Idempotent."""
+        """Close the file off wherever playback has got to.  Idempotent.
+
+        This finishes at the playback position rather than at the recording's
+        duration, so a render stopped early ends where it stopped.  Finishing at the
+        duration held the last frame over the rest of the audio, which gave a video
+        as long as the recording with its picture frozen at the stop.  A replay that
+        reached the end has a position equal to its duration, which
+        test_playback.py pins, so a complete render still lasts the whole recording.
+        """
         if self._done:
             return
         self._done = True
         self._timer.stop()
         try:
-            self._session.finish(self._playback.duration)
+            self._session.finish(self._playback.position)
         except Exception as exc:                        # noqa: BLE001
             self._fail(exc)
         self.finished.emit()

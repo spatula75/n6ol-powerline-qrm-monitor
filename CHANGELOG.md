@@ -67,6 +67,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   arriving. It now waits for new audio. A live receiver or sound card that stalls
   therefore records silence for those minutes, where it used to repeat the last audio's
   readings.
+- `kill` on Linux and macOS, and Ctrl+Break on Windows, now stop the monitor the way
+  Ctrl+C does. A render in progress finishes a playable file and an event recording is
+  closed. Both used to end the process at once, leaving the render's `.mp4` unplayable.
+- A render stopped part way, by closing the window or by Ctrl+C, ends where it stopped.
+  Closing the window used to give a video as long as the whole recording, with the
+  picture frozen at the moment of closing while the audio played on. Ctrl+C also
+  reached ffmpeg, which quit by itself, and the monitor then reported a broken pipe
+  and called a playable file unusable. Ctrl+Break on Windows can still reach ffmpeg.
 
 ## [2.1.0] - 2026-09-19
 
