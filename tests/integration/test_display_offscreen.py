@@ -174,6 +174,22 @@ class TestTheDisplayStopsWhileMinimized:
 
 
 @pytest.mark.integration
+class TestTheApplicationIcon:
+    """A QIcon can only be built once a QApplication exists, so this lives here."""
+
+    def test_the_icon_holds_every_size_in_resources(self, qt_app):
+        from buzz.display.app_icon import application_icon, icon_files
+
+        icon = application_icon()
+        assert not icon.isNull(), 'the application icon came out empty'
+        sizes = sorted(size.width() for size in icon.availableSizes())
+        expected = sorted(int(path.name.split('_')[1].split('x')[0]) for path in icon_files())
+        assert sizes == expected, (
+            f'The icon offers sizes {sizes} and resources/ holds {expected}.  Qt can '
+            'only pick a hand-drawn small size that made it into the icon.')
+
+
+@pytest.mark.integration
 class TestCloseListenersRunFirst:
     """A reader from outside the window stops before anything inside it does.
 

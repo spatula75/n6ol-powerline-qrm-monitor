@@ -541,26 +541,6 @@ as a fragment.  Joining a Markdown paragraph the way `_joined_blocks` joins a co
 run would close it.  Until then, `docs/` and `docs-notebook/` get the reading pass and
 nothing mechanical.
 
-## Display
-
-### The window shows Python's icon
-
-The monitor's window and its taskbar entry show the generic Python icon.  Qt sets a
-window's icon from `QApplication.setWindowIcon`, which takes a `QIcon` built from an
-image file shipped with the program.
-
-Windows needs one more step, which is expected from its documentation and not yet
-tried here.  The taskbar groups a window under the executable that owns it, which is
-`python.exe`, and shows that program's icon whatever Qt sets.  A call to
-`SetCurrentProcessExplicitAppUserModelID` before the first window opens gives the
-process its own identity, and the taskbar then uses the window's icon.
-`buzz.display.windows_qos` already makes Windows-only calls through `ctypes` at
-startup, so it shows the shape this would take.
-
-What stops it now is that no icon exists.  It wants artwork at several sizes, from
-16 px for a title bar to 256 px for a large taskbar, and that is a design decision
-for the author rather than something to generate.
-
 ## Documentation
 
 Three pages carry a `TODO` comment waiting on code that now exists:

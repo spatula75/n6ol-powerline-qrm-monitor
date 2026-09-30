@@ -834,6 +834,7 @@ def main() -> None:  # pragma: no cover
     try:
         from PySide6.QtCore import QTimer  # noqa: I001
         from PySide6.QtWidgets import QApplication
+        from buzz.display.app_icon import application_icon, use_own_taskbar_identity
         from buzz.display.waterfall import MainWindow
     except ImportError:
         logger.warning(
@@ -845,7 +846,9 @@ def main() -> None:  # pragma: no cover
         _wait_until_interrupted(pipeline, analyzer, recorder)
         return
 
+    use_own_taskbar_identity()
     app = QApplication(sys.argv)
+    app.setWindowIcon(application_icon())
     window = MainWindow(pipeline, analyzer, config, always_on_top=args.top,
                         recorder=recorder,
                         playback=pipeline if args.playback else None,

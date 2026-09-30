@@ -24,6 +24,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A warning at startup when the computer running CumulusMX keeps a different time zone
   from `[station] timezone`. It names the hour of the station's day at which the rain
   column then restarts.
+- The monitor's window, and its taskbar entry on Windows, show the monitor's own icon
+  in place of Python's.
 
 ### Changed
 - `[weather] url` takes the CumulusMX station's address, such as
