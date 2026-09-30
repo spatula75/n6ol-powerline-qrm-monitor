@@ -36,9 +36,20 @@ INT16_FORMAT = SampleFormat(
 
 
 class FakeHandle:
-    """Stands in for pyrtlsdr's RtlSdr.  Records what was set, and streams on demand."""
+    """Stands in for pyrtlsdr's RtlSdr.  Records what was set, and streams on demand.
 
-    def __init__(self, gains=None, rate_returns=None, read_raises=False):
+    It closes itself the way pyrtlsdr does.  A read error closes the device before
+    raising, a close that fails leaves `device_opened` True, and a close once the
+    device is closed does nothing.  `collect` does what pyrtlsdr's __del__ does when the
+    handle is garbage-collected, which is to call close.  `close_calls` counts every
+    call to close, and `rtlsdr_close_calls` counts the ones that reach the driver's
+    rtlsdr_close.  `read_fails_on_cancel` ends the async read with an error once it is
+    cancelled, which is the inferred cause of the fault on 2026-09-27, and it happens on
+    the capture thread while close() waits for that thread.
+    """
+
+    def __init__(self, gains=None, rate_returns=None, read_raises=False, read_fails_on_cancel=False,
+                 close_fails=False):
         self.sample_rate = 0.0
         self.center_freq = 0
         self.gain = 0.0
@@ -51,6 +62,11 @@ class FakeHandle:
         self._read_raises = read_raises
         self._cancel = threading.Event()
         self.async_bytes = None
+        self.device_opened = True
+        self.close_calls = 0
+        self.rtlsdr_close_calls = 0
+        self._read_fails_on_cancel = read_fails_on_cancel
+        self._close_fails = close_fails
 
     def __setattr__(self, name, value):
         if name == 'sample_rate' and getattr(self, '_rate_returns', None) is not None:
@@ -63,6 +79,7 @@ class FakeHandle:
 
     def read_bytes(self, num_bytes):
         if self._read_raises:
+            self.close()
             raise OSError('libusb says no')
         return np.full(num_bytes, 200, np.uint8)
 
@@ -71,15 +88,28 @@ class FakeHandle:
         while not self._cancel.is_set():
             callback(np.full(num_bytes, 7, np.uint8))
             time.sleep(0.005)
+        if self._read_fails_on_cancel:
+            self.close()
+            raise OSError('Could not read bytes')
 
     def cancel_read_async(self):
         self.cancelled = True
         self._cancel.set()
 
     def close(self):
+        self.close_calls += 1
+        if not self.device_opened:
+            return
+        self.rtlsdr_close_calls += 1
         while self.close_blocks:
             time.sleep(0.01)
+        if self._close_fails:
+            raise OSError('exception: access violation writing 0x0000000000000000')
+        self.device_opened = False
         self.closed = True
+
+    def collect(self):
+        self.close()
 
 
 class CountingSink:
@@ -379,6 +409,16 @@ class TestSynchronousReads:
         assert device.close() is True, (
             'a receiver the driver had already closed was reported as still held')
 
+    def test_a_failed_read_whose_close_also_failed_is_reported_held_and_not_closed_again(self, caplog):
+        """pyrtlsdr's own close can fail, and then the device is not free at all."""
+        handle = FakeHandle(read_raises=True, close_fails=True)
+        device = _device(handle)
+        assert device.read_block(256) is None
+        with caplog.at_level('WARNING'):
+            assert device.close() is False
+        assert handle.close_calls == 1, 'the half-closed handle was closed a second time'
+        assert 'may stay held until this process ends' in caplog.text
+
     def test_a_device_the_driver_closed_will_not_start_streaming(self):
         """The handle is gone, so a capture thread would read through nothing."""
         device = _device(FakeHandle(read_raises=True))
@@ -389,6 +429,60 @@ class TestSynchronousReads:
     def test_blocks_are_numbered_in_the_order_the_device_made_them(self):
         device = _device()
         assert [device.read_block(256).index for _ in range(3)] == [1, 2, 3]
+
+
+class TestTheHandlesFinalizer:
+    """pyrtlsdr's RtlSdr.__del__ calls close, and its close runs whenever device_opened is True.
+
+    A close that failed inside rtlsdr_close leaves that flag True.  Unless close()
+    clears it, collecting the handle makes the second rtlsdr_close that close() refuses
+    to make, on the same half-freed handle, in a finalizer with no timeout around it.
+    """
+
+    def test_a_driver_close_that_failed_is_not_retried_when_the_handle_is_collected(self):
+        """This is the fault from 2026-09-27, followed past close() to garbage collection."""
+        handle = FakeHandle(read_fails_on_cancel=True, close_fails=True)
+        device = _device(handle)
+        device.start_stream(CountingSink(), 512)
+        assert device.close() is False
+        handle.collect()
+        assert handle.rtlsdr_close_calls == 1, (
+            'collecting the handle closed a half-closed receiver a second time')
+
+    def test_a_failed_read_whose_close_failed_is_not_retried_when_the_handle_is_collected(self):
+        handle = FakeHandle(read_raises=True, close_fails=True)
+        device = _device(handle)
+        assert device.read_block(256) is None
+        assert device.close() is False
+        handle.collect()
+        assert handle.rtlsdr_close_calls == 1, (
+            'collecting the handle closed a half-closed receiver a second time')
+
+    def test_a_close_of_our_own_that_failed_is_not_retried_when_the_handle_is_collected(self):
+        handle = FakeHandle(close_fails=True)
+        device = _device(handle)
+        assert device.close() is False, 'a receiver whose close failed was reported as released'
+        handle.collect()
+        assert handle.rtlsdr_close_calls == 1, (
+            'collecting the handle closed a half-closed receiver a second time')
+
+    def test_a_handle_a_capture_thread_still_reads_is_not_closed_when_collected(self):
+        """close() left the device open on purpose, and the finalizer must not undo that."""
+        handle = FakeHandle()
+        device = _device(handle)
+        device.start_stream(CountingSink(), 512)
+        handle.cancel_read_async = lambda: None      # the read never ends
+        import buzz.receiver.device as module
+        original = module._THREAD_JOIN_TIMEOUT_SECONDS
+        module._THREAD_JOIN_TIMEOUT_SECONDS = 0.05
+        try:
+            assert device.close() is False
+            handle.collect()
+        finally:
+            module._THREAD_JOIN_TIMEOUT_SECONDS = original
+            handle._cancel.set()
+        assert handle.rtlsdr_close_calls == 0, (
+            'collecting the handle closed it while a thread was still reading through it')
 
 
 class TestClosing:
@@ -430,10 +524,12 @@ class TestClosing:
             handle.close_blocks = False
         assert 'left to the operating system' in caplog.text
 
-    def test_a_close_failure_is_swallowed_rather_than_raised(self):
-        handle = FakeHandle()
-        handle.close = lambda: (_ for _ in ()).throw(OSError('gone'))
-        assert _device(handle).close() is True
+    def test_a_close_that_failed_is_reported_held_rather_than_raised(self, caplog):
+        """The failure happened inside rtlsdr_close, so the device may still be held."""
+        handle = FakeHandle(close_fails=True)
+        with caplog.at_level('WARNING'):
+            assert _device(handle).close() is False, 'a receiver whose close failed was reported as released'
+        assert 'may stay held until this process ends' in caplog.text
 
     def test_a_capture_thread_that_will_not_stop_leaves_the_device_open(self, caplog):
         """Closing a handle a thread is still reading through is a crash in C."""
@@ -454,18 +550,59 @@ class TestClosing:
             'the device was closed while a thread was still reading through it')
         assert 'did not stop within' in caplog.text
 
+    def test_a_read_that_ends_in_an_error_when_cancelled_is_not_closed_twice(self):
+        """pyrtlsdr closes the device on the capture thread while close() is still waiting for it.
+
+        close() used to decide whether the driver had closed the device before it
+        stopped the stream, so it missed a close that happened during the stop.
+        """
+        handle = FakeHandle(read_fails_on_cancel=True)
+        device = _device(handle)
+        device.start_stream(CountingSink(), 512)
+        assert device.close() is True
+        assert handle.close_calls == 1, 'the device was closed a second time after the driver closed it'
+
+    def test_the_fault_from_2026_09_27_leaves_the_receiver_reported_held(self, caplog):
+        """The driver's own close failed there, and the second close hung for three seconds."""
+        handle = FakeHandle(read_fails_on_cancel=True, close_fails=True)
+        device = _device(handle)
+        device.start_stream(CountingSink(), 512)
+        with caplog.at_level('DEBUG', logger='buzz.receiver.device'):
+            assert device.close() is False
+        assert handle.close_calls == 1, 'the half-closed handle was closed a second time'
+        assert 'may stay held until this process ends' in caplog.text
+        assert 'ended with an error while it was being stopped' in caplog.text
+        assert 'access violation' in caplog.text, 'the exception the capture thread met was not logged'
+
+    def _cancel_that_fails(self, handle: FakeHandle) -> None:
+        """Make the cancel fail the way pyrtlsdr's does, which closes the device before raising."""
+        real_cancel = handle.cancel_read_async
+
+        def failing():
+            real_cancel()
+            handle.close()
+            raise OSError('Could not cancel async read')
+
+        handle.cancel_read_async = failing
+
     def test_cancelling_is_allowed_to_fail(self):
         handle = FakeHandle()
         device = _device(handle)
         device.start_stream(CountingSink(), 512)
-        real_cancel = handle.cancel_read_async
-
-        def angry():
-            real_cancel()
-            raise OSError('cancel failed')
-
-        handle.cancel_read_async = angry
+        self._cancel_that_fails(handle)
         assert device.close() is True
+        assert handle.close_calls == 1, 'the device was closed again after the failed cancel closed it'
+
+    def test_a_failed_cancel_whose_own_close_failed_is_not_closed_again(self, caplog):
+        """The same second rtlsdr_close as a failed read, reached through the cancel instead."""
+        handle = FakeHandle(close_fails=True)
+        device = _device(handle)
+        device.start_stream(CountingSink(), 512)
+        self._cancel_that_fails(handle)
+        with caplog.at_level('WARNING'):
+            assert device.close() is False
+        assert handle.rtlsdr_close_calls == 1, 'the half-closed handle was closed a second time'
+        assert 'may stay held until this process ends' in caplog.text
 
 
 class TestOpening:
@@ -541,6 +678,29 @@ class TestOpening:
         monkeypatch.setattr(RtlSdrDevice, '_configure', explode)
         with pytest.raises(OSError, match='stopped answering'):
             RtlSdrDevice.open(0, **SETTINGS)
+
+    def test_a_close_that_failed_after_configuring_did_is_not_retried_when_collected(self, monkeypatch):
+        """pyrtlsdr's __del__ would otherwise make a second rtlsdr_close on the half-freed handle."""
+        handle = FakeHandle(close_fails=True)
+        self._with_rtlsdr_module(monkeypatch, lambda index: handle)
+
+        def explode(self, *args, **kwargs):
+            raise OSError('the tuner stopped answering')
+
+        monkeypatch.setattr(RtlSdrDevice, '_configure', explode)
+        with pytest.raises(OSError, match='stopped answering'):
+            RtlSdrDevice.open(0, **SETTINGS)
+        handle.collect()
+        assert handle.rtlsdr_close_calls == 1, (
+            'collecting the handle closed a half-closed receiver a second time')
+
+    def test_a_close_that_failed_after_reading_the_gain_steps_is_not_retried_when_collected(self, monkeypatch):
+        handle = FakeHandle(close_fails=True)
+        self._with_rtlsdr_module(monkeypatch, lambda index: handle)
+        assert RtlSdrDevice.supported_gains(RtlSdrConfig()) == handle.valid_gains_db
+        handle.collect()
+        assert handle.rtlsdr_close_calls == 1, (
+            'collecting the handle closed a half-closed receiver a second time')
 
     def test_reading_the_gain_steps_does_not_configure_the_receiver(self, monkeypatch):
         """The gain picker wants one read-only answer.

@@ -49,6 +49,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   watt takes. Files written before this say `w/m^2`.
 - A CumulusMX 5 station without a solar sensor wrote `-` in the solar radiation
   column. A reading CumulusMX does not have now leaves the cell blank.
+- An RTL-SDR whose read ended in an error while the monitor was stopping could be
+  closed twice. The receiver library closes the device itself after a read error or a
+  failed cancel, and if that close failed, the second close could hang or crash. The
+  monitor now checks after the stream has stopped, and never closes the device again.
+  The device is not closed again later either, when the library's handle is
+  garbage-collected or the program exits. A close that fails, the library's or the
+  monitor's own, now reports the receiver as still held instead of released.
 
 ## [2.1.0] - 2026-09-19
 

@@ -131,6 +131,67 @@ deaf antenna, presumably as librtlsdr redistributes gain among the tuner's stage
 Estimating the receiver floor from the flat region at low gain therefore runs a couple
 of dB optimistic at high gain.
 
+## A close that faulted at shutdown
+
+On 2026-09-27, closing the monitor window with an RTL-SDR running printed a
+faulthandler dump, "Windows fatal exception: access violation", on the `rtlsdr` thread
+inside pyrtlsdr's `close()`, which its `read_bytes_async` had called.  The main thread
+was waiting in `RtlSdrDevice.stop_stream` for that thread.  Three seconds later the log
+said the receiver "did not close within 3 seconds and was left to the operating
+system".  It has happened once.
+
+The process most likely survived the fault.  faulthandler on Windows prints an access
+violation the moment it happens, before ctypes turns it into an `OSError`, and the
+warning that followed comes from `_close_handle`, which runs only after the capture
+thread has ended.
+
+The sequence is reconstructed from the Python frames and the code, because the dump had
+no C frames.  The cancel made `rtlsdr_read_async` return an error code, which is an
+inference.  pyrtlsdr answers any error code by closing the device itself, and that
+`rtlsdr_close` faulted.  The fault escaped as an `OSError` before pyrtlsdr cleared
+`device_opened`, and `_run` discarded it because the stream was stopping.
+`RtlSdrDevice.close` then called pyrtlsdr's `close()` a second time, on a handle already
+half torn down, and that call blocked until the timeout gave up on it.
+
+The second close was this program's defect, and the fix of 2026-09-29 removes it.
+`close()` used to ask whether the driver had closed the device before it stopped the
+stream, which missed a close the stop itself caused.  It now stops the stream first,
+and `_run` records that pyrtlsdr tried to close.  pyrtlsdr's `device_opened` then says
+whether the attempt worked.  If it failed, the receiver is reported as held and never
+closed again.
+
+The first version of that fix still left one second close in place, and review found
+it on the same day.  pyrtlsdr's `RtlSdr.__del__` calls its `close()`, which calls
+`rtlsdr_close` whenever `device_opened` is True, and a failed close leaves it True.
+Garbage collection or interpreter shutdown would therefore have made the second close
+anyway, inside a finalizer with no timeout.  `close()` now clears `device_opened` once
+it has given the handle up, whatever the outcome.  The two paths that close a handle
+before it has streamed do the same: `open` after configuring fails, and
+`supported_gains` after reading the gain steps.
+
+The fault inside `rtlsdr_close` belongs to librtlsdr, and Python cannot reach it.
+Avoiding pyrtlsdr's own close would mean calling `rtlsdr_read_async` through ctypes
+directly, and that should wait for a way to reproduce the fault.  A run with
+`--log-level DEBUG` now logs the exception the capture thread met while stopping.
+
+A review on 2026-09-29 found two more ways to the same second close, and both are
+closed.  A failed `cancel_read_async` closes the device before it raises, so
+`stop_stream` now records the attempt the way `_run` does.  A close of this program's
+own that raised used to report the receiver released, and now reports it held.
+
+One case is left open on purpose.  When configuring a new handle in `open` fails, pyrtlsdr
+may already have closed it, and `_close_unstreamed` closes it again.  That is harmless
+when pyrtlsdr's close worked, because its close then does nothing.  It is a second
+`rtlsdr_close` only when pyrtlsdr's close also faulted, which needs two faults in a row
+during `open`, where the operator already sees an error.  Telling that case apart would
+mean reading pyrtlsdr's choice of exception type: `set_agc_mode` raises a `LibUSBError`
+without closing, and a fault inside `rtlsdr_close` arrives as a plain `OSError`.  The
+operator decided on 2026-09-29 not to depend on that.
+
+The SDRplay path was checked on the same day and needs no change.  Its library never
+closes the device on its own, `close()` releases it only after `sdrplay_api_Uninit` has
+returned, and a failed library call is reported rather than repeated.
+
 ## HF coverage
 
 The V4 upconverts for HF.  A V3 does not, and reaches HF only through direct sampling

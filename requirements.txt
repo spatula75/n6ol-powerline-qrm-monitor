@@ -1,6 +1,9 @@
 ruff
 PySide6
 pytest-cov
+# Runs the test suite across every core.  pyproject.toml turns it on for every
+# pytest run, so it has to be installed wherever the tests run.
+pytest-xdist~=3.8.0
 sounddevice~=0.5.5
 tomli-w
 # numpy is capped below 2.5 by numba's own dependency constraint (numba~=0.66.0
