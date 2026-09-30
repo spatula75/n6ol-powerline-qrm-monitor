@@ -461,3 +461,55 @@ class TestARestartedReplaySeedsTheAveragingScaleFromItsOwnAudio:
                 f'running average.  Clear _average there.')
         finally:
             scope.stop()
+
+
+@pytest.mark.integration
+class TestSwitchingViewsSeedsTheIncomingScale:
+    """Each view's scale stands still while the other view is on.
+
+    A level change made in the other view, such as a band or gain change, left the
+    incoming view scaled for the old level.  It then took seconds to come down, which
+    is the slow start the seeding exists to remove.
+    """
+
+    LOUD = 10_000.0
+    QUIET = 100.0
+    WIDTH = 648
+
+    @staticmethod
+    def _frames(scope, pipeline, amplitude, count=3):
+        window = scope._capture_samples + scope._geometry.phase_period
+        pipeline.amplitude = amplitude
+        for _ in range(count):
+            pipeline.advance(window)
+            scope._tick()
+
+    @pytest.mark.parametrize('view', ['average', 'raw'])
+    def test_a_view_switched_into_after_a_level_change_scales_for_the_new_level(self, qt_app, view):
+        pipeline = _SquareWavePipeline()
+        scope = ScopeWidget(pipeline, _FreeRunningAnalyzer(), BuzzConfig(), self.WIDTH)
+        try:
+            scope.stop()
+            if view == 'average':
+                scope.toggle_mode()
+            scale = lambda: (scope._average_range if view == 'average' else scope._range).full_scale  # noqa: E731
+            self._frames(scope, pipeline, self.LOUD)
+            assert scale() > self.LOUD, (
+                f'The loud audio never set the {view} scale, so this test cannot tell '
+                'whether switching back kept that scale.')
+
+            scope.toggle_mode()
+            self._frames(scope, pipeline, self.QUIET)
+            scope.toggle_mode()
+            self._frames(scope, pipeline, self.QUIET, count=1)
+
+            # The raw scale holds the peak and the averaging scale the rectified mean,
+            # each with headroom.  Twice the quiet level allows for both and lies far
+            # below the loud level a kept scale would still show.
+            assert self.QUIET <= scale() < 2 * self.QUIET, (
+                f'Switching back into the {view} view after the level fell to '
+                f'{self.QUIET:.0f} counts gave a scale of {scale():.0f} counts.  A figure '
+                f'near {self.LOUD:.0f} means toggle_mode did not restart the incoming '
+                "view's ScopeRange.")
+        finally:
+            scope.stop()

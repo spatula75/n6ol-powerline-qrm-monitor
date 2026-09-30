@@ -734,10 +734,10 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
         # information.
         self._floor = minimum_full_scale(pipeline.effective_bits,
                                          pipeline.scope_floor_steps)
-        # Each view seeds from its own first frame.  The averaging view's scale moves
-        # only while averaging is on, so a switch into it later still starts from that
-        # view's own audio rather than from _INITIAL_FULL_SCALE.  A full window is the
-        # capture plus the alignment get_snapshot trims from its end.
+        # Each view has its own scale, and each scale moves only while its view is on.
+        # So toggle_mode seeds the incoming view's scale again from its first full
+        # window of new audio.  A full window is the capture plus the alignment
+        # get_snapshot trims from its end.
         window_samples = self._capture_samples + self._geometry.phase_period
         self._range = ScopeRange(self._floor, window_samples)
         self._average_range = ScopeRange(self._floor, window_samples)
@@ -750,11 +750,16 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
         """Switch between raw-persistence and rectified-average views.
 
         This resets both accumulators, so the incoming mode starts clean rather than
-        showing a stale picture built under the other mode's scaling.
+        showing a stale picture built under the other mode's scaling.  It also seeds
+        the incoming mode's scale again.  That scale stood still while the other mode
+        was on, so after a band or gain change it would start at the old level and
+        take seconds to reach the new one.
         """
         self._averaging = not self._averaging
         self._phosphor[:] = 0.0
         self._average = None
+        incoming = self._average_range if self._averaging else self._range
+        incoming.restart(self._pipeline.total_samples)
 
     def _tick(self) -> None:
         # A stalled stream freezes the display rather than redrawing the same audio

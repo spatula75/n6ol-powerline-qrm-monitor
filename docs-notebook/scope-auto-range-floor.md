@@ -180,9 +180,11 @@ buffer holds enough audio, and would have put the scale at the floor.
 The window is counted from the start of the current stream, not of the run.  A replay
 that starts over empties the ring buffer, while the pipeline's sample count keeps
 running as the audio clock.  The playback bar's restart tells the scope, which counts
-its window again from there.  The trace and the averaging view each seed from their
-own first frame, so a switch into averaging later in a run starts from that view's
-audio too.
+its window again from there.  The trace and the averaging view each keep their own
+scale, and each scale moves only while its view is on.  So a switch between the two
+seeds the incoming view's scale again from its first full window after the switch.
+Without that, a band or gain change made in one view left the other scaled for the old
+level, and it took seconds to come down.  This was found in review on 2026-09-30.
 
 The waterfall's color scale had the same fault in a stronger form, and `WaterfallRange`
 fixes it the same way.  Its floor started from the configured calibration, its 48 rows

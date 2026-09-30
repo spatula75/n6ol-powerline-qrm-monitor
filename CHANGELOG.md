@@ -63,7 +63,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   is in scale within its first second. The scope used to start at a fixed level, and
   the quietest recordings took nearly 13 seconds to come within twice their final
   scale. The waterfall started from a level guessed from the configuration. A replay
-  that starts over sets both scales again.
+  that starts over sets both scales again, and switching the scope between its trace
+  and average views sets the scale of the view switched into.
 - After a replay reached the end of its file, the analyzer went on analyzing the last
   audio, so the meters' correction markers and readings kept moving with nothing
   arriving. It now waits for new audio. A live receiver or sound card that stalls
