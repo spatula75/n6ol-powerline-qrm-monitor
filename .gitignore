@@ -10,3 +10,6 @@ htmlcov/
 tmp/
 # /site/ is auto-generated from docs/ by GHA or by running mkdocs build --strict, thus there's no value to vc it
 /site/
+
+# Scratch renders made while testing --render in the working copy
+/*.mp4
