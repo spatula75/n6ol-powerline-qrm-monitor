@@ -160,6 +160,15 @@ and `_run` records that pyrtlsdr tried to close.  pyrtlsdr's `device_opened` the
 whether the attempt worked.  If it failed, the receiver is reported as held and never
 closed again.
 
+The first version of that fix still left one second close in place, and review found
+it on the same day.  pyrtlsdr's `RtlSdr.__del__` calls its `close()`, which calls
+`rtlsdr_close` whenever `device_opened` is True, and a failed close leaves it True.
+Garbage collection or interpreter shutdown would therefore have made the second close
+anyway, inside a finalizer with no timeout.  `close()` now clears `device_opened` once
+it has given the handle up, whatever the outcome.  The two paths that close a handle
+before it has streamed do the same: `open` after configuring fails, and
+`supported_gains` after reading the gain steps.
+
 The fault inside `rtlsdr_close` belongs to librtlsdr, and Python cannot reach it.
 Avoiding pyrtlsdr's own close would mean calling `rtlsdr_read_async` through ctypes
 directly, and that should wait for a way to reproduce the fault.  A run with

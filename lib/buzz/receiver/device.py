@@ -533,6 +533,7 @@ class RtlSdrHandle(Protocol):
     center_freq: float
     gain: float
     valid_gains_db: list[float]
+    device_opened: bool
 
     def set_agc_mode(self, enabled: bool) -> int:
         ...
@@ -636,14 +637,7 @@ class RtlSdrDevice(SdrDevice):
             # atexit hook only once configuring has succeeded, so a failure in there
             # would leave the receiver held by a process that has no object able to
             # close it, and the next run meets LIBUSB_ERROR_ACCESS.
-            #
-            # A plain close is enough here where close() needs a thread and a timeout,
-            # because this device has never streamed.  What makes rtlsdr_close block is
-            # an async read whose transfers were never cancelled, and there has been no
-            # async read.  Suppressed so that the failure the operator needs to see is
-            # the one that propagates.
-            with suppress(Exception):
-                handle.close()
+            cls._close_unstreamed(handle)
             raise
 
     @classmethod
@@ -674,8 +668,7 @@ class RtlSdrDevice(SdrDevice):
         try:
             return list(handle.valid_gains_db)
         finally:
-            with suppress(Exception):
-                handle.close()
+            cls._close_unstreamed(handle)
 
     @classmethod
     def _open_handle(cls, index: int) -> RtlSdrHandle:
@@ -906,6 +899,12 @@ class RtlSdrDevice(SdrDevice):
             return self._released
         self._closed = True
         atexit.unregister(self.close)
+        self._released = self._release()
+        self._disarm_the_drivers_finalizer(self._handle)
+        return self._released
+
+    def _release(self) -> bool:
+        """Stop the stream and close the device, unless either step says not to."""
         # A join that timed out leaves the capture thread inside librtlsdr's own read.
         # Closing now would free the handle it is reading through, which is a crash in
         # C rather than an exception here.  The cost of skipping the close is measured
@@ -921,10 +920,37 @@ class RtlSdrDevice(SdrDevice):
         # A cancelled read can end in an error, and pyrtlsdr then closes the device on
         # the capture thread while stop_stream is still waiting for it.
         if self._driver_tried_to_close:
-            self._released = self._after_the_drivers_own_close()
-            return self._released
-        self._released = self._close_handle()
-        return self._released
+            return self._after_the_drivers_own_close()
+        return self._close_handle()
+
+    @classmethod
+    def _close_unstreamed(cls, handle: RtlSdrHandle) -> None:
+        """Close a handle that has never streamed, and never let it be closed again.
+
+        This handle needs only a plain close, where close() needs a thread and a
+        timeout, because rtlsdr_close blocks only after an async read whose transfers
+        were never cancelled, and this handle has had no async read.  A failure is
+        suppressed, because the caller is either raising a more useful error or
+        returning an answer it already has.
+        """
+        with suppress(Exception):
+            handle.close()
+        cls._disarm_the_drivers_finalizer(handle)
+
+    @staticmethod
+    def _disarm_the_drivers_finalizer(handle: RtlSdrHandle) -> None:
+        """Stop pyrtlsdr from closing the device again when the handle is collected.
+
+        pyrtlsdr's RtlSdr.__del__ calls its close(), which skips rtlsdr_close only when
+        device_opened is False.  A close that failed inside rtlsdr_close raised before
+        it cleared that flag.  Without this, garbage collection or interpreter shutdown
+        would make the second rtlsdr_close that this class refuses to make, on the same
+        half-freed handle, in a finalizer with no timeout around it.  Clearing the flag
+        also protects a handle that a capture thread still reads through, and a close
+        still blocked in libusb.  Every caller has given the handle up before calling
+        this, and a successful close has already cleared the flag.
+        """
+        handle.device_opened = False
 
     def _after_the_drivers_own_close(self) -> bool:
         """Whether pyrtlsdr's own close released the device, and never a second attempt.

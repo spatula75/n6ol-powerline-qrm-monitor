@@ -52,8 +52,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - An RTL-SDR whose read ended in an error while the monitor was stopping could be
   closed twice. The receiver library closes the device itself after a read error, and
   if that close failed, the second close could hang or crash. The monitor now checks
-  after the stream has stopped, never closes the device again, and reports a receiver
-  the library failed to release as still held.
+  after the stream has stopped, and reports a receiver the library failed to release as
+  still held. The device is not closed again later either, when the library's handle
+  is garbage-collected or the program exits.
 
 ## [2.1.0] - 2026-09-19
 
