@@ -68,7 +68,16 @@ with `$?` false. Windows PowerShell 5.1 has no `&&` or `||`, so chaining needs
     pytest --cov                      # unit suite; must stay at or above the 97% gate
     pytest -m integration --no-cov    # integration tier; slow, real threads and time
     NUMBA_DISABLE_JIT=0 pytest tests/ # the compiled path production actually runs
+    pytest -n 0 tests/test_x.py -k y  # one test on one process, for a debugger or print()
     ruff check .                      # must be clean
+
+Every pytest run is parallel across the machine's cores, because `pyproject.toml` passes
+`-n auto --dist worksteal` to pytest-xdist.  Each worker is its own process, so a module
+constant a test changes stays in that worker, and coverage from every worker is merged
+before the gate reads it.  What parallel runs do expose is a test that relies on a
+short real-time wait, because a loaded machine stretches it.  A test that fails only
+in parallel is that kind of test, and the fix is to wait on a condition, as with
+`_wait_until()` for the Textual dialogs.
 
     PYTHONPATH=lib python -m buzz.main            # run the monitor
     PYTHONPATH=lib python -m buzz.main --headless # no GUI

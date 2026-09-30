@@ -62,7 +62,14 @@ testpaths = ["tests"]
 # `pytest` stays the fast feedback loop that CI runs; `pytest -m integration
 # --no-cov` runs the slow one (--no-cov because the coverage gate is calibrated
 # against the unit suite, and measuring a different subset against it fails).
-addopts = "-m 'not integration'"
+#
+# Every run is spread across the machine's cores by pytest-xdist.  --dist worksteal
+# lets an idle worker take tests queued for a busy one, which matters because the
+# Textual walkthroughs in tests/setup/test_app.py take 4 to 8 seconds each.  Measured
+# on 2026-09-29 on 24 cores, the unit suite with coverage went from 2.5 to 5 minutes
+# to about 46 seconds, and the default scheduler took about 58.  A debugger or print()
+# output does not reach the terminal from a worker, so debug a test with -n 0.
+addopts = "-m 'not integration' -n auto --dist worksteal"
 markers = [
     "integration: end-to-end over real threads and real time; slow, deselected by default",
 ]
