@@ -331,6 +331,22 @@ class TestTheCumulusMXHostClock:
             f'probably gained a zone at a new extreme.  Widen _EARLIEST_UTC_OFFSET or '
             f'_LATEST_UTC_OFFSET in buzz.weather to match.')
 
+    @pytest.mark.parametrize('host_clock', ['19.29.08', '19 29 08'])
+    def test_a_host_culture_with_another_time_separator_is_still_read(self, caplog, host_clock):
+        """.NET writes the culture's separator for ":", which is "." in Finnish and Danish."""
+        assert self._first_fetch(_STATION_ZONE, self._UTC_EPOCH, host_clock, caplog) == ''
+        assert 'restarts at 03:00' in self._first_fetch('America/New_York', self._UTC_EPOCH, host_clock, caplog)
+
+    @pytest.mark.parametrize('host_clock', ['', '19:29', 'noon', '7:29:08 PM:00'])
+    def test_a_clock_it_cannot_read_skips_the_check_and_keeps_the_weather(self, caplog, host_clock):
+        client = CumulusMXWeatherClient('http://fake', 'America/New_York')
+        reply = json.dumps({**TestCumulusMXWeatherClient._REPLY, 'timehhmmss': host_clock}).encode()
+        with caplog.at_level(logging.WARNING, logger='buzz.weather'):
+            with patch('buzz.weather.urllib.request.urlopen', return_value=_mock_urlopen(reply)):
+                result = client.fetch()
+        assert result.humidity == '70'
+        assert caplog.text == ''
+
     def test_the_warning_appears_once_however_many_fetches_follow(self, caplog):
         text = self._first_fetch('America/New_York', self._UTC_EPOCH, '19:29:08', caplog, fetches=3)
         assert text.count('CumulusMX runs on a clock') == 1

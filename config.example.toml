@@ -402,10 +402,10 @@ enable_frequency_chart = false
 #   None - leave the weather columns empty
 source = "cumulusmx"
 
-# The units the CSV records temperature and wind speed in.
+# The units the CSV records temperature, wind speed and rain in.
 #
-#   Imperial - degrees F and MPH
-#   Metric - degrees C and km/h
+#   Imperial - degrees F, MPH and inches
+#   Metric - degrees C, km/h and mm
 #
 # A CSV file that already exists keeps the units it started with, so that no
 # file mixes the two.

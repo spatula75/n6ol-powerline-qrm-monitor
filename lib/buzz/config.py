@@ -415,9 +415,9 @@ class StationConfig:
 class WeatherConfig:
     # Weather data source: 'cumulusmx', 'openmeteo', or 'none'.
     source: str = 'cumulusmx'
-    # Units for temperature and wind speed in the CSV: 'imperial' (F, MPH) or 'metric'
-    # (C, km/h).  Imperial is the default because every file written before this setting
-    # existed used it.
+    # Units for temperature, wind speed and rain in the CSV: 'imperial' (F, MPH, inches)
+    # or 'metric' (C, km/h, mm).  Imperial is the default because every file written
+    # before this setting existed used it.
     units: str = 'imperial'
     # The CumulusMX station's address, such as http://cumulusmx.local:8998/ (used when
     # source = 'cumulusmx').  CumulusMXWeatherClient builds the endpoint path and query

@@ -16,6 +16,7 @@ NullWeatherClient      - returns EMPTY_WEATHER.  Use it when no weather source i
 
 import json
 import logging
+import re
 import urllib.request
 from abc import ABC, abstractmethod
 from collections.abc import Callable, Mapping, Sequence
@@ -214,6 +215,12 @@ class CumulusMXWeatherClient(WeatherClient):
     # tags are read a few milliseconds apart and can straddle a second.  Every one of the
     # 598 zones in the tz database sat on a whole quarter hour in January and July 2026.
     _OFFSET_ROUNDING_MINUTES = 15
+
+    # `timehhmmss` is DateTime.Now.ToString("HH:mm:ss"), and a colon in a .NET format
+    # string stands for the culture's time separator, so a Finnish or Danish host can
+    # answer "14.29.08".  The clock is read as its three runs of digits, whatever
+    # separates them.
+    _CLOCK_FIELDS = re.compile(r'\d+')
     # The extremes of UTC offset in the tz database, which were Etc/GMT+12 at -12:00 and
     # Pacific/Kiritimati at +14:00 in January and July 2026.  They span 26 hours, so a
     # host's time of day alone cannot always name its offset.
@@ -313,7 +320,14 @@ class CumulusMXWeatherClient(WeatherClient):
         that matters, because two clocks a whole day apart reach midnight together.
         """
         utc = datetime.fromtimestamp(utc_epoch, UTC)
-        hours, minutes, seconds = (int(part) for part in host_clock.split(':'))
+        fields = self._CLOCK_FIELDS.findall(host_clock)
+        if len(fields) != 3:
+            # The check is advice about the rain column, and a reading it cannot parse
+            # must not cost the row its weather.
+            logger.debug('CumulusMX sent its clock as %r, which is not hours, minutes and '
+                         'seconds, so the time zone check did not run.', host_clock)
+            return
+        hours, minutes, seconds = (int(field) for field in fields)
         seconds_apart = (hours * 3600 + minutes * 60 + seconds) - (utc.hour * 3600 + utc.minute * 60 + utc.second)
         station_offset = utc.astimezone(self._zone).utcoffset()
         # `ahead` is how far the host clock runs ahead of the station's, folded into the

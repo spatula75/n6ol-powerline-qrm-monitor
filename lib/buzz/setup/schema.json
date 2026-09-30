@@ -498,15 +498,15 @@
         "units": {
           "type": "string",
           "title": "Weather units",
-          "description": "The units the CSV records temperature and wind speed in.",
+          "description": "The units the CSV records temperature, wind speed and rain in.",
           "default": "imperial",
           "enum": [
             "imperial",
             "metric"
           ],
           "x-enum-titles": {
-            "imperial": "Imperial - degrees F and MPH",
-            "metric": "Metric - degrees C and km/h"
+            "imperial": "Imperial - degrees F, MPH and inches",
+            "metric": "Metric - degrees C, km/h and mm"
           },
           "x-notes": [
             "A CSV file that already exists keeps the units it started with, so that no file mixes the two."
