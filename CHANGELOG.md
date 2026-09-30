@@ -56,11 +56,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   The device is not closed again later either, when the library's handle is
   garbage-collected or the program exits. A close that fails, the library's or the
   monitor's own, now reports the receiver as still held instead of released.
-- The scope takes its scale from the first full window of audio in a stream, and a
-  replay or render of a quiet recording, such as one from an SDRplay, is in scale
-  within its first second. The scale used to start at a fixed level, and the quietest
-  recordings took nearly 13 seconds to come within twice their final scale. A replay
-  that starts over sets its scale again.
+- The scope and the waterfall take their scales from the first full window of audio in
+  a stream, and a replay or render of a quiet recording, such as one from an SDRplay,
+  is in scale within its first second. The scope used to start at a fixed level, and
+  the quietest recordings took nearly 13 seconds to come within twice their final
+  scale. The waterfall started from a level guessed from the configuration. A replay
+  that starts over sets both scales again.
 - After a replay reached the end of its file, the analyzer went on analyzing the last
   audio, so the meters' correction markers and readings kept moving with nothing
   arriving. It now waits for new audio. A live receiver or sound card that stalls

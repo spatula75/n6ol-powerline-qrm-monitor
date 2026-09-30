@@ -183,3 +183,12 @@ running as the audio clock.  The playback bar's restart tells the scope, which c
 its window again from there.  The trace and the averaging view each seed from their
 own first frame, so a switch into averaging later in a run starts from that view's
 audio too.
+
+The waterfall's color scale had the same fault in a stronger form, and `WaterfallRange`
+fixes it the same way.  Its floor started from the configured calibration, its 48 rows
+of history started at that guess, and each row moved the floor and ceiling 5% of the
+way toward percentiles of the whole history.  A first row of real audio therefore had
+one forty-eighth of the say, even before the blend.  The first full row now sets the
+floor and ceiling outright.  Only rows filled since then count toward the percentiles,
+and an unfilled row holds a level far below any receiver's, so it draws at the cold end
+of the colormap.

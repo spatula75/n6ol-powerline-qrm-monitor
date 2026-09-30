@@ -244,7 +244,7 @@ class TestTheWaterfallSitsCenteredInItsPanel:
         widget = WaterfallWidget(monitor.pipeline, BuzzConfig())
         try:
             widget.resize(widget.width(), _WATERFALL_H)
-            widget._history_db[:] = widget._color_floor + widget._color_range
+            widget._history_db[:] = widget._range.floor + widget._range.span
             return widget.grab().toImage()
         finally:
             widget.stop()
