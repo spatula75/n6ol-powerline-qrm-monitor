@@ -123,12 +123,6 @@ _MIN_LUMA_RANGE = 0.5
 
 # --------------------------------------------------------------------- source selection
 
-# What an IQ capture's filename ends with.  Taken from the recorder rather than
-# spelled here, so renaming the suffix reaches this tool instead of silently
-# un-skipping the files it exists to skip.
-_IQ_TAIL = f'{IqEventRecorder.FILENAME_SUFFIX}.wav'
-
-
 def newest_recording(directory: Path) -> Path | None:
     """The most recently modified audio .wav in `directory`, or None if there is none.
 
@@ -138,7 +132,9 @@ def newest_recording(directory: Path) -> Path | None:
     five rates passed on resampled nonsense, and the sixth failed because the program
     refuses that rate, which is how this was found.
     """
-    audio = (p for p in directory.glob('*.wav') if not p.name.endswith(_IQ_TAIL))
+    # The recorder decides what an IQ capture is called, so a new name reaches this
+    # tool instead of silently un-skipping the files it exists to skip.
+    audio = (p for p in directory.glob('*.wav') if not IqEventRecorder.is_iq_capture(p.name))
     candidates = sorted(audio, key=lambda p: p.stat().st_mtime)
     return candidates[-1] if candidates else None
 

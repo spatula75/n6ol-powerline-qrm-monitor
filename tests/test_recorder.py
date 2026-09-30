@@ -150,6 +150,68 @@ class TestEventFilename:
         assert not set(AudioEventRecorder.event_filename(when)) & set(':*?"<>|')
 
 
+class TestIqFilename:
+    """The name an IQ capture goes under, checked against each SDR program's rule.
+
+    The rules come from docs-notebook/iq-filenames.md, where the operator tested them
+    against SDRconnect and SDR# and read SDR++'s source.
+    """
+
+    WHEN = datetime(2026, 9, 28, 15, 41, 16, tzinfo=ZoneInfo('America/Los_Angeles'))
+    TUNED_HZ = 3_590_000
+
+    def test_it_is_the_name_that_opened_in_every_program(self):
+        assert (IqEventRecorder.iq_filename(self.WHEN, self.TUNED_HZ)
+                == 'event_IQ_20260928_154116-0700_3590000HZ_3590000Hz.wav')
+
+    @staticmethod
+    def _sdrconnect_reads(name: str) -> int | None:
+        """SDRconnect's rule: IQ in the second field, the fifth ending in HZ."""
+        fields = Path(name).stem.split('_')
+        if len(fields) < 5 or fields[1] != 'IQ' or not re.fullmatch(r'[0-9]+HZ', fields[4]):
+            return None
+        return int(fields[4].removesuffix('HZ'))
+
+    @staticmethod
+    def _sdrplusplus_reads(name: str) -> int | None:
+        """SDR++'s rule: the leftmost match of [0-9]+Hz, case-sensitively."""
+        match = re.search(r'[0-9]+Hz', name)
+        return int(match.group().removesuffix('Hz')) if match else None
+
+    def test_sdrconnect_reads_the_tuned_frequency(self):
+        name = IqEventRecorder.iq_filename(self.WHEN, self.TUNED_HZ)
+        assert self._sdrconnect_reads(name) == self.TUNED_HZ
+
+    def test_sdrplusplus_reads_the_tuned_frequency(self):
+        name = IqEventRecorder.iq_filename(self.WHEN, self.TUNED_HZ)
+        assert self._sdrplusplus_reads(name) == self.TUNED_HZ
+
+    def test_both_still_read_it_after_a_clash_adds_a_number(self, tmp_path):
+        """unique_path puts -2 on the end of the stem, after the last Hz token."""
+        name = IqEventRecorder.iq_filename(self.WHEN, self.TUNED_HZ)
+        (tmp_path / name).touch()
+        renamed = AudioEventRecorder.unique_path(tmp_path / name).name
+        assert renamed != name
+        assert self._sdrconnect_reads(renamed) == self.TUNED_HZ
+        assert self._sdrplusplus_reads(renamed) == self.TUNED_HZ
+
+    def test_contains_no_characters_illegal_on_windows(self):
+        when = datetime(2026, 7, 29, 14, 33, 7, tzinfo=ZoneInfo('UTC'))
+        assert not set(IqEventRecorder.iq_filename(when, self.TUNED_HZ)) & set(':*?"<>|')
+
+
+class TestIsIqCapture:
+    def test_the_current_name_is_one(self):
+        assert IqEventRecorder.is_iq_capture('event_IQ_20260928_154116-0700_3590000HZ_3590000Hz.wav')
+
+    def test_the_name_from_2_0_and_2_1_is_one(self):
+        """A recording directory keeps these after an upgrade."""
+        assert IqEventRecorder.is_iq_capture('event-20260928-154116-0700-iq.wav')
+
+    def test_an_audio_recording_is_not(self):
+        assert not IqEventRecorder.is_iq_capture('event-20260928-154116-0700.wav')
+
+
 class TestUniquePath:
     def test_returns_path_unchanged_when_free(self, tmp_path):
         assert AudioEventRecorder.unique_path(tmp_path / 'event.wav') == tmp_path / 'event.wav'
@@ -1964,6 +2026,10 @@ class TestRecordingRawIq:
     """
 
     IQ_RATE = 4 * SAMPLE_RATE      # a whole number of IQ samples per audio sample
+    # Listening on 3540 kHz tunes the receiver to 3590 kHz, so a name carrying the
+    # listening frequency can be told from one carrying the tuned frequency.
+    LISTENING_KHZ = 3540.0
+    TUNING_OFFSET_KHZ = 50.0
 
     def test_it_reads_the_section_of_the_receiver_in_use(self, tmp_path):
         """An IQ file carries the frequency, gain and rate it was captured at, and
@@ -2012,6 +2078,8 @@ class TestRecordingRawIq:
         # the level offset resolves to the sound card's figure.
         config.audio.source = 'rtlsdr'
         config.rtlsdr.iq_sample_rate = self.IQ_RATE
+        config.rtlsdr.frequency_khz = self.LISTENING_KHZ
+        config.rtlsdr.tuning_offset_khz = self.TUNING_OFFSET_KHZ
         analyzer = FakeAnalyzer()
         return build_recording(audio, analyzer, config), audio, iq, analyzer
 
@@ -2039,16 +2107,25 @@ class TestRecordingRawIq:
         return trigger
 
     def _iq_file(self, tmp_path):
-        return [f for f in _wav_files(tmp_path) if f.name.endswith('-iq.wav')][0]
+        return [f for f in _wav_files(tmp_path) if IqEventRecorder.is_iq_capture(f.name)][0]
+
+    def _audio_file(self, tmp_path):
+        return [f for f in _wav_files(tmp_path) if not IqEventRecorder.is_iq_capture(f.name)][0]
 
     def test_one_event_writes_both_files(self, tmp_path):
         self._record_one(tmp_path)
-        names = sorted(f.name for f in _wav_files(tmp_path))
-        assert len(names) == 2, names
-        # A dash sorts before a dot, so the raw capture comes first.
-        iq_name, audio_name = names
-        assert iq_name == audio_name.replace('.wav', '-iq.wav'), (
-            'the two files should read as one event at a glance')
+        assert len(_wav_files(tmp_path)) == 2, _wav_files(tmp_path)
+        audio_stamp = self._audio_file(tmp_path).name.removeprefix('event-').removesuffix('.wav')
+        iq_fields = self._iq_file(tmp_path).name.split('_')
+        assert f'{iq_fields[2]}-{iq_fields[3]}' == audio_stamp, (
+            'the two files should carry the same moment, so they read as one event')
+
+    def test_the_iq_file_is_named_for_the_tuned_frequency(self, tmp_path):
+        """The tuned frequency is where DC sits in the capture.  An SDR program given
+        the listening frequency would put every signal 50 kHz from where it belongs.
+        """
+        self._record_one(tmp_path)
+        assert self._iq_file(tmp_path).name.endswith('_3590000HZ_3590000Hz.wav')
 
     def test_the_iq_file_is_stereo_at_the_receivers_rate(self, tmp_path):
         self._record_one(tmp_path)
@@ -2112,9 +2189,8 @@ class TestRecordingRawIq:
         self._record_one(tmp_path)
         settings = wavmeta.read_settings(self._iq_file(tmp_path))
         config = _make_config(tmp_path)
-        assert int(settings['center_frequency_hz']) == (
-            config.rtlsdr.frequency_hz + config.rtlsdr.tuning_offset_hz)
-        assert int(settings['listening_frequency_hz']) == config.rtlsdr.frequency_hz
+        assert int(settings['center_frequency_hz']) == 3_590_000
+        assert int(settings['listening_frequency_hz']) == 3_540_000
         assert float(settings['gain_db']) == config.rtlsdr.gain_db
 
     def test_it_carries_the_calibration_and_the_pulse_rate(self, tmp_path):
@@ -2142,7 +2218,7 @@ class TestRecordingRawIq:
         rounding each rate does independently.
         """
         self._record_one(tmp_path)
-        audio_file = [f for f in _wav_files(tmp_path) if not f.name.endswith('-iq.wav')][0]
+        audio_file = self._audio_file(tmp_path)
         with wave.open(str(audio_file), 'rb') as wav:
             audio_seconds = wav.getnframes() / wav.getframerate()
         with wave.open(str(self._iq_file(tmp_path)), 'rb') as wav:

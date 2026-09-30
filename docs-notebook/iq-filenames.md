@@ -92,6 +92,18 @@ the capture is centered on the tuned frequency.  Listening on 3540 kHz, the name
 carries 3590000.  A program given the listening frequency would label every signal
 50 kHz off.
 
+## The audio recording keeps its name
+
+On 2026-09-30 the operator chose to leave the audio recording's name as it was,
+`event-20260928-154116-0700.wav`, when the IQ name changed.  Only SDR programs need
+the new layout, and nothing opens the audio file in one.  The old name also keeps
+working for anything that already matches on it, such as the batch renderer's output
+names.  The two files of one event no longer look alike, but both carry the same date,
+time and UTC offset.
+
+`IqEventRecorder.is_iq_capture` still recognizes the `-iq.wav` name that 2.0.0 and
+2.1.0 wrote, because a recording directory keeps files from every release.
+
 ## Sources
 
 - The operator's recordings: SDR#'s `17-39-56_124410001Hz.wav`, and SDRconnect's

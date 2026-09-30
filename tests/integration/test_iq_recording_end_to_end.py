@@ -35,7 +35,7 @@ from harness import StateLog, config_for
 
 from buzz.analyzer import AnalyzerState, ContinuousAnalyzer
 from buzz.receiver.iq import IqToAudio
-from buzz.recorder import build_recording
+from buzz.recorder import IqEventRecorder, build_recording
 from buzz.receiver.source import SdrPipeline, SdrSource
 from buzz.receiver.device import RTL_SDR_FORMAT, IqBlock, SampleFormat
 from buzz.receiver.sdrplay import SDRPLAY_FORMAT
@@ -196,7 +196,7 @@ class Receiver:
 
     def iq_file(self) -> Path:
         return [f for f in sorted(self.directory.glob('*.wav'))
-                if f.name.endswith('-iq.wav')][0]
+                if IqEventRecorder.is_iq_capture(f.name)][0]
 
     def written(self) -> np.ndarray:
         """Every sample in the IQ recording, read at the width the file declares.

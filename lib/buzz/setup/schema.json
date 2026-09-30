@@ -817,6 +817,7 @@
           "x-notes": [
             "The monitor keeps the last several seconds of raw IQ at all times when this is on, so that an IQ recording gets the same run-up its audio does. That is 4.7 MB at the default sample rate and 44 MB at the highest the hardware takes.",
             "Nothing in this program reads an IQ recording back. Playing one is a job for other software.",
+            "The filename carries the frequency the receiver was tuned to, so SDRconnect, SDR# and SDR++ each open the recording at the right frequency.",
             "An SDR receiver only. A sound card has no IQ to record, so the monitor ignores this and says so at startup when [audio] source is soundcard."
           ],
           "x-visible-when": {

@@ -611,6 +611,9 @@ min_lock_snr = 0.0
 # Nothing in this program reads an IQ recording back. Playing one is a job
 # for other software.
 #
+# The filename carries the frequency the receiver was tuned to, so
+# SDRconnect, SDR# and SDR++ each open the recording at the right frequency.
+#
 # An SDR receiver only. A sound card has no IQ to record, so the monitor
 # ignores this and says so at startup when [audio] source is soundcard.
 record_iq = false

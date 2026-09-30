@@ -59,6 +59,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / 'lib'))
 
 from buzz.config import CONFIG_PATH, BuzzConfig  # noqa: E402
+from buzz.recorder import IqEventRecorder  # noqa: E402
 
 # A subdirectory of the recording directory, rather than the directory itself, so that
 # a second batch does not treat its own output as input.
@@ -111,6 +112,17 @@ def recording_seconds(path: Path) -> float:
             return handle.getnframes() / float(handle.getframerate())
     except (OSError, wave.Error, ZeroDivisionError):
         return 0.0
+
+
+def audio_recordings(directory: Path) -> list[Path]:
+    """Every audio recording in `directory`, in name order.
+
+    Raw IQ captures are left out without a word.  The monitor cannot replay one, so
+    each would cost a failed render, and a station with [recording] record_iq on writes
+    one beside every audio recording.  Listing each as skipped would double the output
+    for no information.
+    """
+    return sorted(p for p in directory.glob('*.wav') if not IqEventRecorder.is_iq_capture(p.name))
 
 
 def plan(sources: list[Path], output_dir: Path,
@@ -360,9 +372,9 @@ def main(argv: list[str] | None = None) -> int:
     recordings = args.recordings or default_recordings_directory()
     output_dir = args.output_dir or recordings / DEFAULT_OUTPUT_NAME
 
-    sources = sorted(recordings.glob('*.wav'))
+    sources = audio_recordings(recordings)
     if not sources:
-        print(f'No .wav recordings in {recordings}.  Point --recordings at the '
+        print(f'No audio recordings in {recordings}.  Point --recordings at the '
               'directory holding them, or check that the monitor is recording.')
         return 1
 

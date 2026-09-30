@@ -98,6 +98,24 @@ class TestRecordingSeconds:
         assert batch.recording_seconds(tmp_path / 'absent.wav') == 0.0
 
 
+class TestAudioRecordings:
+    def test_iq_captures_are_left_out(self, tmp_path):
+        """The monitor cannot replay raw IQ, so each one would be a failed render.
+        Captures from 2.0.0 and 2.1.0 carry the older name and are left out too."""
+        _write_wav(tmp_path / 'event-20260928-154116-0700.wav', 5)
+        _write_wav(tmp_path / 'event_IQ_20260928_154116-0700_3590000HZ_3590000Hz.wav', 5)
+        _write_wav(tmp_path / 'event-20260101-000000-0000-iq.wav', 5)
+        assert [p.name for p in batch.audio_recordings(tmp_path)] == [
+            'event-20260928-154116-0700.wav']
+
+    def test_they_come_back_in_name_order(self, tmp_path):
+        """Names start with the date and time, so this is the order they were recorded."""
+        for name in ('event-20260102-000000-0000.wav', 'event-20260101-000000-0000.wav'):
+            _write_wav(tmp_path / name, 5)
+        assert [p.name for p in batch.audio_recordings(tmp_path)] == [
+            'event-20260101-000000-0000.wav', 'event-20260102-000000-0000.wav']
+
+
 class TestPlan:
     def test_every_recording_becomes_a_job_by_default(self, tmp_path):
         """No --max-length means render everything, however long it runs."""
@@ -504,7 +522,12 @@ class TestMain:
         report success.  The operator would come back to an empty directory and no
         indication of why."""
         assert batch.main(['--recordings', str(tmp_path)]) == 1
-        assert 'No .wav recordings' in capsys.readouterr().out
+        assert 'No audio recordings' in capsys.readouterr().out
+
+    def test_a_directory_of_only_iq_captures_has_nothing_to_render(self, tmp_path, capsys):
+        _write_wav(tmp_path / 'event_IQ_20260101_000000+0000_3590000HZ_3590000Hz.wav', 5)
+        assert batch.main(['--recordings', str(tmp_path)]) == 1
+        assert 'No audio recordings' in capsys.readouterr().out
 
     def test_nothing_left_to_do_is_a_success(self, tmp_path, capsys):
         """Every recording already rendered is the resumed-batch case, not a failure."""
