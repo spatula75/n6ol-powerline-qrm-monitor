@@ -185,9 +185,9 @@ used to retrieve weather data.
 
 #### Unit Selection
 
-Choose whether you would like to log temperature and wind speed in imperial or metric units here.  In `imperial`
-mode, temperature is expressed in degrees Fahrenheit and wind speed in MPH.  In `metric` mode, temperature is
-expressed in degrees Celsius and wind speed in km/h.
+Choose whether you would like to log temperature, wind speed, and rainfall in imperial or metric units here.
+In `imperial` mode, temperature is expressed in degrees Fahrenheit, wind speed in MPH, and rainfall in inches.
+In `metric` mode, temperature is expressed in degrees Celsius, wind speed in km/h, and rainfall in millimeters.
 
 ### Others
 
@@ -223,6 +223,12 @@ filename is formatted with the current date, along with an indication of whether
 minute, part of the minute, or none of the minute. The CSV row also contains the most recent weather data at the time
 the estimate was taken.
 
+The weather data also includes rainfall since midnight and a weather timestamp.  The weather timestamp is the
+latest time the weather source vouches for its figures.  For CumulusMX, this is the last time it read data from your
+station.  For Open-Meteo, it's the end of the 15-minute period being reported by its API.  Note that Open-Meteo's
+figures come from weather models rather than direct measurements, so its rainfall total in particular isn't
+guaranteed to only go up during the day (subsequent model runs could adjust down the estimated rainfall).
+
 Note: at present, decimal values are denoted with a period, never a comma, regardless of locale, and fields are
 always separated by commas.  Locale-specific CSV format limitations may be addressed in a future release.  Header
 values do reflect the units chosen in the weather settings.
@@ -230,7 +236,8 @@ values do reflect the units chosen in the weather settings.
 If you change units partway through the day, the headers do not change immediately, and CSV collection for the
 remainder of the current day continues to log in the existing units.  The recorded units will change at midnight
 local time when the next CSV file is written.  This prevents a CSV file from containing different units throughout
-the day if you decide to change them.
+the day if you decide to change them.  The same goes for new columns.  After you upgrade to a version that adds one,
+a new column first appears in the following day's file.
 
 CSV files roll over automatically at the end of the day in the local time zone.
 
