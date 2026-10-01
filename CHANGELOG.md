@@ -7,6 +7,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-01
+
 ### Added
 - `[weather] units` chooses the units for temperature, wind speed and rain in the CSV:
   `imperial` (F, MPH and inches, the default) or `metric` (C, km/h and mm). The header
@@ -21,8 +23,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   moment CumulusMX last heard from the station, or the end of Open-Meteo's latest
   15-minute interval. It is written in the station's time zone, like the row's own
   timestamp, and left blank when the source cannot say.
-- A warning at startup when the computer running CumulusMX keeps a different time zone
-  from `[station] timezone`. It names the hour of the station's day at which the rain
+- A warning, once per run, when the computer running CumulusMX keeps a different time
+  zone from `[station] timezone`. It names the hour of the station's day at which the rain
   column then restarts.
 - The monitor's window, and its taskbar entry on Windows, show the monitor's own icon
   in place of Python's.
