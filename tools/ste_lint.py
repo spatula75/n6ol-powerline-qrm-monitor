@@ -100,8 +100,10 @@ import tokenize
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-# Assistant tells, banned outright by CLAUDE.md.
-BANNED = re.compile(r'\b(genuine|genuinely|load-bearing|is real|are real|lands?|landed)\b', re.I)
+# Assistant tells, banned outright by CLAUDE.md and listed in the prose-check skill.
+BANNED = re.compile(
+    r'\b(genuine|genuinely|load-bearing|is real|are real|lands?|landed'
+    r'|carry|carries|carried|carrying)\b', re.I)
 MARKETING = re.compile(
     r'\b(seamless|robust|powerful|cutting-edge|effortless|world-class'
     r'|next-generation|revolutionary)\b', re.I)
@@ -131,8 +133,14 @@ STRICT_WORD_CAP = 25
 
 # Files exempt from the two-space rule only.  See the module docstring.
 SPACING_EXEMPT = ('CHANGELOG.md', 'CLAUDE.md', 'ste-writing.md', '.json')
-# Files that quote the banned words in order to ban them.
-RULE_BOOKS = ('CLAUDE.md', 'ste-writing.md')
+# Files that quote the banned words in order to ban them.  SKILL.md is the prose-check
+# skill, which lists them where a writer looks while drafting.
+RULE_BOOKS = ('CLAUDE.md', 'ste-writing.md', 'SKILL.md')
+# Files whose text is borrowed rather than ours, so the house's own banned words do not
+# apply to them.  The STE rules the borrowed text states still do.  ste-writing.md is
+# adapted from an outside skill, and keeping it close to that source keeps visible which
+# parts this project changed.
+BORROWED = ('ste-writing.md',)
 
 # A word a rule book is quoting rather than using: emphasised, backticked, or inside
 # double quotes.  A rule book names every word it bans, so these spans are how it does
@@ -252,12 +260,15 @@ def _check_words(path: str, line: int, text: str, strict: bool) -> list[Finding]
     if path.endswith(RULE_BOOKS):
         text = QUOTATION.sub(' ', text)
     found = []
-    for pattern, rule in ((BANNED, 'banned word'), (MARKETING, 'marketing adjective'),
-                          (BRITISH, 'British spelling')):
+    patterns = ((BANNED, 'banned word'), (MARKETING, 'marketing adjective'),
+                (BRITISH, 'British spelling'))
+    if path.endswith(BORROWED):
+        patterns = patterns[1:]
+    for pattern, rule in patterns:
         found += [Finding(path, line, rule, f'"{word}"', text, strict)
                   for word in _distinct(pattern, text)]
     # The wordy list is a vocabulary restriction, and ste-writing.md applies those in
-    # strict mode only.  Flavored prose carries reasoning a strict vocabulary cannot
+    # strict mode only.  Flavored prose explains reasoning a strict vocabulary cannot
     # express, which is the reason that override exists.  Checking it everywhere had
     # the tool enforcing a rule its own specification exempts.
     if strict:
@@ -450,7 +461,7 @@ def _locate(source: str, text: str, start_at: int) -> int:
 
     The decoded string is not what the file holds.  A quote or a backslash inside
     it was written escaped, so searching for the decoded form misses every string
-    that carries one, and the schema's `ssh-keygen -N ""` note is exactly that.
+    that contains one, and the schema's `ssh-keygen -N ""` note is exactly that.
     Under --changed a miss is worse than a wrong line number: the item reports at
     line 0, and an edit to it then goes unchecked.  `json.dumps` re-escapes the
     text the way the file wrote it.  The decoded form is still tried afterwards,
@@ -667,7 +678,7 @@ def looks_subjectless(sentence: str) -> bool:
     if sentence.lstrip().startswith(NOTEBOOK_ATTRIBUTION):
         return False
     # A label is not a sentence.  "Calibrated at gain (dB)" is a field title, a noun
-    # phrase by house convention, and the giveaway is that it carries no terminal
+    # phrase by house convention, and the giveaway is that it has no terminal
     # punctuation where every real description ends in a period.  Without this the
     # check reports the house style as an error, which is how a tool teaches people
     # to ignore it.

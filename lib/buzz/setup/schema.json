@@ -28,7 +28,7 @@
         "input_device_name": {
           "type": "string",
           "title": "Input device",
-          "description": "The sound card that carries the RF-to-audio converted signal.",
+          "description": "The sound card that receives the RF-to-audio converted signal.",
           "default": "Line In (Realtek(R) Audio), Windows DirectSound",
           "x-widget": "device-picker",
           "x-sample-commented": "Whatever Setup finds on your machine. The value shown names one sound card and is only an example.",
@@ -114,7 +114,7 @@
           "x-widget": "calibration",
           "x-example": -22.9,
           "x-notes": [
-            "This replaces [station] audio_rf_conversion_db whenever [audio] source is rtlsdr. The two carry different names because they are different quantities: that one describes a radio and its wiring, this one is mostly the negative of the tuner gain above and moves whenever the gain does.",
+            "This replaces [station] audio_rf_conversion_db whenever [audio] source is rtlsdr. The two have different names because they are different quantities: that one describes a radio and its wiring, this one is mostly the negative of the tuner gain above and moves whenever the gain does.",
             "Unset means the monitor estimates it as the negative of the tuner gain. Expect the reading to be a few dB out. The [station] figure is not a fallback and is never used for a receiver.",
             "To find the figure, read the noise floor on a radio you trust, on the same antenna at the same time, with its filter set to match the bandwidth above. The difference between the two readings is what goes here.",
             "It depends on the tuner gain, so changing that means finding it again."
@@ -264,7 +264,7 @@
           "default": null,
           "x-example": -40.0,
           "x-notes": [
-            "This replaces [station] audio_rf_conversion_db whenever [audio] source is sdrplay. The two carry different names because they are different quantities: that one describes a radio and its wiring, this one is mostly the negative of the gain above and moves whenever the gain does.",
+            "This replaces [station] audio_rf_conversion_db whenever [audio] source is sdrplay. The two have different names because they are different quantities: that one describes a radio and its wiring, this one is mostly the negative of the gain above and moves whenever the gain does.",
             "Unset means the monitor estimates it as 11 dB minus the receiver gain. The 11 dB fixed conversion estimate came from one RSP1B above its noise-floor knee, so expect another unit to differ. The [station] figure is not a fallback and is never used for a receiver.",
             "To find the figure, read the noise floor on a radio you trust, on the same antenna at the same time, with its filter set to match the bandwidth above. The difference between the two readings is what goes here.",
             "It depends on the receiver gain, so changing that means finding it again."
@@ -758,7 +758,7 @@
           "minimum": 0,
           "x-notes": [
             "The cycle runs from the last reset, not from the moment the budget ran out. It therefore keeps its time of day instead of sliding later by however long each day's events took to arrive.",
-            "A quiet period does not carry unused events forward. Switching recording off by hand also cancels the cycle."
+            "A quiet period does not save unused events for later. Switching recording off by hand also cancels the cycle."
           ]
         },
         "max_seconds": {
@@ -817,7 +817,7 @@
           "x-notes": [
             "The monitor keeps the last several seconds of raw IQ at all times when this is on, so that an IQ recording gets the same run-up its audio does. That is 4.7 MB at the default sample rate and 44 MB at the highest the hardware takes.",
             "Nothing in this program reads an IQ recording back. Playing one is a job for other software.",
-            "The filename carries the frequency the receiver was tuned to, so SDRconnect, SDR# and SDR++ each open the recording at the right frequency.",
+            "The filename contains the frequency the receiver was tuned to, so SDRconnect, SDR# and SDR++ each open the recording at the right frequency.",
             "An SDR receiver only. A sound card has no IQ to record, so the monitor ignores this and says so at startup when [audio] source is soundcard."
           ],
           "x-visible-when": {

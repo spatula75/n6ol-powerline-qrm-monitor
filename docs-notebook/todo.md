@@ -604,6 +604,16 @@ down from 46 counted on 2026-09-12.  `CLAUDE.md` bans the construct and the ratc
 a branch of its own, because folding them into an unrelated change buries whatever
 that change was for.
 
+### A newly banned verb is still through the codebase
+
+On 2026-09-30 the banned-word list in `CLAUDE.md`, and `ste_lint`'s `BANNED` pattern,
+gained all four forms of the verb that prose here kept using for "contains", "holds" or
+"records".  That day 193 uses remained in 78 files, counting `lib/`, `tools/`,
+`scripts/`, `tests/`, `docs/` and `docs-notebook/` and leaving out the ban lists
+themselves and released `CHANGELOG` sections.  `ste_lint --changed` reports only added
+lines, so the rest stay until the ratchet in "Before every commit" takes them or a
+branch of their own clears them.
+
 ### Prose findings outside the ratchet's reach
 
 A full `ste_lint --fragments` pass over the 47 Python files this branch touches

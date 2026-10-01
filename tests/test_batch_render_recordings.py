@@ -101,7 +101,7 @@ class TestRecordingSeconds:
 class TestAudioRecordings:
     def test_iq_captures_are_left_out(self, tmp_path):
         """The monitor cannot replay raw IQ, so each one would be a failed render.
-        Captures from 2.0.0 and 2.1.0 carry the older name and are left out too."""
+        Captures from 2.0.0 and 2.1.0 have the older name and are left out too."""
         _write_wav(tmp_path / 'event-20260928-154116-0700.wav', 5)
         _write_wav(tmp_path / 'event_IQ_20260928_154116-0700_3590000HZ_3590000Hz.wav', 5)
         _write_wav(tmp_path / 'event-20260101-000000-0000-iq.wav', 5)

@@ -4,7 +4,7 @@ Automatic .wav capture of interference events.
 Two responsibilities, deliberately in two classes.  RecordingTrigger decides *when* an
 event is worth a file and when that file should end.  An AbstractEventRecorder subclass
 handles *how* one gets written: which pipeline the samples come from, how they are
-shaped into a frame, and what metadata the finished file carries.  The trigger drives
+shaped into a frame, and what metadata the finished file contains.  The trigger drives
 one or more recorders through begin, capture and finish, and has no opinion about any
 of those answers.
 
@@ -299,7 +299,7 @@ class AbstractEventRecorder(ABC):
 
         A file that begins or ends on a non-zero sample steps to or from silence, and a
         step is broadband: it clicks, and clicks at the seams when files play back to
-        back.  Sound cards carry a DC offset (the reason LevelStream removes one), so
+        back.  Sound cards have a DC offset (the reason LevelStream removes one), so
         this happens even where the recording contains nothing but noise floor.
 
         This uses a raised cosine rather than an exponential, and the ends of a file
@@ -686,7 +686,7 @@ class AbstractEventRecorder(ABC):
                     'INAM': f'{self._callsign} {self.KIND} {started}',
                     'IART': self._callsign,
                     # Nominally a date; the full timestamp is more use and is widely
-                    # accepted, and it carries the offset the filename also records.
+                    # accepted, and it includes the offset the filename also records.
                     'ICRD': started,
                     'ISFT': f'n6ol-powerline-qrm-monitor {__version__}',
                     'ICMT': settings,
@@ -699,7 +699,7 @@ class AbstractEventRecorder(ABC):
 
     @abstractmethod
     def _metadata_settings(self, ended: str) -> dict[str, Any]:
-        """The key=value settings this format's ICMT tag carries.
+        """The key=value settings this format's ICMT tag holds.
 
         Everything a later reading cannot recover from the file itself, and nothing it
         can: the sample rate is already in the format header.  What belongs here
@@ -816,7 +816,7 @@ class IqEventRecorder(AbstractEventRecorder):
             min_free_disk_percent=recording.min_free_disk_percent,
         )
         # What a reader needs to make sense of the samples, none of which the file
-        # itself carries.  The center frequency matters most: it is where DC sits in
+        # itself records.  The center frequency matters most: it is where DC sits in
         # this capture, and without it the numbers describe an unknown piece of
         # spectrum.
         self._pulse_rate = config.audio.pulse_rate
@@ -834,7 +834,7 @@ class IqEventRecorder(AbstractEventRecorder):
         """Return the .wav filename for an IQ capture of an event that locked at `when`.
 
         SDR programs read an IQ capture's center frequency from its filename, because
-        nothing inside a .wav file carries it.  This name opens at `tuned_hz` in
+        nothing inside a .wav file records it.  This name opens at `tuned_hz` in
         SDRconnect, SDR# and SDR++:
 
             event_IQ_20260928_154116-0700_3590000HZ_3590000Hz.wav
@@ -842,7 +842,7 @@ class IqEventRecorder(AbstractEventRecorder):
         SDRconnect splits the name on underscores.  It wants IQ in the second field and
         the frequency in the fifth, ending in a capital HZ.  SDR++ takes the first match
         of [0-9]+Hz, case-sensitively, and so never reads the HZ token.  No one token
-        suits both programs, so the name carries the frequency twice.  SDR# read this
+        suits both programs, so the name contains the frequency twice.  SDR# read this
         name correctly too.  See docs-notebook/iq-filenames.md for the tests.
 
         The frequency is the tuned one, where DC sits in the capture.  The listening
@@ -949,7 +949,7 @@ class RecordingTrigger:
         # Guarded because a misconfigured rate of zero reaches here before anything
         # has had the chance to refuse it: a listener's can_record() is what reports
         # that, and none has subscribed yet.  The wait is zero samples at a zero rate
-        # anyway, so there is nothing to carry across.
+        # anyway, so there is nothing to transfer.
         self._charged_wait_seconds = (self._min_lock_samples / self._sample_rate
                                       if self._sample_rate > 0 else 0.0)
         # Whoever wants to record subscribes; see add_listener.  Nothing is built
@@ -1149,7 +1149,7 @@ class RecordingTrigger:
     def stop(self) -> None:
         """Stop polling and close any recording in progress.
 
-        Finalizing matters: a .wav's header carries its length, and a file whose
+        Finalizing matters: a .wav's header records its length, and a file whose
         writer never closed reports zero frames no matter how much audio is in it.
         """
         self._stop.set()
@@ -1396,7 +1396,7 @@ class RecordingTrigger:
     def _sample_snr(self) -> None:
         """Note the analyzer's latest SNR, while a lock is waiting to be judged.
 
-        Only locked results carry a level.  An unlocked one reports zero by
+        Only locked results have a level.  An unlocked one reports zero by
         convention (see AnalysisResult.unlocked), and averaging those in would hold
         off a perfectly loud event for the sake of a reading that measured nothing.
         """

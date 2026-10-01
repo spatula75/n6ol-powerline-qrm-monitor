@@ -48,7 +48,7 @@ not installed as a package - it has to be on the import path. `tests/conftest.py
 inserts it for the suite; for a manual run set `PYTHONPATH=lib` (PyCharm run
 configurations have `lib` as a source root instead).
 
-Runtime deps are pinned in `requirements.txt`; `pyproject.toml` carries the looser
+Runtime deps are pinned in `requirements.txt`; `pyproject.toml` has the looser
 ranges for packaging. `numpy` is capped below 2.5 by numba's own constraint - check
 that ceiling before bumping either.
 
@@ -221,7 +221,7 @@ auto-closed the PR outright instead of migrating it, despite what its docs sugge
    underneath it. Both releases so far found several wrong. 2.0.0 had a setting under
    a name it never shipped with, a stale default, and a key that does not exist. 2.1.0
    said "No SDRplay receiver works yet" in the release that ships one, quoted a scope
-   figure from before a later commit changed it, carried two `### Changed` headings and
+   figure from before a later commit changed it, had two `### Changed` headings and
    an entry duplicating one 2.0.0 had already made, and never announced the headline
    feature at all.
 
@@ -325,7 +325,7 @@ In that order:
    for.
 
    **Run the `prose-check` skill over any file whose prose this change touched.** It
-   carries the procedure: the mechanical commands, and the reading pass for the three
+   contains the procedure: the mechanical commands, and the reading pass for the three
    rules no tool can check, which are sentence fragments, passive voice, and an `-ing`
    form used as the main verb. A clean `ste_lint` run says nothing about any of the
    three. A first draft of `lib/buzz/receiver/source.py` shipped eight fragments straight past a
@@ -527,7 +527,7 @@ of the change, the critical fix, the one decision worth arguing about. Whatever 
 reviewer would regret skimming past.
 
 Not a changelog and not a file listing - the diff already says what changed and
-`CHANGELOG.md` carries the detail. Same budget as a commit message: a sentence or two
+`CHANGELOG.md` holds the detail. Same budget as a commit message: a sentence or two
 per significant change. The PR says what to *look at* and why it is the important
 part.
 
@@ -539,7 +539,7 @@ with, a test that guards something subtle. A few, not a running commentary - eve
 comment spends attention that the important ones need.
 
 `gh pr review` cannot do this; it only posts a top-level body. Line-anchored comments
-go through the API, as one review carrying several:
+go through the API, as one review containing several:
 
     gh api --method POST repos/OWNER/REPO/pulls/N/reviews \
       --input review.json
@@ -642,7 +642,7 @@ What that outranks, in practice:
 behavior is supposed to hold, in a form that fails loudly when someone breaks the
 assumption - where a comment making the same claim just goes quietly out of date. When
 the thing to convey is an identity, an equivalence, or a boundary condition, a test
-usually carries it better than prose: the equivalence tests behind the pulse-train
+usually states it better than prose: the equivalence tests behind the pulse-train
 summation don't merely check the optimization, they record the claim that makes it
 valid. Reach for a test whenever the explanation is really a claim about behavior.
 
@@ -1249,7 +1249,7 @@ receiver sitting there reported the wrong number, and nothing could tell the
 two apart.
 
 Whether an answer arrived and what the answer says are two facts, and one field cannot
-carry both. Here the delivery wait already knew the first, so the fix was to pass it
+hold both. Here the delivery wait already knew the first, so the fix was to pass it
 rather than to infer it from the value. Where nothing else knows, `None` beside the
 value says it and no in-band figure does.
 
@@ -1331,7 +1331,7 @@ and `Publisher.scp_to_server`'s failure log are worked examples.
 **Banned words and punctuation.** These are assistant tells rather than house voice, and
 they are banned outright in files and comments:
 
-- **No em dashes.** A single spaced hyphen carries most of what one was doing, and
+- **No em dashes.** A single spaced hyphen does most of what one was doing, and
   ordinary prose should take that: `a field tool - not lab gear`. Reach for `--` only
   where the break really needs the weight, meaning a refinement that also wants a pause;
   the codebase already uses `--` that way in comments. A colon, semicolon, comma or full
@@ -1339,14 +1339,10 @@ they are banned outright in files and comments:
   commas, since half of a `- ... -` pair at the start of a line reads as a bullet. The
   semicolon is the one exception to that list in strict text: an error message or a
   numbered step takes two sentences instead, per `docs/ste-writing.md`.
-- **These words:** *genuine*, *genuinely*, *load-bearing*, *is real*, *are real*, *land*,
-  *lands*, *landed*.
-
-Most of them are doing emphasis rather than work.
-"A genuine bug" is a bug.
-"The load-bearing line" is the line that matters.
-"The value lands at 128" is the value being 128.
-Say the thing.
+- **Certain words.** The prose-check skill lists them under "Words `ste_lint` rejects",
+  beside the other checks made while drafting. A test in `tests/test_ste_lint.py` fails
+  if that list and the linter disagree. Most of the words add emphasis and do no work,
+  and the rest stand in for a plainer verb. Say the thing.
 
 - **No sentence fragments.** "Two reasons, not one." has no verb and is not a
   sentence. Write "There are two reasons for this: ..." instead, or fold the
@@ -1375,7 +1371,7 @@ Say the thing.
 
 - **Don't make the reader hold anything in suspense.** Four habits do this. They came
   out of one review of `lib/buzz/receiver/device.py`, and they share a cause: the sentence
-  withholds what it is about until the reader has already had to carry something.
+  withholds what it is about until the reader has already had to hold something in mind.
 
   - **A noun phrase in the subject slot with no verb after it.** "Two reading modes,
     and the difference is deliberate rather than historical." and "A classmethod
@@ -1418,7 +1414,7 @@ Say the thing.
       always used.
 
   Three faults, and the third is the one that made it unreadable rather than merely
-  clumsy. "Agree in arithmetic" was carrying "algebraically identical" and could not.
+  clumsy. "Agree in arithmetic" was meant to say "algebraically identical" and could not.
   "One unit in the last place" is the numerics term for a ULP written out, which helps
   nobody who does not already know it. And nothing said why a reader should care, so
   there was no way to tell whether the sentence mattered.
@@ -1462,7 +1458,7 @@ Say the thing.
   one is a fact about this hardware, the other is somebody's starting point. Say so
   plainly before quoting any figures - "the value came from measuring, not from
   theory" - and then say what was measured and across what range. This is the same
-  job as de-magickifying a constant, carried one step further: the name says what the
+  job as de-magickifying a constant, taken one step further: the name says what the
   number is for, and this says how much to believe it. `buzz.receiver.iq._SKIRT_FRACTION` is
   the worked example.
 - **No length cap in flavored mode is not a license for 30-word sentences.** The rule
@@ -1477,7 +1473,7 @@ Say the thing.
   habit is a short declarative sentence, then a second one that exists only to explain
   it. "Nothing here is allowed to raise.  This is called from C, where an exception has
   nowhere sensible to go." The pause between the two reads as pretentious, as though
-  the claim wanted its own moment before the reason arrived. One sentence carries
+  the claim wanted its own moment before the reason arrived. One sentence holds
   both, and flows better: "Nothing here is allowed to raise, because this is called
   from C, where an exception has nowhere sensible to go." The tell is that the second
   sentence would accept "because" at the front with nothing else changed. `_on_block`
@@ -1541,14 +1537,14 @@ Say the thing.
 
   The tells, when checking your own draft: an abstraction where a concrete noun belongs
   ("the recent", "the situation"), a vague conditional ("where your noise situation is not
-  changing"), a metaphor carrying the meaning ("dilutes"), and any sentence the reader has
+  changing"), a metaphor standing in for the meaning ("dilutes"), and any sentence the reader has
   to decode before they can act on it. Ask what observable thing the sentence claims. If
   the answer takes longer to work out than simply saying it would have, say it instead.
 - **Do not say something is "worth" doing.** The construct shows up as "worth
   rate-limiting", "worth keeping apart", "worth explaining", and "not a cost worth
   reasoning about". It argues for the code rather than describing it, which is the
   sales habit above in miniature. At the density it reaches it also reads as a tic.
-  `receiver/source.py` carried five of them, two inside one four-line docstring. Say what the code
+  `receiver/source.py` had five of them, two inside one four-line docstring. Say what the code
   does and why, and let the reader decide what it was worth. Write "the log is
   rate-limited because this will not happen once" rather than "worth rate-limiting
   because it will not happen once". The occasional one is fine and the frequency is
@@ -1557,7 +1553,7 @@ Say the thing.
 
   **The codebase does not follow this yet, and clearing it is a job of its own.** A
   count on 2026-09-12 found 46 of them outside the RTL-SDR work, across 25 files, with
-  `analyzer.py`, `recorder.py` and `render.py` carrying five each. Let the ratchet in
+  `analyzer.py`, `recorder.py` and `render.py` with five each. Let the ratchet in
   "Before every commit" take them as those files get touched, or clear the lot in one
   pass on a branch for that alone. Do not fold them into an unrelated change, because
   the diff then buries whatever the change was for. The quantity sense accounts for
@@ -1574,7 +1570,7 @@ Say the thing.
 
 An error message is read by someone who is stuck, usually in a hurry, and often
 without the source in front of them. **Every message - raised, logged, or asserted -
-carries three things:**
+contains three things:**
 
 1. **Context.** What was being attempted when it failed, with the specifics filled in:
    the path, the setting, the device, the value. "Not found" is useless; "not found on
@@ -1586,7 +1582,7 @@ carries three things:**
    change, the file to look in. If the failure is survivable, say what the program did
    instead, so nobody hunts a problem that has already been worked around.
 
-**Three things, not three paragraphs.** Two or three sentences carries all of it; past
+**Three things, not three paragraphs.** Two or three sentences hold all of it; past
 that the message stops being read, which costs more than leaving something out. Cut the
 reasoning and keep the facts - *why* it works this way belongs in a comment beside the
 code, where the person who needs it is already looking.

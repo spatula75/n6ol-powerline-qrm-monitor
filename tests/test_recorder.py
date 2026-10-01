@@ -1046,7 +1046,7 @@ class TestMinimumSnr:
         assert lead_in('late', 20) < lead_in('prompt', 0)
 
     def test_one_loud_reading_does_not_let_a_weak_event_through(self, tmp_path):
-        """Judged over a window, so a single tick cannot carry the decision."""
+        """Judged over a window, so a single tick cannot make the decision."""
         recorder, pipeline, analyzer = self._locked_at(tmp_path, snr=2.0)
         analyzer.publish(30.0)
         _feed(pipeline, 1)
@@ -1449,7 +1449,7 @@ class TestRearmCycle:
 
     def test_a_quiet_period_still_refills(self, tmp_path):
         """A cycle that spent only part of its budget tops back up rather than
-        carrying the remainder forward, so the rate is a ceiling, not a quota."""
+        saving the remainder for later, so the rate is a ceiling, not a quota."""
         clock = FakeClock()
         recorder, pipeline, analyzer = self._recorder(
             tmp_path, clock, max_events=3, rearm_reset_minutes=1440)
@@ -1916,7 +1916,7 @@ class TestAFailedOpeningWrite:
     full disk refuses.
 
     That write sat outside the guard covering the open, so it escaped into the
-    trigger, which logs what a listener raises and carries on.  No name was appended,
+    trigger, which logs what a listener raises and continues.  No name was appended,
     so all() over the names that did arrive reported every recorder open.  The trigger
     stayed armed and opened another file on the next poll, which is one stray .wav per
     poll for as long as the signal lasted.  That is the failure begin()'s own open
@@ -2041,13 +2041,13 @@ class TestRecordingRawIq:
     """
 
     IQ_RATE = 4 * SAMPLE_RATE      # a whole number of IQ samples per audio sample
-    # Listening on 3540 kHz tunes the receiver to 3590 kHz, so a name carrying the
-    # listening frequency can be told from one carrying the tuned frequency.
+    # Listening on 3540 kHz tunes the receiver to 3590 kHz, so a name containing the
+    # listening frequency can be told from one containing the tuned frequency.
     LISTENING_KHZ = 3540.0
     TUNING_OFFSET_KHZ = 50.0
 
     def test_it_reads_the_section_of_the_receiver_in_use(self, tmp_path):
-        """An IQ file carries the frequency, gain and rate it was captured at, and
+        """An IQ file records the frequency, gain and rate it was captured at, and
         nothing in the file says which section those came from.
 
         Reading [rtlsdr] on an SDRplay station would label every capture with another
@@ -2133,7 +2133,7 @@ class TestRecordingRawIq:
         audio_stamp = self._audio_file(tmp_path).name.removeprefix('event-').removesuffix('.wav')
         iq_fields = self._iq_file(tmp_path).name.split('_')
         assert f'{iq_fields[2]}-{iq_fields[3]}' == audio_stamp, (
-            'the two files should carry the same moment, so they read as one event')
+            'the two files should name the same moment, so they read as one event')
 
     def test_the_iq_file_is_named_for_the_tuned_frequency(self, tmp_path):
         """The tuned frequency is where DC sits in the capture.  An SDR program given
@@ -2208,8 +2208,8 @@ class TestRecordingRawIq:
         assert int(settings['listening_frequency_hz']) == 3_540_000
         assert float(settings['gain_db']) == config.rtlsdr.gain_db
 
-    def test_it_carries_the_calibration_and_the_pulse_rate(self, tmp_path):
-        """The two the audio file carries, for the same reason: neither is recoverable
+    def test_it_records_the_calibration_and_the_pulse_rate(self, tmp_path):
+        """The two the audio file records, for the same reason: neither is recoverable
         from the samples, and both change what a reading of them means.
         """
         self._record_one(tmp_path)
