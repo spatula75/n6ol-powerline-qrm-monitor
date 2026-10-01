@@ -48,6 +48,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   midnight, and a tool that reads the CSV by column name should accept both.
 
 ### Fixed
+- The daily chart and its moving-average chart now say "Insufficient data to plot" when
+  there are too few readings to draw a line: under two rows for the daily chart, under
+  seven for the moving average. That is the first minutes of every day, and any time on
+  a station that has just started. The moving-average chart used to be skipped then, so
+  the web page went on showing yesterday's, and the upload stopped at the missing file.
+  At midnight that also left the 7-day and 30-day summaries out of date until 1 AM. The
+  daily chart used to draw empty axes and log a matplotlib warning.
 - `scripts/batch_render_recordings.py` leaves out raw IQ captures. It sent each one to
   `--render`, which cannot replay raw IQ, so a station with `[recording] record_iq` on
   got a failed render for every event it recorded.

@@ -63,6 +63,14 @@ _AXIS_ANCHOR_DBFS = -48
 # minutes narrower than the bucket so adjacent bars don't touch.
 _BAR_GAP_MINUTES = 2
 
+# A line needs two points, so a daily chart with fewer says so instead of drawing.  For
+# the smoothed chart that means one row more than the window, because a moving average
+# over n rows yields n - window + 1 points.
+_MINIMUM_POINTS = 2
+_INSUFFICIENT_DATA = 'Insufficient data to plot'
+_INSUFFICIENT_DATA_PT = 18
+_INSUFFICIENT_DATA_COLOR = 'red'
+
 # Axes box margins in pixels for the daily graph.
 _M_LEFT   = 88   # room for y-axis label + tick labels
 _M_RIGHT  = 24
@@ -273,31 +281,30 @@ class Plotter:
         self._config = config
         self._store = store
 
-    def _load_daily_series(self, input_filename: Path | str, smooth: int) -> '_DailySeries | None':
+    def _load_daily_series(self, input_filename: Path | str, smooth: int) -> '_DailySeries':
         """Read one day's CSV rows and, if requested, apply a moving average.
 
-        Returns None when there is nothing to plot: an empty file, or fewer rows
-        than the requested smoothing window.
+        The series can hold fewer than _MINIMUM_POINTS points, and an empty file gives
+        an empty one.  This builds the title from the rows before smoothing, so it names
+        the day even when no smoothed point exists yet.
         """
         station = self._config.station
         rows = self._store.read_rows(input_filename)
-        if not rows:
-            return None
         timestamps = [r.timestamp for r in rows]
-        signals    = [r.signal for r in rows]
-        noises     = [r.noise for r in rows]
+        signals: Series = [r.signal for r in rows]
+        noises: Series = [r.noise for r in rows]
+
+        averaging = f' ({smooth} point moving avg)' if smooth else ''
+        day = f', {timestamps[0].strftime("%Y-%m-%d")}' if timestamps else ''
+        title = f'Powerline Noise vs Noise Floor{averaging}{day} ({station.timezone} Timezone)'
 
         if smooth:
-            if len(timestamps) <= smooth:
-                return None
-            signals = _smooth(signals, smooth)
-            noises = _smooth(noises, smooth)
-            timestamps    = timestamps[smooth - 1:]
-            title = (f'Powerline Noise vs Noise Floor ({smooth} point moving avg), '
-                     f'{timestamps[0].strftime("%Y-%m-%d")} ({station.timezone} Timezone)')
-        else:
-            title = (f'Powerline Noise vs Noise Floor, '
-                     f'{timestamps[0].strftime("%Y-%m-%d")} ({station.timezone} Timezone)')
+            if len(timestamps) < smooth:
+                signals, noises, timestamps = [], [], []
+            else:
+                signals = _smooth(signals, smooth)
+                noises = _smooth(noises, smooth)
+                timestamps = timestamps[smooth - 1:]
 
         return _DailySeries(timestamps=timestamps, signals=signals, noises=noises,
                             title=title)
@@ -354,56 +361,76 @@ class Plotter:
         """Render a daily noise trace and save it as a PNG.
 
         This reads signal and noise floor values from input_filename and plots them
-        on a shared y-axis (dBm) against time-of-day. Reference lines are drawn for
+        on a shared y-axis (dBm) against time-of-day.  It draws reference lines for
         S9, the detection threshold, and the typical noise floor.
 
         If smooth > 0, a simple moving average of that many points is applied before
-        plotting. This returns early without writing output if the file has too few
-        rows for the requested smoothing window.
-        """
-        station = self._config.station
-        audio = self._config.audio
+        plotting.
 
+        This always writes the chart.  With fewer than _MINIMUM_POINTS points to draw,
+        the chart shows empty axes and says the data is insufficient.  That happens for
+        the first minute of a day's raw chart and the first six of the smoothed one, and
+        at any time of day on a station that has just started.  The page shows this
+        chart, and the collector uploads it every minute, so a chart that was not
+        written would leave yesterday's chart on show and a missing file in the upload.
+        """
         series = self._load_daily_series(input_filename, smooth)
-        if series is None:
-            return
 
         # rc_context scopes the timezone setting (used by matplotlib's date
         # machinery) to this render instead of mutating global state.
-        with matplotlib.rc_context({'timezone': station.timezone}):
+        with matplotlib.rc_context({'timezone': self._config.station.timezone}):
             px = 1 / plt.rcParams['figure.dpi']   # inches per pixel; figsize is in inches
             figure, axes = plt.subplots(figsize=(_GRAPH_W * px, _GRAPH_H * px))
             figure.subplots_adjust(left=_M_LEFT/_GRAPH_W, right=1 - _M_RIGHT/_GRAPH_W,
                                    top=1 - _M_TOP/_GRAPH_H, bottom=_M_BOTTOM/_GRAPH_H)
             axes.set_title(series.title)
-            axes.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
-
-            noise_twin = axes.twinx()
-            min_y, max_y = self._daily_chart_y_bounds(series)
-
-            # Both lines plot every row's value continuously, with no NaN gaps: when
-            # unlocked, Collector._run_collection() already writes signal == noise for
-            # that row, so red and green coincide exactly during unlocked stretches.
-            # zorder makes green paint on top there, so an unlocked stretch reads as a
-            # single clean green trace instead of a gap. NaN-masking red instead used
-            # to fragment it into dozens of disconnected dashes whenever lock flickered
-            # on and off for a minute or two. That was worse than useless once smoothed,
-            # since the moving average blended real signal readings with unlocked rows'
-            # noise-floor stand-in before the mask was even applied.
-            plot_signal, = axes.plot(series.timestamps, series.signals, 'r-',
-                                     label=f'{audio.pulse_rate}pps dBm', zorder=2)
-            plot_noise, = noise_twin.plot(series.timestamps, series.noises, 'g-',
-                                          label='Noise Floor dBm', zorder=3)
-
-            axes.set_xlim(series.timestamps[0], series.timestamps[-1])
-            axes.set_ylim(min_y, max_y)
-            noise_twin.set_ylim(min_y, max_y)
-            self._style_dual_axes(axes, noise_twin, plot_signal, plot_noise)
-
-            reference_lines = self._draw_reference_lines(axes)
-            axes.legend(loc='lower left', handles=[plot_signal, plot_noise, *reference_lines])
+            if len(series.timestamps) < _MINIMUM_POINTS:
+                self._draw_insufficient_data(axes)
+            else:
+                self._draw_daily_traces(axes, series)
             figure.savefig(output_filename, pil_kwargs={'optimize': True})
             plt.close(figure)
+
+    @staticmethod
+    def _draw_insufficient_data(axes: Axes) -> None:
+        """Leave the axes empty, with no ticks, and say why in the middle of them."""
+        axes.set_xlabel('Time')
+        axes.set_ylabel('dBm')
+        axes.set_xticks([])
+        axes.set_yticks([])
+        axes.text(0.5, 0.5, _INSUFFICIENT_DATA, transform=axes.transAxes,
+                  ha='center', va='center', fontsize=_INSUFFICIENT_DATA_PT,
+                  color=_INSUFFICIENT_DATA_COLOR)
+
+    def _draw_daily_traces(self, axes: Axes, series: '_DailySeries') -> None:
+        """Draw the signal and noise-floor traces, with their reference lines and legend."""
+        audio = self._config.audio
+        axes.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+
+        noise_twin = axes.twinx()
+        min_y, max_y = self._daily_chart_y_bounds(series)
+
+        # Both lines plot every row's value continuously, with no NaN gaps: when
+        # unlocked, Collector._run_collection() already writes signal == noise for
+        # that row, so red and green coincide exactly during unlocked stretches.
+        # zorder makes green paint on top there, so an unlocked stretch reads as a
+        # single clean green trace instead of a gap.  NaN-masking red instead used
+        # to fragment it into dozens of disconnected dashes whenever lock flickered
+        # on and off for a minute or two.  That was worse than useless once smoothed,
+        # since the moving average blended real signal readings with unlocked rows'
+        # noise-floor stand-in before the mask was even applied.
+        plot_signal, = axes.plot(series.timestamps, series.signals, 'r-',
+                                 label=f'{audio.pulse_rate}pps dBm', zorder=2)
+        plot_noise, = noise_twin.plot(series.timestamps, series.noises, 'g-',
+                                      label='Noise Floor dBm', zorder=3)
+
+        axes.set_xlim(series.timestamps[0], series.timestamps[-1])
+        axes.set_ylim(min_y, max_y)
+        noise_twin.set_ylim(min_y, max_y)
+        self._style_dual_axes(axes, noise_twin, plot_signal, plot_noise)
+
+        reference_lines = self._draw_reference_lines(axes)
+        axes.legend(loc='lower left', handles=[plot_signal, plot_noise, *reference_lines])
 
     def _frequency_series(self, readings: list[tuple[datetime, float | None]],
                           low: float, high: float) -> '_FrequencySeries':

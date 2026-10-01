@@ -1,6 +1,7 @@
 """Tests for Plotter: moving average, daily graph, and summary graph generation."""
 
 import gc
+import warnings
 from datetime import datetime, time, timedelta
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -136,31 +137,99 @@ class TestGcGuarded:
             'past the pass that would have caught it.')
 
 
-class TestARenderWithNothingToPlot:
-    def test_an_empty_csv_writes_no_chart_and_leaves_no_figure(self, tmp_path):
-        """A day with no rows yet is the ordinary state at midnight, not a fault.
+def _render_daily(plotter: Plotter, csv_path: Path, output: Path, smooth: int = 0) -> tuple[str, list[str]]:
+    """Render a daily chart, and return its title and every text drawn on its axes.
 
-        Writing a chart from it would put an empty picture on the web page, and the
-        page has no way to say that the emptiness is the file's rather than the band's.
-        Leaving the previous chart in place is the honest answer, and Collector reports
-        a chart that has stopped being written.
-        """
-        import matplotlib.pyplot as plt
+    These are read from the figure just before the plotter closes it, so the test sees
+    what was drawn without reading pixels.
+    """
+    drawn: dict[str, list[str] | str] = {}
+    close = plt.close
+
+    def inspect_then_close(figure):
+        axes = figure.axes[0]
+        drawn['title'] = axes.get_title()
+        drawn['texts'] = [text.get_text() for axis in figure.axes for text in axis.texts]
+        close(figure)
+
+    with patch('buzz.plotter.plt.close', side_effect=inspect_then_close):
+        plotter.generate_graph_from_csv(csv_path, output, smooth=smooth)
+    return drawn['title'], drawn['texts']
+
+
+INSUFFICIENT = 'Insufficient data to plot'
+
+
+class TestTooLittleToPlot:
+    """A daily chart with fewer than two points to draw says so, and is still written.
+
+    The page shows the smoothed chart and the collector uploads both every minute.  A
+    chart that was not written left yesterday's on the page and a missing file in the
+    upload, which ended that minute's upload part way.  So the chart is written with
+    empty axes and a message that says the emptiness belongs to the data.
+    """
+
+    def test_an_empty_csv_writes_the_placeholder_and_leaves_no_figure(self, tmp_path):
         plotter, _ = _make_plotter(tmp_path)
         csv_path = tmp_path / 'empty.csv'
         csv_path.write_text(
             'ISO datetime,120pps SNR,120pps signal dB,Noise floor dB,T,H,S,W,G,B' + chr(10),
             encoding='utf-8')
-        output = tmp_path / 'should_not_exist.png'
+        output = tmp_path / 'out.png'
+        _, texts = _render_daily(plotter, csv_path, output)
+        assert output.exists(), 'a CSV with no rows wrote no chart, so the upload would miss it'
+        assert texts == [INSUFFICIENT]
+        assert plt.get_fignums() == [], 'the placeholder render left a figure open'
 
-        plotter.generate_graph_from_csv(csv_path, output)
+    def test_one_row_gives_the_placeholder_without_a_warning(self, tmp_path):
+        """The first minute of each day's CSV holds one row.  Drawing it set the x range
+        with equal ends, and matplotlib warned about a singular transformation."""
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv(csv_path, n_rows=1)
+        with warnings.catch_warnings():
+            warnings.simplefilter('error', UserWarning)
+            _, texts = _render_daily(plotter, csv_path, tmp_path / 'out.png')
+        assert texts == [INSUFFICIENT]
 
-        assert not output.exists(), (
-            f'A CSV with a header and no rows produced {output.name}.  An empty chart '
-            'on the web page cannot be told apart from a quiet band.')
-        assert plt.get_fignums() == [], (
-            'The early return left a figure open, so pyplot holds it forever and every '
-            'later render adds another.')
+    def test_two_rows_are_drawn(self, tmp_path):
+        """The boundary from the other side: two rows make a line, so no placeholder."""
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv(csv_path, n_rows=2)
+        _, texts = _render_daily(plotter, csv_path, tmp_path / 'out.png')
+        assert INSUFFICIENT not in texts
+
+    def test_six_rows_are_too_few_to_smooth_and_the_title_still_names_the_day(self, tmp_path):
+        """A 6-point moving average over six rows yields one point, which is no line."""
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv(csv_path, n_rows=6)
+        output = tmp_path / 'smooth.png'
+        title, texts = _render_daily(plotter, csv_path, output, smooth=6)
+        assert output.exists()
+        assert texts == [INSUFFICIENT]
+        assert '2024-01-15' in title and '6 point moving avg' in title, title
+
+    @pytest.mark.parametrize('smooth', [0, 6])
+    @pytest.mark.parametrize('rows', range(9))
+    def test_every_row_count_writes_a_chart(self, tmp_path, rows, smooth):
+        """Collector uploads both daily charts every minute without checking that they
+        exist, so it relies on this for every row count a day can start with."""
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv(csv_path, n_rows=rows)
+        output = tmp_path / 'out.png'
+        plotter.generate_graph_from_csv(csv_path, output, smooth=smooth)
+        assert output.exists(), f'{rows} row(s) with smooth={smooth} wrote no chart'
+
+    def test_seven_rows_smooth_to_two_points_and_are_drawn(self, tmp_path):
+        """n rows give n - 5 smoothed points, so seven rows are the first line."""
+        plotter, _ = _make_plotter(tmp_path)
+        csv_path = tmp_path / 'data.csv'
+        _write_csv(csv_path, n_rows=7)
+        _, texts = _render_daily(plotter, csv_path, tmp_path / 'smooth.png', smooth=6)
+        assert INSUFFICIENT not in texts
 
 
 class TestEveryRenderClosesItsFigure:
@@ -297,14 +366,6 @@ class TestGenerateGraphFromCsv:
         output = tmp_path / 'out_smooth.png'
         plotter.generate_graph_from_csv(csv_path, output, smooth=6)
         assert output.exists()
-
-    def test_returns_early_if_too_few_rows_for_smooth(self, tmp_path):
-        plotter, _ = _make_plotter(tmp_path)
-        csv_path = tmp_path / 'data.csv'
-        _write_csv(csv_path, n_rows=4)   # fewer than smooth=6
-        output = tmp_path / 'should_not_exist.png'
-        plotter.generate_graph_from_csv(csv_path, output, smooth=6)
-        assert not output.exists()
 
     def test_header_lines_skipped_without_error(self, tmp_path):
         plotter, _ = _make_plotter(tmp_path)
