@@ -211,6 +211,21 @@ class TestIsIqCapture:
     def test_an_audio_recording_is_not(self):
         assert not IqEventRecorder.is_iq_capture('event-20260928-154116-0700.wav')
 
+    def test_an_old_name_renamed_for_a_clash_is_still_one(self, tmp_path):
+        """The name comes from unique_path itself, so this follows any change to where
+        it puts the number."""
+        taken = tmp_path / 'event-20260928-154116-0700-iq.wav'
+        taken.write_bytes(b'')
+        renamed = IqEventRecorder.unique_path(taken).name
+        assert IqEventRecorder.is_iq_capture(renamed), (
+            f'{renamed} is an IQ capture from 2.0.0 or 2.1.0 that was renamed because its '
+            'name was taken, and is_iq_capture read it as audio.')
+
+    def test_an_audio_recording_renamed_for_a_clash_is_not(self, tmp_path):
+        taken = tmp_path / 'event-20260928-154116-0700.wav'
+        taken.write_bytes(b'')
+        assert not IqEventRecorder.is_iq_capture(IqEventRecorder.unique_path(taken).name)
+
 
 class TestUniquePath:
     def test_returns_path_unchanged_when_free(self, tmp_path):

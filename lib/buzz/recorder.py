@@ -62,6 +62,7 @@ gone quiet.
 
 
 import logging
+import re
 import shutil
 import threading
 import time
@@ -770,9 +771,11 @@ class IqEventRecorder(AbstractEventRecorder):
 
     CHANNELS = 2
     KIND = 'raw IQ capture'
-    # 2.0.0 and 2.1.0 named an IQ capture by putting this in place of the audio
+    # 2.0.0 and 2.1.0 named an IQ capture by putting -iq.wav in place of the audio
     # recording's extension.  Recording directories from those releases still hold them.
-    _OLD_NAME_ENDING = '-iq.wav'
+    # The number is the one unique_path adds when a name is already taken, which it
+    # puts after -iq, so a clash from those releases ends -iq-2.wav.
+    _OLD_NAME_ENDING = re.compile(r'-iq(-\d+)?\.wav$')
     # Every IQ capture's name starts with this now.  SDRconnect looks for the IQ in the
     # second field, so this is part of the format rather than a label.
     _NAME_START = 'event_IQ_'
@@ -855,7 +858,7 @@ class IqEventRecorder(AbstractEventRecorder):
         This also recognizes the name 2.0.0 and 2.1.0 gave an IQ capture, because a
         recording directory keeps files from every release that wrote to it.
         """
-        return name.startswith(cls._NAME_START) or name.endswith(cls._OLD_NAME_ENDING)
+        return name.startswith(cls._NAME_START) or cls._OLD_NAME_ENDING.search(name) is not None
 
     def _metadata_settings(self, ended: str) -> dict[str, Any]:
         return {
