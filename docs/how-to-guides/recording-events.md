@@ -89,6 +89,16 @@ These files can grow large fairly quickly, and preserving the same lead-in durat
 necessarily will use a good deal more memory when this option is enabled (generally not a major concern on
 modern computing hardware, just something to be aware of).
 
+You might note the filenames for IQ files seem a little strange, notably that the frequency is repeated, once
+followed by `HZ` and once by `Hz`.  This is done in an attempt to maintain easy compatibility with the expectations
+of popular SDR programs like SDRconnect, SDR++, and SDR#.  In particular, SDRconnect expects to find a frequency
+in the filename followed by `HZ` (in uppercase) and SDR++ expects to find a frequency followed by `Hz` (in mixed
+case).  The filename format, strange though it is, allows the same file to be opened in all three of these popular
+tools and to have the center frequency detected correctly.
+
+The files will play in common SDR programs even without the naming convention, but applying the naming convention
+allows at least these three programs to interpret the center frequency for the sake of convenience.
+
 ## Arming
 
 Should you exhaust your record budget and wish to record further, you can also click the "Arm" button in the UI to

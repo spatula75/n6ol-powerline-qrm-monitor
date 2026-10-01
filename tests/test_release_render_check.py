@@ -75,7 +75,7 @@ class TestNewestRecording:
         """
         import os
         audio = _write_wav(tmp_path / 'event-20260101-000000-0000.wav')
-        iq = _write_wav(tmp_path / 'event-20260101-000000-0000-iq.wav')
+        iq = _write_wav(tmp_path / 'event_IQ_20260101_000000+0000_3590000HZ_3590000Hz.wav')
         os.utime(audio, (1_000_000, 1_000_000))
         os.utime(iq, (2_000_000, 2_000_000))
         assert newest_recording(tmp_path) == audio, (
@@ -83,6 +83,8 @@ class TestNewestRecording:
             'receiver rate rather than audio this program can replay')
 
     def test_a_directory_of_only_iq_captures_has_no_newest(self, tmp_path):
+        """Captures named the way 2.0.0 and 2.1.0 named them are skipped as well."""
+        _write_wav(tmp_path / 'event_IQ_20260101_000000+0000_3590000HZ_3590000Hz.wav')
         _write_wav(tmp_path / 'event-20260101-000000-0000-iq.wav')
         assert newest_recording(tmp_path) is None
 

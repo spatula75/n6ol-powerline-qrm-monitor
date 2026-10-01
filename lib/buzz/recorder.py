@@ -4,7 +4,7 @@ Automatic .wav capture of interference events.
 Two responsibilities, deliberately in two classes.  RecordingTrigger decides *when* an
 event is worth a file and when that file should end.  An AbstractEventRecorder subclass
 handles *how* one gets written: which pipeline the samples come from, how they are
-shaped into a frame, and what metadata the finished file carries.  The trigger drives
+shaped into a frame, and what metadata the finished file contains.  The trigger drives
 one or more recorders through begin, capture and finish, and has no opinion about any
 of those answers.
 
@@ -62,6 +62,7 @@ gone quiet.
 
 
 import logging
+import re
 import shutil
 import threading
 import time
@@ -185,11 +186,6 @@ class AbstractEventRecorder(ABC):
     # to whoever opens one later, so each says which it is.
     KIND: str
 
-    # Appended to the filename, so that two recorders of one event are one glance
-    # apart in the directory.  Empty for the audio, which is the one an operator
-    # reaches for and the one every other part of this program reads.
-    FILENAME_SUFFIX = ''
-
     # The config setting this recorder's rate came from, named by the message that
     # refuses an impossible one.  The two recorders read different sections, and
     # whoever meets that message goes and edits whichever setting it names.
@@ -303,7 +299,7 @@ class AbstractEventRecorder(ABC):
 
         A file that begins or ends on a non-zero sample steps to or from silence, and a
         step is broadband: it clicks, and clicks at the seams when files play back to
-        back.  Sound cards carry a DC offset (the reason LevelStream removes one), so
+        back.  Sound cards have a DC offset (the reason LevelStream removes one), so
         this happens even where the recording contains nothing but noise floor.
 
         This uses a raised cosine rather than an exponential, and the ends of a file
@@ -319,19 +315,24 @@ class AbstractEventRecorder(ABC):
         return 0.5 - 0.5 * np.cos(np.pi * np.linspace(0.0, 1.0, n))
 
     @staticmethod
-    def event_filename(when: datetime, suffix: str = '') -> str:
+    def event_filename(when: datetime) -> str:
         """Return the .wav filename for an event that locked at `when`.
 
-        The suffix is what keeps two recorders of one event apart.  Both open at the
-        same instant, so both would otherwise ask for the same name and the second
-        would be pushed to a -2 that says nothing about which file it is.
-
-        Local time with the UTC offset attached, so a file stays unambiguous a year
-        later and across a DST change.  ISO 8601's colons are illegal in Windows
-        filenames and its T separator is hard to read at a glance, so date and time are
-        joined with a dash instead: event-20260729-143307-0700.wav.
+        The name uses local time with the UTC offset attached, so a file stays
+        unambiguous a year later and across a DST change.  ISO 8601's colons are
+        illegal in Windows filenames and its T separator is hard to read at a glance, so
+        date and time are joined with a dash instead: event-20260729-143307-0700.wav.
         """
-        return f'event-{when.strftime("%Y%m%d-%H%M%S%z")}{suffix}.wav'
+        return f'event-{when.strftime("%Y%m%d-%H%M%S%z")}.wav'
+
+    def _filename(self, started_at: datetime) -> str:
+        """The name of this recorder's file for an event that locked at `started_at`.
+
+        Two recorders of one event open at the same instant, so each has to ask for a
+        different name.  Otherwise the second is pushed to a -2 that does not say which
+        file it is.
+        """
+        return self.event_filename(started_at)
 
     @staticmethod
     def unique_path(path: Path) -> Path:
@@ -397,7 +398,7 @@ class AbstractEventRecorder(ABC):
         recorder reading a different pipeline at a different rate has to place the cue
         marker in its own samples.  See docs-notebook/iq-recording-design.md.
         """
-        path = self._directory / self.event_filename(started_at, self.FILENAME_SUFFIX)
+        path = self._directory / self._filename(started_at)
         writer = None
         try:
             self._directory.mkdir(parents=True, exist_ok=True)
@@ -685,7 +686,7 @@ class AbstractEventRecorder(ABC):
                     'INAM': f'{self._callsign} {self.KIND} {started}',
                     'IART': self._callsign,
                     # Nominally a date; the full timestamp is more use and is widely
-                    # accepted, and it carries the offset the filename also records.
+                    # accepted, and it includes the offset the filename also records.
                     'ICRD': started,
                     'ISFT': f'n6ol-powerline-qrm-monitor {__version__}',
                     'ICMT': settings,
@@ -698,7 +699,7 @@ class AbstractEventRecorder(ABC):
 
     @abstractmethod
     def _metadata_settings(self, ended: str) -> dict[str, Any]:
-        """The key=value settings this format's ICMT tag carries.
+        """The key=value settings this format's ICMT tag holds.
 
         Everything a later reading cannot recover from the file itself, and nothing it
         can: the sample rate is already in the format header.  What belongs here
@@ -770,7 +771,14 @@ class IqEventRecorder(AbstractEventRecorder):
 
     CHANNELS = 2
     KIND = 'raw IQ capture'
-    FILENAME_SUFFIX = '-iq'
+    # 2.0.0 and 2.1.0 named an IQ capture by putting -iq.wav in place of the audio
+    # recording's extension.  Recording directories from those releases still hold them.
+    # The number is the one unique_path adds when a name is already taken, which it
+    # puts after -iq, so a clash from those releases ends -iq-2.wav.
+    _OLD_NAME_ENDING = re.compile(r'-iq(-\d+)?\.wav$')
+    # Every IQ capture's name starts with this now.  SDRconnect looks for the IQ in the
+    # second field, so this is part of the format rather than a label.
+    _NAME_START = 'event_IQ_'
     # Set per instance rather than per class, because which section holds the rate
     # depends on which receiver is in use, and a message naming the wrong one sends
     # somebody to edit a setting the program never read.
@@ -808,7 +816,7 @@ class IqEventRecorder(AbstractEventRecorder):
             min_free_disk_percent=recording.min_free_disk_percent,
         )
         # What a reader needs to make sense of the samples, none of which the file
-        # itself carries.  The center frequency matters most: it is where DC sits in
+        # itself records.  The center frequency matters most: it is where DC sits in
         # this capture, and without it the numbers describe an unknown piece of
         # spectrum.
         self._pulse_rate = config.audio.pulse_rate
@@ -817,6 +825,40 @@ class IqEventRecorder(AbstractEventRecorder):
         self._tuning_offset_hz = settings.tuning_offset_hz
         self._gain_db = settings.gain_db
         self._rf_conversion_db = config.level_offset_db
+
+    def _filename(self, started_at: datetime) -> str:
+        return self.iq_filename(started_at, self._tuned_hz)
+
+    @classmethod
+    def iq_filename(cls, when: datetime, tuned_hz: int) -> str:
+        """Return the .wav filename for an IQ capture of an event that locked at `when`.
+
+        SDR programs read an IQ capture's center frequency from its filename, because
+        nothing inside a .wav file records it.  This name opens at `tuned_hz` in
+        SDRconnect, SDR# and SDR++:
+
+            event_IQ_20260928_154116-0700_3590000HZ_3590000Hz.wav
+
+        SDRconnect splits the name on underscores.  It wants IQ in the second field and
+        the frequency in the fifth, ending in a capital HZ.  SDR++ takes the first match
+        of [0-9]+Hz, case-sensitively, and so never reads the HZ token.  No one token
+        suits both programs, so the name contains the frequency twice.  SDR# read this
+        name correctly too.  See docs-notebook/iq-filenames.md for the tests.
+
+        The frequency is the tuned one, where DC sits in the capture.  The listening
+        frequency would put every signal tuning_offset_hz from where it belongs.
+        """
+        stamp = when.strftime('%Y%m%d_%H%M%S%z')
+        return f'{cls._NAME_START}{stamp}_{tuned_hz}HZ_{tuned_hz}Hz.wav'
+
+    @classmethod
+    def is_iq_capture(cls, name: str) -> bool:
+        """Whether the file called `name` is an IQ capture this program wrote.
+
+        This also recognizes the name 2.0.0 and 2.1.0 gave an IQ capture, because a
+        recording directory keeps files from every release that wrote to it.
+        """
+        return name.startswith(cls._NAME_START) or cls._OLD_NAME_ENDING.search(name) is not None
 
     def _metadata_settings(self, ended: str) -> dict[str, Any]:
         return {
@@ -907,7 +949,7 @@ class RecordingTrigger:
         # Guarded because a misconfigured rate of zero reaches here before anything
         # has had the chance to refuse it: a listener's can_record() is what reports
         # that, and none has subscribed yet.  The wait is zero samples at a zero rate
-        # anyway, so there is nothing to carry across.
+        # anyway, so there is nothing to transfer.
         self._charged_wait_seconds = (self._min_lock_samples / self._sample_rate
                                       if self._sample_rate > 0 else 0.0)
         # Whoever wants to record subscribes; see add_listener.  Nothing is built
@@ -1107,7 +1149,7 @@ class RecordingTrigger:
     def stop(self) -> None:
         """Stop polling and close any recording in progress.
 
-        Finalizing matters: a .wav's header carries its length, and a file whose
+        Finalizing matters: a .wav's header records its length, and a file whose
         writer never closed reports zero frames no matter how much audio is in it.
         """
         self._stop.set()
@@ -1354,7 +1396,7 @@ class RecordingTrigger:
     def _sample_snr(self) -> None:
         """Note the analyzer's latest SNR, while a lock is waiting to be judged.
 
-        Only locked results carry a level.  An unlocked one reports zero by
+        Only locked results have a level.  An unlocked one reports zero by
         convention (see AnalysisResult.unlocked), and averaging those in would hold
         off a perfectly loud event for the sake of a reading that measured nothing.
         """

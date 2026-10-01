@@ -23,7 +23,7 @@
 #   SDRplay - an RSP1A or RSP1B, set up in the SDRplay section
 source = "soundcard"
 
-# The sound card that carries the RF-to-audio converted signal.
+# The sound card that receives the RF-to-audio converted signal.
 #
 # Choose this in Setup's Audio step. Do not type it. Setup probes every
 # input, shows a level bar for each, and writes the name for you.
@@ -88,7 +88,7 @@ gain_db = 22.9
 # card. Leave it unset until you have calibrated.
 #
 # This replaces [station] audio_rf_conversion_db whenever [audio] source is
-# rtlsdr. The two carry different names because they are different
+# rtlsdr. The two have different names because they are different
 # quantities: that one describes a radio and its wiring, this one is mostly
 # the negative of the tuner gain above and moves whenever the gain does.
 #
@@ -210,7 +210,7 @@ gain_db = 40.0
 # card. Leave it unset until you have calibrated.
 #
 # This replaces [station] audio_rf_conversion_db whenever [audio] source is
-# sdrplay. The two carry different names because they are different
+# sdrplay. The two have different names because they are different
 # quantities: that one describes a radio and its wiring, this one is mostly
 # the negative of the gain above and moves whenever the gain does.
 #
@@ -536,7 +536,7 @@ max_events = 10
 # out. It therefore keeps its time of day instead of sliding later by
 # however long each day's events took to arrive.
 #
-# A quiet period does not carry unused events forward. Switching recording
+# A quiet period does not save unused events for later. Switching recording
 # off by hand also cancels the cycle.
 rearm_reset_minutes = 0.0
 
@@ -610,6 +610,9 @@ min_lock_snr = 0.0
 #
 # Nothing in this program reads an IQ recording back. Playing one is a job
 # for other software.
+#
+# The filename contains the frequency the receiver was tuned to, so
+# SDRconnect, SDR# and SDR++ each open the recording at the right frequency.
 #
 # An SDR receiver only. A sound card has no IQ to record, so the monitor
 # ignores this and says so at startup when [audio] source is soundcard.

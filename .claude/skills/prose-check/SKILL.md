@@ -20,6 +20,23 @@ form used as the main verb.
 such as "Measured on this hardware, ..." and is blind to noun-phrase openers.  Read what
 it names and expect roughly half to be false alarms.
 
+## Words `ste_lint` rejects
+
+Keep these out of a draft, because `--changed` fails on every one of them.  `CLAUDE.md`
+bans them as assistant tells rather than house voice.
+
+- **Emphasis words:** *genuine*, *genuinely*, *load-bearing*, *is real*, *are real*.
+  Each one adds emphasis and does no work.
+  "A genuine bug" is a bug.
+  "The load-bearing line" is the line that matters.
+- **Stand-in verbs:** *land*, *lands*, *landed*, *carry*, *carries*, *carried*,
+  *carrying*.  Each one stands in for a plainer verb.
+  "The value lands at 128" is the value being 128.
+  "The name carries the frequency" is the name containing it.
+
+Say the thing.  A test in `tests/test_ste_lint.py` fails if this list and the linter
+disagree, so change both together.
+
 ## Read the first sentence of every paragraph
 
 **This is the whole reading job.** Every fragment found in the review that produced
@@ -62,7 +79,7 @@ against 39 verb-first.
 
 ## Then check those same openers for five more things
 
-One line each.  `CLAUDE.md` carries the worked examples.
+One line each.  `CLAUDE.md` holds the worked examples.
 
 - **Garden path.** A long gerund subject whose verb reads as a noun. "Viewing a float64
   array as complex128 pairs consecutive values" parses as *complex128 pairs* until it

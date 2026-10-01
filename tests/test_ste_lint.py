@@ -9,6 +9,7 @@ an f-string's pieces are one sentence rather than several.
 Each of those was a real defect in this tool before it earned its place in tools/.
 """
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -16,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from tools.ste_lint import (
-    Finding, changed_lines, check, fragments_in, json_prose, lint_file,
+    BANNED, Finding, changed_lines, check, fragments_in, json_prose, lint_file,
     looks_like_a_fragment, looks_subjectless, main, markdown_prose, python_prose,
     sentences,
 )
@@ -124,7 +125,8 @@ class TestSpacing:
 
 
 class TestBannedWords:
-    @pytest.mark.parametrize('word', ['genuine', 'genuinely', 'load-bearing', 'lands', 'landed'])
+    @pytest.mark.parametrize('word', ['genuine', 'genuinely', 'load-bearing', 'lands', 'landed',
+                                  'carry', 'carries', 'carried', 'carrying'])
     def test_each_banned_word_is_caught(self, word):
         assert 'banned word' in rules(check('a.py', 1, f'This {word} thing', False))
 
@@ -137,6 +139,19 @@ class TestBannedWords:
         """
         assert 'banned word' not in rules(
             check('CLAUDE.md', 1, 'These words: *genuine*, *lands*.', False))
+
+    def test_the_prose_check_skill_may_quote_them_too(self):
+        assert 'banned word' not in rules(check('.claude/skills/prose-check/SKILL.md', 1,
+                                                '*carries*, and "the name carries it"', False))
+
+    def test_borrowed_text_is_not_held_to_the_house_bans(self):
+        """ste-writing.md stays close to the skill it was adapted from."""
+        assert 'banned word' not in rules(
+            check('docs/ste-writing.md', 1, 'while they carry out a procedure', False))
+
+    def test_borrowed_text_is_still_held_to_the_ste_rules(self):
+        assert 'marketing adjective' in rules(
+            check('docs/ste-writing.md', 1, 'a robust procedure', False))
 
     def test_marketing_adjectives(self):
         assert 'marketing adjective' in rules(check('a.py', 1, 'A robust design', False))
@@ -821,3 +836,40 @@ class TestUntrackedFilesAreChecked:
         (repo / 'scratch' / 'notes.md').write_text('Genuinely.\n', encoding='utf-8')
         monkeypatch.chdir(repo)
         assert 'scratch/notes.md' not in changed_lines('main')
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SKILLS = (ROOT / '.claude' / 'skills' / 'prose-check' / 'SKILL.md',
+          ROOT / '.agents' / 'skills' / 'prose-check' / 'SKILL.md')
+
+
+def _banned_by_the_linter() -> set[str]:
+    """Every word BANNED matches.  An alternative ending in `?` names two words, one
+    with its last letter and one without."""
+    inner = BANNED.pattern[BANNED.pattern.index('(') + 1:BANNED.pattern.rindex(')')]
+    words = set()
+    for alternative in inner.split('|'):
+        if alternative.endswith('?'):
+            words |= {alternative[:-2], alternative[:-1]}
+        else:
+            words.add(alternative)
+    return words
+
+
+def _listed_in(skill: Path) -> set[str]:
+    """The words emphasized in the skill's "Words `ste_lint` rejects" section."""
+    text = skill.read_text(encoding='utf-8')
+    section = text.split('## Words `ste_lint` rejects', 1)[1].split('\n## ', 1)[0]
+    return set(re.findall(r'(?<!\*)\*([^*\n]+)\*(?!\*)', section))
+
+
+@pytest.mark.parametrize('skill', SKILLS, ids=lambda path: path.parts[-4])
+def test_the_prose_check_skill_lists_what_the_linter_bans(skill):
+    """A drift pin.  The skill is where a writer reads the list while drafting, and
+    BANNED is what fails the commit, so a word in one and not the other either goes
+    unenforced or fails a writer who was never told about it."""
+    listed, banned = _listed_in(skill), _banned_by_the_linter()
+    assert listed == banned, (
+        f'{skill.relative_to(ROOT)} and BANNED in tools/ste_lint.py disagree.  '
+        f'Only in the skill: {sorted(listed - banned)}.  Only in the linter: '
+        f'{sorted(banned - listed)}.  Add or remove the word in both places.')

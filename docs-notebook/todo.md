@@ -43,31 +43,6 @@ min_free_disk_percent` keeps a tenth of the disk in reserve by default, so the
 ordinary case is that recording is held off before the disk fills at all, and starts
 again on its own once there is room.
 
-### Put the center frequency in an IQ recording's filename
-
-SDR programs take an IQ recording's center frequency from its filename, and nothing
-inside the file.  Tests on 2026-09-28 found a name that SDRconnect, SDR# and SDR++ all
-read correctly, and `iq-filenames.md` has the evidence and each program's rule:
-
-    event_IQ_20260928_154116-0700_3590000HZ_3590000Hz.wav
-
-The frequency appears twice because SDRconnect requires the fifth `_` field to end in
-`HZ`, and SDR++ matches `[0-9]+Hz` case-sensitively.  Both tokens carry the tuned
-frequency, not the listening one.  `IqEventRecorder` already holds it as `_tuned_hz`,
-and writes it into the file's metadata as `center_frequency_hz`, so recordings made
-before the change can be renamed by hand from that.
-
-The IQ name moves from dashes to underscores, so it no longer looks like its audio
-partner, `event-20260928-154116-0700.wav`.  Whether the audio name follows is for the
-operator to decide.  `event_filename` takes only a time and a suffix today, so the IQ
-recorder needs its own way to build the name.
-
-The tests build the name for a configured listening frequency and offset, and check
-that both tokens carry the tuned frequency.  They also apply each rule to the name:
-SDRconnect's field positions and capital `HZ`, and SDR++'s own pattern.
-
-Nothing stops it.
-
 ## Faster sample rate support
 
 The program runs at 16 kHz at the one station it was written for, and several pieces
@@ -628,6 +603,16 @@ down from 46 counted on 2026-09-12.  `CLAUDE.md` bans the construct and the ratc
 "Before every commit" takes them as files get touched.  Clearing the rest is a job for
 a branch of its own, because folding them into an unrelated change buries whatever
 that change was for.
+
+### A newly banned verb is still through the codebase
+
+On 2026-09-30 the banned-word list in `CLAUDE.md`, and `ste_lint`'s `BANNED` pattern,
+gained all four forms of the verb that prose here kept using for "contains", "holds" or
+"records".  That day 193 uses remained in 78 files, counting `lib/`, `tools/`,
+`scripts/`, `tests/`, `docs/` and `docs-notebook/` and leaving out the ban lists
+themselves and released `CHANGELOG` sections.  `ste_lint --changed` reports only added
+lines, so the rest stay until the ratchet in "Before every commit" takes them or a
+branch of their own clears them.
 
 ### Prose findings outside the ratchet's reach
 

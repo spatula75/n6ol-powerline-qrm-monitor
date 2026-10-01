@@ -28,6 +28,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   in place of Python's.
 
 ### Changed
+- An IQ recording is named for the frequency the receiver was tuned to, so SDRconnect,
+  SDR# and SDR++ open it at the right frequency rather than at 0 Hz. A capture at
+  3590 kHz is now `event_IQ_20260928_154116-0700_3590000HZ_3590000Hz.wav` where it was
+  `event-20260928-154116-0700-iq.wav`. The frequency appears twice because SDRconnect
+  and SDR++ each accept only one of the two spellings. The audio recording keeps its
+  name.
 - `[weather] url` takes the CumulusMX station's address, such as
   `http://cumulusmx.local:8998/`, and the monitor builds the rest of the request
   itself. A full URL from an older config still works, and a warning at startup names
@@ -42,6 +48,9 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   midnight, and a tool that reads the CSV by column name should accept both.
 
 ### Fixed
+- `scripts/batch_render_recordings.py` leaves out raw IQ captures. It sent each one to
+  `--render`, which cannot replay raw IQ, so a station with `[recording] record_iq` on
+  got a failed render for every event it recorded.
 - A CumulusMX station set to metric units wrote Celsius and its own wind unit into
   columns headed F and MPH. The monitor now asks the station which units it serves
   and converts from them.
