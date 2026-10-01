@@ -84,6 +84,25 @@ as in its own `17-39-56_124410001Hz.wav`.  It also opened the name at the top at
 right frequency.  Its exact rule is unknown.  Both tokens hold the same number, so
 SDR# gets the right answer whichever one it reads.
 
+## GNU Radio
+
+GNU Radio replays an IQ recording and never reads a frequency from its name, so the
+name format makes no difference to it.  Claude checked its source on `main` on
+2026-10-01.  Four blocks in `gr-blocks` read a recording, and none takes a frequency:
+
+- WAV File Source opens the file through libsndfile and takes only the file, a repeat
+  flag and the channel count.  One of these captures plays with two channels followed by
+  a Float To Complex block.
+- File Source reads raw samples.
+- File Meta Source reads the sample rate and start time from its own `.hdr` header.
+- SigMF Source (minimal) is a File Source whose documentation tells the operator to read
+  the `.sigmf-meta` file by hand.
+
+A search of the whole repository found no code that takes a frequency from a filename.
+A control search for `sf_open` found the WAV reader, so the empty result was not a
+failed search.  A GNU Radio operator types the tuned frequency into the flowgraph, and
+this name shows it to them.
+
 ## The frequency in the name
 
 The frequency has to be the tuned one, not the listening one.  The monitor tunes the
@@ -102,7 +121,8 @@ names.  The two files of one event no longer look alike, but both contain the sa
 time and UTC offset.
 
 `IqEventRecorder.is_iq_capture` still recognizes the `-iq.wav` name that 2.0.0 and
-2.1.0 wrote, because a recording directory keeps files from every release.
+2.1.0 wrote, because a recording directory keeps files from every release.  It also
+recognizes `-iq-2.wav` and the like, which `unique_path` wrote when a name was taken.
 
 ## Sources
 
@@ -113,3 +133,6 @@ time and UTC offset.
   `source_modules/file_source/src/main.cpp`
 - <https://vulpinecitrus.info/blog/converting-raw-iq-rtl_sdr-wav-iq-sdrpp/>, which first
   described SDR++'s pattern
+- <https://github.com/gnuradio/gnuradio>, files `gr-blocks/lib/wavfile_source_impl.cc`,
+  `gr-blocks/lib/file_meta_source_impl.cc` and
+  `gr-blocks/grc/blocks_sigmf_source_minimal.block.yml`
