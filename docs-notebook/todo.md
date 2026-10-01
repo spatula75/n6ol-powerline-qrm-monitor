@@ -578,24 +578,6 @@ reliably.
 Nothing stops this beyond nobody having written it.  The test is one call against a
 method that takes a string.
 
-### The daily chart warns on a file with one row
-
-The first row of a new day's CSV gives the raw daily chart one timestamp, so
-`Plotter.generate_graph_from_csv` calls `set_xlim` with equal ends.  Matplotlib widens
-the range, prints a `UserWarning` about a singular transformation, and saves the chart
-anyway.  This happens once a day at the first minute after midnight, and on the first
-minute of any new file.  The smoothed chart is not affected, because it skips a file
-with no more rows than its window.
-
-The proposed fix sets the x range only when the series holds two different timestamps,
-and lets matplotlib choose it otherwise.  A test should turn warnings into errors over
-a one-row file, so that it fails if the warning returns.  Skipping the chart for one
-row was considered and set aside, because nobody has checked what the collector and
-the uploader do when that chart file is missing.
-
-Nothing stops it.  The operator put it off on 2026-09-27 to finish the weather work
-first.
-
 ### The "worth" construct is still through the codebase
 
 37 instances outside the quantity sense remain in `lib/`, `tools/` and `scripts/`,
