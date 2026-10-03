@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING, Protocol
 
 import numpy as np
 from PySide6.QtCore import QEvent, QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QImage, QPainter
+from PySide6.QtGui import QColor, QGuiApplication, QImage, QPainter, QScreen
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -739,6 +739,10 @@ class WaterfallWidget(QWidget):  # pragma: no cover -- requires a live Qt displa
         """
         self._timer.stop()
 
+    def is_running(self) -> bool:
+        """Whether the repaint timer is running, for MainWindow's display heartbeat."""
+        return self._timer.isActive()
+
 
 class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt display
     """Pair of vertical S-band bar-graph meters: noise floor (left) and signal (right).
@@ -852,6 +856,10 @@ class MeterPanelWidget(QWidget):  # pragma: no cover -- requires a live Qt displ
         nothing composites.  See MainWindow.changeEvent.
         """
         self._timer.stop()
+
+    def is_running(self) -> bool:
+        """Whether the repaint timer is running, for MainWindow's display heartbeat."""
+        return self._timer.isActive()
 
 
 class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt display
@@ -1037,6 +1045,10 @@ class RecordingBarWidget(QWidget):  # pragma: no cover -- requires a live Qt dis
         """
         self._timer.stop()
 
+    def is_running(self) -> bool:
+        """Whether the repaint timer is running, for MainWindow's display heartbeat."""
+        return self._timer.isActive()
+
 
 class _Repainting(Protocol):
     """A widget that repaints on a timer of its own, and can be told to stop.
@@ -1051,6 +1063,14 @@ class _Repainting(Protocol):
 
     def stop(self) -> None:
         ...
+
+    def is_running(self) -> bool:
+        ...
+
+
+# How often the display heartbeat logs, at DEBUG.  Once a second matches the probe that
+# found the monitor-unplug freeze, and is short enough to place a freeze in the log.
+_HEARTBEAT_MS = 1000
 
 
 class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
@@ -1143,6 +1163,8 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         self.setFixedSize(self._waterfall.width() + _PANEL_GAP + self._meters.width(),
                           bar_height + _WINDOW_H)
 
+        self._watch_the_display()
+
     def _restart_displays(self) -> None:
         """Seed the scope's and the waterfall's scales again, for a replay that started over."""
         self._scope.restart()
@@ -1226,12 +1248,74 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
         shows the present rather than replaying what it missed.
         """
         if event.type() == QEvent.Type.WindowStateChange:
+            logger.debug('Window state changed: minimized=%s, state %s.',
+                         self.isMinimized(), self.windowState())
             for widget in self._repainting_widgets():
                 if self.isMinimized():
                     widget.stop()
                 else:
                     widget.start()
         super().changeEvent(event)
+
+    def _watch_the_display(self) -> None:
+        """Log what happens to the screens and to this window's painting.
+
+        Pulling a monitor's DisplayPort adapter froze the whole window while analysis
+        and logging continued, and a plain Qt window survived the same unplug.  These
+        lines exist to find out which link stops: the panels' timers, their paints, or
+        the window's exposure on a screen.  Screen changes log at INFO because they are
+        rare and each one matters.  The heartbeat logs once a second at DEBUG, and its
+        timer starts only when DEBUG is on.
+        """
+        app = QGuiApplication.instance()
+        app.screenAdded.connect(lambda screen: self._log_screen('added', screen))
+        app.screenRemoved.connect(lambda screen: self._log_screen('removed', screen))
+        app.primaryScreenChanged.connect(lambda screen: self._log_screen('made primary', screen))
+        self._paints = {type(widget).__name__: 0 for widget in self._repainting_widgets()}
+        for widget in self._repainting_widgets():
+            widget.installEventFilter(self)
+        self._heartbeat = QTimer(self)
+        self._heartbeat.timeout.connect(self._log_heartbeat)
+        if logger.isEnabledFor(logging.DEBUG):
+            self._heartbeat.start(_HEARTBEAT_MS)
+
+    @staticmethod
+    def _log_screen(change: str, screen: QScreen | None) -> None:
+        if screen is None:
+            logger.info('Screen %s: none.', change)
+            return
+        geometry = screen.geometry()
+        logger.info('Screen %s: %s, %dx%d at (%d, %d).', change, screen.name(),
+                    geometry.width(), geometry.height(), geometry.x(), geometry.y())
+
+    def _log_heartbeat(self) -> None:
+        handle = self.windowHandle()
+        panels = ', '.join(
+            f'{name} {count} paints{"" if widget.is_running() else " (timer stopped)"}'
+            for (name, count), widget in zip(self._paints.items(), self._repainting_widgets()))
+        logger.debug('Display heartbeat: %s.  Window visible=%s minimized=%s exposed=%s.',
+                     panels, self.isVisible(), self.isMinimized(),
+                     handle.isExposed() if handle is not None else None)
+        self._paints = dict.fromkeys(self._paints, 0)
+
+    def showEvent(self, event) -> None:  # noqa: N802
+        """Watch the native window once it exists, which is not until the first show."""
+        handle = self.windowHandle()
+        if handle is not None and not getattr(self, '_watching_handle', False):
+            self._watching_handle = True
+            handle.installEventFilter(self)
+            handle.screenChanged.connect(lambda screen: self._log_screen('now holds the window', screen))
+        super().showEvent(event)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:  # noqa: N802
+        """Count each panel's paints, and log each change to the window's exposure."""
+        if event.type() == QEvent.Type.Paint:
+            name = type(watched).__name__
+            if name in self._paints:
+                self._paints[name] += 1
+        elif event.type() == QEvent.Type.Expose and watched is self.windowHandle():
+            logger.debug('Window expose event: exposed=%s.', self.windowHandle().isExposed())
+        return super().eventFilter(watched, event)
 
     def add_close_listener(self, listener: Callable[[], None]) -> None:
         """Call `listener` first when the window closes, before anything else stops.
@@ -1245,6 +1329,7 @@ class MainWindow(QMainWindow):  # pragma: no cover -- requires a live Qt display
     def closeEvent(self, event) -> None:  # noqa: N802
         for listener in self._close_listeners:
             listener()
+        self._heartbeat.stop()
         for widget in self._repainting_widgets():
             widget.stop()
         self._analyzer.stop()

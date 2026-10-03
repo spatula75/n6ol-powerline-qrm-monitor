@@ -894,3 +894,7 @@ class ScopeWidget(QWidget):  # pragma: no cover -- requires a live Qt display
         nothing composites.  See MainWindow.changeEvent.
         """
         self._timer.stop()
+
+    def is_running(self) -> bool:
+        """Whether the repaint timer is running, for MainWindow's display heartbeat."""
+        return self._timer.isActive()
